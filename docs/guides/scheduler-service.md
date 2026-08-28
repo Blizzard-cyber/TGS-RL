@@ -42,9 +42,15 @@ flowchart LR
   DECISION --> GW[Gateway / Console]
 ```
 
-一次已接受的 Intent 会先物化 pending units，再以不可变 Snapshot 进行约束过滤、
-评分和计划。提交计划前会复核 Snapshot revision 与 Intent version。Provider 动作完成
-后，每个 binding 分别确认或释放资源；证据缺失时采用 fail-closed 处理。
+一次已接受的 Intent 会先物化 pending units，并在不可变 Snapshot 上评估执行契约、
+过滤硬约束、评分和计划。提交计划前会复核 Snapshot revision 与 Intent version。Provider
+动作完成后，每个 binding 分别确认或释放资源；证据缺失时采用 fail-closed 处理。
+
+Scheduler 使用 fast、medium、slow 三条进程内 keyed queue 处理同一个
+`(execution_id, stage_id)`。同一 key 在队列中重复出现时会合并 cause、最新 revision 和
+最新 contract observation，并保留原有 FIFO 位置。三个 loop 的默认周期分别为 `25ms`、
+`100ms` 和 `250ms`；周期控制开始处理的节奏，不是决策完成时限或 SLA。同一档 tick 尚未
+完成时，重叠 tick 会被跳过。
 
 ## gRPC 接口
 
@@ -83,11 +89,40 @@ uv run --frozen tgsrl list-decisions JOB_ID --run-id RUN_ID
 uv run --frozen tgsrl get-decision JOB_ID DECISION_ID
 ```
 
+## 执行契约评估
+
+候选放置前，Scheduler 会对 Intent 中的 `ExecutionContract` 执行确定性评估。当前评估：
+
+- 带 typed `predicate` 的 `ValidityRule` 和 `Condition`；
+- `component=protocol` 的 `VersionConstraint`；
+- `BackpressurePolicy`；
+- `CommitPolicy.require_safe_point` 与 `SafePointPolicy`。
+
+每条 `ContractEvaluation` 记录 clause、状态、观测值、证据、缺失字段、failure mode 和建议
+动作，并保存在 `DecisionRecord.contractEvaluations`。要求 reject、pause、abort 或等待 safe
+point 的结果会阻止本次放置，形成 fallback；对应的 rejected candidate 也会携带该评估。
+
+以下边界需要由调用方处理：
+
+- 只有字符串 `expression`、没有 typed predicate 的旧式 validity rule 不会解释执行该
+  字符串，而会记录为 `INDETERMINATE` 并按兼容规则放行；
+- 非 `protocol` 的 version component 当前记录为 `NOT_APPLICABLE`；
+- backpressure 的 block、shed 或 scale-out 是决策建议和审计证据；Scheduler 当前不会直接
+  操作生产者、删除样本或扩容外部基础设施。
+
 ## 决策与 Fallback
 
-Scheduler 会记录输入版本、候选、拒绝原因、分项得分、选中计划、Fallback、动作与
-补偿结果。`PublishIntent` 返回 accepted 只表示接收成功；应查看 `DecisionRecord` 的
-`fallback` 和 `action_results` 判断资源动作结果。
+Scheduler 会记录输入版本、tick 与 evaluation context、有界候选和拒绝证据、分项得分、
+选中计划、Fallback、动作与补偿结果。`PublishIntent` 返回 accepted 只表示接收成功；应查看
+`DecisionRecord` 的 `fallback` 和 `action_results` 判断资源动作结果。
+
+`top_k` 是每个 pending unit 的策略选择面，不是全局候选上限，也不会跳过 unit/device pair
+的硬约束评估。候选引擎先按统一的 score-first 顺序形成 TopK shortlist，再允许配置的
+策略在该 shortlist 内二次选择。
+`DecisionRecord.candidates` 与 `rejectedCandidates` 是有界审计投影，不保证包含完整候选
+矩阵。candidate 与 rejection 共用默认 4096 条 evidence budget；已选候选始终保留，必要时
+有效预算会增长。客户端应使用 `totalCandidateCount`、`totalRejectedCandidateCount` 和
+`evidenceTruncated` 判断证据是否完整，不能用数组长度推断实际评估总数。
 
 支持的 Fallback：
 
@@ -108,6 +143,29 @@ Scheduler 启动时会加载 manifest 引用的 BOM、profile、capabilities、p
 - `binpack`；
 - `trace-aware`；
 - 可配置 `top_k` 和 fast/medium/slow event-loop interval。
+
+三档 tick 同时限定本轮可执行的最大动作级别：
+
+| Tick | 默认周期 | 最大 ActionLevel |
+|---|---:|---:|
+| fast | `25ms` | L1 |
+| medium | `100ms` | L3 |
+| slow | `250ms` | L4 |
+
+Action type 与 level 的映射由 Scheduler 统一校验：
+
+| ActionLevel | Action type |
+|---|---|
+| L1 | `set_share`、`set_priority`、`resize`、`bind`、`release` |
+| L2 | `pause`、`resume` |
+| L3 | `sleep`、`offload` |
+| L4 | `rebind`、`recreate` |
+
+Action 声明的 level 必须与 type 匹配，`tick_kind` 必须与 Decision 的 tick 一致，且不得超过
+该 tick 的 ceiling；不符合规则的 plan 会 fail closed，执行前还会再次校验。当前常规放置
+planner 生成 L1 `bind`，L2–L4 表示协议和 Provider 可表达的动作范围，不表示 Scheduler 会
+在默认路径主动生成所有这些动作。仅兼容输入允许缺失 tick 的旧式 L1 action；新调用方
+应始终发送明确的 `tick_kind`。
 
 默认 policy 还启用 mutation protection：按 execution/stage 应用 cooldown、hysteresis、
 时间窗 action budget 和 circuit breaker。保护拒绝会形成带 `PROTECTION_*` 原因的 fallback。

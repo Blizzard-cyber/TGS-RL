@@ -189,16 +189,29 @@ Replay 使用虚拟时钟推进事件时间并返回事件副本。Checkpoint �
 
 ## Replay 与 Experiment 服务
 
-Runtime 进程同时注册 `ExperimentService`。Replay 保存带摘要校验的 typed step
-artifact，其中包含事件、Intent、Snapshot 和可选的 recorded Decision。`start` 会按 ordinal
-顺序把每一步发送给 Scheduler 的只读 `Schedule` RPC，规范化易变 ID/时间字段后比较决策
-语义，并把实际 Decision artifact、计数、fallback/equivalence 指标和 Experiment result
-保存下来。该路径不会调用 `PublishIntent`，也不会执行 Provider mutation。
+Runtime 进程同时注册 `ExperimentService`。Replay 保存带摘要校验的 typed step artifact。
+新写入的 `tgsrl.replay-artifact.v2` 每一步包含事件、Intent、Snapshot、可选的 recorded
+Decision，以及明确的 `EvaluationContext`（tick、evaluation time、decision sequence、cause、
+observed revision 和 contract observation）。`start` 会按 ordinal 顺序把每一步发送给
+Scheduler 的只读 `Schedule` RPC，并用 `decision-semantic-v2` 规范化易变 ID、cursor 和时间
+字段后比较决策语义。实际 Decision artifact、语义摘要、比较状态、计数、
+fallback/equivalence 指标和 Experiment result 会被保存。该路径不会调用 `PublishIntent`，
+也不会执行 Provider mutation。
+
+旧的 v1 artifact 仍可读取；缺少 evaluation context 时会合成 fast tick、
+`replay-compat` cause 等兼容默认，并标记 `compatibilityDefaultsApplied=true`。这保证旧数据
+可重放，但不表示原始 tick context 得到精确恢复。artifact schema、canonicalizer、digest 或
+ordinal 不一致时 Replay 会失败，不会忽略损坏继续运行。
 
 `pause`、`resume`、`stop`、`terminate` 更新 Replay 生命周期状态；Experiment 用于组织
 replay run 与比较结果。`start` 要求 Replay 已带完整 typed scheduler input artifacts，且
 Runtime 以 `--scheduler-target` 连接支持 `Schedule` 的 Scheduler；只有 Trace 引用而没有这些
 artifact 的 Replay 不能执行 Scheduler-backed replay。
+
+Replay runner 支持 recorded、override 和 derive 三种 seed mode，但当前服务端 `start` 使用
+recorded mode，HTTP/CLI 没有 seed-mode 选择参数。每完成一个 Scheduler step，Runtime 都会按
+Replay ID、START 幂等键摘要和 ordinal 持久化进度。同一 START 使用相同幂等键重试时，会先
+校验已保存 step 的 digest，再从下一个未完成步骤继续；不会重新调度已经持久化的步骤。
 
 面向终端用户时，通常通过 HTTP Gateway 或其 Python SDK 操作这些资源：
 
@@ -305,3 +318,4 @@ RPC，一次调用不会等待未来事件。
 - Runtime 不提供跨服务事务、HA、灾备或训练进程镜像恢复。
 - Synthetic Trace、调度 Replay 和 Experiment 汇总不能用来推断真实训练性能、
   GPU 利用率、收敛质量或 wall-clock 收益。
+- v1 Replay 的兼容 context 是合成值；需要精确比较 tick 和契约观测时应使用 v2 artifact。

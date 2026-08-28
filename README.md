@@ -16,7 +16,8 @@ Kubernetes，适合体验完整控制链、集成客户端以及评估调度语�
   `retry` 和 `terminate` 生命周期命令。
 - 用统一 `ExecutionContract` 表达 PPO、GRPO，以及同步、部分异步和完全异步 Rollout。
 - 管理 Runtime unit、Sandbox、Trace、增量 DAG、等待分类、Checkpoint、Replay 和 Experiment。
-- 根据版本化 `SchedulingIntent`、资源快照、能力约束和策略生成可审计决策。
+- 根据版本化 `SchedulingIntent`、资源快照、执行契约和能力约束，在三档 tick 与
+  ActionLevel 授权下生成带有界候选证据的可审计决策。
 - 通过 Provider 执行资源动作，并由 Operator 将成功决策编译为 workload 对象。
 - 通过 HTTP/OpenAPI、Python SDK、CLI 和 Web Console 查询任务、拓扑、时间线、Sandbox
   与调度决策。
@@ -188,7 +189,7 @@ generation 和 cursor，并在恢复后核对 Decision、Provider 与 backend �
 |---|---|---|
 | 单机完整控制链 | **支持** | 使用 CPU Mock Provider 与 fake Operator backend；不创建真实 GPU 或 Kubernetes 资源 |
 | HTTP、CLI、SDK、Console | **支持** | Gateway 必须能访问对应 gRPC 服务；内存模式和浏览器 Mock 仅用于无持久化预览 |
-| NVIDIA | **仅设备发现** | 默认 LocalDriver 可通过 `nvidia-smi` 读取设备，但不执行 bind/release、MIG/MPS 或 Runtime 控制；真实资源动作需要另行提供基础设施 Driver |
+| NVIDIA | **仅设备发现** | 默认 LocalDriver 可通过 `nvidia-smi` 读取设备，但不执行 bind/release、MIG/MPS 或 Runtime 控制；仓库未提供真实 GPU 分配、训练执行、性能或恢复验证证据，真实资源动作需要另行提供基础设施 Driver |
 | 外部训练框架 | **有条件支持** | veRL、OpenRLHF、Ray、PyTorch、vLLM、SGLang adapter 需要对应 Python 包、provider hook、执行后端和资源控制；本项目不提供开箱即用的训练组合 |
 | Kubernetes Operator | **有条件支持** | 部署工件只安装 Operator；还需部署 Scheduler、Job Controller、Runtime、Kueue 及所选 GPU/DRA 组件，并确认目标集群 API 兼容性 |
 | 公网或多租户服务 | **不支持直接部署** | HTTP/gRPC/metrics 无 TLS、认证、授权、租户隔离和限流；必须通过受控网络与外部安全层访问 |
