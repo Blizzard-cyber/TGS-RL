@@ -5,15 +5,14 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"sort"
-	"time"
 
 	tgsrlv1 "github.com/Blizzard-cyber/TGS-RL/gen/go/tgsrl/v1"
+	"github.com/Blizzard-cyber/TGS-RL/scheduler-go/actionpolicy"
+	"github.com/Blizzard-cyber/TGS-RL/scheduler-go/eventloop"
 	"github.com/Blizzard-cyber/TGS-RL/scheduler-go/observability"
 	"github.com/Blizzard-cyber/TGS-RL/scheduler-go/provider"
 	"github.com/Blizzard-cyber/TGS-RL/scheduler-go/scheduler"
 	"github.com/Blizzard-cyber/TGS-RL/scheduler-go/state"
-	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
@@ -28,11 +27,14 @@ func (s *Server) workState(key workKey) *workState {
 	return work
 }
 
-func (s *Server) enqueue(ctx context.Context, intent *tgsrlv1.SchedulingIntent) {
+func (s *Server) enqueue(ctx context.Context, intent *tgsrlv1.SchedulingIntent, trigger *eventloop.Trigger) {
 	s.mu.Lock()
 	started := s.started
 	s.mu.Unlock()
 	if !started {
+		return
+	}
+	if intent == nil {
 		return
 	}
 	key := workKey{executionID: intent.GetExecutionId(), stageID: intent.GetStageId()}
@@ -45,8 +47,12 @@ func (s *Server) enqueue(ctx context.Context, intent *tgsrlv1.SchedulingIntent) 
 		work = &workState{}
 		s.workers[key] = work
 	}
-	work.accepted = append(work.accepted, proto.Clone(intent).(*tgsrlv1.SchedulingIntent))
-	s.recordQueueDepthLocked(intent, len(work.accepted))
+	work.pending = mergeReconcileWork(work.pending, intent, trigger)
+	depth := 0
+	if work.pending != nil {
+		depth = 1
+	}
+	s.recordQueueDepthLocked(intent, depth)
 	if work.running {
 		s.mu.Unlock()
 		return
@@ -72,12 +78,67 @@ func (s *Server) enqueue(ctx context.Context, intent *tgsrlv1.SchedulingIntent) 
 	}()
 }
 
-func (s *Server) triggerReconcile(ctx context.Context, executionID, stageID string) {
-	intent, ok := s.store.LatestValidIntent(executionID, stageID)
+func (s *Server) triggerReconcile(ctx context.Context, trigger *eventloop.Trigger) {
+	if trigger == nil {
+		return
+	}
+	intent, ok := s.store.LatestValidIntent(trigger.ExecutionID, trigger.StageID)
 	if !ok {
 		return
 	}
-	s.enqueue(s.workerContext(ctx), intent)
+	s.enqueue(s.workerContext(ctx), intent, trigger)
+}
+
+func (s *Server) enqueueThroughRuntime(ctx context.Context, intent *tgsrlv1.SchedulingIntent, trigger *eventloop.Trigger) {
+	if intent == nil {
+		return
+	}
+	if s.eventLoop != nil {
+		s.eventLoop.PublishIntent(intent)
+	}
+	if s.runtime != nil {
+		runtimeTrigger := cloneRuntimeTrigger(trigger)
+		if runtimeTrigger == nil {
+			runtimeTrigger = &eventloop.Trigger{}
+		}
+		runtimeTrigger.ExecutionID = intent.GetExecutionId()
+		runtimeTrigger.StageID = intent.GetStageId()
+		if runtimeTrigger.ContractObservation == nil {
+			runtimeTrigger.ContractObservation = cloneContractObservation(intent.GetContractObservation())
+		}
+		s.runtime.Enqueue(runtimeTrigger)
+		return
+	}
+	legacy := cloneRuntimeTrigger(trigger)
+	if legacy == nil {
+		legacy = &eventloop.Trigger{}
+	}
+	legacy.ExecutionID = intent.GetExecutionId()
+	legacy.StageID = intent.GetStageId()
+	if legacy.TickKind == tgsrlv1.TickKind_TICK_KIND_UNKNOWN {
+		legacy.TickKind = tgsrlv1.TickKind_TICK_KIND_FAST
+	}
+	if legacy.Cause == "" {
+		legacy.Cause = "legacy_direct"
+	}
+	if legacy.ContractObservation == nil {
+		legacy.ContractObservation = cloneContractObservation(intent.GetContractObservation())
+	}
+	s.enqueue(s.workerContext(ctx), intent, legacy)
+}
+
+func (s *Server) runtimeTriggerForIntent(intent *tgsrlv1.SchedulingIntent, cause string, tick tgsrlv1.TickKind) *eventloop.Trigger {
+	if intent == nil {
+		return nil
+	}
+	return &eventloop.Trigger{
+		ExecutionID:                  intent.GetExecutionId(),
+		StageID:                      intent.GetStageId(),
+		TickKind:                     tick,
+		Cause:                        cause,
+		ContractObservation:          cloneContractObservation(intent.GetContractObservation()),
+		CompatibilityDefaultsApplied: false,
+	}
 }
 
 func (s *Server) processKey(ctx context.Context, key workKey) {
@@ -94,47 +155,42 @@ func (s *Server) processKey(ctx context.Context, key workKey) {
 		}
 		s.mu.Lock()
 		work := s.workers[key]
-		if work == nil || len(work.accepted) == 0 {
+		if work == nil || work.pending == nil {
 			if work != nil {
 				work.running = false
 			}
 			s.mu.Unlock()
 			return
 		}
-		accepted := work.accepted
-		work.accepted = nil
-		s.recordQueueDepthLocked(accepted[len(accepted)-1], 0)
+		pending := work.pending
+		work.pending = nil
+		s.recordQueueDepthLocked(pending.intent, 0)
 		s.mu.Unlock()
-
-		sort.SliceStable(accepted, func(i, j int) bool { return accepted[i].GetVersion() < accepted[j].GetVersion() })
-		accepted = dedupeAcceptedIntents(accepted)
-		for _, superseded := range accepted[:len(accepted)-1] {
-			if err := s.appendTerminalFallback(superseded, "INTENT_SUPERSEDED", "a newer accepted intent replaced this version"); err != nil {
-				return
-			}
-		}
-		s.processAccepted(ctx, accepted[len(accepted)-1])
+		s.processAccepted(ctx, pending)
 	}
 }
 
-func dedupeAcceptedIntents(intents []*tgsrlv1.SchedulingIntent) []*tgsrlv1.SchedulingIntent {
-	if len(intents) < 2 {
-		return intents
+func (s *Server) processAccepted(ctx context.Context, workItem *reconcileWork) {
+	if workItem == nil || workItem.intent == nil {
+		return
 	}
-	deduped := intents[:1]
-	for _, intent := range intents[1:] {
-		last := deduped[len(deduped)-1]
-		if last.GetVersion() == intent.GetVersion() && proto.Equal(last, intent) {
-			continue
-		}
-		deduped = append(deduped, intent)
+	intent := workItem.intent
+	triggers := workItem.triggers
+	if len(triggers) == 0 {
+		triggers = []*eventloop.Trigger{s.runtimeTriggerForIntent(intent, "legacy_direct", tgsrlv1.TickKind_TICK_KIND_FAST)}
 	}
-	return deduped
-}
-
-func (s *Server) processAccepted(ctx context.Context, intent *tgsrlv1.SchedulingIntent) {
 	key := workKey{executionID: intent.GetExecutionId(), stageID: intent.GetStageId()}
 	work := s.workState(key)
+	for _, trigger := range triggers {
+		if !s.processAcceptedTrigger(ctx, work, intent, trigger) {
+			return
+		}
+	}
+}
+
+func (s *Server) processAcceptedTrigger(ctx context.Context, work *workState, intent *tgsrlv1.SchedulingIntent, trigger *eventloop.Trigger) bool {
+	evaluationNow := s.now()
+	evaluationContext := buildEvaluationContext(evaluationNow, intent, trigger)
 	for attempt := 0; attempt < maxRevisionRetries; attempt++ {
 		retry := false
 		completed := func() bool {
@@ -188,9 +244,9 @@ func (s *Server) processAccepted(ctx context.Context, intent *tgsrlv1.Scheduling
 				}
 				return true
 			}
-			evaluationStarted := time.Now()
-			plan, decision, err := s.scheduler.Evaluate(snapshot, intent)
-			s.recordScheduleLatency(intent, time.Since(evaluationStarted))
+			evaluationStarted := evaluationNow
+			plan, decision, err := s.evaluateIntent(snapshot, intent, evaluationContext)
+			s.recordScheduleLatency(intent, s.now().Sub(evaluationStarted))
 			if err != nil {
 				if appendErr := s.appendFailureDecision(intent, snapshot, "EVALUATION_FAILED", err); appendErr != nil {
 					return true
@@ -198,6 +254,9 @@ func (s *Server) processAccepted(ctx context.Context, intent *tgsrlv1.Scheduling
 				return true
 			}
 			fillDecisionMetadataFromIntent(decision, intent)
+			applyDecisionEvaluationContext(decision, evaluationContext)
+			applyDecisionPlanTickDefaults(decision, evaluationContext.GetTickKind())
+			applyPlanTickDefaults(plan, evaluationContext.GetTickKind())
 			if decision.GetFallback() || len(plan.GetActions()) == 0 {
 				if err := s.appendDecision(intent.GetJobId(), decision); err != nil {
 					return true
@@ -218,6 +277,15 @@ func (s *Server) processAccepted(ctx context.Context, intent *tgsrlv1.Scheduling
 					}
 					return true
 				}
+			}
+			if err := actionpolicy.ValidatePlan(plan, evaluationContext.GetTickKind(), actionpolicy.ValidationOptions{AllowLegacyUnknownTickL1: true}); err != nil {
+				decision.Fallback = true
+				decision.FallbackReason = "PLAN_POLICY_REJECTED"
+				decision.SelectedPlan.Actions = nil
+				if appendErr := s.appendDecision(intent.GetJobId(), decision); appendErr != nil {
+					return true
+				}
+				return true
 			}
 			beforeReservation := s.store.ExportDurableState()
 			if _, err := s.store.ReservePlan(plan); err != nil {
@@ -284,14 +352,62 @@ func (s *Server) processAccepted(ctx context.Context, intent *tgsrlv1.Scheduling
 			return true
 		}()
 		if completed {
-			return
+			return true
 		}
 		if retry {
 			continue
 		}
 	}
 	if err := s.appendFailureDecision(intent, nil, "REVISION_CONFLICT_RETRY_EXHAUSTED", state.ErrPlanRevisionConflict); err != nil {
+		return false
+	}
+	return true
+}
+
+func (s *Server) evaluateIntent(
+	snapshot *tgsrlv1.ClusterSnapshot,
+	intent *tgsrlv1.SchedulingIntent,
+	evaluationContext *tgsrlv1.EvaluationContext,
+) (*tgsrlv1.PlacementPlan, *tgsrlv1.DecisionRecord, error) {
+	if evaluator, ok := s.scheduler.(ContextualEvaluator); ok {
+		return evaluator.EvaluateWithContext(snapshot, intent, evaluationContext)
+	}
+	return s.scheduler.Evaluate(snapshot, intent)
+}
+
+func applyPlanTickDefaults(plan *tgsrlv1.PlacementPlan, tick tgsrlv1.TickKind) {
+	if plan == nil || tick == tgsrlv1.TickKind_TICK_KIND_UNKNOWN {
 		return
+	}
+	for _, action := range plan.GetActions() {
+		if action != nil && action.GetTickKind() == tgsrlv1.TickKind_TICK_KIND_UNKNOWN {
+			action.TickKind = tick
+		}
+	}
+}
+
+func applyDecisionPlanTickDefaults(decision *tgsrlv1.DecisionRecord, tick tgsrlv1.TickKind) {
+	if decision == nil || tick == tgsrlv1.TickKind_TICK_KIND_UNKNOWN {
+		return
+	}
+	if decision.GetTickKind() == tgsrlv1.TickKind_TICK_KIND_UNKNOWN {
+		decision.TickKind = tick
+	}
+	applyPlanTickDefaults(decision.GetSelectedPlan(), tick)
+	for _, candidate := range decision.GetCandidates() {
+		if candidate == nil {
+			continue
+		}
+		applyPlanTickDefaults(candidate.GetPlan(), tick)
+	}
+}
+
+func applyDecisionEvaluationContext(decision *tgsrlv1.DecisionRecord, evaluationContext *tgsrlv1.EvaluationContext) {
+	if decision == nil || evaluationContext == nil {
+		return
+	}
+	if decision.GetTickKind() == tgsrlv1.TickKind_TICK_KIND_UNKNOWN {
+		decision.TickKind = evaluationContext.GetTickKind()
 	}
 }
 

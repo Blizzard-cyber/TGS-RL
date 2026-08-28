@@ -49,7 +49,7 @@ func TestSchedulerServiceBufconn(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewMockResourceProvider() error = %v", err)
 	}
-	implementation, err := New(Config{Store: store, Scheduler: evaluator, Provider: mockProvider, DecisionRetention: 8})
+	implementation, err := New(Config{Store: store, Scheduler: evaluator, Provider: mockProvider, DecisionRetention: 8, Clock: ClockFunc(func() time.Time { return now })})
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
@@ -160,7 +160,7 @@ func TestDecisionUnaryQueriesPaginationFilteringAndErrors(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewMockResourceProvider() error = %v", err)
 	}
-	implementation, err := New(Config{Store: store, Scheduler: evaluator, Provider: mockProvider, DecisionRetention: 16})
+	implementation, err := New(Config{Store: store, Scheduler: evaluator, Provider: mockProvider, DecisionRetention: 16, Clock: ClockFunc(func() time.Time { return now })})
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
@@ -325,6 +325,7 @@ func TestServiceBootstrapsEventLoopRuntime(t *testing.T) {
 		Recorder:         recorder,
 		EventLoop:        loop,
 		EventLoopRuntime: runtime,
+		Clock:            ClockFunc(func() time.Time { return now }),
 		DeferStart:       true,
 	})
 	if err != nil {
@@ -657,6 +658,7 @@ func TestNewStartsProviderWatchesFromZeroCursor(t *testing.T) {
 		Store:     store,
 		Scheduler: evaluator,
 		Provider:  watched,
+		Clock:     ClockFunc(func() time.Time { return now }),
 	})
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
@@ -696,6 +698,7 @@ func TestNewReturnsProviderWatchStartupError(t *testing.T) {
 		Store:     store,
 		Scheduler: evaluator,
 		Provider:  watchFailingProvider{base: base, err: watchErr},
+		Clock:     ClockFunc(func() time.Time { return now }),
 	}); err == nil || !strings.Contains(err.Error(), "start resource watch") || !errors.Is(err, provider.ErrCursorExpired) {
 		t.Fatalf("New() error = %v, want wrapped start resource watch + ErrCursorExpired", err)
 	}
@@ -715,6 +718,7 @@ func TestProcessAcceptedEvaluatorFailureDoesNotPanicAndAppendsFallback(t *testin
 		Store:     store,
 		Scheduler: failingEvaluator{err: errors.New("boom")},
 		Provider:  mockProvider,
+		Clock:     ClockFunc(func() time.Time { return now }),
 	})
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
@@ -751,9 +755,122 @@ func TestProcessAcceptedEvaluatorFailureDoesNotPanicAndAppendsFallback(t *testin
 	}
 }
 
+func TestPublishIntentPassesTriggerContextIntoContextualEvaluator(t *testing.T) {
+	now := time.Date(2026, 8, 28, 7, 0, 0, 0, time.UTC)
+	store, err := state.NewStore(serviceSnapshot(now), state.WithClock(state.ClockFunc(func() time.Time { return now })))
+	if err != nil {
+		t.Fatal(err)
+	}
+	intent := serviceIntent(now)
+	sampleCount := uint64(9)
+	observation := &tgsrlv1.ContractObservation{
+		EventId:     "trigger-observation",
+		Source:      "runtime",
+		SampleCount: &sampleCount,
+	}
+	plan := &tgsrlv1.PlacementPlan{
+		PlanId:           "context-plan",
+		ExecutionId:      intent.GetExecutionId(),
+		StageId:          intent.GetStageId(),
+		IntentVersion:    intent.GetVersion(),
+		SnapshotRevision: 5,
+		DecisionId:       "context-decision",
+		Actions:          []*tgsrlv1.Action{},
+	}
+	decision := &tgsrlv1.DecisionRecord{
+		DecisionId:       "context-decision",
+		ExecutionId:      intent.GetExecutionId(),
+		StageId:          intent.GetStageId(),
+		IntentVersion:    intent.GetVersion(),
+		SnapshotRevision: 5,
+		SelectedPlan:     proto.Clone(plan).(*tgsrlv1.PlacementPlan),
+	}
+	spy := &contextualEvaluatorSpy{plan: plan, decision: decision}
+	mockProvider, err := provider.NewMockResourceProvider(provider.WithNow(func() time.Time { return now }))
+	if err != nil {
+		t.Fatal(err)
+	}
+	implementation, err := New(Config{Store: store, Scheduler: spy, Provider: mockProvider, Clock: ClockFunc(func() time.Time { return now })})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer implementation.Close()
+	if _, err := store.PublishIntent(intent); err != nil {
+		t.Fatalf("store.PublishIntent() error = %v", err)
+	}
+
+	trigger := &eventloop.Trigger{
+		ExecutionID:                  intent.GetExecutionId(),
+		StageID:                      intent.GetStageId(),
+		TickKind:                     tgsrlv1.TickKind_TICK_KIND_SLOW,
+		Cause:                        "startup_recovery",
+		ObservedRevision:             23,
+		ContractObservation:          observation,
+		CompatibilityDefaultsApplied: true,
+	}
+	implementation.enqueue(context.Background(), intent, trigger)
+
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		got := spy.LastContext()
+		if got == nil {
+			time.Sleep(10 * time.Millisecond)
+			continue
+		}
+		if got.GetTickKind() != tgsrlv1.TickKind_TICK_KIND_SLOW {
+			t.Fatalf("tick_kind = %s, want SLOW", got.GetTickKind())
+		}
+		if got.GetCause() != "startup_recovery" {
+			t.Fatalf("cause = %q, want startup_recovery", got.GetCause())
+		}
+		if got.GetObservedRevision() != 23 {
+			t.Fatalf("observed_revision = %d, want 23", got.GetObservedRevision())
+		}
+		if !got.GetCompatibilityDefaultsApplied() {
+			t.Fatal("compatibility_defaults_applied = false, want true")
+		}
+		if got.GetContractObservation() == nil || got.GetContractObservation().GetEventId() != "trigger-observation" {
+			t.Fatalf("contract_observation = %+v, want trigger observation", got.GetContractObservation())
+		}
+		return
+	}
+	t.Fatal("contextual evaluator did not receive an evaluation context")
+}
+
 type failingRepository struct{ err error }
 
 func (r failingRepository) SaveCheckpoint(persistence.SchedulerState) error { return r.err }
+
+type contextualEvaluatorSpy struct {
+	mu       sync.Mutex
+	plan     *tgsrlv1.PlacementPlan
+	decision *tgsrlv1.DecisionRecord
+	contexts []*tgsrlv1.EvaluationContext
+}
+
+func (s *contextualEvaluatorSpy) Evaluate(snapshot *tgsrlv1.ClusterSnapshot, intent *tgsrlv1.SchedulingIntent) (*tgsrlv1.PlacementPlan, *tgsrlv1.DecisionRecord, error) {
+	return s.EvaluateWithContext(snapshot, intent, nil)
+}
+
+func (s *contextualEvaluatorSpy) EvaluateWithContext(_ *tgsrlv1.ClusterSnapshot, _ *tgsrlv1.SchedulingIntent, context *tgsrlv1.EvaluationContext) (*tgsrlv1.PlacementPlan, *tgsrlv1.DecisionRecord, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if context != nil {
+		s.contexts = append(s.contexts, proto.Clone(context).(*tgsrlv1.EvaluationContext))
+	} else {
+		s.contexts = append(s.contexts, nil)
+	}
+	return proto.Clone(s.plan).(*tgsrlv1.PlacementPlan), proto.Clone(s.decision).(*tgsrlv1.DecisionRecord), nil
+}
+
+func (s *contextualEvaluatorSpy) LastContext() *tgsrlv1.EvaluationContext {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if len(s.contexts) == 0 || s.contexts[len(s.contexts)-1] == nil {
+		return nil
+	}
+	return proto.Clone(s.contexts[len(s.contexts)-1]).(*tgsrlv1.EvaluationContext)
+}
 
 type failAfterRepository struct {
 	mu        sync.Mutex
@@ -992,7 +1109,7 @@ func TestPersistenceFailureFailsClosed(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	implementation, err := New(Config{Store: store, Scheduler: evaluator, Provider: mockProvider, Repository: failingRepository{err: errors.New("disk full")}})
+	implementation, err := New(Config{Store: store, Scheduler: evaluator, Provider: mockProvider, Repository: failingRepository{err: errors.New("disk full")}, Clock: ClockFunc(func() time.Time { return now })})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1028,6 +1145,7 @@ func TestPublishIntentCheckpointFailureLeavesStateInvisibleAndWatchersQuiet(t *t
 		Scheduler:  evaluator,
 		Provider:   mockProvider,
 		Repository: failingRepository{err: errors.New("disk full")},
+		Clock:      ClockFunc(func() time.Time { return now }),
 		DeferStart: true,
 	})
 	if err != nil {
@@ -1093,6 +1211,7 @@ func TestStartDelaysProviderBacklogUntilAfterRecovery(t *testing.T) {
 		Scheduler:  evaluator,
 		Provider:   watched,
 		Recorder:   observability.NewInMemoryRecorder(),
+		Clock:      ClockFunc(func() time.Time { return now }),
 		DeferStart: true,
 	})
 	if err != nil {
@@ -1154,7 +1273,7 @@ func TestAppendDecisionCheckpointFailureKeepsDecisionAndSequenceInvisible(t *tes
 		t.Fatal(err)
 	}
 	repository := &failAfterRepository{failAfter: 1, err: errors.New("injected checkpoint failure")}
-	implementation, err := New(Config{Store: store, Scheduler: evaluator, Provider: mockProvider, Repository: repository})
+	implementation, err := New(Config{Store: store, Scheduler: evaluator, Provider: mockProvider, Repository: repository, Clock: ClockFunc(func() time.Time { return now })})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1219,7 +1338,7 @@ func TestDecisionCheckpointFailureRecoversCompletePendingAudit(t *testing.T) {
 	// PublishIntent and the pre-execution reservation/audit checkpoint succeed;
 	// the final decision checkpoint is injected to fail.
 	repository := &failAfterRepository{failAfter: 2, err: errors.New("injected final checkpoint failure")}
-	implementation, err := New(Config{Store: store, Scheduler: evaluator, Provider: mockProvider, Repository: repository})
+	implementation, err := New(Config{Store: store, Scheduler: evaluator, Provider: mockProvider, Repository: repository, Clock: ClockFunc(func() time.Time { return now })})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1270,7 +1389,7 @@ func TestDecisionCheckpointFailureRecoversCompletePendingAudit(t *testing.T) {
 		t.Fatalf("RestoreStore() error = %v", err)
 	}
 	recoveredRepository := &recordingRepository{}
-	restarted, err := New(Config{Store: restartedStore, Scheduler: evaluator, Provider: mockProvider, Repository: recoveredRepository, DeferStart: true})
+	restarted, err := New(Config{Store: restartedStore, Scheduler: evaluator, Provider: mockProvider, Repository: recoveredRepository, DeferStart: true, Clock: ClockFunc(func() time.Time { return now })})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1351,7 +1470,7 @@ func TestResumeRecoveredStateWithoutDecisionAuditFailsWithRetryPath(t *testing.T
 	if err != nil {
 		t.Fatal(err)
 	}
-	implementation, err := New(Config{Store: restartedStore, Scheduler: evaluator, Provider: mockProvider, Repository: &recordingRepository{}, DeferStart: true})
+	implementation, err := New(Config{Store: restartedStore, Scheduler: evaluator, Provider: mockProvider, Repository: &recordingRepository{}, DeferStart: true, Clock: ClockFunc(func() time.Time { return now })})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1383,7 +1502,7 @@ func TestProviderUnavailableEmitsNoOpFallbackAndKeepsIntent(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	implementation, err := New(Config{Store: store, Scheduler: evaluator, Provider: unhealthyProvider{ResourceProvider: base}})
+	implementation, err := New(Config{Store: store, Scheduler: evaluator, Provider: unhealthyProvider{ResourceProvider: base}, Clock: ClockFunc(func() time.Time { return now })})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1430,7 +1549,7 @@ func TestProviderWatchChannelCloseFailsClosedAndReconnects(t *testing.T) {
 	}
 	watched := newReconnectingWatchProvider(base)
 	recorder := observability.NewInMemoryRecorder()
-	implementation, err := New(Config{Store: store, Scheduler: evaluator, Provider: watched, Recorder: recorder})
+	implementation, err := New(Config{Store: store, Scheduler: evaluator, Provider: watched, Recorder: recorder, Clock: ClockFunc(func() time.Time { return now })})
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
@@ -1486,7 +1605,7 @@ func TestProviderWatchApplyErrorFailsClosed(t *testing.T) {
 	}
 	mockProvider := newCountingWatchProvider(base)
 	recorder := observability.NewInMemoryRecorder()
-	implementation, err := New(Config{Store: store, Scheduler: evaluator, Provider: mockProvider, Recorder: recorder})
+	implementation, err := New(Config{Store: store, Scheduler: evaluator, Provider: mockProvider, Recorder: recorder, Clock: ClockFunc(func() time.Time { return now })})
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
@@ -1505,6 +1624,16 @@ func TestProviderWatchApplyErrorFailsClosed(t *testing.T) {
 	}
 	if got := recorder.Counter("provider_watch_event_apply_failures"); got == 0 {
 		t.Fatal("provider_watch_event_apply_failures did not increment")
+	}
+	deadline = time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		if err := implementation.providerWatchFailure(); err != nil {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if err := implementation.providerWatchFailure(); err == nil {
+		t.Fatal("provider watch remained healthy after apply error")
 	}
 
 	intent := serviceIntent(now)
@@ -1552,6 +1681,7 @@ func TestWorkerPanicReleasesKeyAndFailsClosed(t *testing.T) {
 		Scheduler: panicEvaluator{panicOnExecutionID: "panic-execution", delegate: baseEvaluator},
 		Provider:  mockProvider,
 		Recorder:  recorder,
+		Clock:     ClockFunc(func() time.Time { return now }),
 	})
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
@@ -1622,6 +1752,7 @@ func TestRuntimeTriggersAuthorityReconcileWithoutPhantomDecisionOrDuplicateBind(
 		Store:     store,
 		Scheduler: evaluator,
 		Provider:  mockProvider,
+		Clock:     ClockFunc(func() time.Time { return now }),
 	})
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
@@ -1632,7 +1763,11 @@ func TestRuntimeTriggersAuthorityReconcileWithoutPhantomDecisionOrDuplicateBind(
 	if _, err := store.PublishIntent(intent); err != nil {
 		t.Fatalf("store.PublishIntent() error = %v", err)
 	}
-	implementation.runtime.Enqueue(intent.GetExecutionId(), intent.GetStageId())
+	implementation.runtime.Enqueue(&eventloop.Trigger{
+		ExecutionID: intent.GetExecutionId(),
+		StageID:     intent.GetStageId(),
+		Cause:       "test-runtime",
+	})
 
 	deadline := time.Now().Add(time.Second)
 	for time.Now().Before(deadline) {
@@ -1684,6 +1819,7 @@ func TestResourceWatchTriggersAuthorityReconcileWithoutDuplicateBind(t *testing.
 		Store:     store,
 		Scheduler: evaluator,
 		Provider:  mockProvider,
+		Clock:     ClockFunc(func() time.Time { return now }),
 	})
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
@@ -1771,6 +1907,7 @@ func TestResourceWatchProjectsIntoStoreBeforeAuthorityEvaluate(t *testing.T) {
 		Store:     store,
 		Scheduler: evaluator,
 		Provider:  mockProvider,
+		Clock:     ClockFunc(func() time.Time { return now }),
 	})
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
@@ -1837,6 +1974,116 @@ func TestResourceWatchProjectsIntoStoreBeforeAuthorityEvaluate(t *testing.T) {
 	if got := snapshot.GetDevices()[0].GetAllocatable().GetCpuMillis(); got == 0 {
 		t.Fatalf("store snapshot allocatable cpu = %d, want provider capacity projected before Evaluate", got)
 	}
+}
+
+func TestServiceStampsTickKindAcrossDecisionAndCandidatePlans(t *testing.T) {
+	now := time.Date(2026, 8, 28, 7, 15, 0, 0, time.UTC)
+	store, err := state.NewStore(serviceSnapshot(now), state.WithClock(state.ClockFunc(func() time.Time { return now })))
+	if err != nil {
+		t.Fatal(err)
+	}
+	intent := serviceIntent(now)
+	binding := &tgsrlv1.Binding{
+		BindingId:     "binding-stamped",
+		PendingUnitId: "pending-stamped",
+		DeviceIds:     []string{"mock-cpu-0"},
+		Resources:     proto.Clone(intent.GetResourcesPerUnit()).(*tgsrlv1.ResourceVector),
+		SandboxId:     "sandbox-stamped",
+		Generation:    1,
+	}
+	makeAction := func(actionID, planID string) *tgsrlv1.Action {
+		return &tgsrlv1.Action{
+			ActionId:                 actionID,
+			ActionType:               tgsrlv1.ActionType_ACTION_TYPE_BIND,
+			Level:                    tgsrlv1.ActionLevel_ACTION_LEVEL_L1,
+			PlanId:                   planID,
+			TargetId:                 binding.GetPendingUnitId(),
+			Binding:                  proto.Clone(binding).(*tgsrlv1.Binding),
+			ExpectedGeneration:       1,
+			ExpectedSnapshotRevision: 5,
+			Deadline:                 timestamppb.New(now.Add(time.Minute)),
+		}
+	}
+	selectedPlan := &tgsrlv1.PlacementPlan{
+		PlanId:           "selected-plan",
+		ExecutionId:      intent.GetExecutionId(),
+		StageId:          intent.GetStageId(),
+		IntentVersion:    intent.GetVersion(),
+		SnapshotRevision: 5,
+		DecisionId:       "stamped-decision",
+		Actions:          []*tgsrlv1.Action{makeAction("selected-action", "selected-plan")},
+	}
+	candidatePlan := &tgsrlv1.PlacementPlan{
+		PlanId:           "candidate-plan",
+		ExecutionId:      intent.GetExecutionId(),
+		StageId:          intent.GetStageId(),
+		IntentVersion:    intent.GetVersion(),
+		SnapshotRevision: 5,
+		DecisionId:       "stamped-decision",
+		Actions:          []*tgsrlv1.Action{makeAction("candidate-action", "candidate-plan")},
+	}
+	spy := &contextualEvaluatorSpy{
+		plan: &tgsrlv1.PlacementPlan{
+			PlanId:           "authoritative-noop",
+			ExecutionId:      intent.GetExecutionId(),
+			StageId:          intent.GetStageId(),
+			IntentVersion:    intent.GetVersion(),
+			SnapshotRevision: 5,
+			DecisionId:       "stamped-decision",
+			Actions:          []*tgsrlv1.Action{},
+		},
+		decision: &tgsrlv1.DecisionRecord{
+			DecisionId:       "stamped-decision",
+			ExecutionId:      intent.GetExecutionId(),
+			StageId:          intent.GetStageId(),
+			IntentVersion:    intent.GetVersion(),
+			SnapshotRevision: 5,
+			SelectedPlan:     proto.Clone(selectedPlan).(*tgsrlv1.PlacementPlan),
+			Candidates: []*tgsrlv1.PlacementCandidate{{
+				CandidateId: "candidate-1",
+				Plan:        proto.Clone(candidatePlan).(*tgsrlv1.PlacementPlan),
+			}},
+		},
+	}
+	mockProvider, err := provider.NewMockResourceProvider(provider.WithNow(func() time.Time { return now }))
+	if err != nil {
+		t.Fatal(err)
+	}
+	implementation, err := New(Config{Store: store, Scheduler: spy, Provider: mockProvider, Clock: ClockFunc(func() time.Time { return now })})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer implementation.Close()
+
+	if _, err := store.PublishIntent(intent); err != nil {
+		t.Fatalf("store.PublishIntent() error = %v", err)
+	}
+	implementation.runtime.Enqueue(&eventloop.Trigger{
+		ExecutionID: intent.GetExecutionId(),
+		StageID:     intent.GetStageId(),
+		Cause:       "test-stamp",
+	})
+
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		entries, _, _ := implementation.decisionsAfter(0)
+		if len(entries) == 0 {
+			time.Sleep(10 * time.Millisecond)
+			continue
+		}
+		decision := entries[len(entries)-1].decision
+		if decision.GetTickKind() != tgsrlv1.TickKind_TICK_KIND_FAST {
+			t.Fatalf("decision tick_kind = %s, want FAST", decision.GetTickKind())
+		}
+		if got := decision.GetSelectedPlan().GetActions()[0].GetTickKind(); got != tgsrlv1.TickKind_TICK_KIND_FAST {
+			t.Fatalf("selected plan action tick_kind = %s, want FAST", got)
+		}
+		if got := decision.GetCandidates()[0].GetPlan().GetActions()[0].GetTickKind(); got != tgsrlv1.TickKind_TICK_KIND_FAST {
+			t.Fatalf("candidate plan action tick_kind = %s, want FAST", got)
+		}
+		return
+	}
+	t.Fatal("stamped decision was not retained")
 }
 
 func TestResumeRecoveredStateReconcilesReservationsAndReplaysIntent(t *testing.T) {
@@ -1932,6 +2179,7 @@ func TestResumeRecoveredStateReconcilesReservationsAndReplaysIntent(t *testing.T
 		Provider:          mockProvider,
 		Repository:        repository,
 		DecisionRetention: 8,
+		Clock:             ClockFunc(func() time.Time { return now }),
 		DeferStart:        true,
 	})
 	if err != nil {

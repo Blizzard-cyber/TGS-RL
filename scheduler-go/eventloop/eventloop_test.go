@@ -90,9 +90,12 @@ func TestEventLoopPublishesImmutableStateAndRuntimeDispatchesTriggers(t *testing
 		drained  []string
 		received = make(chan struct{}, 3)
 	)
-	runtime.SetTrigger(func(_ context.Context, executionID, stageID string) {
+	runtime.SetTrigger(func(_ context.Context, trigger *Trigger) {
+		if trigger == nil {
+			return
+		}
 		mu.Lock()
-		drained = append(drained, executionID+"/"+stageID)
+		drained = append(drained, trigger.ExecutionID+"/"+trigger.StageID+":"+trigger.TickKind.String())
 		mu.Unlock()
 		select {
 		case received <- struct{}{}:
@@ -101,7 +104,7 @@ func TestEventLoopPublishesImmutableStateAndRuntimeDispatchesTriggers(t *testing
 	})
 	runtime.Start(ctx)
 	defer runtime.Stop()
-	runtime.Enqueue("exec", "stage")
+	runtime.Enqueue(&Trigger{ExecutionID: "exec", StageID: "stage", Cause: "test-enqueue", ObservedRevision: 7})
 	for range 3 {
 		select {
 		case <-received:
@@ -114,10 +117,69 @@ func TestEventLoopPublishesImmutableStateAndRuntimeDispatchesTriggers(t *testing
 	if got := len(drained); got != 3 {
 		t.Fatalf("trigger count = %d, want 3 queue drains", got)
 	}
+	want := map[string]bool{
+		"exec/stage:TICK_KIND_FAST":   false,
+		"exec/stage:TICK_KIND_MEDIUM": false,
+		"exec/stage:TICK_KIND_SLOW":   false,
+	}
 	for _, key := range drained {
-		if key != "exec/stage" {
-			t.Fatalf("trigger key = %q, want exec/stage", key)
+		if _, ok := want[key]; !ok {
+			t.Fatalf("trigger key = %q, want one of fast/medium/slow drains for exec/stage", key)
 		}
+		want[key] = true
+	}
+	for key, seen := range want {
+		if !seen {
+			t.Fatalf("missing trigger drain %q", key)
+		}
+	}
+}
+
+func TestRuntimeQueueKeyKeepsDelimitedIdentitiesDistinct(t *testing.T) {
+	runtime := NewRuntime(nil, RuntimeConfig{})
+	runtime.Enqueue(&Trigger{ExecutionID: "execution/one", StageID: "stage"})
+	runtime.Enqueue(&Trigger{ExecutionID: "execution", StageID: "one/stage"})
+
+	if got := runtime.fastQueue.Len(); got != 2 {
+		t.Fatalf("fast queue length = %d, want two distinct identities", got)
+	}
+}
+
+func TestMergeTriggerUsesNewestObservationAndStableCauses(t *testing.T) {
+	older := &Trigger{
+		ExecutionID:      "execution",
+		StageID:          "stage",
+		Cause:            "sandbox|intent",
+		ObservedRevision: 4,
+		ContractObservation: &tgsrlv1.ContractObservation{
+			EventId:    "observation-old",
+			ObservedAt: timestamppb.New(time.Unix(10, 0)),
+		},
+	}
+	newer := &Trigger{
+		ExecutionID:      "execution",
+		StageID:          "stage",
+		Cause:            "resource|intent",
+		ObservedRevision: 5,
+		ContractObservation: &tgsrlv1.ContractObservation{
+			EventId:    "observation-new",
+			ObservedAt: timestamppb.New(time.Unix(11, 0)),
+		},
+	}
+
+	merged := MergeTrigger(older, newer)
+	if merged.ObservedRevision != 5 {
+		t.Fatalf("observed revision = %d, want 5", merged.ObservedRevision)
+	}
+	if got := merged.ContractObservation.GetEventId(); got != "observation-new" {
+		t.Fatalf("observation = %q, want newest observation", got)
+	}
+	if got := merged.Cause; got != "intent|resource|sandbox" {
+		t.Fatalf("cause = %q, want deterministic merged causes", got)
+	}
+	merged.ContractObservation.EventId = "caller-mutation"
+	if newer.ContractObservation.GetEventId() != "observation-new" {
+		t.Fatal("MergeTrigger aliased the incoming observation")
 	}
 }
 

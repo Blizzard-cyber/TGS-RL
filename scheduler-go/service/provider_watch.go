@@ -10,6 +10,7 @@ import (
 
 	tgsrlv1 "github.com/Blizzard-cyber/TGS-RL/gen/go/tgsrl/v1"
 	"github.com/Blizzard-cyber/TGS-RL/scheduler-go/cache"
+	"github.com/Blizzard-cyber/TGS-RL/scheduler-go/eventloop"
 	"github.com/Blizzard-cyber/TGS-RL/scheduler-go/provider"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/timestamppb"
@@ -94,9 +95,11 @@ func (s *Server) consumeResourceWatch(ctx context.Context, stream <-chan provide
 			if event.Event != nil {
 				snapshot, changed, err := s.applyAuthoritativeResourceEvent(event.Event)
 				if err != nil {
+					s.poisonProviderWatch("resource", err.Error())
 					s.recorder.IncCounter("provider_watch_event_apply_failures", 1)
 					return fmt.Errorf("resource event apply failed: %w", err)
 				}
+				s.markProviderWatchEventHealthy("resource")
 				if changed {
 					s.enqueueSnapshotIntents(snapshot)
 				}
@@ -151,9 +154,11 @@ func (s *Server) consumeSandboxWatch(ctx context.Context, stream <-chan provider
 			if event.Event != nil {
 				snapshot, changed, err := s.applyAuthoritativeSandboxEvent(event.Event)
 				if err != nil {
+					s.poisonProviderWatch("sandbox", err.Error())
 					s.recorder.IncCounter("provider_watch_event_apply_failures", 1)
 					return fmt.Errorf("sandbox event apply failed: %w", err)
 				}
+				s.markProviderWatchEventHealthy("sandbox")
 				if changed {
 					s.enqueueSnapshotIntents(snapshot)
 				}
@@ -173,7 +178,13 @@ func (s *Server) enqueueSnapshotIntents(snapshot cache.Snapshot) {
 		if intent == nil {
 			continue
 		}
-		s.triggerReconcile(s.backgroundContext(), intent.GetExecutionId(), intent.GetStageId())
+		s.enqueueThroughRuntime(s.backgroundContext(), intent, &eventloop.Trigger{
+			ExecutionID:         intent.GetExecutionId(),
+			StageID:             intent.GetStageId(),
+			TickKind:            tgsrlv1.TickKind_TICK_KIND_FAST,
+			Cause:               "provider_event",
+			ContractObservation: cloneContractObservation(intent.GetContractObservation()),
+		})
 	}
 }
 

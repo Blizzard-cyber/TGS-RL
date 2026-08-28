@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"time"
 
 	tgsrlv1 "github.com/Blizzard-cyber/TGS-RL/gen/go/tgsrl/v1"
 	"github.com/Blizzard-cyber/TGS-RL/scheduler-go/cache"
@@ -24,6 +25,24 @@ type Evaluator interface {
 	Evaluate(*tgsrlv1.ClusterSnapshot, *tgsrlv1.SchedulingIntent) (*tgsrlv1.PlacementPlan, *tgsrlv1.DecisionRecord, error)
 }
 
+// ContextualEvaluator is the optional extended scheduling boundary that accepts
+// EvaluationContext while preserving compatibility with existing fakes.
+type ContextualEvaluator interface {
+	EvaluateWithContext(*tgsrlv1.ClusterSnapshot, *tgsrlv1.SchedulingIntent, *tgsrlv1.EvaluationContext) (*tgsrlv1.PlacementPlan, *tgsrlv1.DecisionRecord, error)
+}
+
+// Clock provides deterministic wall-clock capture for service-side evaluation
+// context construction.
+type Clock interface {
+	Now() time.Time
+}
+
+// ClockFunc adapts a function to Clock.
+type ClockFunc func() time.Time
+
+// Now returns the current time.
+func (f ClockFunc) Now() time.Time { return f() }
+
 // Config defines the dependencies and bounded decision retention for a Server.
 type Config struct {
 	Store             *state.Store
@@ -34,6 +53,7 @@ type Config struct {
 	EventLoop         *eventloop.EventLoop
 	Recorder          observability.Recorder
 	Repository        DurableRepository
+	Clock             Clock
 	// DeferStart lets a composition root restore durable state before provider
 	// watches and scheduling workers become active. The zero value preserves
 	// construct-and-start behavior for embedded callers.
@@ -51,6 +71,7 @@ type Server struct {
 	recorder       observability.Recorder
 	repository     DurableRepository
 	persistenceErr error
+	clock          Clock
 	eventLoop      *eventloop.EventLoop
 	runtime        *eventloop.Runtime
 	lifecycleCtx   context.Context
@@ -90,17 +111,24 @@ type workKey struct {
 }
 
 type workState struct {
-	running  bool
-	accepted []*tgsrlv1.SchedulingIntent
-	gate     sync.Mutex
+	running bool
+	pending *reconcileWork
+	gate    sync.Mutex
 }
 
 const maxRevisionRetries = 4
+
+type reconcileWork struct {
+	intent   *tgsrlv1.SchedulingIntent
+	triggers []*eventloop.Trigger
+}
 
 type providerWatchState struct {
 	mu                 sync.RWMutex
 	resourceHealthy    bool
 	sandboxHealthy     bool
+	resourcePoisoned   bool
+	sandboxPoisoned    bool
 	resourceReason     string
 	sandboxReason      string
 	resourceReconnects int
@@ -124,6 +152,9 @@ func New(config Config) (*Server, error) {
 	if config.Recorder == nil {
 		config.Recorder = observability.NopRecorder{}
 	}
+	if config.Clock == nil {
+		config.Clock = ClockFunc(func() time.Time { return time.Now().UTC() })
+	}
 	lifecycleCtx, lifecycleStop := context.WithCancel(context.Background())
 	server := &Server{
 		store:         config.Store,
@@ -132,6 +163,7 @@ func New(config Config) (*Server, error) {
 		retention:     config.DecisionRetention,
 		recorder:      config.Recorder,
 		repository:    config.Repository,
+		clock:         config.Clock,
 		lifecycleCtx:  lifecycleCtx,
 		lifecycleStop: lifecycleStop,
 		changed:       make(chan struct{}),
@@ -185,7 +217,7 @@ func (s *Server) Start() error {
 		s.started = true
 		s.mu.Unlock()
 		for _, intent := range s.store.ExportDurableState().Intents {
-			s.enqueue(s.backgroundContext(), intent)
+			s.enqueueThroughRuntime(s.backgroundContext(), intent, s.runtimeTriggerForIntent(intent, "startup_replay", tgsrlv1.TickKind_TICK_KIND_SLOW))
 		}
 	})
 	if s.startErr != nil && s.lifecycleStop != nil {
@@ -223,7 +255,7 @@ func (s *Server) PublishIntent(ctx context.Context, request *tgsrlv1.PublishInte
 	s.planMu.Unlock()
 	if err == nil {
 		if response.GetStatus() == tgsrlv1.IntentPublishStatus_INTENT_PUBLISH_STATUS_ACCEPTED {
-			s.enqueue(s.workerContext(ctx), request.Intent)
+			s.enqueueThroughRuntime(s.workerContext(ctx), request.Intent, s.runtimeTriggerForIntent(request.Intent, "publish_intent", tgsrlv1.TickKind_TICK_KIND_FAST))
 		}
 		return response, nil
 	}
@@ -265,11 +297,13 @@ func (s *Server) Schedule(_ context.Context, request *tgsrlv1.ScheduleRequest) (
 	if request == nil || request.Intent == nil || request.Snapshot == nil {
 		return nil, status.Error(codes.InvalidArgument, "intent and snapshot are required")
 	}
-	_, decision, err := s.scheduler.Evaluate(request.Snapshot, request.Intent)
+	evaluationContext := buildEvaluationContext(request.GetSnapshot().GetObservedAt().AsTime(), request.Intent, nil)
+	_, decision, err := s.evaluateIntent(request.Snapshot, request.Intent, evaluationContext)
 	if err != nil {
 		return nil, status.Error(codes.InvalidArgument, err.Error())
 	}
 	fillDecisionMetadataFromIntent(decision, request.Intent)
+	applyDecisionEvaluationContext(decision, evaluationContext)
 	return &tgsrlv1.ScheduleResponse{Decision: cloneDecision(decision)}, nil
 }
 

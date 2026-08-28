@@ -7,8 +7,10 @@ import (
 	"time"
 
 	tgsrlv1 "github.com/Blizzard-cyber/TGS-RL/gen/go/tgsrl/v1"
+	"github.com/Blizzard-cyber/TGS-RL/scheduler-go/eventloop"
 	"github.com/Blizzard-cyber/TGS-RL/scheduler-go/observability"
 	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
 func (s *Server) recordQueueDepthLocked(intent *tgsrlv1.SchedulingIntent, depth int) {
@@ -63,6 +65,77 @@ func cloneSemanticEnvelope(envelope *tgsrlv1.SemanticEnvelope) *tgsrlv1.Semantic
 	return proto.Clone(envelope).(*tgsrlv1.SemanticEnvelope)
 }
 
+func cloneContractObservation(observation *tgsrlv1.ContractObservation) *tgsrlv1.ContractObservation {
+	if observation == nil {
+		return nil
+	}
+	return proto.Clone(observation).(*tgsrlv1.ContractObservation)
+}
+
+func cloneRuntimeTrigger(trigger *eventloop.Trigger) *eventloop.Trigger {
+	return eventloop.CloneTrigger(trigger)
+}
+
+func appendOrMergeTrigger(triggers []*eventloop.Trigger, trigger *eventloop.Trigger) []*eventloop.Trigger {
+	if trigger == nil {
+		return triggers
+	}
+	for index, existing := range triggers {
+		if existing == nil {
+			continue
+		}
+		if existing.TickKind == trigger.TickKind {
+			triggers[index] = eventloop.MergeTrigger(existing, trigger)
+			return triggers
+		}
+	}
+	return append(triggers, cloneRuntimeTrigger(trigger))
+}
+
+func mergeReconcileWork(current *reconcileWork, intent *tgsrlv1.SchedulingIntent, trigger *eventloop.Trigger) *reconcileWork {
+	if intent == nil {
+		return current
+	}
+	if current == nil || current.intent == nil || intent.GetVersion() > current.intent.GetVersion() {
+		next := &reconcileWork{intent: proto.Clone(intent).(*tgsrlv1.SchedulingIntent)}
+		if trigger != nil {
+			next.triggers = appendOrMergeTrigger(next.triggers, trigger)
+		}
+		return next
+	}
+	if intent.GetVersion() < current.intent.GetVersion() {
+		return current
+	}
+	if current.intent == nil {
+		current.intent = proto.Clone(intent).(*tgsrlv1.SchedulingIntent)
+	}
+	if trigger != nil {
+		current.triggers = appendOrMergeTrigger(current.triggers, trigger)
+	}
+	return current
+}
+
+func buildEvaluationContext(now time.Time, intent *tgsrlv1.SchedulingIntent, trigger *eventloop.Trigger) *tgsrlv1.EvaluationContext {
+	evaluationTime := timestamppb.New(now.UTC())
+	context := &tgsrlv1.EvaluationContext{
+		TickKind:                     tgsrlv1.TickKind_TICK_KIND_UNKNOWN,
+		EvaluationTime:               evaluationTime,
+		DecisionSequence:             0,
+		CompatibilityDefaultsApplied: false,
+	}
+	if trigger != nil {
+		context.TickKind = trigger.TickKind
+		context.Cause = trigger.Cause
+		context.ObservedRevision = trigger.ObservedRevision
+		context.ContractObservation = cloneContractObservation(trigger.ContractObservation)
+		context.CompatibilityDefaultsApplied = trigger.CompatibilityDefaultsApplied
+	}
+	if intent != nil && context.ContractObservation == nil {
+		context.ContractObservation = cloneContractObservation(intent.GetContractObservation())
+	}
+	return context
+}
+
 func fillDecisionMetadataFromIntent(decision *tgsrlv1.DecisionRecord, intent *tgsrlv1.SchedulingIntent) {
 	if decision == nil || intent == nil {
 		return
@@ -97,6 +170,13 @@ func (s *Server) backgroundContext() context.Context {
 	return context.Background()
 }
 
+func (s *Server) now() time.Time {
+	if s != nil && s.clock != nil {
+		return s.clock.Now().UTC()
+	}
+	return time.Now().UTC()
+}
+
 func (s *Server) setProviderWatchHealthy(kind string) {
 	if s == nil {
 		return
@@ -104,16 +184,24 @@ func (s *Server) setProviderWatchHealthy(kind string) {
 	s.providerWatch.mu.Lock()
 	switch kind {
 	case "resource":
-		s.providerWatch.resourceHealthy = true
-		s.providerWatch.resourceReason = ""
+		if !s.providerWatch.resourcePoisoned {
+			s.providerWatch.resourceHealthy = true
+			s.providerWatch.resourceReason = ""
+		}
 	case "sandbox":
-		s.providerWatch.sandboxHealthy = true
-		s.providerWatch.sandboxReason = ""
+		if !s.providerWatch.sandboxPoisoned {
+			s.providerWatch.sandboxHealthy = true
+			s.providerWatch.sandboxReason = ""
+		}
 	default:
-		s.providerWatch.resourceHealthy = true
-		s.providerWatch.sandboxHealthy = true
-		s.providerWatch.resourceReason = ""
-		s.providerWatch.sandboxReason = ""
+		if !s.providerWatch.resourcePoisoned {
+			s.providerWatch.resourceHealthy = true
+			s.providerWatch.resourceReason = ""
+		}
+		if !s.providerWatch.sandboxPoisoned {
+			s.providerWatch.sandboxHealthy = true
+			s.providerWatch.sandboxReason = ""
+		}
 	}
 	s.providerWatch.mu.Unlock()
 }
@@ -135,6 +223,56 @@ func (s *Server) setProviderWatchUnhealthy(kind, reason string) {
 		s.providerWatch.sandboxHealthy = false
 		s.providerWatch.resourceReason = reason
 		s.providerWatch.sandboxReason = reason
+	}
+	s.providerWatch.mu.Unlock()
+}
+
+func (s *Server) poisonProviderWatch(kind, reason string) {
+	if s == nil {
+		return
+	}
+	s.providerWatch.mu.Lock()
+	switch kind {
+	case "resource":
+		s.providerWatch.resourceHealthy = false
+		s.providerWatch.resourcePoisoned = true
+		s.providerWatch.resourceReason = reason
+	case "sandbox":
+		s.providerWatch.sandboxHealthy = false
+		s.providerWatch.sandboxPoisoned = true
+		s.providerWatch.sandboxReason = reason
+	default:
+		s.providerWatch.resourceHealthy = false
+		s.providerWatch.resourcePoisoned = true
+		s.providerWatch.resourceReason = reason
+		s.providerWatch.sandboxHealthy = false
+		s.providerWatch.sandboxPoisoned = true
+		s.providerWatch.sandboxReason = reason
+	}
+	s.providerWatch.mu.Unlock()
+}
+
+func (s *Server) markProviderWatchEventHealthy(kind string) {
+	if s == nil {
+		return
+	}
+	s.providerWatch.mu.Lock()
+	switch kind {
+	case "resource":
+		s.providerWatch.resourcePoisoned = false
+		s.providerWatch.resourceHealthy = true
+		s.providerWatch.resourceReason = ""
+	case "sandbox":
+		s.providerWatch.sandboxPoisoned = false
+		s.providerWatch.sandboxHealthy = true
+		s.providerWatch.sandboxReason = ""
+	default:
+		s.providerWatch.resourcePoisoned = false
+		s.providerWatch.resourceHealthy = true
+		s.providerWatch.resourceReason = ""
+		s.providerWatch.sandboxPoisoned = false
+		s.providerWatch.sandboxHealthy = true
+		s.providerWatch.sandboxReason = ""
 	}
 	s.providerWatch.mu.Unlock()
 }
