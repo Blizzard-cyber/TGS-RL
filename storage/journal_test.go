@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/binary"
 	"errors"
+	"hash/crc32"
 	"os"
 	"path/filepath"
 	"testing"
@@ -88,21 +89,23 @@ func TestJournalRejectsOversizedBodyBeforeAllocation(t *testing.T) {
 	}
 
 	err = journal.Replay(func(JournalRecord) error { return nil })
-	if !errors.Is(err, ErrCorruptRecord) {
-		t.Fatalf("Replay() error = %v, want ErrCorruptRecord", err)
+	if !errors.Is(err, ErrRecordTooLarge) {
+		t.Fatalf("Replay() error = %v, want ErrRecordTooLarge", err)
 	}
 }
 
-func TestJournalRejectsBodyShorterThanLengths(t *testing.T) {
+func TestJournalRejectsDeclaredBodyShorterThanFieldLengths(t *testing.T) {
 	root := t.TempDir()
 	journal, err := OpenJournal(root, "events")
 	if err != nil {
 		t.Fatalf("OpenJournal() error = %v", err)
 	}
-	header := make([]byte, 12)
-	binary.BigEndian.PutUint32(header[0:4], journalMagic)
-	binary.BigEndian.PutUint32(header[4:8], 3)
-	if err := os.WriteFile(journal.Path(), header, 0o644); err != nil {
+	body := []byte{
+		0, 5,
+		'a', 'b',
+	}
+	record := encodedRawJournalRecord(body)
+	if err := os.WriteFile(journal.Path(), record, 0o644); err != nil {
 		t.Fatalf("WriteFile() error = %v", err)
 	}
 
@@ -118,8 +121,161 @@ func TestJournalRejectsOversizedEncodedRecord(t *testing.T) {
 		Key:     "oversized",
 		Payload: make([]byte, int(maxJournalBodyBytes)),
 	}
-	if _, err := encodeJournalRecord(record); err == nil {
-		t.Fatal("encodeJournalRecord() error = nil, want size limit error")
+	if _, err := encodeJournalRecord(record); !errors.Is(err, ErrRecordTooLarge) {
+		t.Fatalf("encodeJournalRecord() error = %v, want ErrRecordTooLarge", err)
+	}
+}
+
+func TestJournalAppendRejectsOversizedRecord(t *testing.T) {
+	root := t.TempDir()
+	journal, err := OpenJournal(root, "events")
+	if err != nil {
+		t.Fatalf("OpenJournal() error = %v", err)
+	}
+	if err := journal.Append(JournalRecord{Kind: "intent", Key: "k1", Payload: []byte("ok")}); err != nil {
+		t.Fatalf("Append(valid) error = %v", err)
+	}
+	before, err := os.ReadFile(journal.Path())
+	if err != nil {
+		t.Fatalf("ReadFile(before) error = %v", err)
+	}
+
+	err = journal.Append(JournalRecord{
+		Kind:    "intent",
+		Key:     "oversized",
+		Payload: make([]byte, int(maxJournalBodyBytes)),
+	})
+	if !errors.Is(err, ErrRecordTooLarge) {
+		t.Fatalf("Append(oversized) error = %v, want ErrRecordTooLarge", err)
+	}
+
+	after, err := os.ReadFile(journal.Path())
+	if err != nil {
+		t.Fatalf("ReadFile(after) error = %v", err)
+	}
+	if !bytes.Equal(after, before) {
+		t.Fatal("Append(oversized) modified journal contents")
+	}
+}
+
+func TestJournalReplaceRejectsOversizedRecordWithoutReplacingFile(t *testing.T) {
+	root := t.TempDir()
+	journal, err := OpenJournal(root, "events")
+	if err != nil {
+		t.Fatalf("OpenJournal() error = %v", err)
+	}
+	existing := JournalRecord{Kind: "intent", Key: "k1", Payload: []byte("one")}
+	if err := journal.Append(existing); err != nil {
+		t.Fatalf("Append(existing) error = %v", err)
+	}
+	before, err := os.ReadFile(journal.Path())
+	if err != nil {
+		t.Fatalf("ReadFile(before) error = %v", err)
+	}
+
+	err = journal.Replace([]JournalRecord{{
+		Kind:    "intent",
+		Key:     "oversized",
+		Payload: make([]byte, int(maxJournalBodyBytes)),
+	}})
+	if !errors.Is(err, ErrRecordTooLarge) {
+		t.Fatalf("Replace(oversized) error = %v, want ErrRecordTooLarge", err)
+	}
+
+	after, err := os.ReadFile(journal.Path())
+	if err != nil {
+		t.Fatalf("ReadFile(after) error = %v", err)
+	}
+	if !bytes.Equal(after, before) {
+		t.Fatal("Replace(oversized) replaced journal contents")
+	}
+
+	var records []JournalRecord
+	if err := journal.Replay(func(record JournalRecord) error {
+		records = append(records, record)
+		return nil
+	}); err != nil {
+		t.Fatalf("Replay() error = %v", err)
+	}
+	if len(records) != 1 || !sameRecord(records[0], existing) {
+		t.Fatalf("records = %+v", records)
+	}
+}
+
+func TestJournalBoundarySizedRecordRoundTrips(t *testing.T) {
+	root := t.TempDir()
+	journal, err := OpenJournal(root, "events")
+	if err != nil {
+		t.Fatalf("OpenJournal() error = %v", err)
+	}
+	record := JournalRecord{
+		Kind:    "i",
+		Key:     "k",
+		Payload: bytes.Repeat([]byte{'x'}, int(maxJournalBodyBytes)-(2+len("i")+2+len("k"))),
+	}
+	if _, err := encodeJournalRecord(record); err != nil {
+		t.Fatalf("encodeJournalRecord() error = %v", err)
+	}
+	if err := journal.Append(record); err != nil {
+		t.Fatalf("Append() error = %v", err)
+	}
+
+	count := 0
+	if err := journal.Replay(func(got JournalRecord) error {
+		count++
+		if !sameRecord(got, record) {
+			t.Fatalf("record mismatch: got kind=%q key=%q payload=%d want kind=%q key=%q payload=%d",
+				got.Kind, got.Key, len(got.Payload), record.Kind, record.Key, len(record.Payload))
+		}
+		return nil
+	}); err != nil {
+		t.Fatalf("Replay() error = %v", err)
+	}
+	if count != 1 {
+		t.Fatalf("Replay() count = %d, want 1", count)
+	}
+}
+
+func TestJournalReplaceRejectsOversizedAggregateWithoutReplacingFile(t *testing.T) {
+	root := t.TempDir()
+	journal, err := OpenJournal(root, "events")
+	if err != nil {
+		t.Fatal(err)
+	}
+	existing := JournalRecord{Kind: "intent", Key: "existing", Payload: []byte("value")}
+	if err := journal.Append(existing); err != nil {
+		t.Fatal(err)
+	}
+	before, err := os.ReadFile(journal.Path())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	payload := bytes.Repeat([]byte{'x'}, int(maxJournalBodyBytes/2))
+	err = journal.Replace([]JournalRecord{
+		{Kind: "intent", Key: "one", Payload: payload},
+		{Kind: "intent", Key: "two", Payload: payload},
+	})
+	if !errors.Is(err, ErrJournalTooLarge) {
+		t.Fatalf("Replace() error = %v, want ErrJournalTooLarge", err)
+	}
+	after, err := os.ReadFile(journal.Path())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(before, after) {
+		t.Fatal("oversized aggregate replaced the existing journal")
+	}
+}
+
+func TestValidateJournalReplacementRejectsOversizedRecord(t *testing.T) {
+	err := ValidateJournalReplacement([]JournalRecord{{
+		Kind:    "intent",
+		Key:     "oversized",
+		Payload: make([]byte, int(maxJournalBodyBytes)),
+	}})
+	if !errors.Is(err, ErrRecordTooLarge) {
+		t.Fatalf("ValidateJournalReplacement() error = %v, want ErrRecordTooLarge", err)
 	}
 }
 
@@ -152,4 +308,13 @@ func sameRecord(left, right JournalRecord) bool {
 	return left.Kind == right.Kind &&
 		left.Key == right.Key &&
 		bytes.Equal(left.Payload, right.Payload)
+}
+
+func encodedRawJournalRecord(body []byte) []byte {
+	record := make([]byte, 12+len(body))
+	binary.BigEndian.PutUint32(record[0:4], journalMagic)
+	binary.BigEndian.PutUint32(record[4:8], uint32(len(body)))
+	copy(record[12:], body)
+	binary.BigEndian.PutUint32(record[8:12], crc32.ChecksumIEEE(body))
+	return record
 }

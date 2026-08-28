@@ -13,8 +13,10 @@ import (
 )
 
 var (
-	ErrCorruptJournal = errors.New("storage: corrupt journal")
-	ErrCorruptRecord  = errors.New("storage: corrupt journal record")
+	ErrCorruptJournal  = errors.New("storage: corrupt journal")
+	ErrCorruptRecord   = errors.New("storage: corrupt journal record")
+	ErrRecordTooLarge  = errors.New("storage: journal record too large")
+	ErrJournalTooLarge = errors.New("storage: replacement journal too large")
 )
 
 const (
@@ -102,62 +104,65 @@ func (j *Journal) Replay(visitor func(JournalRecord) error) error {
 }
 
 func (j *Journal) Replace(records []JournalRecord) error {
-	buffer, err := encodeJournalRecords(records)
-	if err != nil {
-		return err
-	}
-	return atomicWriteFile(j.path, buffer.Bytes(), 0o644)
+	return writeJournalRecordsAtomically(j.path, records, 0o644)
 }
 
 func ValidateJournalReplacement(records []JournalRecord) error {
-	_, err := encodeJournalRecords(records)
-	return err
+	var total uint64
+	for _, record := range records {
+		bodyLen, err := journalRecordBodyLength(record)
+		if err != nil {
+			return err
+		}
+		total += 12 + bodyLen
+		if total > uint64(maxJournalBodyBytes) {
+			return fmt.Errorf("%w: encoded size %d exceeds limit %d", ErrJournalTooLarge, total, maxJournalBodyBytes)
+		}
+	}
+	return nil
 }
 
-func encodeJournalRecords(records []JournalRecord) (*bytes.Buffer, error) {
-	var buffer bytes.Buffer
-	for _, record := range records {
-		wire, err := encodeJournalRecord(record)
-		if err != nil {
-			return nil, err
-		}
-		if uint64(buffer.Len())+uint64(len(wire)) > uint64(maxJournalBodyBytes) {
-			return nil, fmt.Errorf(
-				"storage: replacement journal is too large: exceeds %d bytes",
-				maxJournalBodyBytes,
-			)
-		}
-		buffer.Write(wire)
+func journalRecordBodyLength(record JournalRecord) (uint64, error) {
+	if len(record.Kind) > 1<<16-1 {
+		return 0, errors.New("storage: journal record kind is too long")
 	}
-	return &buffer, nil
+	if len(record.Key) > 1<<16-1 {
+		return 0, errors.New("storage: journal record key is too long")
+	}
+	bodyLen := uint64(2) + uint64(len(record.Kind)) + 2 + uint64(len(record.Key)) + uint64(len(record.Payload))
+	if bodyLen > uint64(maxJournalBodyBytes) {
+		return 0, fmt.Errorf(
+			"%w: body length %d exceeds limit %d",
+			ErrRecordTooLarge,
+			bodyLen,
+			maxJournalBodyBytes,
+		)
+	}
+	return bodyLen, nil
 }
 
 func encodeJournalRecord(record JournalRecord) ([]byte, error) {
-	if len(record.Kind) > 1<<16-1 {
-		return nil, errors.New("storage: journal record kind is too long")
+	bodyLen64, err := journalRecordBodyLength(record)
+	if err != nil {
+		return nil, err
 	}
-	if len(record.Key) > 1<<16-1 {
-		return nil, errors.New("storage: journal record key is too long")
-	}
-	payloadLen := len(record.Payload)
-	bodyLen := 2 + len(record.Kind) + 2 + len(record.Key) + payloadLen
-	if uint64(bodyLen) > uint64(maxJournalBodyBytes) {
-		return nil, fmt.Errorf("storage: journal record body is too large: %d bytes (maximum %d)", bodyLen, maxJournalBodyBytes)
-	}
-	buffer := bytes.NewBuffer(make([]byte, 0, 12+bodyLen))
-	header := make([]byte, 12)
-	binary.BigEndian.PutUint32(header[0:4], journalMagic)
-	binary.BigEndian.PutUint32(header[4:8], uint32(bodyLen))
-	body := bytes.NewBuffer(make([]byte, 0, bodyLen))
-	_ = binary.Write(body, binary.BigEndian, uint16(len(record.Kind)))
-	body.WriteString(record.Kind)
-	_ = binary.Write(body, binary.BigEndian, uint16(len(record.Key)))
-	body.WriteString(record.Key)
-	body.Write(record.Payload)
-	binary.BigEndian.PutUint32(header[8:12], crc32.ChecksumIEEE(body.Bytes()))
-	buffer.Write(header)
-	buffer.Write(body.Bytes())
-	return buffer.Bytes(), nil
+	bodyLen := int(bodyLen64)
+
+	wire := make([]byte, 12+bodyLen)
+	binary.BigEndian.PutUint32(wire[0:4], journalMagic)
+	binary.BigEndian.PutUint32(wire[4:8], uint32(bodyLen))
+
+	offset := 12
+	binary.BigEndian.PutUint16(wire[offset:offset+2], uint16(len(record.Kind)))
+	offset += 2
+	offset += copy(wire[offset:], record.Kind)
+	binary.BigEndian.PutUint16(wire[offset:offset+2], uint16(len(record.Key)))
+	offset += 2
+	offset += copy(wire[offset:], record.Key)
+	copy(wire[offset:], record.Payload)
+
+	binary.BigEndian.PutUint32(wire[8:12], crc32.ChecksumIEEE(wire[12:]))
+	return wire, nil
 }
 
 func decodeJournalRecord(reader *bufio.Reader) (JournalRecord, error) {
@@ -169,7 +174,15 @@ func decodeJournalRecord(reader *bufio.Reader) (JournalRecord, error) {
 		return JournalRecord{}, fmt.Errorf("%w: bad magic", ErrCorruptRecord)
 	}
 	bodyLen := binary.BigEndian.Uint32(header[4:8])
-	if bodyLen < 4 || bodyLen > maxJournalBodyBytes {
+	if bodyLen > maxJournalBodyBytes {
+		return JournalRecord{}, fmt.Errorf(
+			"%w: body length %d exceeds limit %d",
+			ErrRecordTooLarge,
+			bodyLen,
+			maxJournalBodyBytes,
+		)
+	}
+	if bodyLen < 4 {
 		return JournalRecord{}, fmt.Errorf("%w: invalid body length %d", ErrCorruptRecord, bodyLen)
 	}
 	body := make([]byte, bodyLen)
@@ -201,4 +214,56 @@ func decodeJournalRecord(reader *bufio.Reader) (JournalRecord, error) {
 		return JournalRecord{}, fmt.Errorf("%w: payload", ErrCorruptRecord)
 	}
 	return JournalRecord{Kind: string(kind), Key: string(key), Payload: payload}, nil
+}
+
+func writeJournalRecordsAtomically(path string, records []JournalRecord, mode os.FileMode) error {
+	if err := ValidateJournalReplacement(records); err != nil {
+		return err
+	}
+	if err := ensureDir(path); err != nil {
+		return err
+	}
+	temp, err := os.CreateTemp(filepath.Dir(path), filepath.Base(path)+".tmp-*")
+	if err != nil {
+		return fmt.Errorf("storage: create temp file for %s: %w", path, err)
+	}
+	tempPath := temp.Name()
+	cleanup := true
+	defer func() {
+		_ = temp.Close()
+		if cleanup {
+			_ = os.Remove(tempPath)
+		}
+	}()
+	if err := temp.Chmod(mode); err != nil {
+		return fmt.Errorf("storage: chmod temp file for %s: %w", path, err)
+	}
+
+	writer := bufio.NewWriter(temp)
+	for _, record := range records {
+		wire, err := encodeJournalRecord(record)
+		if err != nil {
+			return err
+		}
+		if _, err := writer.Write(wire); err != nil {
+			return fmt.Errorf("storage: write temp file for %s: %w", path, err)
+		}
+	}
+	if err := writer.Flush(); err != nil {
+		return fmt.Errorf("storage: flush temp file for %s: %w", path, err)
+	}
+	if err := temp.Sync(); err != nil {
+		return fmt.Errorf("storage: sync temp file for %s: %w", path, err)
+	}
+	if err := temp.Close(); err != nil {
+		return fmt.Errorf("storage: close temp file for %s: %w", path, err)
+	}
+	if err := os.Rename(tempPath, path); err != nil {
+		return fmt.Errorf("storage: rename temp file into %s: %w", path, err)
+	}
+	cleanup = false
+	if err := syncDir(filepath.Dir(path)); err != nil {
+		return err
+	}
+	return nil
 }
