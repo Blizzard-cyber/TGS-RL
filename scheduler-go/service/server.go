@@ -18,6 +18,7 @@ import (
 	"github.com/Blizzard-cyber/TGS-RL/scheduler-go/state"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/proto"
 )
 
 // Evaluator is the generated-DTO scheduling boundary used by the service.
@@ -297,7 +298,13 @@ func (s *Server) Schedule(_ context.Context, request *tgsrlv1.ScheduleRequest) (
 	if request == nil || request.Intent == nil || request.Snapshot == nil {
 		return nil, status.Error(codes.InvalidArgument, "intent and snapshot are required")
 	}
-	evaluationContext := buildEvaluationContext(request.GetSnapshot().GetObservedAt().AsTime(), request.Intent, nil)
+	var evaluationContext *tgsrlv1.EvaluationContext
+	if request.GetEvaluationContext() != nil {
+		evaluationContext = proto.Clone(request.GetEvaluationContext()).(*tgsrlv1.EvaluationContext)
+	} else {
+		evaluationContext = buildEvaluationContext(s.now(), request.Intent, nil)
+		evaluationContext.CompatibilityDefaultsApplied = true
+	}
 	_, decision, err := s.evaluateIntent(request.Snapshot, request.Intent, evaluationContext)
 	if err != nil {
 		return nil, status.Error(codes.InvalidArgument, err.Error())

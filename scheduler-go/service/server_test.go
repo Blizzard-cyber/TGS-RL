@@ -837,6 +837,52 @@ func TestPublishIntentPassesTriggerContextIntoContextualEvaluator(t *testing.T) 
 	t.Fatal("contextual evaluator did not receive an evaluation context")
 }
 
+func TestScheduleForwardsExplicitEvaluationContext(t *testing.T) {
+	now := time.Date(2026, 8, 28, 7, 5, 0, 0, time.UTC)
+	store, err := state.NewStore(serviceSnapshot(now), state.WithClock(state.ClockFunc(func() time.Time { return now })))
+	if err != nil {
+		t.Fatal(err)
+	}
+	intent := serviceIntent(now)
+	plan := &tgsrlv1.PlacementPlan{PlanId: "preview-plan"}
+	decision := &tgsrlv1.DecisionRecord{DecisionId: "preview-decision"}
+	spy := &contextualEvaluatorSpy{plan: plan, decision: decision}
+	mockProvider, err := provider.NewMockResourceProvider(provider.WithNow(func() time.Time { return now }))
+	if err != nil {
+		t.Fatal(err)
+	}
+	implementation, err := New(Config{
+		Store: store, Scheduler: spy, Provider: mockProvider,
+		Clock: ClockFunc(func() time.Time { return now }), DeferStart: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer implementation.Close()
+	explicit := &tgsrlv1.EvaluationContext{
+		TickKind:         tgsrlv1.TickKind_TICK_KIND_SLOW,
+		EvaluationTime:   timestamppb.New(now.Add(3 * time.Second)),
+		DecisionSequence: 77,
+		Cause:            "replay",
+		ObservedRevision: 19,
+	}
+	explicit.ContractObservation = &tgsrlv1.ContractObservation{EventId: "replay-observation"}
+
+	if _, err := implementation.Schedule(context.Background(), &tgsrlv1.ScheduleRequest{
+		Intent: intent, Snapshot: serviceSnapshot(now), EvaluationContext: explicit,
+	}); err != nil {
+		t.Fatalf("Schedule() error = %v", err)
+	}
+	got := spy.LastContext()
+	if !proto.Equal(got, explicit) {
+		t.Fatalf("evaluation context = %+v, want exact request context %+v", got, explicit)
+	}
+	explicit.Cause = "caller-mutation"
+	if spy.LastContext().GetCause() != "replay" {
+		t.Fatal("Schedule aliased caller evaluation context")
+	}
+}
+
 type failingRepository struct{ err error }
 
 func (r failingRepository) SaveCheckpoint(persistence.SchedulerState) error { return r.err }
