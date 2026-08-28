@@ -182,6 +182,9 @@ func TestLoadStartupConfigHonorsEnvOverrides(t *testing.T) {
 	if schedulerConfig.Policy.Strategy != "trace_aware" {
 		t.Fatalf("scheduler policy strategy = %s, want trace_aware", schedulerConfig.Policy.Strategy)
 	}
+	if schedulerConfig.Policy.TopK != 7 {
+		t.Fatalf("scheduler policy top_k = %d, want 7", schedulerConfig.Policy.TopK)
+	}
 }
 
 func TestBuildProviderFailsFastForUnsupportedKind(t *testing.T) {

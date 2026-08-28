@@ -285,6 +285,7 @@ type SchedulerPolicyConfig struct {
 	PolicyID      string
 	PolicyVersion string
 	Strategy      string
+	TopK          int
 	Protection    ProtectionPolicy
 	Preemption    PreemptionPolicy
 }

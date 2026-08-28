@@ -70,10 +70,10 @@ func TestEvaluateBuildsCompleteDeterministicDecision(t *testing.T) {
 			t.Errorf("candidate %d is incomplete: %+v", index, candidate)
 		}
 		components := candidate.GetComponentScores()
-		if len(components) != 3 {
-			t.Errorf("candidate %d component count = %d, want 3", index, len(components))
+		if len(components) != 4 {
+			t.Errorf("candidate %d component count = %d, want 4", index, len(components))
 		}
-		sum := components["capacity_headroom"] + components["share_headroom"] + components["ready"]
+		sum := components["capacity_headroom"] + components["share_headroom"] + components["ready"] + components["trace_affinity"]
 		if math.Abs(candidate.GetScore()-roundScore(sum)) > 1e-12 {
 			t.Errorf("candidate %d score %f != component sum %f", index, candidate.GetScore(), sum)
 		}
@@ -85,9 +85,18 @@ func TestEvaluateBuildsCompleteDeterministicDecision(t *testing.T) {
 		if action.GetOrder() != uint32(index+1) || action.GetPlanId() != plan.GetPlanId() || action.GetExpectedSnapshotRevision() != snapshot.GetRevision() {
 			t.Errorf("action %d lacks ordering/fencing: %+v", index, action)
 		}
-		if !action.GetRequiresSafePoint() || action.GetRollback() == nil || action.GetIdempotencyKey() == "" {
+		if action.GetRequiresSafePoint() || action.GetRollback() == nil || action.GetIdempotencyKey() == "" {
 			t.Errorf("action %d lacks precondition/rollback/idempotency: %+v", index, action)
 		}
+		if action.GetTickKind() != tgsrlv1.TickKind_TICK_KIND_FAST {
+			t.Errorf("action %d tick_kind = %s, want FAST", index, action.GetTickKind())
+		}
+	}
+	if record.GetTickKind() != tgsrlv1.TickKind_TICK_KIND_FAST {
+		t.Errorf("record tick_kind = %s, want FAST", record.GetTickKind())
+	}
+	if record.GetEvaluationContext() == nil || !record.GetEvaluationContext().GetCompatibilityDefaultsApplied() {
+		t.Errorf("evaluation context = %+v, want compatibility defaults applied", record.GetEvaluationContext())
 	}
 	if !proto.Equal(snapshot, snapshotBefore) || !proto.Equal(intent, intentBefore) {
 		t.Fatal("Evaluate mutated an input")
@@ -144,11 +153,18 @@ func TestEvaluateLargeDecisionThresholdKeepsChoiceAcross4096Boundary(t *testing.
 	if got, want := len(atLimitRecord.GetCandidates()), 4096; got != want {
 		t.Fatalf("at-limit candidate evidence = %d, want %d", got, want)
 	}
-	if got, want := len(aboveLimitRecord.GetCandidates()), 0; got != want {
-		t.Fatalf("above-limit candidate evidence = %d, want %d", got, want)
+	if got := len(aboveLimitRecord.GetCandidates()); got == 0 {
+		t.Fatal("above-limit decision did not retain selected candidate evidence")
+	}
+	if got, want := aboveLimitRecord.GetTotalCandidateCount(), uint64(4097); got != want {
+		t.Fatalf("above-limit total candidate count = %d, want %d", got, want)
+	}
+	if !aboveLimitRecord.GetEvidenceTruncated() {
+		t.Fatal("above-limit decision did not mark bounded evidence as truncated")
 	}
 
 	atLimitSelected := selectedCandidateForBinding(t, atLimitRecord, atLimitPlan.GetBindings()[0])
+	_ = selectedCandidateForBinding(t, aboveLimitRecord, aboveLimitPlan.GetBindings()[0])
 	if candidateDevice, candidateUnit := candidateSortKeys(atLimitSelected); candidateDevice != firstDeviceID(aboveLimitPlan) || candidateUnit != aboveLimitPlan.GetBindings()[0].GetPendingUnitId() {
 		t.Fatalf("threshold crossing changed selected binding surface: at limit=(%q,%q) above=(%q,%q)", candidateUnit, candidateDevice, aboveLimitPlan.GetBindings()[0].GetPendingUnitId(), firstDeviceID(aboveLimitPlan))
 	}
@@ -190,6 +206,24 @@ func TestEvaluateSelectedBindingsMapToRecordedCandidates(t *testing.T) {
 		if !proto.Equal(candidateBinding, binding) {
 			t.Fatalf("binding %+v does not match recorded candidate binding %+v", binding, candidateBinding)
 		}
+	}
+}
+
+func TestEvaluateEvidenceTotalsAreExactForMixedSurface(t *testing.T) {
+	snapshot, intent := orderedDecisionSurfaceFixture(t)
+
+	_, record, err := testScheduler(t, FallbackNoOp).Evaluate(snapshot, intent)
+	if err != nil {
+		t.Fatalf("Evaluate() error = %v", err)
+	}
+	if got, want := record.GetTotalCandidateCount(), uint64(2); got != want {
+		t.Fatalf("total_candidate_count = %d, want %d", got, want)
+	}
+	if got, want := record.GetTotalRejectedCandidateCount(), uint64(2); got != want {
+		t.Fatalf("total_rejected_candidate_count = %d, want %d", got, want)
+	}
+	if record.GetEvidenceTruncated() {
+		t.Fatal("small complete evidence surface unexpectedly marked truncated")
 	}
 }
 
@@ -432,7 +466,8 @@ func TestEvaluateHardConstraints(t *testing.T) {
 		{name: "capability unmeasured", mutate: func(snapshot *tgsrlv1.ClusterSnapshot, _ *tgsrlv1.SchedulingIntent) {
 			setAllDevices(snapshot, func(device *tgsrlv1.Device) { device.Capabilities.MeasuredAt = nil })
 		}, reason: tgsrlv1.CandidateRejectionReason_CANDIDATE_REJECTION_REASON_CAPABILITY_MISMATCH, detailPart: "measured_at"},
-		{name: "safe point", mutate: func(snapshot *tgsrlv1.ClusterSnapshot, _ *tgsrlv1.SchedulingIntent) {
+		{name: "safe point", mutate: func(snapshot *tgsrlv1.ClusterSnapshot, intent *tgsrlv1.SchedulingIntent) {
+			intent.ExecutionContract.CommitPolicy.RequireSafePoint = true
 			snapshot.Annotations[SafePointAnnotation] = "false"
 		}, reason: tgsrlv1.CandidateRejectionReason_CANDIDATE_REJECTION_REASON_VALIDITY_RULE, detailPart: "safe point"},
 	}
@@ -440,6 +475,9 @@ func TestEvaluateHardConstraints(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			snapshot, intent := validFixture()
 			test.mutate(snapshot, intent)
+			if intent.GetExecutionContract() != nil {
+				intent.ExecutionContract.ContractId, _ = CanonicalContractID(intent.GetExecutionContract())
+			}
 			plan, record, err := testScheduler(t, FallbackNoOp).Evaluate(snapshot, intent)
 			if err != nil {
 				t.Fatalf("Evaluate() error = %v", err)
@@ -485,7 +523,8 @@ func TestEvaluateFallbackReasonsAndModes(t *testing.T) {
 				unit.IntentVersion = intent.Version - 1
 			}
 		}, wantReason: FallbackReasonRevision},
-		{name: "safe point missing", mode: FallbackNoOp, mutate: func(snapshot *tgsrlv1.ClusterSnapshot, _ *tgsrlv1.SchedulingIntent) {
+		{name: "safe point missing", mode: FallbackNoOp, mutate: func(snapshot *tgsrlv1.ClusterSnapshot, intent *tgsrlv1.SchedulingIntent) {
+			intent.ExecutionContract.CommitPolicy.RequireSafePoint = true
 			delete(snapshot.Annotations, SafePointAnnotation)
 		}, wantReason: FallbackReasonSafePoint},
 		{name: "expired static holds active allocation", mode: FallbackStatic, mutate: func(snapshot *tgsrlv1.ClusterSnapshot, intent *tgsrlv1.SchedulingIntent) {
@@ -499,6 +538,9 @@ func TestEvaluateFallbackReasonsAndModes(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			snapshot, intent := validFixture()
 			test.mutate(snapshot, intent)
+			if intent.GetExecutionContract() != nil {
+				intent.ExecutionContract.ContractId, _ = CanonicalContractID(intent.GetExecutionContract())
+			}
 			plan, record, err := testScheduler(t, test.mode).Evaluate(snapshot, intent)
 			if err != nil {
 				t.Fatalf("Evaluate() error = %v", err)

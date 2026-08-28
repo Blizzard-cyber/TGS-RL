@@ -155,9 +155,13 @@ func New(config Config) (*Scheduler, error) {
 			ID:               "default",
 			Version:          config.ConfigRevision,
 			Strategy:         policy.StrategyScoreFirst,
+			TopK:             1,
 			PreemptionPolicy: "noop",
 			RequireSafePoint: true,
 		}
+	}
+	if config.Policy.TopK == 0 {
+		config.Policy.TopK = 1
 	}
 	configuredPolicy, err := policy.New(config.Policy)
 	if err != nil {

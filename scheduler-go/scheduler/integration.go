@@ -4,7 +4,6 @@ import (
 	"time"
 
 	tgsrlv1 "github.com/Blizzard-cyber/TGS-RL/gen/go/tgsrl/v1"
-	"github.com/Blizzard-cyber/TGS-RL/scheduler-go/candidates"
 	"github.com/Blizzard-cyber/TGS-RL/scheduler-go/preemption"
 	"google.golang.org/protobuf/proto"
 )
@@ -12,43 +11,6 @@ import (
 type schedulerProtectionClock struct{ clock Clock }
 
 func (c schedulerProtectionClock) Now() time.Time { return c.clock.Now() }
-
-func (s *Scheduler) chooseConfiguredCandidate(snapshot *tgsrlv1.ClusterSnapshot, intent *tgsrlv1.SchedulingIntent, options []*candidateOption) (*candidateOption, string) {
-	if len(options) == 0 {
-		return nil, "NO_CANDIDATE"
-	}
-	if s.policy == nil || s.policy.Name() == "score_first" {
-		return options[0], ""
-	}
-	input := make([]candidates.EvaluatedCandidate, 0, len(options))
-	for _, option := range options {
-		if option == nil || option.proto == nil {
-			continue
-		}
-		input = append(input, candidates.EvaluatedCandidate{Candidate: proto.Clone(option.proto).(*tgsrlv1.PlacementCandidate), DeviceID: option.deviceID, PendingID: option.unitID})
-	}
-	selected, fallback := s.policy.Choose(snapshot, intent, input)
-	if selected == nil || selected.Candidate == nil {
-		return nil, fallback
-	}
-	for _, option := range options {
-		if option.proto != nil && option.proto.GetCandidateId() == selected.Candidate.GetCandidateId() {
-			return option, ""
-		}
-	}
-	return nil, "INVALID_SELECTION"
-}
-
-func recordCandidateScore(selected []candidateOption) float64 {
-	if len(selected) == 0 {
-		return 0
-	}
-	var score float64
-	for _, item := range selected {
-		score += item.score
-	}
-	return roundScore(score / float64(len(selected)))
-}
 
 func firstDeviceID(plan *tgsrlv1.PlacementPlan) string {
 	if plan == nil || len(plan.GetBindings()) == 0 || len(plan.GetBindings()[0].GetDeviceIds()) == 0 {

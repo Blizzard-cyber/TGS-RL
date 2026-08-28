@@ -37,6 +37,7 @@ func TestEvaluateP95Budgets(t *testing.T) {
 			}
 			sort.Slice(latencies, func(i, j int) bool { return latencies[i] < latencies[j] })
 			p95 := latencies[(samples*95+99)/100-1]
+			t.Logf("Evaluate(%d devices, %d units) p95=%s, budget=%s", test.devices, test.units, p95, test.budget)
 			if p95 >= test.budget {
 				t.Fatalf("Evaluate(%d devices, %d units) p95=%s, budget=%s", test.devices, test.units, p95, test.budget)
 			}

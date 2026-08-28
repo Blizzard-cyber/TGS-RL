@@ -10,6 +10,7 @@ func (p PolicyBundle) SchedulerPolicy() SchedulerPolicyConfig {
 		PolicyID:      p.PolicyID,
 		PolicyVersion: p.PolicyVersion,
 		Strategy:      normalizeStrategy(p.Selection.Strategy),
+		TopK:          p.Selection.TopK,
 		Protection:    p.Protection,
 		Preemption:    p.Preemption,
 	}

@@ -1,86 +1,103 @@
 package constraints
 
 import (
+	"math"
 	"testing"
 	"time"
 
 	tgsrlv1 "github.com/Blizzard-cyber/TGS-RL/gen/go/tgsrl/v1"
+	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
-func TestDefaultConstraints(t *testing.T) {
-	unit := &tgsrlv1.PendingUnit{
-		PendingUnitId:      "u1",
-		RequestedResources: &tgsrlv1.ResourceVector{CpuMillis: 500, MemoryBytes: 1024, AcceleratorUnits: 0.25},
-		RequiredCapabilities: &tgsrlv1.CapabilitySet{
-			Names: []string{"logical-cpu"},
-		},
+func TestResourceLessOrEqualCoversEveryDimension(t *testing.T) {
+	available := &tgsrlv1.ResourceVector{
+		CpuMillis:             1000,
+		MemoryBytes:           2000,
+		AcceleratorUnits:      0.75,
+		EphemeralStorageBytes: 3000,
+		NetworkBandwidthBps:   4000,
 	}
-	device := &tgsrlv1.Device{
-		DeviceId:    "d1",
-		Health:      tgsrlv1.DeviceHealth_DEVICE_HEALTH_READY,
-		Capacity:    &tgsrlv1.ResourceVector{CpuMillis: 1000, MemoryBytes: 2048, AcceleratorUnits: 1},
-		Allocatable: &tgsrlv1.ResourceVector{CpuMillis: 1000, MemoryBytes: 2048, AcceleratorUnits: 1},
-		Capabilities: &tgsrlv1.CapabilitySet{
-			Names: []string{"logical-cpu"},
-		},
+	request := &tgsrlv1.ResourceVector{
+		CpuMillis:             1000,
+		MemoryBytes:           2000,
+		AcceleratorUnits:      0.75,
+		EphemeralStorageBytes: 3000,
+		NetworkBandwidthBps:   4000,
 	}
-	ctx := Context{Unit: unit, Device: device}
-	for _, check := range Default() {
-		if err := check.Check(ctx); err != nil {
-			t.Fatalf("%s.Check() error = %v", check.Name(), err)
-		}
+	if !ResourceLessOrEqual(request, available) {
+		t.Fatal("equal resource vectors should fit")
 	}
 
-	device.Health = tgsrlv1.DeviceHealth_DEVICE_HEALTH_DRAINING
-	err := ReadyDevice{}.Check(ctx)
-	if err == nil {
-		t.Fatal("ReadyDevice.Check() unexpectedly succeeded for draining device")
-	}
-
-	device.Health = tgsrlv1.DeviceHealth_DEVICE_HEALTH_READY
-	device.Allocatable.CpuMillis = 100
-	err = SufficientResources{}.Check(ctx)
-	if err == nil {
-		t.Fatal("SufficientResources.Check() unexpectedly succeeded for undersized device")
-	}
-
-	device.Allocatable.CpuMillis = 1000
-	device.Capabilities.Names = []string{"other"}
-	err = CapabilityMatch{}.Check(ctx)
-	if err == nil {
-		t.Fatal("CapabilityMatch.Check() unexpectedly succeeded for mismatched capability")
+	for name, mutate := range map[string]func(*tgsrlv1.ResourceVector){
+		"cpu":         func(r *tgsrlv1.ResourceVector) { r.CpuMillis++ },
+		"memory":      func(r *tgsrlv1.ResourceVector) { r.MemoryBytes++ },
+		"accelerator": func(r *tgsrlv1.ResourceVector) { r.AcceleratorUnits += 0.01 },
+		"storage":     func(r *tgsrlv1.ResourceVector) { r.EphemeralStorageBytes++ },
+		"network":     func(r *tgsrlv1.ResourceVector) { r.NetworkBandwidthBps++ },
+	} {
+		t.Run(name, func(t *testing.T) {
+			over := proto.Clone(request).(*tgsrlv1.ResourceVector)
+			mutate(over)
+			if ResourceLessOrEqual(over, available) {
+				t.Fatal("oversized request unexpectedly fit")
+			}
+		})
 	}
 }
 
-func TestStableUnitOrderAndScores(t *testing.T) {
+func TestSumFitsRejectsOverflowAndInvalidShare(t *testing.T) {
+	max := ^uint64(0)
+	if SumFits(
+		&tgsrlv1.ResourceVector{CpuMillis: max},
+		&tgsrlv1.ResourceVector{CpuMillis: 1},
+		&tgsrlv1.ResourceVector{CpuMillis: max},
+	) {
+		t.Fatal("overflowing sum unexpectedly fit")
+	}
+	if AcceleratorShareFits(0.8, 0.3) {
+		t.Fatal("aggregate accelerator share above one unexpectedly fit")
+	}
+	if AcceleratorShareFits(math.NaN(), 0.1) {
+		t.Fatal("NaN accelerator share unexpectedly fit")
+	}
+	if !AcceleratorShareFits(0.75, 0.25) {
+		t.Fatal("aggregate accelerator share equal to one should fit")
+	}
+}
+
+func TestResourceLessOrEqualRejectsInvalidAcceleratorValues(t *testing.T) {
+	available := &tgsrlv1.ResourceVector{AcceleratorUnits: 1}
+	for name, request := range map[string]*tgsrlv1.ResourceVector{
+		"negative": {AcceleratorUnits: -0.1},
+		"nan":      {AcceleratorUnits: math.NaN()},
+		"infinite": {AcceleratorUnits: math.Inf(1)},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if ResourceLessOrEqual(request, available) {
+				t.Fatal("invalid accelerator request unexpectedly fit")
+			}
+		})
+	}
+}
+
+func TestStableUnitOrder(t *testing.T) {
 	now := time.Date(2026, 8, 27, 12, 0, 0, 0, time.UTC)
 	units := []*tgsrlv1.PendingUnit{
+		nil,
 		{PendingUnitId: "b", Priority: 1, QueuedAt: timestamppb.New(now.Add(time.Second))},
 		{PendingUnitId: "a", Priority: 5, QueuedAt: timestamppb.New(now)},
 		{PendingUnitId: "c", Priority: 5, QueuedAt: timestamppb.New(now.Add(time.Second))},
 	}
+	originalFirst := units[0]
 	ordered := StableUnitOrder(units)
 	if got := []string{ordered[0].GetPendingUnitId(), ordered[1].GetPendingUnitId(), ordered[2].GetPendingUnitId()}; got[0] != "a" || got[1] != "c" || got[2] != "b" {
-		t.Fatalf("StableUnitOrder() = %v, want [a c b]", got)
+		t.Fatalf("StableUnitOrder() = %v, want [a c b nil]", got)
 	}
-
-	device := &tgsrlv1.Device{
-		Capacity: &tgsrlv1.ResourceVector{CpuMillis: 1000, MemoryBytes: 2000, AcceleratorUnits: 2},
+	if ordered[3] != nil {
+		t.Fatalf("StableUnitOrder() final unit = %v, want nil", ordered[3])
 	}
-	unit := &tgsrlv1.PendingUnit{
-		RequestedResources: &tgsrlv1.ResourceVector{CpuMillis: 500, MemoryBytes: 1000, AcceleratorUnits: 1},
-	}
-	if got := Headroom(device, unit); got <= 0 || got >= 1 {
-		t.Fatalf("Headroom() = %f, want normalized fraction in (0,1)", got)
-	}
-	snapshot := &tgsrlv1.ClusterSnapshot{
-		Allocations: []*tgsrlv1.Allocation{
-			{AllocationId: "a1", DeviceIds: []string{"d1"}, State: tgsrlv1.AllocationState_ALLOCATION_STATE_ACTIVE},
-			{AllocationId: "a2", DeviceIds: []string{"d1"}, State: tgsrlv1.AllocationState_ALLOCATION_STATE_ACTIVE},
-		},
-	}
-	if got := ShareScore(snapshot, "d1"); got != 1.0/3.0 {
-		t.Fatalf("ShareScore() = %f, want %f", got, 1.0/3.0)
+	if units[0] != originalFirst {
+		t.Fatal("StableUnitOrder mutated input slice")
 	}
 }

@@ -23,7 +23,26 @@ func makeBinding(decisionID, pendingUnitID, runtimeUnitID, deviceID string, reso
 	}
 }
 
-func makePlan(decisionID, planID string, snapshot *tgsrlv1.ClusterSnapshot, intent *tgsrlv1.SchedulingIntent, now time.Time, bindings []*tgsrlv1.Binding, requiresSafePoint bool) *tgsrlv1.PlacementPlan {
+func populateBindingMetadata(binding *tgsrlv1.Binding, decisionID string, intent *tgsrlv1.SchedulingIntent) {
+	if binding == nil {
+		return
+	}
+	binding.BindingId = stableID("binding", decisionID, binding.GetPendingUnitId(), binding.GetDeviceIds()[0])
+	binding.RuntimeUnitId = intent.GetLabels()["runtime_unit_id"]
+	binding.SandboxId = stableID("sandbox", decisionID, binding.GetPendingUnitId())
+	binding.Generation = 1
+}
+
+func populateCandidatePlanMetadata(plan *tgsrlv1.PlacementPlan, candidateID, decisionID string, snapshot *tgsrlv1.ClusterSnapshot, intent *tgsrlv1.SchedulingIntent, now time.Time, requiresSafePoint bool, tick tgsrlv1.TickKind) {
+	if plan == nil || len(plan.GetBindings()) != 1 {
+		return
+	}
+	complete := makePlan(decisionID, stableID("candidate-plan", candidateID), snapshot, intent, now, plan.GetBindings(), requiresSafePoint, tick)
+	proto.Reset(plan)
+	proto.Merge(plan, complete)
+}
+
+func makePlan(decisionID, planID string, snapshot *tgsrlv1.ClusterSnapshot, intent *tgsrlv1.SchedulingIntent, now time.Time, bindings []*tgsrlv1.Binding, requiresSafePoint bool, tick tgsrlv1.TickKind) *tgsrlv1.PlacementPlan {
 	plan := &tgsrlv1.PlacementPlan{
 		PlanId:           planID,
 		ExecutionId:      intent.GetExecutionId(),
@@ -62,6 +81,7 @@ func makePlan(decisionID, planID string, snapshot *tgsrlv1.ClusterSnapshot, inte
 			RequiresSafePoint:        requiresSafePoint,
 			Deadline:                 proto.Clone(intent.GetValidUntil()).(*timestamppb.Timestamp),
 			IdempotencyKey:           stableID("action-idempotency", intent.GetIdempotencyKey(), binding.GetPendingUnitId(), strconv.FormatUint(uint64(order), 10)),
+			TickKind:                 tick,
 		})
 	}
 	return plan

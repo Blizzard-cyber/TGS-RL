@@ -46,7 +46,7 @@ func TestLoadBundleReadsRealConfigGraph(t *testing.T) {
 		t.Fatalf("safety policy = %+v", bundle.Policy.Safety)
 	}
 	projection := bundle.Policy.SchedulerPolicy()
-	if projection.PolicyID != "static" || projection.Strategy != "score_first" || !projection.Protection.Enabled || projection.Preemption.Strategy != "noop" {
+	if projection.PolicyID != "static" || projection.Strategy != "score_first" || projection.TopK != 1 || !projection.Protection.Enabled || projection.Preemption.Strategy != "noop" {
 		t.Fatalf("scheduler policy projection = %+v", projection)
 	}
 	if bundle.Scenario.ScenarioID != "tool-wait-v1" {

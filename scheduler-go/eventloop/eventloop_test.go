@@ -183,6 +183,25 @@ func TestMergeTriggerUsesNewestObservationAndStableCauses(t *testing.T) {
 	}
 }
 
+func TestMergeTriggerUsesNewerObservationWithoutRevisionChange(t *testing.T) {
+	current := &Trigger{
+		ExecutionID: "execution", StageID: "stage", ObservedRevision: 5,
+		ContractObservation: &tgsrlv1.ContractObservation{
+			EventId: "old", ObservedAt: timestamppb.New(time.Unix(10, 0)),
+		},
+	}
+	incoming := &Trigger{
+		ExecutionID: "execution", StageID: "stage", ObservedRevision: 5,
+		ContractObservation: &tgsrlv1.ContractObservation{
+			EventId: "new", ObservedAt: timestamppb.New(time.Unix(11, 0)),
+		},
+	}
+
+	if got := MergeTrigger(current, incoming).ContractObservation.GetEventId(); got != "new" {
+		t.Fatalf("observation = %q, want causally newer observation", got)
+	}
+}
+
 func TestEventLoopPublishesIntentWithInjectedClock(t *testing.T) {
 	fixed := time.Date(2026, 8, 27, 15, 0, 0, 0, time.UTC)
 	recorder := observability.NewInMemoryRecorder()

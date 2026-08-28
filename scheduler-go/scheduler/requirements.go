@@ -2,10 +2,8 @@ package scheduler
 
 import (
 	"fmt"
-	"math"
 	"sort"
 	"strconv"
-	"strings"
 
 	tgsrlv1 "github.com/Blizzard-cyber/TGS-RL/gen/go/tgsrl/v1"
 	"google.golang.org/protobuf/proto"
@@ -65,7 +63,7 @@ func workUnits(snapshot *tgsrlv1.ClusterSnapshot, intent *tgsrlv1.SchedulingInte
 		if !capabilityRequirementEqual(unit.GetRequiredCapabilities(), intent.GetRequiredCapabilities()) {
 			return nil, FallbackReasonRevision, fmt.Sprintf("pending unit %s capabilities do not match intent version %d", unit.GetPendingUnitId(), intent.GetVersion())
 		}
-		units = append(units, workUnit{id: unit.GetPendingUnitId()})
+		units = append(units, workUnit{id: unit.GetPendingUnitId(), pending: proto.Clone(unit).(*tgsrlv1.PendingUnit)})
 	}
 	if len(matching) == 0 {
 		for index := uint32(0); index < remaining; index++ {
@@ -93,142 +91,9 @@ func capabilityRequirementEqual(left, right *tgsrlv1.CapabilitySet) bool {
 	return proto.Equal(left, right)
 }
 
-func candidateRejection(candidateID string, device *tgsrlv1.Device, resources *deviceResources, request *tgsrlv1.ResourceVector, required *tgsrlv1.CapabilitySet, safePoint bool) *tgsrlv1.CandidateRejection {
-	return candidateRejectionWithCapabilityDetail(candidateID, device, resources, request, safePoint, capabilityMismatch(device.GetCapabilities(), required))
-}
-
-func candidateRejectionWithCapabilityDetail(candidateID string, device *tgsrlv1.Device, resources *deviceResources, request *tgsrlv1.ResourceVector, safePoint bool, capabilityDetail string) *tgsrlv1.CandidateRejection {
-	if device.GetHealth() != tgsrlv1.DeviceHealth_DEVICE_HEALTH_READY {
-		return rejection(candidateID, tgsrlv1.CandidateRejectionReason_CANDIDATE_REJECTION_REASON_VALIDITY_RULE, "device is not READY")
-	}
-	if !safePoint {
-		return rejection(candidateID, tgsrlv1.CandidateRejectionReason_CANDIDATE_REJECTION_REASON_VALIDITY_RULE, "execution contract requires a safe point not present in snapshot annotations")
-	}
-	if resources.overcommitted {
-		return rejection(candidateID, tgsrlv1.CandidateRejectionReason_CANDIDATE_REJECTION_REASON_INSUFFICIENT_RESOURCES, "existing active allocations exceed device capacity or aggregate share")
-	}
-	if capabilityDetail != "" {
-		return rejection(candidateID, tgsrlv1.CandidateRejectionReason_CANDIDATE_REJECTION_REASON_CAPABILITY_MISMATCH, capabilityDetail)
-	}
-	if !resourceLessOrEqual(request, resources.allocatable) {
-		return rejection(candidateID, tgsrlv1.CandidateRejectionReason_CANDIDATE_REJECTION_REASON_INSUFFICIENT_RESOURCES, "request exceeds allocatable resources")
-	}
-	share := resources.used.GetAcceleratorUnits() + request.GetAcceleratorUnits()
-	if math.IsInf(share, 0) || math.IsNaN(share) || share > 1 {
-		return rejection(candidateID, tgsrlv1.CandidateRejectionReason_CANDIDATE_REJECTION_REASON_INSUFFICIENT_RESOURCES, "aggregate active accelerator share plus request exceeds 1")
-	}
-	if !sumFits(resources.used, request, resources.capacity) {
-		return rejection(candidateID, tgsrlv1.CandidateRejectionReason_CANDIDATE_REJECTION_REASON_INSUFFICIENT_RESOURCES, "active allocations plus request exceed device capacity")
-	}
-	return nil
-}
-
-func capabilityMismatch(available, required *tgsrlv1.CapabilitySet) string {
-	if available == nil {
-		return "device has no measured CapabilitySet"
-	}
-	if strings.TrimSpace(available.GetSource()) == "" || available.GetRevision() == 0 || available.GetMeasuredAt() == nil {
-		return "device CapabilitySet lacks source, revision, or measured_at evidence"
-	}
-	if err := available.GetMeasuredAt().CheckValid(); err != nil {
-		return "device CapabilitySet measured_at is invalid"
-	}
-	if !containsNormalized(available.GetSupportedActions(), "bind") {
-		return "device does not advertise the bind action"
-	}
-	if required == nil {
-		return ""
-	}
-	if required.GetSource() != "" && available.GetSource() != required.GetSource() {
-		return "capability source mismatch"
-	}
-	if available.GetRevision() < required.GetRevision() {
-		return "capability revision is older than required"
-	}
-	if required.GetMeasuredAt() != nil && available.GetMeasuredAt().AsTime().Before(required.GetMeasuredAt().AsTime()) {
-		return "capability measurement is older than required"
-	}
-	if missing := missingStrings(available.GetNames(), required.GetNames(), false); len(missing) > 0 {
-		return "missing capability names: " + strings.Join(missing, ",")
-	}
-	if missing := missingStrings(available.GetAlgorithms(), required.GetAlgorithms(), false); len(missing) > 0 {
-		return "missing declared algorithm capabilities: " + strings.Join(missing, ",")
-	}
-	if missing := missingStrings(available.GetRolloutModes(), required.GetRolloutModes(), false); len(missing) > 0 {
-		return "missing declared rollout capabilities: " + strings.Join(missing, ",")
-	}
-	if missing := missingStrings(available.GetSupportedActions(), required.GetSupportedActions(), true); len(missing) > 0 {
-		return "missing supported actions: " + strings.Join(missing, ",")
-	}
-	attributeKeys := make([]string, 0, len(required.GetAttributes()))
-	for key := range required.GetAttributes() {
-		attributeKeys = append(attributeKeys, key)
-	}
-	sort.Strings(attributeKeys)
-	for _, key := range attributeKeys {
-		if available.GetAttributes()[key] != required.GetAttributes()[key] {
-			return "capability attribute mismatch: " + key
-		}
-	}
-	limitKeys := make([]string, 0, len(required.GetLimits()))
-	for key := range required.GetLimits() {
-		limitKeys = append(limitKeys, key)
-	}
-	sort.Strings(limitKeys)
-	for _, key := range limitKeys {
-		availableValue, exists := available.GetLimits()[key]
-		if !exists || availableValue < required.GetLimits()[key] {
-			return "capability limit below requirement: " + key
-		}
-	}
-	return ""
-}
-
-func missingStrings(available, required []string, normalized bool) []string {
-	set := make(map[string]struct{}, len(available))
-	for _, value := range available {
-		if normalized {
-			value = normalizeAction(value)
-		}
-		set[value] = struct{}{}
-	}
-	missing := make([]string, 0)
-	for _, value := range required {
-		lookup := value
-		if normalized {
-			lookup = normalizeAction(value)
-		}
-		if _, exists := set[lookup]; !exists {
-			missing = append(missing, value)
-		}
-	}
-	sort.Strings(missing)
-	return missing
-}
-
 func contractRequiresSafePoint(contract *tgsrlv1.ExecutionContract) bool {
 	if contract == nil {
 		return false
 	}
-	return contract.GetSafePointPolicy().GetEnabled() || contract.GetCommitPolicy().GetRequireSafePoint()
-}
-
-func snapshotAtSafePoint(snapshot *tgsrlv1.ClusterSnapshot, intent *tgsrlv1.SchedulingIntent, configuredKey string) bool {
-	keys := []string{
-		configuredKey + "/" + intent.GetExecutionId() + "/" + intent.GetStageId(),
-		configuredKey,
-		"safe_point/" + intent.GetExecutionId() + "/" + intent.GetStageId(),
-		"safe_point",
-	}
-	for _, key := range keys {
-		if raw, exists := snapshot.GetAnnotations()[key]; exists {
-			value, err := strconv.ParseBool(strings.TrimSpace(raw))
-			return err == nil && value
-		}
-	}
-	return false
-}
-
-func rejection(id string, reason tgsrlv1.CandidateRejectionReason, detail string) *tgsrlv1.CandidateRejection {
-	return &tgsrlv1.CandidateRejection{CandidateId: id, Reason: reason, Detail: detail}
+	return contract.GetCommitPolicy().GetRequireSafePoint()
 }

@@ -17,11 +17,21 @@ import (
 const protocolVersion = "0.3.0"
 const safePointAnnotation = "tgsrl.io/safe-point"
 
+// SafePointResolution is the immutable safe-point fact shared by contract
+// evaluation and candidate/action planning. Present distinguishes an observed
+// false value from a missing observation.
+type SafePointResolution struct {
+	Value    bool
+	Present  bool
+	Evidence []*tgsrlv1.SemanticField
+}
+
 type Input struct {
-	Contract *tgsrlv1.ExecutionContract
-	Intent   *tgsrlv1.SchedulingIntent
-	Snapshot *tgsrlv1.ClusterSnapshot
-	Context  *tgsrlv1.EvaluationContext
+	Contract  *tgsrlv1.ExecutionContract
+	Intent    *tgsrlv1.SchedulingIntent
+	Snapshot  *tgsrlv1.ClusterSnapshot
+	Context   *tgsrlv1.EvaluationContext
+	SafePoint *SafePointResolution
 }
 
 type AggregateResult struct {
@@ -45,6 +55,10 @@ func Evaluate(input Input) ([]*tgsrlv1.ContractEvaluation, AggregateResult, erro
 		return nil, AggregateResult{}, errors.New("context is nil")
 	}
 
+	if input.SafePoint == nil {
+		resolved := ResolveSafePoint(input.Snapshot, input.Intent, input.Context, safePointAnnotation)
+		input.SafePoint = &resolved
+	}
 	obs := effectiveObservation(input.Context, input.Intent)
 	facts, err := buildFacts(input, obs)
 	if err != nil {
@@ -114,6 +128,57 @@ func effectiveObservation(ctx *tgsrlv1.EvaluationContext, intent *tgsrlv1.Schedu
 	return nil
 }
 
+// ResolveSafePoint applies the authoritative precedence: evaluation-context
+// observation, intent observation, configured annotation, canonical annotation,
+// then legacy annotation keys. It does not mutate any input.
+func ResolveSafePoint(snapshot *tgsrlv1.ClusterSnapshot, intent *tgsrlv1.SchedulingIntent, ctx *tgsrlv1.EvaluationContext, configuredKey string) SafePointResolution {
+	if ctx != nil && ctx.GetContractObservation() != nil && ctx.GetContractObservation().SafePoint != nil {
+		return SafePointResolution{Value: ctx.GetContractObservation().GetSafePoint(), Present: true}
+	}
+	if intent != nil && intent.GetContractObservation() != nil && intent.GetContractObservation().SafePoint != nil {
+		return SafePointResolution{Value: intent.GetContractObservation().GetSafePoint(), Present: true}
+	}
+	if snapshot == nil || intent == nil {
+		return SafePointResolution{}
+	}
+	keys := stableSafePointKeys(configuredKey, intent.GetExecutionId(), intent.GetStageId())
+	for _, key := range keys {
+		raw, exists := snapshot.GetAnnotations()[key]
+		if !exists {
+			continue
+		}
+		evidence := []*tgsrlv1.SemanticField{
+			semanticField("snapshot.safe_point.annotation_key", semanticString(key)),
+			semanticField("snapshot.safe_point.annotation_raw", semanticString(raw)),
+		}
+		value, err := strconv.ParseBool(strings.TrimSpace(raw))
+		if err != nil {
+			return SafePointResolution{Evidence: evidence}
+		}
+		return SafePointResolution{Value: value, Present: true, Evidence: evidence}
+	}
+	return SafePointResolution{}
+}
+
+func stableSafePointKeys(configuredKey, executionID, stageID string) []string {
+	bases := []string{strings.TrimSpace(configuredKey), safePointAnnotation, "safe_point"}
+	seen := make(map[string]struct{}, len(bases)*2)
+	keys := make([]string, 0, len(bases)*2)
+	for _, base := range bases {
+		if base == "" {
+			continue
+		}
+		for _, key := range []string{base + "/" + executionID + "/" + stageID, base} {
+			if _, exists := seen[key]; exists {
+				continue
+			}
+			seen[key] = struct{}{}
+			keys = append(keys, key)
+		}
+	}
+	return keys
+}
+
 type factRegistry struct {
 	values map[string]*tgsrlv1.SemanticValue
 	issues map[string]factIssue
@@ -129,6 +194,15 @@ func buildFacts(input Input, obs *tgsrlv1.ContractObservation) (*factRegistry, e
 		"intent.version.current": semanticUint(input.Intent.GetVersion()),
 	}
 	issues := map[string]factIssue{}
+	if input.SafePoint != nil && input.SafePoint.Present {
+		values["runtime.safe_point"] = semanticBool(input.SafePoint.Value)
+	}
+	if input.SafePoint != nil && len(input.SafePoint.Evidence) > 0 {
+		issues["runtime.safe_point"] = factIssue{
+			reason:   "runtime safe point resolved from snapshot annotation fallback",
+			evidence: stableFields(input.SafePoint.Evidence),
+		}
+	}
 
 	if obs != nil {
 		if obs.PolicyLag != nil {
@@ -139,15 +213,6 @@ func buildFacts(input Input, obs *tgsrlv1.ContractObservation) (*factRegistry, e
 		}
 		if obs.BufferLevel != nil {
 			values["buffer.level.current"] = semanticUint(obs.GetBufferLevel())
-		}
-		if obs.SafePoint != nil {
-			values["runtime.safe_point"] = semanticBool(obs.GetSafePoint())
-		} else if value, evidence, ok := snapshotSafePointFact(input.Snapshot, input.Intent); ok {
-			values["runtime.safe_point"] = semanticBool(value)
-			issues["runtime.safe_point"] = factIssue{
-				reason:   "runtime safe point resolved from snapshot annotation fallback",
-				evidence: evidence,
-			}
 		}
 		if obs.AcceptedSamples != nil {
 			values["batch.accepted_samples"] = semanticUint(obs.GetAcceptedSamples())
@@ -209,14 +274,7 @@ func buildFacts(input Input, obs *tgsrlv1.ContractObservation) (*factRegistry, e
 			}
 			values[field.GetKey()] = proto.Clone(field.GetValue()).(*tgsrlv1.SemanticValue)
 		}
-	} else if value, evidence, ok := snapshotSafePointFact(input.Snapshot, input.Intent); ok {
-		values["runtime.safe_point"] = semanticBool(value)
-		issues["runtime.safe_point"] = factIssue{
-			reason:   "runtime safe point resolved from snapshot annotation fallback",
-			evidence: evidence,
-		}
 	}
-
 	return &factRegistry{values: values, issues: issues}, nil
 }
 
@@ -884,34 +942,6 @@ func finiteSemanticValue(value *tgsrlv1.SemanticValue) bool {
 		}
 	}
 	return true
-}
-
-func snapshotSafePointFact(snapshot *tgsrlv1.ClusterSnapshot, intent *tgsrlv1.SchedulingIntent) (bool, []*tgsrlv1.SemanticField, bool) {
-	if snapshot == nil || intent == nil {
-		return false, nil, false
-	}
-	keys := []string{
-		safePointAnnotation + "/" + intent.GetExecutionId() + "/" + intent.GetStageId(),
-		safePointAnnotation,
-		"safe_point/" + intent.GetExecutionId() + "/" + intent.GetStageId(),
-		"safe_point",
-	}
-	for _, key := range keys {
-		if raw, exists := snapshot.GetAnnotations()[key]; exists {
-			value, err := strconv.ParseBool(strings.TrimSpace(raw))
-			if err != nil {
-				return false, []*tgsrlv1.SemanticField{
-					semanticField("snapshot.safe_point.annotation_key", semanticString(key)),
-					semanticField("snapshot.safe_point.annotation_raw", semanticString(raw)),
-				}, false
-			}
-			return value, []*tgsrlv1.SemanticField{
-				semanticField("snapshot.safe_point.annotation_key", semanticString(key)),
-				semanticField("snapshot.safe_point.annotation_raw", semanticString(raw)),
-			}, true
-		}
-	}
-	return false, nil, false
 }
 
 func actionFor(status tgsrlv1.ContractEvaluationStatus, mode tgsrlv1.ValidityFailureMode) tgsrlv1.ContractDecisionAction {

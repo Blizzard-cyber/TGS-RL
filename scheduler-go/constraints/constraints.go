@@ -1,187 +1,113 @@
+// Package constraints contains stateless primitives shared by the
+// authoritative candidate engine. It intentionally does not expose a default
+// evaluator; the engine owns readiness, capability, safe-point, allocation,
+// and per-unit resource-ledger semantics.
 package constraints
 
 import (
-	"fmt"
 	"math"
 	"sort"
-	"strings"
 
 	tgsrlv1 "github.com/Blizzard-cyber/TGS-RL/gen/go/tgsrl/v1"
 )
 
-// Context is the immutable candidate-evaluation surface passed to constraints.
-type Context struct {
-	Snapshot *tgsrlv1.ClusterSnapshot
-	Intent   *tgsrlv1.SchedulingIntent
-	Unit     *tgsrlv1.PendingUnit
-	Device   *tgsrlv1.Device
+// ResourceLessOrEqual reports whether every request dimension fits within the
+// available vector. A nil request is empty; a nil available vector fits only
+// an empty request. Invalid accelerator values fail closed.
+func ResourceLessOrEqual(request, available *tgsrlv1.ResourceVector) bool {
+	if request != nil && (invalidFloat(request.GetAcceleratorUnits()) || request.GetAcceleratorUnits() < 0) {
+		return false
+	}
+	if available != nil && (invalidFloat(available.GetAcceleratorUnits()) || available.GetAcceleratorUnits() < 0) {
+		return false
+	}
+	if request == nil {
+		return true
+	}
+	if available == nil {
+		return ResourceIsZero(request)
+	}
+	return request.GetCpuMillis() <= available.GetCpuMillis() &&
+		request.GetMemoryBytes() <= available.GetMemoryBytes() &&
+		request.GetAcceleratorUnits() <= available.GetAcceleratorUnits() &&
+		request.GetEphemeralStorageBytes() <= available.GetEphemeralStorageBytes() &&
+		request.GetNetworkBandwidthBps() <= available.GetNetworkBandwidthBps()
 }
 
-// Constraint rejects infeasible unit/device pairs.
-type Constraint interface {
-	Name() string
-	Check(Context) error
+// SumFits reports whether used+request fits every capacity dimension without
+// unsigned overflow. Invalid accelerator values fail closed.
+func SumFits(used, request, capacity *tgsrlv1.ResourceVector) bool {
+	if used == nil {
+		used = &tgsrlv1.ResourceVector{}
+	}
+	if request == nil {
+		request = &tgsrlv1.ResourceVector{}
+	}
+	if capacity == nil {
+		return ResourceIsZero(used) && ResourceIsZero(request)
+	}
+	return uintSumFits(used.GetCpuMillis(), request.GetCpuMillis(), capacity.GetCpuMillis()) &&
+		uintSumFits(used.GetMemoryBytes(), request.GetMemoryBytes(), capacity.GetMemoryBytes()) &&
+		floatSumFits(used.GetAcceleratorUnits(), request.GetAcceleratorUnits(), capacity.GetAcceleratorUnits()) &&
+		uintSumFits(used.GetEphemeralStorageBytes(), request.GetEphemeralStorageBytes(), capacity.GetEphemeralStorageBytes()) &&
+		uintSumFits(used.GetNetworkBandwidthBps(), request.GetNetworkBandwidthBps(), capacity.GetNetworkBandwidthBps())
 }
 
-// Reason classifies a constraint failure with a stable proto rejection code.
-type Reason struct {
-	Code   tgsrlv1.CandidateRejectionReason
-	Detail string
+// AcceleratorShareFits applies the scheduler's aggregate accelerator-share
+// invariant: active share plus the request must not exceed one.
+func AcceleratorShareFits(used, request float64) bool {
+	return floatSumFits(used, request, 1)
 }
 
-func (r *Reason) Error() string { return r.Detail }
-
-// Compose runs constraints in order and returns the first rejection.
-func Compose(constraints ...Constraint) Constraint {
-	return composed(constraints)
+// ResourceIsZero reports whether all resource dimensions are zero. Invalid
+// accelerator values are not considered zero.
+func ResourceIsZero(resources *tgsrlv1.ResourceVector) bool {
+	return resources == nil || (resources.GetCpuMillis() == 0 &&
+		resources.GetMemoryBytes() == 0 &&
+		resources.GetAcceleratorUnits() == 0 &&
+		resources.GetEphemeralStorageBytes() == 0 &&
+		resources.GetNetworkBandwidthBps() == 0)
 }
 
-type composed []Constraint
-
-func (c composed) Name() string { return "compose" }
-
-func (c composed) Check(ctx Context) error {
-	for _, constraint := range c {
-		if constraint == nil {
-			continue
-		}
-		if err := constraint.Check(ctx); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-// Default returns conservative production-ready constraints.
-func Default() []Constraint {
-	return []Constraint{
-		ReadyDevice{},
-		SufficientResources{},
-		CapabilityMatch{},
-	}
-}
-
-// ReadyDevice requires the device to be ready.
-type ReadyDevice struct{}
-
-func (ReadyDevice) Name() string { return "ready_device" }
-
-func (ReadyDevice) Check(ctx Context) error {
-	if ctx.Device == nil || ctx.Device.GetHealth() != tgsrlv1.DeviceHealth_DEVICE_HEALTH_READY {
-		return &Reason{
-			Code:   tgsrlv1.CandidateRejectionReason_CANDIDATE_REJECTION_REASON_VALIDITY_RULE,
-			Detail: "device is not READY",
-		}
-	}
-	return nil
-}
-
-// SufficientResources rejects devices without enough allocatable resources.
-type SufficientResources struct{}
-
-func (SufficientResources) Name() string { return "sufficient_resources" }
-
-func (SufficientResources) Check(ctx Context) error {
-	if ctx.Device == nil || ctx.Unit == nil {
-		return &Reason{
-			Code:   tgsrlv1.CandidateRejectionReason_CANDIDATE_REJECTION_REASON_INSUFFICIENT_RESOURCES,
-			Detail: "device or pending unit is missing",
-		}
-	}
-	if ctx.Unit.GetRequestedResources().GetCpuMillis() > ctx.Device.GetAllocatable().GetCpuMillis() ||
-		ctx.Unit.GetRequestedResources().GetMemoryBytes() > ctx.Device.GetAllocatable().GetMemoryBytes() ||
-		ctx.Unit.GetRequestedResources().GetEphemeralStorageBytes() > ctx.Device.GetAllocatable().GetEphemeralStorageBytes() ||
-		ctx.Unit.GetRequestedResources().GetNetworkBandwidthBps() > ctx.Device.GetAllocatable().GetNetworkBandwidthBps() ||
-		ctx.Unit.GetRequestedResources().GetAcceleratorUnits() > ctx.Device.GetAllocatable().GetAcceleratorUnits() {
-		return &Reason{
-			Code:   tgsrlv1.CandidateRejectionReason_CANDIDATE_REJECTION_REASON_INSUFFICIENT_RESOURCES,
-			Detail: "device allocatable resources are insufficient",
-		}
-	}
-	return nil
-}
-
-// CapabilityMatch requires all named capabilities from the unit to be present.
-type CapabilityMatch struct{}
-
-func (CapabilityMatch) Name() string { return "capability_match" }
-
-func (CapabilityMatch) Check(ctx Context) error {
-	if ctx.Device == nil || ctx.Unit == nil {
-		return &Reason{
-			Code:   tgsrlv1.CandidateRejectionReason_CANDIDATE_REJECTION_REASON_CAPABILITY_MISMATCH,
-			Detail: "device or pending unit is missing",
-		}
-	}
-	deviceNames := make(map[string]struct{}, len(ctx.Device.GetCapabilities().GetNames()))
-	for _, name := range ctx.Device.GetCapabilities().GetNames() {
-		deviceNames[strings.ToLower(name)] = struct{}{}
-	}
-	for _, required := range ctx.Unit.GetRequiredCapabilities().GetNames() {
-		if _, ok := deviceNames[strings.ToLower(required)]; !ok {
-			return &Reason{
-				Code:   tgsrlv1.CandidateRejectionReason_CANDIDATE_REJECTION_REASON_CAPABILITY_MISMATCH,
-				Detail: fmt.Sprintf("device lacks capability %q", required),
-			}
-		}
-	}
-	return nil
-}
-
-// Headroom reports normalized remaining capacity after placing the unit.
-func Headroom(device *tgsrlv1.Device, unit *tgsrlv1.PendingUnit) float64 {
-	if device == nil || unit == nil {
-		return 0
-	}
-	capacity := device.GetCapacity()
-	requested := unit.GetRequestedResources()
-	if capacity.GetCpuMillis() == 0 || capacity.GetMemoryBytes() == 0 {
-		return 0
-	}
-	cpu := 1 - float64(requested.GetCpuMillis())/float64(capacity.GetCpuMillis())
-	mem := 1 - float64(requested.GetMemoryBytes())/float64(capacity.GetMemoryBytes())
-	acc := 1.0
-	if capacity.GetAcceleratorUnits() > 0 {
-		acc = 1 - requested.GetAcceleratorUnits()/capacity.GetAcceleratorUnits()
-	}
-	return roundNonNegative((cpu + mem + acc) / 3)
-}
-
-// ShareScore penalizes devices with more active allocations.
-func ShareScore(snapshot *tgsrlv1.ClusterSnapshot, deviceID string) float64 {
-	if snapshot == nil || deviceID == "" {
-		return 0
-	}
-	var total int
-	for _, allocation := range snapshot.GetAllocations() {
-		for _, current := range allocation.GetDeviceIds() {
-			if current == deviceID && allocation.GetState() == tgsrlv1.AllocationState_ALLOCATION_STATE_ACTIVE {
-				total++
-			}
-		}
-	}
-	return 1 / float64(total+1)
-}
-
-// StableUnitOrder returns a deterministic pending-unit order.
+// StableUnitOrder returns a deterministic copy ordered by priority descending,
+// queue time ascending, then pending-unit ID ascending. Nil units sort last.
 func StableUnitOrder(units []*tgsrlv1.PendingUnit) []*tgsrlv1.PendingUnit {
 	out := append([]*tgsrlv1.PendingUnit(nil), units...)
 	sort.SliceStable(out, func(i, j int) bool {
 		left, right := out[i], out[j]
+		if left == nil || right == nil {
+			return left != nil
+		}
 		if left.GetPriority() != right.GetPriority() {
 			return left.GetPriority() > right.GetPriority()
 		}
-		if !left.GetQueuedAt().AsTime().Equal(right.GetQueuedAt().AsTime()) {
-			return left.GetQueuedAt().AsTime().Before(right.GetQueuedAt().AsTime())
+		leftQueued, rightQueued := left.GetQueuedAt(), right.GetQueuedAt()
+		if leftQueued == nil || rightQueued == nil {
+			if leftQueued == nil && rightQueued != nil {
+				return false
+			}
+			if leftQueued != nil {
+				return true
+			}
+		} else if !leftQueued.AsTime().Equal(rightQueued.AsTime()) {
+			return leftQueued.AsTime().Before(rightQueued.AsTime())
 		}
 		return left.GetPendingUnitId() < right.GetPendingUnitId()
 	})
 	return out
 }
 
-func roundNonNegative(value float64) float64 {
-	if math.IsNaN(value) || math.IsInf(value, 0) || value < 0 {
-		return 0
+func uintSumFits(left, right, limit uint64) bool {
+	return left <= limit && right <= limit-left
+}
+
+func floatSumFits(left, right, limit float64) bool {
+	if invalidFloat(left) || invalidFloat(right) || invalidFloat(limit) || left < 0 || right < 0 || limit < 0 {
+		return false
 	}
-	return math.Round(value*1_000_000) / 1_000_000
+	return left <= limit && right <= limit-left
+}
+
+func invalidFloat(value float64) bool {
+	return math.IsNaN(value) || math.IsInf(value, 0)
 }
