@@ -218,9 +218,9 @@ message CandidateRejection {
   ContractEvaluation contract_evaluation = 4;
 }
 
-// DecisionRecord contains the full auditable scheduler decision surface: all
-// candidates, rejections, selected score, fallback state, input data kind, and
-// scheduler code revision.
+// DecisionRecord captures the scheduler decision surface. Candidate and
+// rejection evidence may be bounded; the total counters and truncation marker
+// distinguish complete selection from its retained audit projection.
 message DecisionRecord {
   string decision_id = 1;
   uint64 sequence = 2;
@@ -250,6 +250,9 @@ message DecisionRecord {
   TickKind tick_kind = 26;
   EvaluationContext evaluation_context = 27;
   repeated ContractEvaluation contract_evaluations = 28;
+  uint64 total_candidate_count = 29;
+  uint64 total_rejected_candidate_count = 30;
+  bool evidence_truncated = 31;
 }
 
 message PublishIntentRequest {
