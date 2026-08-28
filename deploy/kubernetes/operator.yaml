@@ -1,0 +1,138 @@
+# Prerequisite: a cluster administrator must install
+# deploy/crds/tgsrl_jobrunbundles.yaml before applying this manifest.
+# This manifest deliberately does not own the cluster-scoped CRD lifecycle.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: tgsrl-system
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: tgsrl-operator
+  namespace: tgsrl-system
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: tgsrl-operator
+  namespace: tgsrl-system
+rules:
+  - apiGroups: ["batch"]
+    resources: ["jobs"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: ["resource.k8s.io"]
+    resources: ["resourceclaims"]
+    verbs: ["get", "list", "watch", "create", "update", "patch"]
+  - apiGroups: ["kueue.x-k8s.io"]
+    resources: ["workloads"]
+    verbs: ["get", "list", "watch", "create", "update", "patch"]
+  - apiGroups: ["tgsrl.io"]
+    resources: ["jobrunbundles"]
+    verbs: ["get", "list", "watch", "create", "update", "patch"]
+  - apiGroups: ["tgsrl.io"]
+    resources: ["jobrunbundles/status"]
+    verbs: ["get", "update", "patch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: tgsrl-operator
+  namespace: tgsrl-system
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: tgsrl-operator
+subjects:
+  - kind: ServiceAccount
+    name: tgsrl-operator
+    namespace: tgsrl-system
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: tgsrl-operator
+  namespace: tgsrl-system
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: tgsrl-operator
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: tgsrl-operator
+    spec:
+      serviceAccountName: tgsrl-operator
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        fsGroup: 65532
+        fsGroupChangePolicy: OnRootMismatch
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: operator
+          # Local-development default only. Production installs must replace
+          # this tag with an immutable registry/repository@sha256:digest.
+          image: tgsrl-operator:0.1.0
+          imagePullPolicy: IfNotPresent
+          securityContext:
+            runAsNonRoot: true
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
+          args:
+            - --mode=kubernetes
+            - --controller=true
+            - --admission=true
+            - --scheduler=tgsrl-scheduler:50051
+            - --control=tgsrl-job-controller:50061
+            - --runtime=tgsrl-runtime:50071
+            - --listen=0.0.0.0:50081
+            - --namespace=tgsrl-system
+            - --gpu-profile=none
+            - --cursor-dir=/var/lib/tgsrl-operator
+          ports:
+            - name: grpc
+              containerPort: 50081
+              protocol: TCP
+          volumeMounts:
+            - name: cursor-state
+              mountPath: /var/lib/tgsrl-operator
+      volumes:
+        - name: cursor-state
+          persistentVolumeClaim:
+            claimName: tgsrl-operator-state
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: tgsrl-operator
+  namespace: tgsrl-system
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: tgsrl-operator
+  ports:
+    - name: grpc
+      port: 50081
+      targetPort: grpc
+      protocol: TCP
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: tgsrl-operator-state
+  namespace: tgsrl-system
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 1Gi

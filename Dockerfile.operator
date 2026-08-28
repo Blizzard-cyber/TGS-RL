@@ -1,0 +1,22 @@
+FROM --platform=$BUILDPLATFORM golang:1.23.0-bookworm@sha256:32096e84705b30bb39cc9c65ef2896efacc4268203b7876049847763cefc934d AS build
+
+ARG TARGETOS
+ARG TARGETARCH
+
+WORKDIR /src
+
+COPY go.mod go.sum ./
+RUN go mod download
+
+COPY cmd ./cmd
+COPY gen ./gen
+COPY operator-go ./operator-go
+
+RUN CGO_ENABLED=0 GOOS="${TARGETOS}" GOARCH="${TARGETARCH}" \
+    go build -trimpath -ldflags='-s -w' -o /out/operator ./cmd/operator
+
+FROM gcr.io/distroless/static-debian12:nonroot@sha256:afa5c872c891853ca7fcf1f12c3edb23f7eeef36189728842dd51042ff57f7ab
+
+COPY --from=build /out/operator /usr/local/bin/operator
+
+ENTRYPOINT ["/usr/local/bin/operator"]

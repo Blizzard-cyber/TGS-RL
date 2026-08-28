@@ -1,0 +1,13 @@
+**
+!.dockerignore
+!Dockerfile.operator
+!go.mod
+!go.sum
+!cmd/
+!cmd/operator/
+!cmd/operator/**
+!gen/
+!gen/go/
+!gen/go/**
+!operator-go/
+!operator-go/**

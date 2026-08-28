@@ -1,0 +1,64 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ .Values.serviceAccount.name }}
+  namespace: {{ default .Release.Namespace .Values.namespaceOverride }}
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: {{ .Values.serviceAccount.name }}
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: {{ .Values.serviceAccount.name }}
+    spec:
+      serviceAccountName: {{ .Values.serviceAccount.name }}
+      securityContext:
+{{ toYaml .Values.podSecurityContext | indent 8 }}
+      containers:
+        - name: operator
+          image: "{{ .Values.image.repository }}{{ if .Values.image.digest }}@{{ .Values.image.digest }}{{ else }}:{{ .Values.image.tag }}{{ end }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          securityContext:
+{{ toYaml .Values.securityContext | indent 12 }}
+          args:
+            - --mode={{ ternary "fake" "kubernetes" .Values.controller.fakeBackend }}
+            - --controller=true
+            - --admission={{ ternary "true" "false" .Values.controller.admission }}
+            - --scheduler={{ .Values.controller.schedulerAddress }}
+            - --control={{ .Values.controller.controlAddress }}
+            - --runtime={{ .Values.controller.runtimeAddress }}
+            - --listen={{ .Values.controller.listenHost }}:{{ .Values.service.port }}
+            - --namespace={{ default .Release.Namespace .Values.namespaceOverride }}
+            - --gpu-profile={{ .Values.controller.gpuProfile }}
+{{ if .Values.controller.runtimeClassName }}
+            - --runtime-class-name={{ .Values.controller.runtimeClassName }}
+{{ end }}
+{{ if .Values.controller.runtimeClassHandler }}
+            - --runtime-class-handler={{ .Values.controller.runtimeClassHandler }}
+{{ end }}
+{{ if .Values.controller.runtimeClassCreate }}
+            - --runtime-class-create=true
+{{ end }}
+{{ range $key, $value := .Values.controller.nodeSelector }}
+            - --node-selector={{ $key }}={{ $value }}
+{{ end }}
+            - --cursor-dir={{ .Values.persistence.mountPath }}
+          ports:
+            - name: grpc
+              containerPort: {{ .Values.service.port }}
+              protocol: TCP
+          volumeMounts:
+            - name: cursor-state
+              mountPath: {{ .Values.persistence.mountPath }}
+      volumes:
+        - name: cursor-state
+{{ if .Values.persistence.enabled }}
+          persistentVolumeClaim:
+            claimName: {{ default (printf "%s-state" .Values.serviceAccount.name) .Values.persistence.existingClaim }}
+{{ else }}
+          emptyDir: {}
+{{ end }}
