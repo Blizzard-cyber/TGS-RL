@@ -42,11 +42,12 @@ from tgsrl_runtime.persistence_adapter import (
 )
 from tgsrl_runtime.proto_utils import decode_page_token, encode_page_token
 from tgsrl_runtime.replay import (
+    REPLAY_STEP_ARTIFACT_KIND,
     ReplayScheduler,
     SchedulerReplayRunner,
     decode_replay_steps,
     replay_start_key_digest,
-    replay_step_digest,
+    replay_step_progress_digests,
 )
 from tgsrl_runtime.runtime_errors import RuntimeLifecycleError
 from tgsrl_runtime.runtime_lifecycle import RuntimeLifecycleCoordinator
@@ -1003,6 +1004,14 @@ class RuntimeSupervisor:
         scheduler: ReplayScheduler,
     ) -> experiment_pb2.Replay:
         steps = decode_replay_steps(replay)
+        step_artifacts = sorted(
+            (
+                artifact
+                for artifact in replay.artifacts
+                if artifact.kind == REPLAY_STEP_ARTIFACT_KIND
+            ),
+            key=lambda artifact: artifact.replay_step.ordinal,
+        )
         key_digest = replay_start_key_digest(idempotency_key)
         completed = self.persistence.list_replay_schedule_steps(
             replay_id=replay.replay_id, start_key_digest=key_digest
@@ -1012,7 +1021,9 @@ class RuntimeSupervisor:
         runner = SchedulerReplayRunner(steps, scheduler=scheduler, seed=replay.seed)
         for ordinal, item in enumerate(completed, start=1):
             step = steps[ordinal - 1]
-            if item.ordinal != ordinal or item.step_digest != replay_step_digest(step):
+            if item.ordinal != ordinal or item.step_digest not in replay_step_progress_digests(
+                step_artifacts[ordinal - 1], step
+            ):
                 raise RuntimeLifecycleError("durable replay progress does not match inputs")
             runner.restore_decision(item.decision)
         while runner.remaining:
@@ -1025,7 +1036,7 @@ class RuntimeSupervisor:
                     replay_id=replay.replay_id,
                     start_key_digest=key_digest,
                     ordinal=result.ordinal,
-                    step_digest=replay_step_digest(step),
+                    step_digest=step_artifacts[result.ordinal - 1].digest,
                     decision=result.decision,
                     completed_at=datetime.now(tz=UTC),
                 )

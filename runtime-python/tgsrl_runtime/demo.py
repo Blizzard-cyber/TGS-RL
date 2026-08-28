@@ -53,6 +53,13 @@ def _build_fixture(
         base_time=trace_base_time or datetime(2025, 1, 1, tzinfo=UTC),
     )
     batch = workload.generate_batch(SyntheticScenario.TOOL_WAIT)
+    contract_observation = execution_pb2.ContractObservation()
+    contract_observation.CopyFrom(batch.events[-1].contract_observation)
+    contract_observation.observed_at.FromDatetime(now)
+    contract_observation.source = "synthetic-demo"
+    contract_observation.event_id = f"{batch.events[-1].event_id}-intent-decode"
+    contract_observation.phase_id = "decode"
+    contract_observation.policy_version = "policy-1"
     intent = IntentBuilder(clock=lambda: now).build(
         execution_id=batch.execution_id,
         stage_id="decode",
@@ -66,6 +73,7 @@ def _build_fixture(
         required_capabilities=_capabilities(algorithm.name, mode.proto_value),
         deterministic_seed=seed,
         labels={"data_kind": "synthetic"},
+        contract_observation=contract_observation,
     )
     return {"execution_contract": contract, "scheduling_intent": intent, "trace": batch}
 

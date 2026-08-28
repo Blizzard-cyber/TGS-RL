@@ -32,6 +32,7 @@ REPLAY_ARTIFACT_SCHEMA_V2 = "tgsrl.replay-artifact.v2"
 REPLAY_ARTIFACT_SCHEMA = REPLAY_ARTIFACT_SCHEMA_V2
 DECISION_CANONICALIZER_V1 = "decision-semantic-v1"
 DECISION_CANONICALIZER_V2 = "decision-semantic-v2"
+REPLAY_STEP_CANONICALIZER_V2 = "replay-step-input-v2-presence"
 
 
 class SeedMode(StrEnum):
@@ -159,18 +160,44 @@ def synthesize_evaluation_context(
     context = scheduling_pb2.EvaluationContext(
         tick_kind=scheduling_pb2.TICK_KIND_FAST,
         decision_sequence=(
+            step.recorded_decision.sequence
+            if step.HasField("recorded_decision") and step.recorded_decision.sequence
+            else step.ordinal
+        ),
+        cause="replay-compat",
+        observed_revision=step.snapshot.revision,
+        compatibility_defaults_applied=True,
+    )
+    if step.HasField("recorded_decision") and step.recorded_decision.HasField("decided_at"):
+        context.evaluation_time.CopyFrom(step.recorded_decision.decided_at)
+    elif step.event.HasField("occurred_at"):
+        context.evaluation_time.CopyFrom(step.event.occurred_at)
+    else:
+        context.evaluation_time.FromSeconds(0)
+    observation = _step_dynamic_observation(step)
+    if observation is not None:
+        context.contract_observation.CopyFrom(observation)
+    return context
+
+
+def _synthesize_legacy_evaluation_context(
+    step: ReplayArtifactStep,
+) -> scheduling_pb2.EvaluationContext:
+    """Reproduce the pre-v2 compatibility context only for progress migration."""
+    context = scheduling_pb2.EvaluationContext(
+        tick_kind=scheduling_pb2.TICK_KIND_FAST,
+        decision_sequence=(
             step.recorded_decision.sequence if step.HasField("recorded_decision") else 0
         ),
         cause="replay-compat",
         observed_revision=step.snapshot.revision,
+        compatibility_defaults_applied=True,
     )
     if step.HasField("recorded_decision") and step.recorded_decision.HasField("decided_at"):
         context.evaluation_time.CopyFrom(step.recorded_decision.decided_at)
     observation = _step_dynamic_observation(step)
-    if observation is not None and "contract_observation" in context.DESCRIPTOR.fields_by_name:
+    if observation is not None:
         context.contract_observation.CopyFrom(observation)
-    if "compatibility_defaults_applied" in context.DESCRIPTOR.fields_by_name:
-        context.compatibility_defaults_applied = True
     return context
 
 
@@ -179,17 +206,8 @@ def resolve_evaluation_context(
 ) -> scheduling_pb2.EvaluationContext:
     """Return an explicit replay-step context, synthesizing legacy defaults when absent."""
     if step.HasField("evaluation_context"):
-        context = _copy_message(step.evaluation_context)
-    else:
-        context = synthesize_evaluation_context(step)
-    observation = _step_dynamic_observation(step)
-    if (
-        observation is not None
-        and "contract_observation" in context.DESCRIPTOR.fields_by_name
-        and not context.HasField("contract_observation")
-    ):
-        context.contract_observation.CopyFrom(observation)
-    return context
+        return _copy_message(step.evaluation_context)
+    return synthesize_evaluation_context(step)
 
 
 def _decision_artifact_canonicalizer(schema_version: str) -> str:
@@ -210,8 +228,9 @@ def encode_replay_step_artifact(
         raise ReplayArtifactError("replay step ordinal must be positive")
     if not step.event.HasField("occurred_at"):
         raise ReplayArtifactError("replay step event occurred_at is required")
-    evaluation_context = resolve_evaluation_context(step)
-    digest = replay_step_digest(step, schema_version=REPLAY_ARTIFACT_SCHEMA_V2)
+    encoded_step = _copy_message(step)
+    encoded_step.evaluation_context.CopyFrom(resolve_evaluation_context(step))
+    digest = replay_step_digest(encoded_step, schema_version=REPLAY_ARTIFACT_SCHEMA_V2)
     return experiment_pb2.ReplayArtifact(
         artifact_id=f"{replay_id}:step:{step.ordinal}:{digest[:16]}",
         replay_id=replay_id,
@@ -220,14 +239,8 @@ def encode_replay_step_artifact(
         digest=digest,
         observed_at=step.event.occurred_at,
         schema_version=REPLAY_ARTIFACT_SCHEMA_V2,
-        replay_step=experiment_pb2.ReplayStepArtifact(
-            ordinal=step.ordinal,
-            event=step.event,
-            intent=step.intent,
-            snapshot=step.snapshot,
-            recorded_decision=step.recorded_decision,
-            evaluation_context=evaluation_context,
-        ),
+        canonicalizer=REPLAY_STEP_CANONICALIZER_V2,
+        replay_step=encoded_step,
     )
 
 
@@ -238,10 +251,13 @@ def replay_step_digest(
     event = step.event.SerializeToString(deterministic=True)
     intent = step.intent.SerializeToString(deterministic=True)
     snapshot = step.snapshot.SerializeToString(deterministic=True)
-    recorded = (
-        step.recorded_decision.SerializeToString(deterministic=True)
-        if step.HasField("recorded_decision")
-        else b""
+    recorded = step.recorded_decision.SerializeToString(deterministic=True)
+    recorded_input = (
+        b"\x01" + recorded
+        if schema_version == REPLAY_ARTIFACT_SCHEMA_V2 and step.HasField("recorded_decision")
+        else b"\x00"
+        if schema_version == REPLAY_ARTIFACT_SCHEMA_V2
+        else recorded
     )
     parts = [
         schema_version.encode(),
@@ -249,13 +265,32 @@ def replay_step_digest(
         event,
         intent,
         snapshot,
-        recorded,
+        recorded_input,
     ]
     if schema_version == REPLAY_ARTIFACT_SCHEMA_V2:
         parts.append(resolve_evaluation_context(step).SerializeToString(deterministic=True))
     elif schema_version != REPLAY_ARTIFACT_SCHEMA_V1:
         raise ReplayArtifactError("unsupported replay artifact schema")
     return _artifact_digest(parts)
+
+
+def _legacy_v2_replay_step_digest(step: ReplayArtifactStep) -> str:
+    """Digest emitted by v2 writers before message-presence authentication."""
+    return _artifact_digest(
+        [
+            REPLAY_ARTIFACT_SCHEMA_V2.encode(),
+            str(step.ordinal).encode(),
+            step.event.SerializeToString(deterministic=True),
+            step.intent.SerializeToString(deterministic=True),
+            step.snapshot.SerializeToString(deterministic=True),
+            (
+                step.recorded_decision.SerializeToString(deterministic=True)
+                if step.HasField("recorded_decision")
+                else b""
+            ),
+            resolve_evaluation_context(step).SerializeToString(deterministic=True),
+        ]
+    )
 
 
 def decode_replay_step_artifact(
@@ -275,13 +310,21 @@ def decode_replay_step_artifact(
         raise ReplayArtifactError("typed replay_step fields are incomplete")
     if not typed.HasField("snapshot"):
         raise ReplayArtifactError("typed replay_step snapshot is required")
+    if artifact.schema_version == REPLAY_ARTIFACT_SCHEMA_V2 and not typed.HasField(
+        "evaluation_context"
+    ):
+        raise ReplayArtifactError("v2 replay_step evaluation_context is required")
     event_wire = typed.event.SerializeToString(deterministic=True)
     intent_wire = typed.intent.SerializeToString(deterministic=True)
     snapshot_wire = typed.snapshot.SerializeToString(deterministic=True)
-    decision_wire = (
-        typed.recorded_decision.SerializeToString(deterministic=True)
-        if typed.HasField("recorded_decision")
-        else b""
+    decision_wire = typed.recorded_decision.SerializeToString(deterministic=True)
+    recorded_input = (
+        b"\x01" + decision_wire
+        if artifact.schema_version == REPLAY_ARTIFACT_SCHEMA_V2
+        and typed.HasField("recorded_decision")
+        else b"\x00"
+        if artifact.schema_version == REPLAY_ARTIFACT_SCHEMA_V2
+        else decision_wire
     )
     digest_parts = [
         artifact.schema_version.encode(),
@@ -289,16 +332,47 @@ def decode_replay_step_artifact(
         event_wire,
         intent_wire,
         snapshot_wire,
-        decision_wire,
+        recorded_input,
     ]
     if artifact.schema_version == REPLAY_ARTIFACT_SCHEMA_V2:
-        digest_parts.append(resolve_evaluation_context(typed).SerializeToString(deterministic=True))
+        digest_parts.append(typed.evaluation_context.SerializeToString(deterministic=True))
     expected_digest = _artifact_digest(digest_parts)
+    if artifact.schema_version == REPLAY_ARTIFACT_SCHEMA_V2:
+        if artifact.canonicalizer == REPLAY_STEP_CANONICALIZER_V2:
+            pass
+        elif not artifact.canonicalizer:
+            expected_digest = _legacy_v2_replay_step_digest(typed)
+        else:
+            raise ReplayArtifactError("unsupported replay step canonicalizer")
+    elif artifact.canonicalizer:
+        raise ReplayArtifactError("v1 replay step must not declare a canonicalizer")
     if artifact.digest != expected_digest:
         raise ReplayArtifactError("replay artifact digest mismatch")
     decoded = _clone_message(typed)
-    decoded.evaluation_context.CopyFrom(resolve_evaluation_context(typed))
+    if artifact.schema_version == REPLAY_ARTIFACT_SCHEMA_V1:
+        # EvaluationContext was added in v2 and is therefore not authenticated by a
+        # v1 digest. Always derive it from the durable v1 fields, even if a newer
+        # writer placed an unknown-to-v1 context in the payload.
+        decoded.ClearField("evaluation_context")
+        decoded.evaluation_context.CopyFrom(synthesize_evaluation_context(decoded))
     return decoded
+
+
+def replay_step_progress_digests(
+    artifact: experiment_pb2.ReplayArtifact,
+    step: ReplayArtifactStep,
+) -> frozenset[str]:
+    """Return stable and migration-compatible durable progress identities."""
+    accepted = {artifact.digest}
+    if artifact.schema_version == REPLAY_ARTIFACT_SCHEMA_V1:
+        # Two released readers persisted a derived v2 digest instead of the v1
+        # artifact identity. Accept both context synthesis generations while new
+        # writes use the authenticated, synthesis-independent artifact digest.
+        accepted.add(_legacy_v2_replay_step_digest(step))
+        legacy_step = _copy_message(step)
+        legacy_step.evaluation_context.CopyFrom(_synthesize_legacy_evaluation_context(step))
+        accepted.add(_legacy_v2_replay_step_digest(legacy_step))
+    return frozenset(accepted)
 
 
 def decode_replay_steps(replay: experiment_pb2.Replay) -> tuple[ReplayArtifactStep, ...]:

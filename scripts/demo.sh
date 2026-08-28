@@ -44,6 +44,7 @@ command -v uv >/dev/null 2>&1 || { printf '%s\n' 'error: uv is required' >&2; ex
 go build -trimpath -o "${DEMO_DIR}/tgsrl-scheduler" ./scheduler-go/cmd/scheduler
 "${DEMO_DIR}/tgsrl-scheduler" \
   -listen "${SCHEDULER_ADDRESS}" \
+  -state-dir "${DEMO_DIR}/scheduler-state" \
   -fallback noop >"${SCHEDULER_LOG}" 2>&1 &
 scheduler_pid=$!
 

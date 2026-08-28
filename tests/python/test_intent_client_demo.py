@@ -8,6 +8,7 @@ from typing import Any
 
 import grpc
 import pytest
+from google.protobuf import timestamp_pb2
 from tgsrl.v1 import (
     execution_pb2,
     resource_pb2,
@@ -28,6 +29,12 @@ from tgsrl_runtime.intent_coordinator import IntentCoordinator
 from tgsrl_runtime.scheduler_client import SchedulerClient
 
 from adapters import GRPOAdapter, PartialAsyncRolloutAdapter, build_execution_contract
+
+
+def _timestamp(seconds: int) -> timestamp_pb2.Timestamp:
+    value = timestamp_pb2.Timestamp()
+    value.FromDatetime(datetime(2025, 1, 1, 0, 0, seconds, tzinfo=UTC))
+    return value
 
 
 def _builder() -> IntentBuilder:
@@ -415,10 +422,25 @@ async def test_schedule_forwards_optional_evaluation_context() -> None:
     snapshot = resource_pb2.ClusterSnapshot(snapshot_id="snapshot-1", revision=17)
     context = scheduling_pb2.EvaluationContext(
         tick_kind=scheduling_pb2.TICK_KIND_FAST,
+        evaluation_time=_timestamp(5),
         decision_sequence=23,
         cause="replay-step",
         observed_revision=17,
+        contract_observation=execution_pb2.ContractObservation(
+            observed_at=_timestamp(4),
+            policy_lag=2,
+            safe_point=True,
+            source="recorded-event",
+            event_id="event-1",
+            typed_facts=[
+                semantic_pb2.SemanticField(
+                    key="sample.policy_lag",
+                    value=semantic_pb2.SemanticValue(uint64_value=2),
+                )
+            ],
+        ),
     )
+    expected_context = context.SerializeToString(deterministic=True)
 
     decision = await client.schedule(intent, snapshot, evaluation_context=context)
 
@@ -426,8 +448,23 @@ async def test_schedule_forwards_optional_evaluation_context() -> None:
     request = stub.schedule_requests[0]
     assert request.intent.execution_id == intent.execution_id
     assert request.snapshot.snapshot_id == "snapshot-1"
-    assert request.evaluation_context == context
-    assert decision.evaluation_context == context
+    assert request.evaluation_context.SerializeToString(deterministic=True) == expected_context
+    assert decision.evaluation_context.SerializeToString(deterministic=True) == expected_context
+    assert context.SerializeToString(deterministic=True) == expected_context
+
+
+@pytest.mark.asyncio
+async def test_schedule_omits_absent_evaluation_context() -> None:
+    stub = _Stub()
+    client = SchedulerClient(stub=stub)
+
+    await client.schedule(
+        _build_intent(_builder()),
+        resource_pb2.ClusterSnapshot(snapshot_id="snapshot-1", revision=17),
+    )
+
+    assert len(stub.schedule_requests) == 1
+    assert not stub.schedule_requests[0].HasField("evaluation_context")
 
 
 class _ReconnectStub:
@@ -498,7 +535,7 @@ def test_demo_fixture_is_generated_proto_and_byte_stable() -> None:
     assert set(fixture) == {"execution_contract", "scheduling_intent", "trace"}
     rendered = render_demo_fixture(23)
     assert hashlib.sha256(rendered.encode()).hexdigest() == (
-        "d013a1f7de596113fa8e5858647ae79d14c73cea8a4d0502c7fb7bc1edfd5f5f"
+        "456265b178b5e48049793ddb963179709e58eeff61c895595fd34b502e0fe3e3"
     )
     assert '"data_kind": "synthetic"' in rendered
 
@@ -510,6 +547,22 @@ def test_live_fixture_uses_captured_current_time_and_mock_capability_evidence() 
     assert isinstance(intent, scheduling_pb2.SchedulingIntent)
     assert intent.submitted_at.ToDatetime(tzinfo=UTC) == now
     assert intent.valid_until.ToDatetime(tzinfo=UTC) == now + timedelta(seconds=60)
+    observation = intent.contract_observation
+    assert observation.observed_at.ToDatetime(tzinfo=UTC) == now
+    assert observation.source == "synthetic-demo"
+    assert observation.event_id.endswith("-intent-decode")
+    assert observation.phase_id == intent.stage_id == "decode"
+    assert observation.policy_version == intent.policy_version == "policy-1"
+    assert observation.policy_lag == 1
+    assert observation.accepted_samples == observation.expected_samples == 8
+    assert observation.buffer_level == 0
+    assert observation.safe_point is True
+    typed_facts = {field.key: field.value for field in observation.typed_facts}
+    assert typed_facts["sample.policy_lag"].uint64_value == observation.policy_lag
+    assert typed_facts["group.accepted_samples"].uint64_value == observation.accepted_samples
+    assert typed_facts["group.expected_samples"].uint64_value == observation.expected_samples
+    assert typed_facts["buffer.level.current"].uint64_value == observation.buffer_level
+    assert typed_facts["runtime.safe_point"].bool_value is observation.safe_point
     trace = fixture["trace"]
     assert isinstance(trace, trace_pb2.TraceEventBatch)
     assert trace.events[0].occurred_at.ToDatetime(tzinfo=UTC) >= now
@@ -579,6 +632,12 @@ async def test_run_live_demo_publishes_current_compatible_fixture(
 
     assert len(stub.published) == 1
     assert stub.published[0].valid_until.ToDatetime(tzinfo=UTC) > datetime.now(tz=UTC)
+    published_observation = stub.published[0].contract_observation
+    assert published_observation.phase_id == stub.published[0].stage_id == "decode"
+    assert published_observation.policy_version == stub.published[0].policy_version == "policy-1"
+    assert published_observation.accepted_samples == 8
+    assert published_observation.expected_samples == 8
+    assert published_observation.safe_point is True
     publish_response = result["publish_response"]
     decision = result["decision"]
     assert isinstance(publish_response, scheduling_pb2.PublishIntentResponse)

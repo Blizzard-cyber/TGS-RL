@@ -24,6 +24,8 @@ from tgsrl_runtime.experiments import ExperimentCoordinator
 from tgsrl_runtime.replay import (
     DECISION_CANONICALIZER_V1,
     REPLAY_ARTIFACT_SCHEMA_V1,
+    REPLAY_ARTIFACT_SCHEMA_V2,
+    REPLAY_STEP_CANONICALIZER_V2,
     DecisionCanonicalizer,
     DecisionStatus,
     ReplayArtifactStep,
@@ -342,7 +344,12 @@ def _artifact_wire(steps: Iterable[ReplayArtifactStep]) -> list[tuple[bytes, ...
             _wire(step.event),
             _wire(step.intent),
             _wire(step.snapshot),
-            _wire(step.recorded_decision) if step.recorded_decision is not None else b"",
+            (b"\x01" + _wire(step.recorded_decision))
+            if step.HasField("recorded_decision")
+            else b"\x00",
+            (b"\x01" + _wire(step.evaluation_context))
+            if step.HasField("evaluation_context")
+            else b"\x00",
         )
         for step in steps
     ]
@@ -357,10 +364,85 @@ def test_replay_step_artifacts_round_trip_and_reject_tampering(
         artifacts=[encode_replay_step_artifact("persisted-replay", step) for step in steps],
     )
     assert _artifact_wire(decode_replay_steps(replay)) == _artifact_wire(steps)
+    assert all(artifact.schema_version.endswith(".v2") for artifact in replay.artifacts)
 
     replay.artifacts[0].replay_step.intent.stage_id = "tampered"
     with pytest.raises(ReplayError, match="digest"):
         decode_replay_steps(replay)
+
+
+def test_v2_replay_step_preserves_absent_recorded_decision() -> None:
+    step = ReplayArtifactStep(
+        ordinal=1,
+        event=trace_pb2.TraceEvent(event_id="event-1", occurred_at=_timestamp(1)),
+        intent=scheduling_pb2.SchedulingIntent(execution_id="execution-1", deterministic_seed=7),
+        snapshot=resource_pb2.ClusterSnapshot(snapshot_id="snapshot-1", revision=1),
+        evaluation_context=scheduling_pb2.EvaluationContext(
+            tick_kind=scheduling_pb2.TICK_KIND_FAST,
+            evaluation_time=_timestamp(1),
+            decision_sequence=1,
+            cause="recorded-step",
+            observed_revision=1,
+        ),
+    )
+
+    first = encode_replay_step_artifact("replay-1", step)
+    second = encode_replay_step_artifact("replay-1", step)
+    decoded = decode_replay_steps(experiment_pb2.Replay(replay_id="replay-1", artifacts=[first]))[0]
+
+    assert not first.replay_step.HasField("recorded_decision")
+    assert not decoded.HasField("recorded_decision")
+    assert decoded.evaluation_context == step.evaluation_context
+    assert first.digest == second.digest
+    assert _wire(first) == _wire(second)
+
+    present_empty = _clone_message(step)
+    present_empty.recorded_decision.SetInParent()
+    present_artifact = encode_replay_step_artifact("replay-1", present_empty)
+    assert present_artifact.digest != first.digest
+    first.replay_step.recorded_decision.SetInParent()
+    with pytest.raises(ReplayError, match="digest"):
+        decode_replay_steps(experiment_pb2.Replay(replay_id="replay-1", artifacts=[first]))
+
+
+def test_decode_replay_steps_accepts_only_explicit_legacy_v2_digest_mode() -> None:
+    step = ReplayArtifactStep(
+        ordinal=1,
+        event=trace_pb2.TraceEvent(event_id="event-1", occurred_at=_timestamp(1)),
+        intent=scheduling_pb2.SchedulingIntent(execution_id="execution-1", deterministic_seed=7),
+        snapshot=resource_pb2.ClusterSnapshot(snapshot_id="snapshot-1", revision=1),
+        evaluation_context=scheduling_pb2.EvaluationContext(
+            tick_kind=scheduling_pb2.TICK_KIND_FAST,
+            evaluation_time=_timestamp(1),
+            decision_sequence=1,
+        ),
+    )
+    legacy_digest = _artifact_digest(
+        [
+            REPLAY_ARTIFACT_SCHEMA_V2.encode(),
+            b"1",
+            _wire(step.event),
+            _wire(step.intent),
+            _wire(step.snapshot),
+            b"",
+            _wire(step.evaluation_context),
+        ]
+    )
+    artifact = experiment_pb2.ReplayArtifact(
+        replay_id="replay-1",
+        kind="scheduler-replay-step",
+        schema_version=REPLAY_ARTIFACT_SCHEMA_V2,
+        digest=legacy_digest,
+        replay_step=step,
+    )
+    assert (
+        decode_replay_steps(experiment_pb2.Replay(replay_id="replay-1", artifacts=[artifact]))[0]
+        == step
+    )
+
+    artifact.canonicalizer = REPLAY_STEP_CANONICALIZER_V2
+    with pytest.raises(ReplayError, match="digest"):
+        decode_replay_steps(experiment_pb2.Replay(replay_id="replay-1", artifacts=[artifact]))
 
 
 def test_replay_step_digest_changes_with_context_and_is_stable_for_permuted_evidence() -> None:
@@ -390,6 +472,32 @@ def test_replay_step_digest_changes_with_context_and_is_stable_for_permuted_evid
 
     assert replay_step_digest(reordered) != baseline
     assert replay_step_digest(changed) != baseline
+
+
+def test_replay_step_digest_covers_semantic_evaluation_evidence() -> None:
+    step = _steps(
+        lambda event_id, **_: trace_pb2.TraceEvent(event_id=event_id, occurred_at=_timestamp(1)),
+        count=1,
+    )[0]
+    canonicalizer = DecisionCanonicalizer()
+    baseline = canonicalizer.digest(step.recorded_decision)
+
+    for field_name in ("observations", "evidence", "missing_keys"):
+        changed = _clone_message(step.recorded_decision)
+        evaluation = changed.contract_evaluations[0]
+        if field_name == "observations":
+            evaluation.observations[0].value.uint64_value += 1
+        elif field_name == "evidence":
+            evaluation.evidence[0].value.uint64_value += 1
+        else:
+            evaluation.missing_keys[0] = "contract.changed"
+        assert canonicalizer.digest(changed) != baseline
+
+    truncated = _clone_message(step.recorded_decision)
+    truncated.total_candidate_count = 3
+    truncated.total_rejected_candidate_count = 2
+    truncated.evidence_truncated = True
+    assert canonicalizer.digest(truncated) != baseline
 
 
 def test_decision_canonicalizer_ignores_recursive_volatile_identity_and_time() -> None:
@@ -495,10 +603,8 @@ async def test_runner_schedules_every_exact_artifact_in_ordinal_order_and_compar
     ]
     contexts = [cast(scheduling_pb2.EvaluationContext, call[2]) for call in scheduler.calls]
     assert all(context is not None for context in contexts)
-    assert [context.cause for context in contexts] == [
-        "recorded-step",
-        "recorded-step",
-        "recorded-step",
+    assert [_wire(context) for context in contexts] == [
+        _wire(step.evaluation_context) for step in steps
     ]
     assert [result.ordinal for result in results] == [1, 2, 3]
     assert [result.event_id for result in results] == [
@@ -517,6 +623,47 @@ async def test_runner_schedules_every_exact_artifact_in_ordinal_order_and_compar
     assert results[0].decision.score == 1.0
     assert runner.remaining == 0
     assert await runner.step() is None
+
+
+@pytest.mark.asyncio
+async def test_runner_passes_explicit_context_unchanged_without_enrichment(
+    event_factory: EventFactory,
+) -> None:
+    step = _steps(event_factory, count=1)[0]
+    step.event.contract_observation.CopyFrom(
+        execution_pb2.ContractObservation(event_id="event-observation")
+    )
+    step.evaluation_context.ClearField("contract_observation")
+    expected_context = _wire(step.evaluation_context)
+    scheduler = RecordingScheduler([_decision(1)])
+
+    await SchedulerReplayRunner([step], scheduler=scheduler, seed=7).run()
+
+    passed = cast(scheduling_pb2.EvaluationContext, scheduler.calls[0][2])
+    assert _wire(passed) == expected_context
+    assert not passed.HasField("contract_observation")
+    assert _wire(step.evaluation_context) == expected_context
+
+
+@pytest.mark.asyncio
+async def test_same_input_replay_has_stable_context_decision_bits_and_digest(
+    event_factory: EventFactory,
+) -> None:
+    step = _steps(event_factory, count=1)[0]
+
+    async def execute() -> tuple[bytes, bytes, str, str]:
+        scheduler = RecordingScheduler([_decision(1, volatile="stable")])
+        runner = SchedulerReplayRunner([step], scheduler=scheduler, seed=7)
+        result = (await runner.run())[0]
+        context = cast(scheduling_pb2.EvaluationContext, scheduler.calls[0][2])
+        return (
+            _wire(context),
+            _wire(result.decision),
+            result.comparison.actual_digest,
+            runner.checkpoint().decision_digest,
+        )
+
+    assert await execute() == await execute()
 
 
 @pytest.mark.asyncio
@@ -703,6 +850,41 @@ def test_decode_replay_steps_synthesizes_legacy_context_and_accepts_v1_digest(
     assert decoded.evaluation_context.evaluation_time == step.recorded_decision.decided_at
     assert decoded.evaluation_context.compatibility_defaults_applied
     assert decoded.evaluation_context.contract_observation.event_id == step.event.event_id
+
+
+@pytest.mark.asyncio
+async def test_legacy_context_without_recorded_decision_uses_durable_time_and_ordinal(
+    event_factory: EventFactory,
+) -> None:
+    step = _steps(event_factory, count=1, recorded_decisions=[None])[0]
+    step.ClearField("evaluation_context")
+    legacy = experiment_pb2.ReplayArtifact(
+        artifact_id="replay-1:step:1:legacy-no-decision",
+        replay_id="replay-1",
+        kind="scheduler-replay-step",
+        uri="inline://replays/replay-1/steps/1",
+        digest=replay_step_digest(step, schema_version=REPLAY_ARTIFACT_SCHEMA_V1),
+        observed_at=step.event.occurred_at,
+        schema_version=REPLAY_ARTIFACT_SCHEMA_V1,
+        replay_step=step,
+    )
+    decoded = decode_replay_steps(experiment_pb2.Replay(replay_id="replay-1", artifacts=[legacy]))[
+        0
+    ]
+
+    first = RecordingScheduler([_decision(1, volatile="stable")])
+    second = RecordingScheduler([_decision(1, volatile="stable")])
+    first_result = await SchedulerReplayRunner([decoded], scheduler=first, seed=7).run()
+    second_result = await SchedulerReplayRunner([decoded], scheduler=second, seed=7).run()
+    first_context = cast(scheduling_pb2.EvaluationContext, first.calls[0][2])
+    second_context = cast(scheduling_pb2.EvaluationContext, second.calls[0][2])
+
+    assert _wire(first_context) == _wire(second_context)
+    assert first_context.evaluation_time == step.event.occurred_at
+    assert first_context.decision_sequence == step.ordinal
+    assert first_context.compatibility_defaults_applied
+    assert _wire(first_result[0].decision) == _wire(second_result[0].decision)
+    assert first_result[0].comparison.actual_digest == second_result[0].comparison.actual_digest
 
 
 def test_decode_decision_artifacts_accepts_v1_canonicalizer() -> None:

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import sqlite3
 from collections.abc import Awaitable, Callable, Sequence
 from datetime import UTC, datetime
@@ -31,10 +32,17 @@ from tgsrl_runtime.executor import FakeProcessDriver
 from tgsrl_runtime.job_control_client import JobControlClient
 from tgsrl_runtime.operator_client import OperatorClient
 from tgsrl_runtime.persistence_adapter import NullPersistenceHook, SQLitePersistenceHook
-from tgsrl_runtime.replay import ReplayArtifactStep, encode_replay_step_artifact
+from tgsrl_runtime.replay import (
+    REPLAY_ARTIFACT_SCHEMA_V1,
+    ReplayArtifactStep,
+    encode_replay_step_artifact,
+    replay_start_key_digest,
+    replay_step_digest,
+)
 from tgsrl_runtime.runtime_app import _parser, build_runtime_supervisor
 from tgsrl_runtime.runtime_errors import RuntimeLifecycleError
 from tgsrl_runtime.runtime_transport import ExperimentServicer, RuntimeControlServicer
+from tgsrl_runtime.storage import ReplayScheduleStep
 from tgsrl_runtime.supervisor import RuntimeSupervisor
 
 from adapters import (
@@ -48,6 +56,7 @@ from adapters import (
 class _SchedulerStub:
     def __init__(self) -> None:
         self.published: list[scheduling_pb2.SchedulingIntent] = []
+        self.schedule_contexts: list[scheduling_pb2.EvaluationContext] = []
 
     async def publish_intent(self, intent: scheduling_pb2.SchedulingIntent) -> None:
         self.published.append(intent)
@@ -56,8 +65,13 @@ class _SchedulerStub:
         self,
         intent: scheduling_pb2.SchedulingIntent,
         snapshot: resource_pb2.ClusterSnapshot,
+        evaluation_context: scheduling_pb2.EvaluationContext | None = None,
     ) -> scheduling_pb2.DecisionRecord:
-        return scheduling_pb2.DecisionRecord(
+        context = scheduling_pb2.EvaluationContext()
+        if evaluation_context is not None:
+            context.CopyFrom(evaluation_context)
+            self.schedule_contexts.append(context)
+        decision = scheduling_pb2.DecisionRecord(
             decision_id=f"replay:{intent.stage_id}",
             execution_id=intent.execution_id,
             stage_id=intent.stage_id,
@@ -67,6 +81,9 @@ class _SchedulerStub:
             deterministic_seed=intent.deterministic_seed,
             data_kind=trace_pb2.DATA_KIND_REPLAY,
         )
+        if evaluation_context is not None:
+            decision.evaluation_context.CopyFrom(evaluation_context)
+        return decision
 
 
 class _PartialFailScheduler(_SchedulerStub):
@@ -1049,6 +1066,10 @@ async def test_runtime_and_experiment_servicers_share_supervisor_state() -> None
             _context(),
         )
     ).replay
+    assert len(scheduler.schedule_contexts) == 1
+    assert scheduler.schedule_contexts[0].evaluation_time == event.occurred_at
+    assert scheduler.schedule_contexts[0].decision_sequence == step.ordinal
+    assert scheduler.schedule_contexts[0].compatibility_defaults_applied
     assert replay.state == experiment_pb2.REPLAY_STATE_COMPLETED
     assert replay.applied_events == 1
     assert replay.emitted_decisions == 1
@@ -1154,7 +1175,8 @@ async def test_replay_start_requires_scheduler_preview_capability() -> None:
 async def test_replay_artifacts_and_decisions_survive_sqlite_restart(tmp_path: Path) -> None:
     state_db = tmp_path / "replay-state.sqlite3"
     persistence = SQLitePersistenceHook(str(state_db))
-    supervisor = RuntimeSupervisor(scheduler_client=_SchedulerStub(), persistence=persistence)
+    scheduler = _SchedulerStub()
+    supervisor = RuntimeSupervisor(scheduler_client=scheduler, persistence=persistence)
     supervisor.create_replay(
         experiment_pb2.CreateReplayRequest(
             replay=experiment_pb2.Replay(
@@ -1210,6 +1232,9 @@ async def test_replay_artifacts_and_decisions_survive_sqlite_restart(tmp_path: P
             idempotency_key="durable-replay-start",
         )
     )
+    assert len(scheduler.schedule_contexts) == 1
+    assert scheduler.schedule_contexts[0].evaluation_time == event.occurred_at
+    assert scheduler.schedule_contexts[0].decision_sequence == step.ordinal
     persistence.close()
 
     restarted_persistence = SQLitePersistenceHook(str(state_db))
@@ -1237,11 +1262,12 @@ async def test_replay_start_resumes_only_unfinished_steps_after_sqlite_restart(
             self,
             intent: scheduling_pb2.SchedulingIntent,
             snapshot: resource_pb2.ClusterSnapshot,
+            evaluation_context: scheduling_pb2.EvaluationContext | None = None,
         ) -> scheduling_pb2.DecisionRecord:
             self.calls.append(intent.stage_id)
             if self.fail_call == len(self.calls):
                 raise RuntimeError("replay preview interrupted")
-            return await super().schedule(intent, snapshot)
+            return await super().schedule(intent, snapshot, evaluation_context=evaluation_context)
 
     def replay_step(ordinal: int) -> ReplayArtifactStep:
         occurred_at = to_timestamp(datetime(2025, 1, 1, 0, 0, ordinal, tzinfo=UTC))
@@ -1316,11 +1342,130 @@ async def test_replay_start_resumes_only_unfinished_steps_after_sqlite_restart(
     completed = await resumed.apply_replay_command(request)
 
     assert resumed_scheduler.calls == ["stage-2"]
+    assert len(resumed_scheduler.schedule_contexts) == 1
+    assert resumed_scheduler.schedule_contexts[0].decision_sequence == 2
+    assert resumed_scheduler.schedule_contexts[0].evaluation_time == to_timestamp(
+        datetime(2025, 1, 1, 0, 0, 2, tzinfo=UTC)
+    )
     assert completed.replay.state == experiment_pb2.REPLAY_STATE_COMPLETED
     assert completed.replay.applied_events == 2
     repeated = await resumed.apply_replay_command(request)
     assert repeated.replay == completed.replay
     assert resumed_scheduler.calls == ["stage-2"]
+    resumed_persistence.close()
+
+
+@pytest.mark.asyncio
+async def test_v1_partial_replay_progress_survives_context_synthesis_upgrade(
+    tmp_path: Path,
+) -> None:
+    state_db = tmp_path / "replay-v1-progress.sqlite3"
+    first = ReplayArtifactStep(
+        ordinal=1,
+        event=trace_pb2.TraceEvent(
+            event_id="event-1",
+            job_id="job-1",
+            execution_id="execution-1",
+            phase_id="stage-1",
+            stage_id="stage-1",
+            occurred_at=to_timestamp(datetime(2025, 1, 1, tzinfo=UTC)),
+            event_type=trace_pb2.TRACE_EVENT_TYPE_PHASE_STARTED,
+            algorithm="grpo",
+            rollout_mode=trace_pb2.ROLLOUT_MODE_PARTIALLY_ASYNC,
+            policy_version="policy-1",
+            decision_id="recorded-1",
+        ),
+        intent=scheduling_pb2.SchedulingIntent(
+            execution_id="execution-1", stage_id="stage-1", deterministic_seed=7
+        ),
+        snapshot=resource_pb2.ClusterSnapshot(snapshot_id="snapshot-1", revision=1),
+    )
+    second = ReplayArtifactStep()
+    second.CopyFrom(first)
+    second.ordinal = 2
+    second.event.event_id = "event-2"
+    second.event.execution_id = "execution-2"
+    second.event.phase_id = "stage-2"
+    second.event.stage_id = "stage-2"
+    second.event.decision_id = "recorded-2"
+    second.intent.execution_id = "execution-2"
+    second.intent.stage_id = "stage-2"
+    legacy_artifacts = []
+    for step in (first, second):
+        legacy_artifacts.append(
+            experiment_pb2.ReplayArtifact(
+                replay_id="v1-partial",
+                kind="scheduler-replay-step",
+                schema_version=REPLAY_ARTIFACT_SCHEMA_V1,
+                digest=replay_step_digest(step, schema_version=REPLAY_ARTIFACT_SCHEMA_V1),
+                replay_step=step,
+            )
+        )
+
+    persistence = SQLitePersistenceHook(str(state_db))
+    failing = _SchedulerStub()
+    supervisor = RuntimeSupervisor(scheduler_client=failing, persistence=persistence)
+    replay = supervisor.create_replay(
+        experiment_pb2.CreateReplayRequest(
+            replay=experiment_pb2.Replay(
+                replay_id="v1-partial",
+                run_id="run-1",
+                trace_id="trace-1",
+                speed=1.0,
+                seed=7,
+                artifacts=legacy_artifacts,
+            )
+        )
+    ).replay
+    old_context = scheduling_pb2.EvaluationContext(
+        tick_kind=scheduling_pb2.TICK_KIND_FAST,
+        decision_sequence=0,
+        cause="replay-compat",
+        observed_revision=first.snapshot.revision,
+        compatibility_defaults_applied=True,
+    )
+    old_step = ReplayArtifactStep()
+    old_step.CopyFrom(first)
+    old_step.evaluation_context.CopyFrom(old_context)
+    old_progress_hasher = hashlib.sha256()
+    for part in (
+        b"tgsrl.replay-artifact.v2",
+        b"1",
+        old_step.event.SerializeToString(deterministic=True),
+        old_step.intent.SerializeToString(deterministic=True),
+        old_step.snapshot.SerializeToString(deterministic=True),
+        b"",
+        old_step.evaluation_context.SerializeToString(deterministic=True),
+    ):
+        old_progress_hasher.update(len(part).to_bytes(8, "big"))
+        old_progress_hasher.update(part)
+    old_progress_digest = old_progress_hasher.hexdigest()
+    persistence.record_replay_schedule_step(
+        ReplayScheduleStep(
+            replay_id=replay.replay_id,
+            start_key_digest=replay_start_key_digest("start-v1"),
+            ordinal=1,
+            step_digest=old_progress_digest,
+            decision=scheduling_pb2.DecisionRecord(decision_id="old-decision"),
+            completed_at=datetime(2025, 1, 1, tzinfo=UTC),
+        )
+    )
+    persistence.close()
+
+    resumed_scheduler = _SchedulerStub()
+    resumed_persistence = SQLitePersistenceHook(str(state_db))
+    resumed = RuntimeSupervisor(scheduler_client=resumed_scheduler, persistence=resumed_persistence)
+    completed = await resumed.apply_replay_command(
+        experiment_pb2.ApplyReplayCommandRequest(
+            replay_id="v1-partial",
+            command=experiment_pb2.REPLAY_COMMAND_TYPE_START,
+            idempotency_key="start-v1",
+        )
+    )
+
+    assert completed.replay.state == experiment_pb2.REPLAY_STATE_COMPLETED
+    assert [context.decision_sequence for context in resumed_scheduler.schedule_contexts] == [2]
+    assert resumed_scheduler.schedule_contexts[0].evaluation_time == second.event.occurred_at
     resumed_persistence.close()
 
 

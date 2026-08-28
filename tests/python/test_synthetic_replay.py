@@ -87,9 +87,11 @@ def test_replay_pause_step_checkpoint_and_immutable_input(event_factory: EventFa
     assert first is not None and first.event_id == "a"
     checkpoint = replay.checkpoint()
     replay.resume()
-    assert replay.next_event().event_id == "b"
+    second = replay.next_event()
+    assert second is not None and second.event_id == "b"
     replay.restore(checkpoint)
-    assert replay.paused and replay.step().event_id == "b"
+    restored = replay.step()
+    assert replay.paused and restored is not None and restored.event_id == "b"
     assert [event.SerializeToString(deterministic=True) for event in source] == source_wire
 
 
