@@ -39,12 +39,13 @@ type deliveryLedgerState struct {
 }
 
 type FileDeliveryRepository struct {
-	path string
-	mu   sync.Mutex
+	path          string
+	mu            sync.Mutex
+	syncDirectory func(string) error
 }
 
 func NewFileDeliveryRepository(path string) *FileDeliveryRepository {
-	return &FileDeliveryRepository{path: path}
+	return &FileDeliveryRepository{path: path, syncDirectory: syncLedgerDirectory}
 }
 
 func (r *FileDeliveryRepository) Load() (DeliveryRecord, error) {
@@ -143,11 +144,11 @@ func (r *FileDeliveryRepository) readStateLocked() (deliveryLedgerState, error) 
 		return deliveryLedgerState{}, err
 	}
 	if _, hasDelivery := fields["delivery"]; hasDelivery || fields["registrations"] != nil {
-		var state deliveryLedgerState
-		if err := json.Unmarshal(payload, &state); err != nil {
+		var persisted persistedDeliveryLedgerState
+		if err := json.Unmarshal(payload, &persisted); err != nil {
 			return deliveryLedgerState{}, err
 		}
-		return state, nil
+		return decodeDeliveryLedgerState(persisted)
 	}
 
 	// Files written before observation registrations were introduced contain
@@ -161,15 +162,22 @@ func (r *FileDeliveryRepository) readStateLocked() (deliveryLedgerState, error) 
 
 func (r *FileDeliveryRepository) writeStateLocked(state deliveryLedgerState) error {
 	if state.Delivery == nil && len(state.Registrations) == 0 {
-		if err := os.Remove(r.path); err != nil && !os.IsNotExist(err) {
+		if err := os.Remove(r.path); err != nil {
+			if os.IsNotExist(err) {
+				return nil
+			}
 			return err
 		}
-		return nil
+		return r.syncParentDirectory()
 	}
 	if err := os.MkdirAll(filepath.Dir(r.path), 0o755); err != nil {
 		return err
 	}
-	payload, err := json.Marshal(state)
+	persisted, err := encodeDeliveryLedgerState(state)
+	if err != nil {
+		return err
+	}
+	payload, err := json.Marshal(persisted)
 	if err != nil {
 		return err
 	}
@@ -192,7 +200,19 @@ func (r *FileDeliveryRepository) writeStateLocked(state deliveryLedgerState) err
 	if err := os.Rename(tmp, r.path); err != nil {
 		return fmt.Errorf("rename delivery file: %w", err)
 	}
-	directory, err := os.Open(filepath.Dir(r.path))
+	return r.syncParentDirectory()
+}
+
+func (r *FileDeliveryRepository) syncParentDirectory() error {
+	syncDirectory := r.syncDirectory
+	if syncDirectory == nil {
+		syncDirectory = syncLedgerDirectory
+	}
+	return syncDirectory(filepath.Dir(r.path))
+}
+
+func syncLedgerDirectory(path string) error {
+	directory, err := os.Open(path)
 	if err != nil {
 		return err
 	}

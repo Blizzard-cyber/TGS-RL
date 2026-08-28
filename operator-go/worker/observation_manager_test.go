@@ -126,6 +126,32 @@ func TestObservationManagerPublishesInBackgroundAndReconnects(t *testing.T) {
 	}
 }
 
+func TestObservationManagerPublishesFromPersistedSemanticRegistration(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "delivery.json")
+	registration := semanticRegistrationForLedgerTest()
+	if err := NewFileDeliveryRepository(path).SaveRegistration(registration); err != nil {
+		t.Fatal(err)
+	}
+	publisher := &fakePublisher{}
+	manager, err := NewObservationManager(&scriptedObserver{snapshots: []*statuswatch.Snapshot{{
+		ObservedGeneration:      decisionGeneration(registration.Decision),
+		WorkloadAdmitted:        true,
+		ResourceClaimsAllocated: true,
+	}}}, publisher, NewFileDeliveryRepository(path))
+	if err != nil {
+		t.Fatal(err)
+	}
+	done, cancel := startObservationManager(t, manager)
+	publisher.waitForCount(t, len(registration.Decision.GetSelectedPlan().GetBindings()), 2*time.Second)
+	stopObservationManager(t, cancel, done)
+
+	for _, event := range publisher.snapshot() {
+		if event.GetDecisionId() != registration.Decision.GetDecisionId() || event.GetPlanId() != registration.Decision.GetSelectedPlan().GetPlanId() {
+			t.Fatalf("published event lost persisted causality: %+v", event)
+		}
+	}
+}
+
 func TestObservationManagerRecoversDurableAndMaterializedRegistrations(t *testing.T) {
 	ledger := NewFileDeliveryRepository(filepath.Join(t.TempDir(), "delivery.json"))
 	durable := observationRegistration(decisionForSequence(9))
