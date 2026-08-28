@@ -1,0 +1,253 @@
+schema_version: "tgsrl.io/bom/v1alpha1"
+bom_id: "runtime"
+revision: 1
+status: "current"
+scope: "toolchain and dependency inventory for TGS-RL local development"
+
+pinning_policy:
+  floating_versions_allowed: false
+  immutable_image_digest_required_for_release: true
+  unknown_commit_or_digest_value: null
+  note: >-
+    A null commit or digest means it was not resolved in this baseline. It must
+    not be replaced with a guessed value.
+
+toolchain:
+  - name: "go-toolchain"
+    kind: "language-toolchain"
+    version: "1.23.0"
+    source: "https://go.dev"
+    source_commit: null
+    artifact_digest: null
+    license_spdx: "BSD-3-Clause"
+    status: "integrated"
+    usage: "Go scheduler build and tests"
+    evidence: "go.mod"
+
+  - name: "python"
+    kind: "language-runtime"
+    version: "3.12.14"
+    source: "https://www.python.org"
+    source_commit: null
+    artifact_digest: null
+    license_spdx: "PSF-2.0"
+    status: "integrated"
+    usage: "Selected CI and Compose runtime; project compatibility floor is 3.12"
+    evidence: "pyproject.toml and .github/workflows/ci.yaml"
+
+  - name: "uv"
+    kind: "package-manager"
+    version: "0.11.30"
+    source: "https://github.com/astral-sh/uv"
+    source_commit: "4cb3d0366c9b30c0f6f1517e946121b4c3879034"
+    artifact_digest: null
+    license_spdx: "Apache-2.0 OR MIT"
+    status: "integrated"
+    usage: "Locked Python dependency installation and task execution"
+    evidence: "uv.lock and .github/workflows/ci.yaml"
+
+  - name: "buf-cli"
+    kind: "build-tool"
+    version: "1.47.2"
+    source: "https://github.com/bufbuild/buf"
+    source_commit: null
+    artifact_digest: null
+    license_spdx: "Apache-2.0"
+    status: "integrated"
+    usage: "Protobuf linting and generation bootstrap"
+    evidence: "scripts/generate-proto.sh"
+
+  - name: "protoc-gen-go"
+    kind: "code-generator"
+    version: "1.36.5"
+    source: "https://buf.build/protocolbuffers/go"
+    source_commit: null
+    artifact_digest: null
+    license_spdx: "BSD-3-Clause"
+    status: "integrated"
+    usage: "Go protobuf generation through the Buf remote plugin"
+    evidence: "buf.gen.yaml"
+
+  - name: "protoc-gen-go-grpc"
+    kind: "code-generator"
+    version: "1.5.1"
+    source: "https://buf.build/grpc/go"
+    source_commit: null
+    artifact_digest: null
+    license_spdx: "Apache-2.0"
+    status: "integrated"
+    usage: "Go gRPC generation through the Buf remote plugin"
+    evidence: "buf.gen.yaml"
+
+  - name: "protobuf-python-generator"
+    kind: "code-generator"
+    version: "29.3"
+    source: "https://buf.build/protocolbuffers/python"
+    source_commit: null
+    artifact_digest: null
+    license_spdx: "BSD-3-Clause"
+    status: "integrated"
+    usage: "Python protobuf generation through the Buf remote plugin"
+    evidence: "buf.gen.yaml"
+
+  - name: "grpc-python-generator"
+    kind: "code-generator"
+    version: "1.70.0"
+    source: "https://buf.build/grpc/python"
+    source_commit: null
+    artifact_digest: null
+    license_spdx: "Apache-2.0"
+    status: "integrated"
+    usage: "Python gRPC generation through the Buf remote plugin"
+    evidence: "buf.gen.yaml"
+
+runtime_dependencies:
+  - name: "google.golang.org/protobuf"
+    ecosystem: "go"
+    version: "1.36.5"
+    source: "https://github.com/protocolbuffers/protobuf-go"
+    source_commit: null
+    artifact_digest: null
+    license_spdx: "BSD-3-Clause"
+    status: "integrated"
+    evidence: "go.mod and go.sum"
+  - name: "google.golang.org/grpc"
+    ecosystem: "go"
+    version: "1.71.0"
+    source: "https://github.com/grpc/grpc-go"
+    source_commit: null
+    artifact_digest: null
+    license_spdx: "Apache-2.0"
+    status: "integrated"
+    evidence: "go.mod and go.sum"
+  - name: "protobuf"
+    ecosystem: "python"
+    version: "5.29.6"
+    source: "https://github.com/protocolbuffers/protobuf"
+    source_commit: null
+    artifact_digest: null
+    license_spdx: "BSD-3-Clause"
+    status: "integrated"
+    evidence: "uv.lock"
+  - name: "grpcio"
+    ecosystem: "python"
+    version: "1.83.0"
+    source: "https://github.com/grpc/grpc"
+    source_commit: null
+    artifact_digest: null
+    license_spdx: "Apache-2.0"
+    status: "integrated"
+    evidence: "uv.lock"
+  - name: "hypothesis"
+    ecosystem: "python-dev"
+    version: "6.165.10"
+    source: "https://github.com/HypothesisWorks/hypothesis"
+    source_commit: null
+    artifact_digest: null
+    license_spdx: "MPL-2.0"
+    status: "integrated"
+    evidence: "uv.lock"
+  - name: "mypy"
+    ecosystem: "python-dev"
+    version: "1.20.2"
+    source: "https://github.com/python/mypy"
+    source_commit: null
+    artifact_digest: null
+    license_spdx: "MIT"
+    status: "integrated"
+    evidence: "uv.lock"
+  - name: "pytest"
+    ecosystem: "python-dev"
+    version: "8.4.2"
+    source: "https://github.com/pytest-dev/pytest"
+    source_commit: null
+    artifact_digest: null
+    license_spdx: "MIT"
+    status: "integrated"
+    evidence: "uv.lock"
+  - name: "pytest-asyncio"
+    ecosystem: "python-dev"
+    version: "0.26.0"
+    source: "https://github.com/pytest-dev/pytest-asyncio"
+    source_commit: null
+    artifact_digest: null
+    license_spdx: "Apache-2.0"
+    status: "integrated"
+    evidence: "uv.lock"
+  - name: "ruff"
+    ecosystem: "python-dev"
+    version: "0.16.4"
+    source: "https://github.com/astral-sh/ruff"
+    source_commit: null
+    artifact_digest: null
+    license_spdx: "MIT"
+    status: "integrated"
+    evidence: "uv.lock"
+  - name: "types-grpcio"
+    ecosystem: "python-dev"
+    version: "1.83.0.20260730"
+    source: "https://github.com/python/typeshed"
+    source_commit: null
+    artifact_digest: null
+    license_spdx: "Apache-2.0"
+    status: "integrated"
+    evidence: "uv.lock"
+  - name: "types-protobuf"
+    ecosystem: "python-dev"
+    version: "6.32.1.20260221"
+    source: "https://github.com/python/typeshed"
+    source_commit: null
+    artifact_digest: null
+    license_spdx: "Apache-2.0"
+    status: "integrated"
+    evidence: "uv.lock"
+
+development_images:
+  - name: "golang-compose-toolchain"
+    image: "docker.io/library/golang:1.23.0-bookworm"
+    image_digest: "sha256:32096e84705b30bb39cc9c65ef2896efacc4268203b7876049847763cefc934d"
+    license_spdx: null
+    license_status: "composite-image-sbom-pending"
+    status: "development-only"
+    evidence: "compose.yaml"
+  - name: "python-compose-runtime"
+    image: "docker.io/library/python:3.12.14-slim-bookworm"
+    image_digest: "sha256:0f5b26b9518d002b6173fd61daad821fa340635ebfec5bba471013f9ca114579"
+    license_spdx: null
+    license_status: "composite-image-sbom-pending"
+    status: "development-only"
+    evidence: "compose.yaml"
+  - name: "node-compose-console"
+    image: "docker.io/library/node:24.16.0-bookworm-slim"
+    image_digest: "sha256:2c87ef9bd3c6a3bd4b472b4bec2ce9d16354b0c574f736c476489d09f560a203"
+    license_spdx: null
+    license_status: "composite-image-sbom-pending"
+    status: "development-only"
+    evidence: "compose.yaml"
+  - name: "operator-distroless-runtime"
+    image: "gcr.io/distroless/static-debian12:nonroot"
+    image_digest: "sha256:afa5c872c891853ca7fcf1f12c3edb23f7eeef36189728842dd51042ff57f7ab"
+    license_spdx: null
+    license_status: "composite-image-sbom-pending"
+    status: "development-only"
+    evidence: "Dockerfile.operator"
+
+generated_sbom:
+  format: "SPDX-2.3-json-lite"
+  path: "compatibility/sbom/lockfiles.spdx.json"
+  generator: "scripts/generate-sbom.py"
+  inputs:
+    - "go.mod"
+    - "go.sum"
+    - "uv.lock"
+    - "console/package-lock.json"
+
+registered_patches: []
+patch_ledger: "upstream/patches.json"
+
+claims:
+  lockfiles_audited: true
+  sbom_generated: true
+  development_container_images_pinned: true
+  release_container_images_pinned: false
+  gpu_stack_integrated: false

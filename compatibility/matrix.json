@@ -1,0 +1,70 @@
+{
+  "combinations": [
+    {
+      "components": {
+        "execution_backend": "fake",
+        "framework": "fake",
+        "resource_provider": "mock",
+        "rollout_engine": "fake",
+        "trainer": "fake"
+      },
+      "evidence": [
+        "tests/python/test_adapters_runtime.py",
+        "scheduler-go/provider/compliance_test.go",
+        "tests/e2e/product_e2e.py"
+      ],
+      "id": "local-product-contract",
+      "missing_dependencies": [],
+      "required_dependencies": [],
+      "status": "verified",
+      "verification_scope": "contract, lifecycle, persistence, and local process integration"
+    },
+    {
+      "components": {
+        "execution_backend": "ray",
+        "framework": "verl",
+        "resource_provider": "nvidia",
+        "rollout_engine": "vllm",
+        "trainer": "pytorch"
+      },
+      "evidence": [
+        "adapters/frameworks/verl.py",
+        "adapters/execution/ray.py",
+        "adapters/trainers/pytorch.py",
+        "adapters/rollout_engines/vllm.py",
+        "scheduler-go/provider/nvidia/provider.go"
+      ],
+      "id": "verl-ray-pytorch-vllm-nvidia",
+      "missing_dependencies": ["nvidia", "pytorch", "ray", "verl", "vllm"],
+      "required_dependencies": ["verl", "ray", "pytorch", "vllm", "nvidia"],
+      "status": "unavailable",
+      "verification_scope": "adapter and provider boundaries declared; dependencies and hardware are not present in lockfiles"
+    },
+    {
+      "components": {
+        "execution_backend": "ray",
+        "framework": "openrlhf",
+        "resource_provider": "nvidia",
+        "rollout_engine": "sglang",
+        "trainer": "pytorch"
+      },
+      "evidence": [
+        "adapters/frameworks/openrlhf.py",
+        "adapters/execution/ray.py",
+        "adapters/trainers/pytorch.py",
+        "adapters/rollout_engines/sglang.py",
+        "scheduler-go/provider/nvidia/provider.go"
+      ],
+      "id": "openrlhf-ray-pytorch-sglang-nvidia",
+      "missing_dependencies": ["nvidia", "openrlhf", "pytorch", "ray", "sglang"],
+      "required_dependencies": ["openrlhf", "ray", "pytorch", "sglang", "nvidia"],
+      "status": "unavailable",
+      "verification_scope": "adapter and provider boundaries declared; dependencies and hardware are not present in lockfiles"
+    }
+  ],
+  "policy": {
+    "unavailable": "A declared product boundary whose external dependency is absent from committed lockfiles or whose hardware evidence is unavailable.",
+    "verified": "Executed by repository tests named in evidence; scope is limited to those tests."
+  },
+  "schema_version": "tgsrl.io/compatibility-matrix/v1alpha1"
+}

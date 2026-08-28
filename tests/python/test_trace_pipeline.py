@@ -1,0 +1,364 @@
+"""Trace aggregation and atomic ingestion contract tests."""
+
+from collections.abc import Callable
+from datetime import timedelta
+
+import pytest
+from tgsrl.v1 import trace_pb2
+from tgsrl_runtime.aggregation import TraceAggregator
+from tgsrl_runtime.trace_ingest import TraceIngestError, TraceIngestor
+
+EventFactory = Callable[..., trace_pb2.TraceEvent]
+
+
+def _event(
+    factory: EventFactory,
+    event_id: str,
+    *,
+    stage_id: str = "decode",
+    seconds: int = 1,
+    sequence: int = 1,
+    event_type: int = trace_pb2.TRACE_EVENT_TYPE_PHASE_STARTED,
+    execution_id: str = "execution-1",
+    trace_id: str = "trace-1",
+    run_id: str = "run-1",
+    data_kind: int = trace_pb2.DATA_KIND_REPLAY,
+    generation: int = 1,
+) -> trace_pb2.TraceEvent:
+    event = factory(
+        event_id,
+        seconds=seconds,
+        sequence=sequence,
+        phase_id=stage_id,
+        event_type=event_type,
+    )
+    event.execution_id = execution_id
+    event.stage_id = stage_id
+    event.run_id = run_id
+    event.trace_id = trace_id
+    event.data_kind = data_kind
+    event.generation = generation
+    return event
+
+
+def _wire(events: list[trace_pb2.TraceEvent]) -> list[bytes]:
+    return [event.SerializeToString(deterministic=True) for event in events]
+
+
+def test_aggregator_pairs_interleaved_micro_stages_by_concrete_identity(
+    event_factory: EventFactory,
+) -> None:
+    decode_start = _event(event_factory, "decode-start", sequence=1, seconds=1)
+    reward_start = _event(event_factory, "reward-start", stage_id="reward", sequence=2, seconds=2)
+    decode_sample = _event(
+        event_factory,
+        "decode-sample",
+        sequence=3,
+        seconds=3,
+        event_type=trace_pb2.TRACE_EVENT_TYPE_SAMPLE_PRODUCED,
+    )
+    reward_complete = _event(
+        event_factory,
+        "reward-complete",
+        stage_id="reward",
+        sequence=4,
+        seconds=5,
+        event_type=trace_pb2.TRACE_EVENT_TYPE_PHASE_COMPLETED,
+    )
+    decode_complete = _event(
+        event_factory,
+        "decode-complete",
+        sequence=5,
+        seconds=7,
+        event_type=trace_pb2.TRACE_EVENT_TYPE_PHASE_COMPLETED,
+    )
+    decode_start.buffer_level = 2
+    decode_sample.buffer_level = 9
+    decode_sample.safe_point = True
+    decode_sample.decision_id = "decision-2"
+    decode_complete.policy_version = "policy-2"
+
+    aggregates = TraceAggregator().aggregate_micro_stages(
+        [decode_complete, reward_start, decode_sample, decode_start, reward_complete]
+    )
+
+    assert [(item.key.stage_id, item.key.attempt) for item in aggregates] == [
+        ("decode", 1),
+        ("reward", 1),
+    ]
+    decode, reward = aggregates
+    assert decode.event_ids == ("decode-start", "decode-sample", "decode-complete")
+    assert decode.first_sequence == 1
+    assert decode.last_sequence == 5
+    assert decode.duration == timedelta(seconds=6)
+    assert decode.complete and not decode.clock_skew
+    assert decode.max_buffer_level == 9
+    assert decode.safe_point_count == 1
+    assert decode.decision_ids == ("decision-1", "decision-2")
+    assert decode.policy_versions == ("policy-1", "policy-2")
+    assert reward.event_ids == ("reward-start", "reward-complete")
+    assert reward.duration == timedelta(seconds=3)
+
+
+def test_aggregator_retains_orphans_and_restarted_attempts_as_incomplete(
+    event_factory: EventFactory,
+) -> None:
+    events = [
+        _event(
+            event_factory,
+            "orphan-complete",
+            sequence=1,
+            seconds=1,
+            event_type=trace_pb2.TRACE_EVENT_TYPE_PHASE_COMPLETED,
+        ),
+        _event(event_factory, "first-start", sequence=2, seconds=2),
+        _event(
+            event_factory,
+            "first-sample",
+            sequence=3,
+            seconds=3,
+            event_type=trace_pb2.TRACE_EVENT_TYPE_SAMPLE_PRODUCED,
+        ),
+        _event(event_factory, "restart", sequence=4, seconds=4),
+        _event(
+            event_factory,
+            "final-complete",
+            sequence=5,
+            seconds=6,
+            event_type=trace_pb2.TRACE_EVENT_TYPE_PHASE_COMPLETED,
+        ),
+    ]
+
+    aggregates = TraceAggregator().aggregate_micro_stages(reversed(events))
+
+    assert [item.key.attempt for item in aggregates] == [1, 2, 3]
+    assert [item.event_ids for item in aggregates] == [
+        ("orphan-complete",),
+        ("first-start", "first-sample"),
+        ("restart", "final-complete"),
+    ]
+    assert [item.complete for item in aggregates] == [False, False, True]
+    assert aggregates[0].started_at is None
+    assert aggregates[1].completed_at is None
+    assert aggregates[2].duration == timedelta(seconds=2)
+
+
+def test_aggregator_separates_generations_and_excludes_clock_skew_from_duration(
+    event_factory: EventFactory,
+) -> None:
+    generation_one = [
+        _event(event_factory, "g1-start", sequence=1, seconds=1, generation=1),
+        _event(
+            event_factory,
+            "g1-complete",
+            sequence=2,
+            seconds=5,
+            generation=1,
+            event_type=trace_pb2.TRACE_EVENT_TYPE_PHASE_COMPLETED,
+        ),
+    ]
+    generation_two = [
+        _event(event_factory, "g2-start", sequence=3, seconds=10, generation=2),
+        _event(
+            event_factory,
+            "g2-complete",
+            sequence=4,
+            seconds=8,
+            generation=2,
+            event_type=trace_pb2.TRACE_EVENT_TYPE_PHASE_COMPLETED,
+        ),
+    ]
+
+    summary = TraceAggregator().summarize([*generation_two, *generation_one])
+
+    assert [stage.key.generation for stage in summary.micro_stages] == [1, 2]
+    assert summary.micro_stages[0].duration == timedelta(seconds=4)
+    assert summary.micro_stages[1].duration is None
+    assert summary.micro_stages[1].clock_skew
+    assert summary.completed_micro_stage_count == 1
+    assert summary.incomplete_micro_stage_count == 1
+    assert summary.total_micro_stage_seconds == 4.0
+    metrics = {metric.name: metric.value for metric in TraceAggregator().to_metrics(summary)}
+    assert metrics["micro_stage_duration"] == 4.0
+    assert metrics["completed_micro_stage_count"] == 1.0
+
+
+def test_ingestor_orders_each_execution_causally_across_batches_and_clones(
+    event_factory: EventFactory,
+) -> None:
+    ingestor = TraceIngestor()
+    execution_b = _event(event_factory, "b-1", execution_id="execution-b", sequence=1, seconds=1)
+    execution_a_late = _event(
+        event_factory, "a-2", execution_id="execution-a", sequence=2, seconds=2
+    )
+    execution_a_early = _event(
+        event_factory, "a-1", execution_id="execution-a", sequence=1, seconds=9
+    )
+    ingestor.ingest("run-1", [execution_b])
+    ingestor.ingest("run-1", [execution_a_late, execution_a_early])
+
+    causal = ingestor.list_causal("run-1")
+
+    assert [event.event_id for event in causal] == ["a-1", "a-2", "b-1"]
+    causal[0].event_id = "caller-mutation"
+    assert [event.event_id for event in ingestor.list_causal("run-1")] == [
+        "a-1",
+        "a-2",
+        "b-1",
+    ]
+
+
+def test_ingestor_rejects_cross_stream_input_without_partial_commit(
+    event_factory: EventFactory,
+) -> None:
+    ingestor = TraceIngestor()
+    valid = _event(event_factory, "valid")
+    ingestor.ingest("run-1", [valid])
+    before = _wire(ingestor.list("run-1"))
+    before_digest = ingestor.source_digest("run-1")
+
+    invalid_batches = [
+        [
+            _event(event_factory, "new-valid", sequence=2),
+            _event(event_factory, "other-run", run_id="run-2", sequence=3),
+        ],
+        [
+            _event(event_factory, "execution-a", execution_id="execution-a"),
+            _event(event_factory, "execution-b", execution_id="execution-b", sequence=2),
+        ],
+        [
+            _event(event_factory, "trace-a", trace_id="trace-a"),
+            _event(event_factory, "trace-b", trace_id="trace-b", sequence=2),
+        ],
+        [
+            _event(event_factory, "replay", data_kind=trace_pb2.DATA_KIND_REPLAY),
+            _event(
+                event_factory,
+                "live",
+                data_kind=trace_pb2.DATA_KIND_LIVE,
+                sequence=2,
+            ),
+        ],
+    ]
+
+    for events in invalid_batches:
+        with pytest.raises(TraceIngestError):
+            ingestor.ingest("run-1", events)
+        assert _wire(ingestor.list("run-1")) == before
+        assert ingestor.source_digest("run-1") == before_digest
+
+    for run_id in ("", " run-1", "run-1 "):
+        with pytest.raises(TraceIngestError, match="canonical"):
+            ingestor.ingest(run_id, [valid])
+
+
+@pytest.mark.parametrize(
+    ("fault", "message"),
+    [
+        ("empty", "contain events"),
+        ("run", "run_id"),
+        ("execution", "execution_id"),
+        ("zero_sequence", "positive sequences"),
+        ("first_sequence", "first_sequence"),
+        ("last_sequence", "last_sequence"),
+        ("trace", "trace_id"),
+        ("data_kind", "data_kind"),
+    ],
+)
+def test_ingest_batch_validates_its_envelope(
+    event_factory: EventFactory, fault: str, message: str
+) -> None:
+    events = [
+        _event(event_factory, "one", sequence=1),
+        _event(event_factory, "two", sequence=2, seconds=2),
+    ]
+    batch = trace_pb2.TraceEventBatch(
+        execution_id="execution-1",
+        first_sequence=1,
+        last_sequence=2,
+        events=events,
+        run_id="run-1",
+        trace_id="trace-1",
+        data_kind=trace_pb2.DATA_KIND_REPLAY,
+    )
+    if fault == "empty":
+        del batch.events[:]
+    elif fault == "run":
+        batch.run_id = "run-2"
+    elif fault == "execution":
+        batch.execution_id = "execution-2"
+    elif fault == "zero_sequence":
+        batch.events[0].sequence = 0
+    elif fault == "first_sequence":
+        batch.first_sequence = 2
+    elif fault == "last_sequence":
+        batch.last_sequence = 1
+    elif fault == "trace":
+        batch.trace_id = "trace-2"
+    elif fault == "data_kind":
+        batch.data_kind = trace_pb2.DATA_KIND_LIVE
+
+    ingestor = TraceIngestor()
+    with pytest.raises(TraceIngestError, match=message):
+        ingestor.ingest_batch("run-1", batch)
+    assert ingestor.list("run-1") == []
+
+
+def test_ingest_batch_accepts_a_valid_envelope(event_factory: EventFactory) -> None:
+    events = [
+        _event(event_factory, "late", sequence=2, seconds=1),
+        _event(event_factory, "early", sequence=1, seconds=8),
+    ]
+    batch = trace_pb2.TraceEventBatch(
+        execution_id="execution-1",
+        first_sequence=1,
+        last_sequence=2,
+        events=events,
+        run_id="run-1",
+        trace_id="trace-1",
+        data_kind=trace_pb2.DATA_KIND_REPLAY,
+    )
+
+    ingested = TraceIngestor().ingest_batch("run-1", batch)
+
+    assert [event.event_id for event in ingested] == ["early", "late"]
+
+
+def test_ingestion_is_idempotent_and_conflicts_are_atomic(event_factory: EventFactory) -> None:
+    original = _event(event_factory, "original", sequence=1)
+    ingestor = TraceIngestor()
+    first = ingestor.ingest("run-1", [original])
+    first_digest = ingestor.source_digest("run-1")
+
+    retry = ingestor.ingest("run-1", [original])
+
+    assert [event.event_id for event in first] == ["original"]
+    assert [event.event_id for event in retry] == ["original"]
+    assert ingestor.source_digest("run-1") == first_digest
+
+    sequence_conflict = _event(event_factory, "other-owner", sequence=1, seconds=2)
+    with pytest.raises(TraceIngestError, match=r"sequence 1.*conflicting"):
+        ingestor.ingest("run-1", [sequence_conflict])
+    assert [event.event_id for event in ingestor.list("run-1")] == ["original"]
+    assert ingestor.source_digest("run-1") == first_digest
+
+    duplicate_conflict = _event(event_factory, "original", sequence=2, seconds=3)
+    with pytest.raises(TraceIngestError, match="conflicting duplicate event_id"):
+        ingestor.ingest("run-1", [duplicate_conflict])
+    assert [event.event_id for event in ingestor.list("run-1")] == ["original"]
+    assert ingestor.source_digest("run-1") == first_digest
+
+
+def test_source_digest_is_independent_of_batch_arrival_order(
+    event_factory: EventFactory,
+) -> None:
+    first = _event(event_factory, "first", sequence=1, seconds=7)
+    second = _event(event_factory, "second", sequence=2, seconds=2)
+    left = TraceIngestor()
+    right = TraceIngestor()
+    left.ingest("run-1", [first])
+    left.ingest("run-1", [second])
+    right.ingest("run-1", [second])
+    right.ingest("run-1", [first])
+
+    assert left.source_digest("run-1") == right.source_digest("run-1")

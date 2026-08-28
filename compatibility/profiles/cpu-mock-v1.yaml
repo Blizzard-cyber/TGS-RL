@@ -1,0 +1,79 @@
+schema_version: "tgsrl.io/compatibility-profile/v1alpha1"
+profile_id: "cpu-mock-v1"
+revision: 1
+status: "supported-with-limitations"
+description: >-
+  Local profile for deterministic synthetic and replay validation. All
+  accelerator behavior is simulated and is not evidence of GPU capability.
+
+provider:
+  kind: "MockResourceProvider"
+  source: "mock"
+  live_hardware: false
+  authoritative_for: "simulated-resource-state-only"
+
+runtime_scope:
+  required_host_resources:
+    - "cpu"
+    - "memory"
+  data_kinds:
+    - "synthetic"
+    - "replay"
+  algorithms:
+    - "ppo"
+    - "grpo"
+  rollout_modes:
+    - "sync"
+    - "partially_async"
+    - "fully_async"
+  simulated_action_levels:
+    L1:
+      - "set_share"
+      - "set_priority"
+      - "resize"
+    L2:
+      - "pause"
+      - "resume"
+    L3:
+      - "sleep"
+      - "offload"
+    L4:
+      - "rebind"
+      - "recreate"
+  lifecycle_actions:
+    - "bind"
+    - "release"
+
+gpu_management_profile:
+  selected: "none"
+  allowed_values:
+    - "none"
+    - "nvidia-device-plugin"
+    - "kubernetes-dra"
+    - "volcano-hami"
+  mutually_exclusive: true
+  maximum_active_profiles: 1
+  admission_rejects_multiple_profiles: true
+  enabled_profiles: []
+
+unsupported_scope:
+  - "scale-in or resource/capability migration of existing allocations; explicit release/resize workflow is not implemented"
+  - "live GPU scheduling or execution"
+  - "NVIDIA capability discovery"
+  - "CUDA MPS or MIG behavior"
+  - "Kubernetes or Kueue admission"
+  - "veRL, Ray, PyTorch, vLLM, or SGLang integration"
+  - "hardware latency, throughput, convergence, VUG, or wall-clock claims"
+
+admission:
+  require_explicit_capability: true
+  unknown_capability_supported: false
+  reject_live_data: true
+  reject_physical_device_claims: true
+
+evidence:
+  status: "unit-and-local-process"
+  provider_compliance:
+    - "scheduler-go/provider/provider_test.go"
+  process_e2e:
+    - "scripts/demo.sh"

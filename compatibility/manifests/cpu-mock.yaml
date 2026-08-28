@@ -1,0 +1,73 @@
+schema_version: "tgsrl.io/compatibility-manifest/v1alpha1"
+manifest_id: "cpu-mock"
+revision: 1
+status: "supported-with-limitations"
+scope: "local dual-plane mock runtime"
+
+references:
+  bom: "compatibility/bom/runtime.yaml"
+  profile: "compatibility/profiles/cpu-mock-v1.yaml"
+  capabilities: "configs/capabilities/mock.yaml"
+  policy: "configs/policies/static.yaml"
+  representative_scenario: "configs/scenarios/tool-wait.yaml"
+  patch_ledger: "upstream/patches.json"
+  compatibility_matrix: "compatibility/matrix.json"
+
+protocol:
+  protobuf_package: "tgsrl.v1"
+  protocol_release: "v0.3"
+  northbound_api_version: null
+  execution_contract_versions:
+    - "1.0.0"
+
+combination:
+  framework:
+    name: "mock"
+    version: null
+  execution_backend:
+    name: "in-process-mock"
+    version: null
+  trainer:
+    name: "fake"
+    version: null
+  rollout_engine:
+    name: "fake"
+    version: null
+  resource_provider:
+    name: "MockResourceProvider"
+    source: "mock"
+  kubernetes:
+    enabled: false
+    version: null
+  gpu_management_profile: "none"
+
+declared_matrix:
+  algorithms:
+    - "ppo"
+    - "grpo"
+  rollout_modes:
+    - "sync"
+    - "partially_async"
+    - "fully_async"
+  data_kinds:
+    - "synthetic"
+    - "replay"
+  evidence_status: "unit-and-local-process"
+  evidence:
+    - "tests/python/test_contracts.py"
+    - "scheduler-go/service/server_test.go"
+    - "scripts/demo.sh"
+
+verification_commands:
+  proto: "make proto && make check-generated"
+  go: "make test-go && make race"
+  python: "make test-python && make lint"
+  process_e2e: "make demo"
+
+limitations:
+  runtime_config_loader: true
+  persistent_state: true
+  tls_or_authentication: false
+  gpu_provider: false
+  kubernetes_integration: "operator contract and manifests only; live cluster not verified"
+  performance_claims_allowed: false
