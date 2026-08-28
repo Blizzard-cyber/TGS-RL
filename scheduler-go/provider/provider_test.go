@@ -196,6 +196,76 @@ func TestExecuteActionRejectsUnsupportedCapability(t *testing.T) {
 	}
 }
 
+func TestExecuteActionTickPolicyCompatibility(t *testing.T) {
+	tests := []struct {
+		name     string
+		mutate   func(*tgsrlv1.Action)
+		wantErr  error
+		wantCode string
+	}{
+		{
+			name: "legacy unknown tick allows L1",
+			mutate: func(action *tgsrlv1.Action) {
+				action.TickKind = tgsrlv1.TickKind_TICK_KIND_UNKNOWN
+			},
+		},
+		{
+			name: "unknown tick rejects L2",
+			mutate: func(action *tgsrlv1.Action) {
+				action.ActionType = tgsrlv1.ActionType_ACTION_TYPE_PAUSE
+				action.Level = tgsrlv1.ActionLevel_ACTION_LEVEL_L2
+				action.TickKind = tgsrlv1.TickKind_TICK_KIND_UNKNOWN
+			},
+			wantErr:  ErrUnsupported,
+			wantCode: ErrorCodeUnsupported,
+		},
+		{
+			name: "fast rejects L2",
+			mutate: func(action *tgsrlv1.Action) {
+				action.ActionType = tgsrlv1.ActionType_ACTION_TYPE_PAUSE
+				action.Level = tgsrlv1.ActionLevel_ACTION_LEVEL_L2
+				action.TickKind = tgsrlv1.TickKind_TICK_KIND_FAST
+			},
+			wantErr:  ErrUnsupported,
+			wantCode: ErrorCodeUnsupported,
+		},
+		{
+			name: "medium allows L3",
+			mutate: func(action *tgsrlv1.Action) {
+				action.ActionType = tgsrlv1.ActionType_ACTION_TYPE_SLEEP
+				action.Level = tgsrlv1.ActionLevel_ACTION_LEVEL_L3
+				action.TickKind = tgsrlv1.TickKind_TICK_KIND_MEDIUM
+			},
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			provider := newTestProvider(t, WithSandboxes(testSandbox(SandboxStateRunning)))
+			action := testAction("action", "plan", "key", tgsrlv1.ActionType_ACTION_TYPE_SET_SHARE, tgsrlv1.ActionLevel_ACTION_LEVEL_L1, 1)
+			action.Share = 0.5
+			test.mutate(action)
+
+			result, err := provider.ExecuteAction(context.Background(), action)
+			if test.wantErr == nil {
+				if err != nil {
+					t.Fatalf("ExecuteAction() error = %v", err)
+				}
+				if result.GetStatus() != tgsrlv1.ActionResultStatus_ACTION_RESULT_STATUS_SUCCEEDED {
+					t.Fatalf("ExecuteAction() status = %s, want succeeded", result.GetStatus())
+				}
+				return
+			}
+			if !errors.Is(err, test.wantErr) {
+				t.Fatalf("ExecuteAction() error = %v, want errors.Is(%v)", err, test.wantErr)
+			}
+			if result.GetErrorCode() != test.wantCode {
+				t.Fatalf("result error code = %q, want %q", result.GetErrorCode(), test.wantCode)
+			}
+		})
+	}
+}
+
 func TestExecuteActionRejectsInvalidPreconditionsWithoutMutation(t *testing.T) {
 	tests := []struct {
 		name     string
@@ -452,6 +522,25 @@ func TestExecutePlanRequiresExplicitRollback(t *testing.T) {
 	snapshot, _ := provider.Snapshot(context.Background())
 	if snapshot.GetRevision() != 1 {
 		t.Fatalf("revision after invalid plan = %d, want 1", snapshot.GetRevision())
+	}
+}
+
+func TestExecutePlanRejectsTickPolicyMismatch(t *testing.T) {
+	provider := newTestProvider(t, WithSandboxes(testSandbox(SandboxStateRunning)))
+	first := testAction("share", "plan", "share-key", tgsrlv1.ActionType_ACTION_TYPE_SET_SHARE, tgsrlv1.ActionLevel_ACTION_LEVEL_L1, 1)
+	first.TickKind = tgsrlv1.TickKind_TICK_KIND_MEDIUM
+	first.Share = 0.5
+	first.Rollback = &tgsrlv1.Rollback{ActionType: tgsrlv1.ActionType_ACTION_TYPE_SET_SHARE, TargetId: "sandbox-a"}
+	second := testAction("sleep", "plan", "sleep-key", tgsrlv1.ActionType_ACTION_TYPE_SLEEP, tgsrlv1.ActionLevel_ACTION_LEVEL_L3, 1)
+	second.TickKind = tgsrlv1.TickKind_TICK_KIND_FAST
+	second.Rollback = &tgsrlv1.Rollback{ActionType: tgsrlv1.ActionType_ACTION_TYPE_RESUME, TargetId: "sandbox-a"}
+
+	if _, err := provider.ExecutePlan(context.Background(), &tgsrlv1.PlacementPlan{
+		PlanId:           "plan",
+		SnapshotRevision: 1,
+		Actions:          []*tgsrlv1.Action{first, second},
+	}); !errors.Is(err, ErrUnsupported) {
+		t.Fatalf("ExecutePlan() error = %v, want ErrUnsupported", err)
 	}
 }
 
@@ -911,6 +1000,7 @@ func testAction(actionID, planID, idempotencyKey string, actionType tgsrlv1.Acti
 		ExpectedSnapshotRevision: revision,
 		Deadline:                 timestamppb.New(fixtureNow.Add(time.Minute)),
 		IdempotencyKey:           idempotencyKey,
+		TickKind:                 tgsrlv1.TickKind_TICK_KIND_SLOW,
 	}
 }
 

@@ -283,5 +283,6 @@ func complianceAction(actionID, planID, key, sandboxID string) *tgsrlv1.Action {
 		ExpectedSnapshotRevision: 1,
 		Deadline:                 timestamppb.New(complianceNow.Add(time.Minute)),
 		IdempotencyKey:           key,
+		TickKind:                 tgsrlv1.TickKind_TICK_KIND_SLOW,
 	}
 }

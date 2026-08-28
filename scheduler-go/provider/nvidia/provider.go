@@ -9,6 +9,7 @@ import (
 	"time"
 
 	tgsrlv1 "github.com/Blizzard-cyber/TGS-RL/gen/go/tgsrl/v1"
+	"github.com/Blizzard-cyber/TGS-RL/scheduler-go/actionpolicy"
 	base "github.com/Blizzard-cyber/TGS-RL/scheduler-go/provider"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/timestamppb"
@@ -190,6 +191,9 @@ func (p *Provider) ExecutePlan(ctx context.Context, plan *tgsrlv1.PlacementPlan)
 	}
 	if plan == nil || strings.TrimSpace(plan.GetPlanId()) == "" {
 		return nil, fmt.Errorf("%w: plan_id is required", base.ErrInvalidArgument)
+	}
+	if err := validatePlanAt(plan); err != nil {
+		return nil, err
 	}
 	p.mu.Lock()
 	p.plans[plan.GetPlanId()] = &base.PlanRecord{Plan: clonePlacementPlan(plan), Status: base.PlanStatusInFlight, UpdatedAt: p.now(), ObservedRevision: p.revision}
@@ -390,9 +394,8 @@ func validateActionAt(action *tgsrlv1.Action, now time.Time, capabilities *tgsrl
 	if strings.TrimSpace(action.GetActionId()) == "" || strings.TrimSpace(action.GetPlanId()) == "" || strings.TrimSpace(action.GetIdempotencyKey()) == "" {
 		return fmt.Errorf("%w: action_id, plan_id, and idempotency_key are required", base.ErrInvalidArgument)
 	}
-	expectedLevel, supported := levelForAction(action.GetActionType())
-	if !supported || action.GetLevel() != expectedLevel {
-		return &base.Error{Code: base.ErrorCodeUnsupported, Message: "action type is unknown or action level is invalid", PlanID: action.GetPlanId(), ActionID: action.GetActionId(), SandboxID: actionSandboxID(action), Cause: base.ErrUnsupported}
+	if err := validateActionPolicy(action); err != nil {
+		return err
 	}
 	if !containsSupportedAction(capabilities.GetSupportedActions(), actionNames[action.GetActionType()]) {
 		return &base.Error{Code: base.ErrorCodeUnsupported, Message: "action is not advertised by provider capabilities", PlanID: action.GetPlanId(), ActionID: action.GetActionId(), SandboxID: actionSandboxID(action), Cause: base.ErrUnsupported}
@@ -601,18 +604,44 @@ func transitionError(action *tgsrlv1.Action, sandbox base.Sandbox, message strin
 	return &base.Error{Code: base.ErrorCodeFailedPrecondition, Message: message, PlanID: action.GetPlanId(), ActionID: action.GetActionId(), SandboxID: sandbox.SandboxID, ExpectedGeneration: action.GetExpectedGeneration(), ObservedGeneration: sandbox.Generation, Cause: base.ErrFailedPrecondition}
 }
 
-func levelForAction(actionType tgsrlv1.ActionType) (tgsrlv1.ActionLevel, bool) {
-	switch actionType {
-	case tgsrlv1.ActionType_ACTION_TYPE_SET_SHARE, tgsrlv1.ActionType_ACTION_TYPE_SET_PRIORITY, tgsrlv1.ActionType_ACTION_TYPE_RESIZE, tgsrlv1.ActionType_ACTION_TYPE_BIND, tgsrlv1.ActionType_ACTION_TYPE_RELEASE:
-		return tgsrlv1.ActionLevel_ACTION_LEVEL_L1, true
-	case tgsrlv1.ActionType_ACTION_TYPE_PAUSE, tgsrlv1.ActionType_ACTION_TYPE_RESUME:
-		return tgsrlv1.ActionLevel_ACTION_LEVEL_L2, true
-	case tgsrlv1.ActionType_ACTION_TYPE_SLEEP, tgsrlv1.ActionType_ACTION_TYPE_OFFLOAD:
-		return tgsrlv1.ActionLevel_ACTION_LEVEL_L3, true
-	case tgsrlv1.ActionType_ACTION_TYPE_REBIND, tgsrlv1.ActionType_ACTION_TYPE_RECREATE:
-		return tgsrlv1.ActionLevel_ACTION_LEVEL_L4, true
+func validateActionPolicy(action *tgsrlv1.Action) error {
+	err := actionpolicy.ValidateAction(action, tgsrlv1.TickKind_TICK_KIND_UNKNOWN, actionpolicy.ValidationOptions{
+		AllowLegacyUnknownTickL1: true,
+	})
+	if err == nil {
+		return nil
+	}
+	return translatePolicyError(action, err)
+}
+
+func validatePlanAt(plan *tgsrlv1.PlacementPlan) error {
+	err := actionpolicy.ValidatePlan(plan, tgsrlv1.TickKind_TICK_KIND_UNKNOWN, actionpolicy.ValidationOptions{
+		AllowLegacyUnknownTickL1: true,
+	})
+	if err == nil {
+		return nil
+	}
+	return translatePolicyError(firstPlanAction(plan), err)
+}
+
+func translatePolicyError(action *tgsrlv1.Action, err error) error {
+	var policyErr *actionpolicy.ValidationError
+	if !errors.As(err, &policyErr) {
+		return err
+	}
+	planID := ""
+	actionID := ""
+	sandboxID := ""
+	if action != nil {
+		planID = action.GetPlanId()
+		actionID = action.GetActionId()
+		sandboxID = actionSandboxID(action)
+	}
+	switch policyErr.Kind {
+	case actionpolicy.ViolationInvalidArgument:
+		return fmt.Errorf("%w: %s", base.ErrInvalidArgument, policyErr.Message)
 	default:
-		return tgsrlv1.ActionLevel_ACTION_LEVEL_UNKNOWN, false
+		return &base.Error{Code: base.ErrorCodeUnsupported, Message: policyErr.Message, PlanID: planID, ActionID: actionID, SandboxID: sandboxID, Cause: base.ErrUnsupported}
 	}
 }
 

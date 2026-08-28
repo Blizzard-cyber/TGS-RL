@@ -10,6 +10,7 @@ import (
 	"time"
 
 	tgsrlv1 "github.com/Blizzard-cyber/TGS-RL/gen/go/tgsrl/v1"
+	"github.com/Blizzard-cyber/TGS-RL/scheduler-go/actionpolicy"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
@@ -94,6 +95,9 @@ func (p *MockResourceProvider) ExecutePlan(ctx context.Context, plan *tgsrlv1.Pl
 	}
 	if plan == nil || strings.TrimSpace(plan.GetPlanId()) == "" {
 		return nil, fmt.Errorf("%w: plan_id is required", ErrInvalidArgument)
+	}
+	if err := validatePlanPolicy(plan); err != nil {
+		return nil, err
 	}
 
 	p.mu.Lock()
@@ -529,9 +533,8 @@ func (p *MockResourceProvider) validateActionLocked(action *tgsrlv1.Action) erro
 	if strings.TrimSpace(action.GetActionId()) == "" || strings.TrimSpace(action.GetPlanId()) == "" || strings.TrimSpace(action.GetIdempotencyKey()) == "" {
 		return fmt.Errorf("%w: action_id, plan_id, and idempotency_key are required", ErrInvalidArgument)
 	}
-	expectedLevel, supported := levelForAction(action.GetActionType())
-	if !supported || action.GetLevel() != expectedLevel {
-		return &Error{Code: ErrorCodeUnsupported, Message: "action type is unknown or action level is invalid", PlanID: action.GetPlanId(), ActionID: action.GetActionId(), Cause: ErrUnsupported}
+	if err := validateActionPolicy(action); err != nil {
+		return err
 	}
 	name := actionNames[action.GetActionType()]
 	if !containsString(p.capabilities.GetSupportedActions(), name) {
@@ -693,18 +696,43 @@ func (p *MockResourceProvider) skippedResult(action *tgsrlv1.Action, message str
 	return &tgsrlv1.ActionResult{ActionId: action.GetActionId(), Status: tgsrlv1.ActionResultStatus_ACTION_RESULT_STATUS_SKIPPED, StartedAt: timestamppb.New(now), CompletedAt: timestamppb.New(now), ErrorCode: ErrorCodeFailedPrecondition, ErrorMessage: message, ObservedRevision: p.revision, PlanId: action.GetPlanId(), IdempotencyKey: action.GetIdempotencyKey()}
 }
 
-func levelForAction(actionType tgsrlv1.ActionType) (tgsrlv1.ActionLevel, bool) {
-	switch actionType {
-	case tgsrlv1.ActionType_ACTION_TYPE_SET_SHARE, tgsrlv1.ActionType_ACTION_TYPE_SET_PRIORITY, tgsrlv1.ActionType_ACTION_TYPE_RESIZE, tgsrlv1.ActionType_ACTION_TYPE_BIND, tgsrlv1.ActionType_ACTION_TYPE_RELEASE:
-		return tgsrlv1.ActionLevel_ACTION_LEVEL_L1, true
-	case tgsrlv1.ActionType_ACTION_TYPE_PAUSE, tgsrlv1.ActionType_ACTION_TYPE_RESUME:
-		return tgsrlv1.ActionLevel_ACTION_LEVEL_L2, true
-	case tgsrlv1.ActionType_ACTION_TYPE_SLEEP, tgsrlv1.ActionType_ACTION_TYPE_OFFLOAD:
-		return tgsrlv1.ActionLevel_ACTION_LEVEL_L3, true
-	case tgsrlv1.ActionType_ACTION_TYPE_REBIND, tgsrlv1.ActionType_ACTION_TYPE_RECREATE:
-		return tgsrlv1.ActionLevel_ACTION_LEVEL_L4, true
+func validateActionPolicy(action *tgsrlv1.Action) error {
+	err := actionpolicy.ValidateAction(action, tgsrlv1.TickKind_TICK_KIND_UNKNOWN, actionpolicy.ValidationOptions{
+		AllowLegacyUnknownTickL1: true,
+	})
+	if err == nil {
+		return nil
+	}
+	return translatePolicyError(action, err)
+}
+
+func validatePlanPolicy(plan *tgsrlv1.PlacementPlan) error {
+	err := actionpolicy.ValidatePlan(plan, tgsrlv1.TickKind_TICK_KIND_UNKNOWN, actionpolicy.ValidationOptions{
+		AllowLegacyUnknownTickL1: true,
+	})
+	if err == nil {
+		return nil
+	}
+	action := firstPlanAction(plan)
+	return translatePolicyError(action, err)
+}
+
+func translatePolicyError(action *tgsrlv1.Action, err error) error {
+	var policyErr *actionpolicy.ValidationError
+	if !errors.As(err, &policyErr) {
+		return err
+	}
+	planID := ""
+	actionID := ""
+	if action != nil {
+		planID = action.GetPlanId()
+		actionID = action.GetActionId()
+	}
+	switch policyErr.Kind {
+	case actionpolicy.ViolationInvalidArgument:
+		return fmt.Errorf("%w: %s", ErrInvalidArgument, policyErr.Message)
 	default:
-		return tgsrlv1.ActionLevel_ACTION_LEVEL_UNKNOWN, false
+		return &Error{Code: ErrorCodeUnsupported, Message: policyErr.Message, PlanID: planID, ActionID: actionID, Cause: ErrUnsupported}
 	}
 }
 
@@ -716,6 +744,13 @@ func actionSandboxID(action *tgsrlv1.Action) string {
 		return action.GetBinding().GetSandboxId()
 	}
 	return action.GetTargetId()
+}
+
+func firstPlanAction(plan *tgsrlv1.PlacementPlan) *tgsrlv1.Action {
+	if plan == nil || len(plan.GetActions()) == 0 {
+		return nil
+	}
+	return plan.GetActions()[0]
 }
 
 func transitionError(action *tgsrlv1.Action, sandbox Sandbox, message string) error {
