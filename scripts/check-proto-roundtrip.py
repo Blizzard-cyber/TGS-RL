@@ -48,9 +48,7 @@ def main() -> None:
     )
     observation.observed_at.FromDatetime(datetime(2026, 8, 27, tzinfo=UTC))
     observation.oldest_sample_at.FromDatetime(datetime(2026, 8, 27, 0, 0, 1, tzinfo=UTC))
-    observation.backpressure_started_at.FromDatetime(
-        datetime(2026, 8, 27, 0, 0, 2, tzinfo=UTC)
-    )
+    observation.backpressure_started_at.FromDatetime(datetime(2026, 8, 27, 0, 0, 2, tzinfo=UTC))
     intent = IntentBuilder(clock=lambda: datetime(2026, 8, 27, tzinfo=UTC)).build(
         execution_id="roundtrip-execution",
         stage_id="decode",
@@ -180,8 +178,7 @@ def main() -> None:
     assert intent.contract_observation.buffer_level == 16
     assert decision.contract_evaluations[0].predicate.fact_path == "sample.policy_lag"
     assert (
-        decision.contract_evaluations[0].predicate.comparison_fact_path
-        == "contract.max_policy_lag"
+        decision.contract_evaluations[0].predicate.comparison_fact_path == "contract.max_policy_lag"
     )
     assert trace_event.contract_observation.policy_version == "roundtrip-policy"
     assert replay_step.evaluation_context.tick_kind == scheduling_pb2.TICK_KIND_MEDIUM

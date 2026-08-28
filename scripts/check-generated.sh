@@ -17,7 +17,8 @@ find "${BASELINE_DIR}/gen" -type f -name '*.py[co]' -delete
 
 "${ROOT_DIR}/scripts/generate-proto.sh"
 
-if ! diff -ruN "${BASELINE_DIR}/gen" "${ROOT_DIR}/gen"; then
+if ! diff -ruN --exclude='__pycache__' --exclude='*.pyc' --exclude='*.pyo' \
+  "${BASELINE_DIR}/gen" "${ROOT_DIR}/gen"; then
   printf 'generated protobuf files were stale; run scripts/generate-proto.sh\n' >&2
   exit 1
 fi

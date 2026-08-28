@@ -380,8 +380,8 @@ func TestRepositoryRejectsOversizedJournalReplacementBeforeCheckpointCommit(t *t
 		Snapshot: testSnapshot(),
 		Intents:  checkpointIntentMap(oversizedIntents...),
 	})
-	if err == nil || !strings.Contains(err.Error(), "replacement journal is too large") {
-		t.Fatalf("SaveCheckpoint(oversized) error = %v, want replacement journal too large", err)
+	if !errors.Is(err, rootstorage.ErrJournalTooLarge) {
+		t.Fatalf("SaveCheckpoint(oversized) error = %v, want ErrJournalTooLarge", err)
 	}
 
 	restarted, err := OpenRepository(root)
