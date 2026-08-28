@@ -1,11 +1,12 @@
 """Deterministic composition and validation of execution contracts."""
 
 import hashlib
+import math
 import re
 from itertools import pairwise
 
 from google.protobuf import duration_pb2
-from tgsrl.v1 import execution_pb2
+from tgsrl.v1 import execution_pb2, semantic_pb2
 
 from adapters.algorithms import AlgorithmAdapter
 from adapters.rollout_modes import RolloutModeAdapter
@@ -16,6 +17,68 @@ _MAX_DURATION_SECONDS = 315_576_000_000
 _MAX_UINT32 = (1 << 32) - 1
 _CONTRACT_ID_PREFIX = "contract-sha256-"
 SCHEDULER_PROTOCOL_VERSION = "0.3.0"
+_EXPRESSION_LANGUAGE = "tgsrl.condition/v1"
+_FACT_PATH_PATTERN = re.compile(r"^[a-z][a-z0-9_]*(?:\.[a-z][a-z0-9_]*)+$")
+_ALLOWED_FACT_PATHS: dict[str, frozenset[str]] = {
+    "bool": frozenset({"sample.stale", "runtime.safe_point"}),
+    "uint64": frozenset(
+        {
+            "sample.policy_lag",
+            "buffer.level.current",
+            "sample.sample_count",
+            "batch.accepted_samples",
+            "group.accepted_samples",
+            "group.expected_samples",
+        }
+    ),
+    "double": frozenset(
+        {
+            "batch.effective_sample_size",
+            "batch.effective_sample_size_ratio",
+        }
+    ),
+}
+_ALL_ALLOWED_FACT_PATHS = frozenset().union(*_ALLOWED_FACT_PATHS.values())
+_LEAF_OPERATORS = frozenset(
+    {
+        execution_pb2.CONDITION_OPERATOR_EQ,
+        execution_pb2.CONDITION_OPERATOR_NE,
+        execution_pb2.CONDITION_OPERATOR_GT,
+        execution_pb2.CONDITION_OPERATOR_GE,
+        execution_pb2.CONDITION_OPERATOR_LT,
+        execution_pb2.CONDITION_OPERATOR_LE,
+        execution_pb2.CONDITION_OPERATOR_IN,
+        execution_pb2.CONDITION_OPERATOR_NOT_IN,
+        execution_pb2.CONDITION_OPERATOR_EXISTS,
+    }
+)
+_COMPOSITE_OPERATORS = frozenset(
+    {
+        execution_pb2.CONDITION_OPERATOR_AND,
+        execution_pb2.CONDITION_OPERATOR_OR,
+        execution_pb2.CONDITION_OPERATOR_NOT,
+    }
+)
+_EQUALITY_OPERATORS = frozenset(
+    {
+        execution_pb2.CONDITION_OPERATOR_EQ,
+        execution_pb2.CONDITION_OPERATOR_NE,
+    }
+)
+_ORDERING_OPERATORS = frozenset(
+    {
+        execution_pb2.CONDITION_OPERATOR_GT,
+        execution_pb2.CONDITION_OPERATOR_GE,
+        execution_pb2.CONDITION_OPERATOR_LT,
+        execution_pb2.CONDITION_OPERATOR_LE,
+    }
+)
+_SET_OPERATORS = frozenset(
+    {
+        execution_pb2.CONDITION_OPERATOR_IN,
+        execution_pb2.CONDITION_OPERATOR_NOT_IN,
+    }
+)
 
 
 class ContractValidationError(ValueError):
@@ -52,7 +115,10 @@ def build_execution_contract(
             edges=_edges(phase_ids),
             entry_phase_ids=[phase_ids[0]],
         ),
-        validity_rules=[*algorithm.validity_rules(), *rollout_mode.validity_rules()],
+        validity_rules=[
+            *algorithm.validity_rules(),
+            *rollout_mode.validity_rules(),
+        ],
         version_constraints=algorithm.version_constraints(),
         commit_policy=rollout_mode.commit_policy(),
         backpressure_policy=rollout_mode.backpressure_policy(),
@@ -85,6 +151,196 @@ def _validate_positive_duration(duration: duration_pb2.Duration, field: str) -> 
 
 def _canonical_nonempty(value: str) -> bool:
     return bool(value) and value == value.strip()
+
+
+def _fact_path_type(path: str) -> str:
+    for type_name, paths in _ALLOWED_FACT_PATHS.items():
+        if path in paths:
+            return type_name
+    raise ContractValidationError(f"fact path {path!r} is not allowed")
+
+
+def _semantic_value_kind(value: semantic_pb2.SemanticValue) -> str:
+    kind = value.WhichOneof("kind")
+    if kind is None:
+        raise ContractValidationError("semantic values must set a kind")
+    if kind == "double_value" and not math.isfinite(value.double_value):
+        raise ContractValidationError("double semantic values must be finite")
+    return kind
+
+
+def _validate_semantic_value(
+    value: semantic_pb2.SemanticValue,
+    *,
+    expected_fact_type: str | None = None,
+    field: str,
+) -> None:
+    kind = _semantic_value_kind(value)
+    if kind == "object_value":
+        keys: list[str] = []
+        for nested in value.object_value.fields:
+            if not _canonical_nonempty(nested.key):
+                raise ContractValidationError(f"{field} object field keys must be nonblank")
+            keys.append(nested.key)
+            _validate_semantic_value(nested.value, field=f"{field}.{nested.key}")
+        _validate_unique_ids(keys, f"{field} object field keys")
+    elif kind == "list_value":
+        if not value.list_value.values:
+            raise ContractValidationError(f"{field} list operands must not be empty")
+        for index, item in enumerate(value.list_value.values):
+            _validate_semantic_value(item, field=f"{field}[{index}]")
+    if expected_fact_type is None:
+        return
+    allowed_kinds = {
+        "bool": {"bool_value"},
+        "uint64": {"uint64_value"},
+        "double": {"double_value"},
+    }[expected_fact_type]
+    if kind not in allowed_kinds:
+        raise ContractValidationError(
+            f"{field} must use {expected_fact_type} semantic values for the selected fact path"
+        )
+
+
+def _validate_condition(
+    condition: execution_pb2.Condition,
+    *,
+    field: str,
+    require_id: bool,
+) -> None:
+    if require_id and not _canonical_nonempty(condition.condition_id):
+        raise ContractValidationError(f"{field} requires a nonblank condition_id")
+    if condition.condition_id and not _canonical_nonempty(condition.condition_id):
+        raise ContractValidationError(f"{field} condition_id must have no surrounding whitespace")
+    if condition.display_name and not _canonical_nonempty(condition.display_name):
+        raise ContractValidationError(f"{field} display_name must have no surrounding whitespace")
+    if condition.expression and not _canonical_nonempty(condition.expression):
+        raise ContractValidationError(f"{field} expression must have no surrounding whitespace")
+    if condition.language and condition.language != _EXPRESSION_LANGUAGE:
+        raise ContractValidationError(f"{field} language must be {_EXPRESSION_LANGUAGE}")
+    if (
+        condition.operator == execution_pb2.CONDITION_OPERATOR_UNKNOWN
+        or condition.operator not in execution_pb2.ConditionOperator.values()
+    ):
+        raise ContractValidationError(f"{field} operator must be recognized")
+    if any(
+        not _canonical_nonempty(key) or not _canonical_nonempty(value)
+        for key, value in condition.attributes.items()
+    ):
+        raise ContractValidationError(f"{field} attributes must be nonblank")
+    if condition.fact_path:
+        if not _canonical_nonempty(condition.fact_path):
+            raise ContractValidationError(f"{field} fact_path must have no surrounding whitespace")
+        if not _FACT_PATH_PATTERN.fullmatch(condition.fact_path):
+            raise ContractValidationError(f"{field} fact_path must use canonical dotted syntax")
+        _fact_path_type(condition.fact_path)
+    if condition.comparison_fact_path:
+        if not _canonical_nonempty(condition.comparison_fact_path):
+            raise ContractValidationError(
+                f"{field} comparison_fact_path must have no surrounding whitespace"
+            )
+        if not _FACT_PATH_PATTERN.fullmatch(condition.comparison_fact_path):
+            raise ContractValidationError(
+                f"{field} comparison_fact_path must use canonical dotted syntax"
+            )
+        _fact_path_type(condition.comparison_fact_path)
+
+    if condition.operator in _COMPOSITE_OPERATORS:
+        if condition.fact_path or condition.comparison_fact_path or condition.operands:
+            raise ContractValidationError(
+                f"{field} composite predicates must not carry fact paths or operands"
+            )
+        if condition.operator == execution_pb2.CONDITION_OPERATOR_NOT:
+            if len(condition.predicates) != 1:
+                raise ContractValidationError(f"{field} NOT predicates require exactly one child")
+        elif len(condition.predicates) < 2:
+            raise ContractValidationError(
+                f"{field} AND/OR predicates require at least two child predicates"
+            )
+        for index, predicate in enumerate(condition.predicates):
+            _validate_condition(
+                predicate,
+                field=f"{field}.predicates[{index}]",
+                require_id=False,
+            )
+        if not condition.expression:
+            raise ContractValidationError(f"{field} composite predicates require expression")
+        return
+
+    if condition.operator not in _LEAF_OPERATORS:
+        raise ContractValidationError(f"{field} uses an unsupported predicate operator")
+    if condition.predicates:
+        raise ContractValidationError(f"{field} leaf predicates must not contain child predicates")
+    if not condition.fact_path:
+        raise ContractValidationError(f"{field} leaf predicates require fact_path")
+    fact_type = _fact_path_type(condition.fact_path)
+    if condition.operator == execution_pb2.CONDITION_OPERATOR_EXISTS:
+        if condition.operands or condition.comparison_fact_path:
+            raise ContractValidationError(
+                f"{field} EXISTS predicates must not carry operands or comparison_fact_path"
+            )
+    elif condition.comparison_fact_path:
+        comparison_type = _fact_path_type(condition.comparison_fact_path)
+        if comparison_type != fact_type:
+            raise ContractValidationError(f"{field} comparison_fact_path type must match fact_path")
+        if condition.operands:
+            raise ContractValidationError(
+                f"{field} must not set both operands and comparison_fact_path"
+            )
+        if condition.operator in _SET_OPERATORS:
+            raise ContractValidationError(
+                f"{field} IN predicates require literal list operands, not comparison facts"
+            )
+    else:
+        if not condition.operands:
+            raise ContractValidationError(
+                f"{field} predicates require operands or comparison_fact_path"
+            )
+        if condition.operator in _ORDERING_OPERATORS | _EQUALITY_OPERATORS:
+            if len(condition.operands) != 1:
+                raise ContractValidationError(
+                    f"{field} comparison predicates require exactly one operand"
+                )
+            _validate_semantic_value(
+                condition.operands[0],
+                expected_fact_type=fact_type,
+                field=f"{field}.operands[0]",
+            )
+        elif condition.operator in _SET_OPERATORS:
+            if len(condition.operands) != 1:
+                raise ContractValidationError(f"{field} IN predicates require one list operand")
+            operand = condition.operands[0]
+            if operand.WhichOneof("kind") != "list_value":
+                raise ContractValidationError(f"{field} IN predicates require a list operand")
+            for index, item in enumerate(operand.list_value.values):
+                _validate_semantic_value(
+                    item,
+                    expected_fact_type=fact_type,
+                    field=f"{field}.operands[0][{index}]",
+                )
+    if not condition.expression:
+        raise ContractValidationError(f"{field} requires expression for expression fallback")
+
+
+def _validate_semantic_field(
+    field_message: semantic_pb2.SemanticField,
+    *,
+    field: str,
+    allow_contract_paths: bool = False,
+) -> None:
+    if not _canonical_nonempty(field_message.key):
+        raise ContractValidationError(f"{field} key must be nonblank")
+    if not _FACT_PATH_PATTERN.fullmatch(field_message.key):
+        raise ContractValidationError(f"{field} key must use canonical dotted syntax")
+    if field_message.key not in _ALL_ALLOWED_FACT_PATHS and (
+        not allow_contract_paths or not field_message.key.startswith("contract.")
+    ):
+        raise ContractValidationError(f"{field} key {field_message.key!r} is not allowed")
+    _validate_semantic_value(
+        field_message.value,
+        expected_fact_type=_fact_path_type(field_message.key),
+        field=f"{field}.{field_message.key}",
+    )
 
 
 def _validate_unique_ids(values: list[str], field: str, *, case_insensitive: bool = False) -> None:
@@ -219,17 +475,39 @@ def validate_execution_contract(contract: execution_pb2.ExecutionContract) -> No
         raise ContractValidationError("at least one validity rule is required")
     rule_ids: list[str] = []
     for rule in contract.validity_rules:
-        if not _canonical_nonempty(rule.rule_id) or not all(
-            (rule.description.strip(), rule.expression.strip())
-        ):
-            raise ContractValidationError("validity rules require ID, description, and expression")
+        if not _canonical_nonempty(rule.rule_id) or not _canonical_nonempty(rule.description):
+            raise ContractValidationError("validity rules require nonblank ID and description")
+        if not (rule.expression or rule.HasField("predicate")):
+            raise ContractValidationError("validity rules require expression or predicate")
+        if rule.expression and not _canonical_nonempty(rule.expression):
+            raise ContractValidationError("validity rule expression must have no whitespace")
         if (
             rule.failure_mode == execution_pb2.VALIDITY_FAILURE_MODE_UNKNOWN
             or rule.failure_mode not in execution_pb2.ValidityFailureMode.values()
         ):
             raise ContractValidationError("validity rule failure mode must be recognized")
+        if rule.HasField("predicate"):
+            _validate_condition(
+                rule.predicate,
+                field=f"validity_rules[{rule.rule_id}]",
+                require_id=True,
+            )
+            if rule.expression and rule.predicate.expression != rule.expression:
+                raise ContractValidationError(
+                    "validity rule predicate expression must match expression fallback"
+                )
         rule_ids.append(rule.rule_id)
     _validate_unique_ids(rule_ids, "validity rule IDs")
+
+    condition_ids: list[str] = []
+    for index, condition in enumerate(contract.conditions):
+        _validate_condition(
+            condition,
+            field=f"conditions[{index}]",
+            require_id=True,
+        )
+        condition_ids.append(condition.condition_id)
+    _validate_unique_ids(condition_ids, "condition IDs")
 
     if not contract.version_constraints:
         raise ContractValidationError("at least one version constraint is required")
@@ -334,5 +612,115 @@ def validate_execution_contract(contract: execution_pb2.ExecutionContract) -> No
         raise ContractValidationError("disabled safe-point policy must not carry active fields")
 
     _validate_unique_ids(list(contract.capabilities.extensions), "capability extensions")
+    for index, extension in enumerate(contract.capabilities.extensions):
+        if not _canonical_nonempty(extension):
+            raise ContractValidationError(f"capability extension {index} must be nonblank")
     if contract.contract_id != canonical_contract_id(contract):
         raise ContractValidationError("contract_id does not match canonical contract content")
+
+
+def validate_contract_observation(observation: execution_pb2.ContractObservation) -> None:
+    """Validate typed observation payloads before they are attached to intents."""
+    required_strings = {
+        "source": observation.source,
+        "event_id": observation.event_id,
+        "phase_id": observation.phase_id,
+        "policy_version": observation.policy_version,
+    }
+    missing = [field for field, value in required_strings.items() if not _canonical_nonempty(value)]
+    if missing:
+        raise ContractValidationError(
+            f"contract observation fields must be nonblank: {', '.join(sorted(missing))}"
+        )
+    if not observation.HasField("observed_at"):
+        raise ContractValidationError("contract observation observed_at is required")
+    for field_name in ("observed_at", "oldest_sample_at", "backpressure_started_at"):
+        if not observation.HasField(field_name):
+            continue
+        try:
+            getattr(observation, field_name).ToDatetime()
+        except (OverflowError, ValueError) as error:
+            raise ContractValidationError(
+                f"contract observation {field_name} is not a valid protobuf timestamp"
+            ) from error
+    for field_name in ("effective_sample_size", "effective_sample_size_ratio"):
+        if observation.HasField(field_name) and not math.isfinite(getattr(observation, field_name)):
+            raise ContractValidationError(
+                f"contract observation {field_name} must be finite when present"
+            )
+    typed_fact_keys: list[str] = []
+    for index, typed_fact in enumerate(observation.typed_facts):
+        _validate_semantic_field(
+            typed_fact,
+            field=f"contract_observation.typed_facts[{index}]",
+        )
+        if typed_fact.key.startswith("contract."):
+            raise ContractValidationError(
+                "contract observation typed_facts must use sample.*, batch.*, or group.* paths"
+            )
+        typed_fact_keys.append(typed_fact.key)
+    _validate_unique_ids(typed_fact_keys, "contract observation typed_facts")
+    typed_fact_map = {typed_fact.key: typed_fact for typed_fact in observation.typed_facts}
+    scalar_bindings = (
+        ("policy_lag", "sample.policy_lag", "uint64_value"),
+        ("sample_stale", "sample.stale", "bool_value"),
+        ("buffer_level", "buffer.level.current", "uint64_value"),
+        ("effective_sample_size", "batch.effective_sample_size", "double_value"),
+        ("safe_point", "runtime.safe_point", "bool_value"),
+        ("sample_count", "sample.sample_count", "uint64_value"),
+        (
+            "effective_sample_size_ratio",
+            "batch.effective_sample_size_ratio",
+            "double_value",
+        ),
+    )
+    for field_name, fact_key, semantic_kind in scalar_bindings:
+        if not observation.HasField(field_name):
+            continue
+        typed_fact = typed_fact_map.get(fact_key)
+        if typed_fact is None:
+            raise ContractValidationError(
+                f"contract observation typed_facts must include {fact_key} when {field_name} is set"
+            )
+        if typed_fact.value.WhichOneof("kind") != semantic_kind:
+            raise ContractValidationError(
+                f"contract observation typed_facts {fact_key} must use {semantic_kind}"
+            )
+        actual = getattr(observation, field_name)
+        expected = getattr(typed_fact.value, semantic_kind)
+        if actual != expected:
+            raise ContractValidationError(
+                f"contract observation typed_facts {fact_key} must match {field_name}"
+            )
+    accepted_fact_keys = ("batch.accepted_samples", "group.accepted_samples")
+    if observation.HasField("accepted_samples"):
+        present = [key for key in accepted_fact_keys if key in typed_fact_map]
+        if len(present) != 1:
+            raise ContractValidationError(
+                "contract observation accepted_samples requires exactly one typed fact of "
+                "batch.accepted_samples or group.accepted_samples"
+            )
+        typed_fact = typed_fact_map[present[0]]
+        if typed_fact.value.WhichOneof("kind") != "uint64_value":
+            raise ContractValidationError(
+                f"contract observation typed_facts {present[0]} must use uint64_value"
+            )
+        if observation.accepted_samples != typed_fact.value.uint64_value:
+            raise ContractValidationError(
+                f"contract observation typed_facts {present[0]} must match accepted_samples"
+            )
+    if observation.HasField("expected_samples"):
+        typed_fact = typed_fact_map.get("group.expected_samples")
+        if typed_fact is None:
+            raise ContractValidationError(
+                "contract observation expected_samples requires typed fact group.expected_samples"
+            )
+        if typed_fact.value.WhichOneof("kind") != "uint64_value":
+            raise ContractValidationError(
+                "contract observation typed_facts group.expected_samples must use uint64_value"
+            )
+        if observation.expected_samples != typed_fact.value.uint64_value:
+            raise ContractValidationError(
+                "contract observation typed_facts group.expected_samples must match "
+                "expected_samples"
+            )

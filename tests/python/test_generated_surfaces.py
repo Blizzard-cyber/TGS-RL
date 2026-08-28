@@ -1,7 +1,6 @@
 """Smoke tests for newly generated proto surfaces."""
 
 from google.protobuf import timestamp_pb2
-
 from tgsrl.v1 import (
     control_pb2,
     execution_pb2,
@@ -34,7 +33,39 @@ def test_generated_proto_surfaces_are_importable() -> None:
             semantic_pb2.SemanticField(
                 key="sample.policy_lag",
                 value=semantic_pb2.SemanticValue(uint64_value=4),
-            )
+            ),
+            semantic_pb2.SemanticField(
+                key="sample.stale",
+                value=semantic_pb2.SemanticValue(bool_value=False),
+            ),
+            semantic_pb2.SemanticField(
+                key="buffer.level.current",
+                value=semantic_pb2.SemanticValue(uint64_value=12),
+            ),
+            semantic_pb2.SemanticField(
+                key="group.accepted_samples",
+                value=semantic_pb2.SemanticValue(uint64_value=7),
+            ),
+            semantic_pb2.SemanticField(
+                key="group.expected_samples",
+                value=semantic_pb2.SemanticValue(uint64_value=8),
+            ),
+            semantic_pb2.SemanticField(
+                key="sample.sample_count",
+                value=semantic_pb2.SemanticValue(uint64_value=8),
+            ),
+            semantic_pb2.SemanticField(
+                key="batch.effective_sample_size",
+                value=semantic_pb2.SemanticValue(double_value=8.0),
+            ),
+            semantic_pb2.SemanticField(
+                key="batch.effective_sample_size_ratio",
+                value=semantic_pb2.SemanticValue(double_value=1.0),
+            ),
+            semantic_pb2.SemanticField(
+                key="runtime.safe_point",
+                value=semantic_pb2.SemanticValue(bool_value=True),
+            ),
         ],
     )
     observation.observed_at.CopyFrom(timestamp_pb2.Timestamp(seconds=1))
@@ -45,7 +76,6 @@ def test_generated_proto_surfaces_are_importable() -> None:
         condition_id="predicate-1",
         operator=execution_pb2.CONDITION_OPERATOR_LE,
         fact_path="sample.policy_lag",
-        comparison_fact_path="contract.max_policy_lag",
         operands=[semantic_pb2.SemanticValue(uint64_value=5)],
     )
     evaluation = execution_pb2.ContractEvaluation(
@@ -187,7 +217,7 @@ def test_generated_proto_surfaces_are_importable() -> None:
     assert control.targets[0].expected_generation == 3
     assert runtime_watch.sequence == 9
     assert evaluation.predicate.fact_path == "sample.policy_lag"
-    assert evaluation.predicate.comparison_fact_path == "contract.max_policy_lag"
+    assert evaluation.predicate.operands[0].uint64_value == 5
     assert record.contract_evaluations[0].recommended_action == (
         execution_pb2.CONTRACT_DECISION_ACTION_ALLOW
     )

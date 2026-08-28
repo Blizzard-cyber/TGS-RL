@@ -8,7 +8,15 @@ from typing import Any
 
 import grpc
 import pytest
-from tgsrl.v1 import execution_pb2, resource_pb2, scheduling_pb2, trace_pb2
+from tgsrl.v1 import (
+    execution_pb2,
+    resource_pb2,
+    runtime_pb2,
+    scheduling_pb2,
+    semantic_pb2,
+    trace_pb2,
+)
+from tgsrl_runtime.aggregation import TraceSummary
 from tgsrl_runtime.demo import (
     build_demo_fixture,
     build_live_fixture,
@@ -16,6 +24,7 @@ from tgsrl_runtime.demo import (
     run_live_demo,
 )
 from tgsrl_runtime.intent import IntentBuilder, IntentValidationError
+from tgsrl_runtime.intent_coordinator import IntentCoordinator
 from tgsrl_runtime.scheduler_client import SchedulerClient
 
 from adapters import GRPOAdapter, PartialAsyncRolloutAdapter, build_execution_contract
@@ -164,6 +173,150 @@ def test_intent_idempotency_key_is_canonical_and_failed_build_does_not_advance()
     assert builder.last_version("execution", "decode") == 1
 
 
+def _observation(
+    *,
+    phase_id: str = "decode",
+    policy_version: str = "policy-1",
+) -> execution_pb2.ContractObservation:
+    observation = execution_pb2.ContractObservation(
+        source="runtime",
+        event_id="evt-1",
+        phase_id=phase_id,
+        policy_version=policy_version,
+        policy_lag=1,
+        sample_stale=False,
+        buffer_level=4,
+        accepted_samples=8,
+        expected_samples=8,
+        sample_count=8,
+        safe_point=True,
+        typed_facts=[
+            semantic_pb2.SemanticField(
+                key="sample.policy_lag",
+                value=semantic_pb2.SemanticValue(uint64_value=1),
+            ),
+            semantic_pb2.SemanticField(
+                key="sample.stale",
+                value=semantic_pb2.SemanticValue(bool_value=False),
+            ),
+            semantic_pb2.SemanticField(
+                key="buffer.level.current",
+                value=semantic_pb2.SemanticValue(uint64_value=4),
+            ),
+            semantic_pb2.SemanticField(
+                key="group.accepted_samples",
+                value=semantic_pb2.SemanticValue(uint64_value=8),
+            ),
+            semantic_pb2.SemanticField(
+                key="group.expected_samples",
+                value=semantic_pb2.SemanticValue(uint64_value=8),
+            ),
+            semantic_pb2.SemanticField(
+                key="sample.sample_count",
+                value=semantic_pb2.SemanticValue(uint64_value=8),
+            ),
+            semantic_pb2.SemanticField(
+                key="runtime.safe_point",
+                value=semantic_pb2.SemanticValue(bool_value=True),
+            ),
+        ],
+    )
+    observation.observed_at.FromDatetime(datetime(2025, 1, 1, tzinfo=UTC))
+    return observation
+
+
+def test_builder_clones_contract_observation_and_validates_it() -> None:
+    builder = _builder()
+    observation = _observation()
+
+    intent = _build_intent(builder, contract_observation=observation)
+    observation.event_id = "mutated-after-build"
+
+    assert intent.contract_observation.event_id == "evt-1"
+    assert intent.contract_observation.phase_id == "decode"
+    assert intent.contract_observation.accepted_samples == 8
+
+
+def test_validate_rejects_contract_observation_mismatches() -> None:
+    intent = _build_intent(_builder(), contract_observation=_observation())
+    intent.contract_observation.policy_version = "policy-2"
+
+    with pytest.raises(IntentValidationError, match="policy_version"):
+        IntentBuilder.validate(intent)
+
+    intent = _build_intent(_builder(), contract_observation=_observation())
+    intent.contract_observation.phase_id = "reward"
+
+    with pytest.raises(IntentValidationError, match="phase_id"):
+        IntentBuilder.validate(intent)
+
+
+def test_intent_coordinator_writes_latest_observation_as_authority() -> None:
+    coordinator = IntentCoordinator(builder=_builder())
+    manifest = runtime_pb2.RuntimeManifest(
+        manifest_id="manifest-1",
+        run_id="run-1",
+        job_id="job-1",
+        trace_id="trace-1",
+        framework="fake",
+        execution_backend="fake",
+        trainer="fake",
+        rollout_engine="fake",
+        compatibility_profile="cpu-mock",
+        data_kind=trace_pb2.DATA_KIND_SYNTHETIC,
+        execution_contract=build_execution_contract(GRPOAdapter(), PartialAsyncRolloutAdapter()),
+        resources_per_unit=resource_pb2.ResourceVector(cpu_millis=1000, memory_bytes=1 << 30),
+        desired_units=1,
+        priority=7,
+        queue="gold",
+        rollout_mode=trace_pb2.ROLLOUT_MODE_PARTIALLY_ASYNC,
+        policy_version="policy-1",
+        deterministic_seed=11,
+    )
+    runtime_unit = runtime_pb2.RuntimeUnit(
+        runtime_unit_id="unit-1",
+        run_id="run-1",
+        job_id="job-1",
+        trace_id="trace-1",
+        kind=runtime_pb2.RUNTIME_UNIT_KIND_ROLLOUT,
+        phase_id="decode",
+        phase_kind=execution_pb2.PHASE_KIND_DECODE,
+        state=runtime_pb2.RUNTIME_STATE_REQUESTED,
+        requested_resources=resource_pb2.ResourceVector(cpu_millis=1000, memory_bytes=1 << 30),
+        required_capabilities=resource_pb2.CapabilitySet(names=["runtime-unit"]),
+        execution_id="execution-1",
+        stage_id="decode",
+        data_kind=trace_pb2.DATA_KIND_SYNTHETIC,
+    )
+    summary = TraceSummary(
+        event_count=2,
+        safe_point_count=1,
+        policy_publish_count=0,
+        phase_counts={"decode": 2},
+        max_buffer_level=11,
+        latest_buffer_level=4,
+        latest_safe_point=True,
+        latest_policy_version="policy-1",
+        latest_phase_id="decode",
+        latest_event_id="evt-1",
+        latest_observation=_observation(),
+        micro_stage_count=1,
+        completed_micro_stage_count=1,
+        incomplete_micro_stage_count=0,
+        total_micro_stage_seconds=1.0,
+        micro_stages=(),
+    )
+
+    intents = coordinator.build_for_units(manifest, [runtime_unit], summary)
+
+    assert len(intents) == 1
+    intent = intents[0]
+    assert intent.contract_observation.event_id == "evt-1"
+    assert intent.contract_observation.buffer_level == 4
+    assert intent.preferences["max_buffer_level"] == 11.0
+    assert intent.preferences["latest_buffer_level"] == 4.0
+
+
 class _Stream:
     def __init__(self, responses: list[scheduling_pb2.WatchDecisionsResponse]) -> None:
         self._responses = responses
@@ -184,6 +337,9 @@ class _FailingStream(_Stream):
 
 
 class _Stub:
+    def __init__(self) -> None:
+        self.schedule_requests: list[scheduling_pb2.ScheduleRequest] = []
+
     async def PublishIntent(
         self, request: scheduling_pb2.PublishIntentRequest, *, timeout: float
     ) -> scheduling_pb2.PublishIntentResponse:
@@ -192,6 +348,23 @@ class _Stub:
             execution_id=request.intent.execution_id,
             stage_id=request.intent.stage_id,
             version=request.intent.version,
+        )
+
+    async def Schedule(
+        self, request: scheduling_pb2.ScheduleRequest, *, timeout: float
+    ) -> scheduling_pb2.ScheduleResponse:
+        del timeout
+        clone = scheduling_pb2.ScheduleRequest()
+        clone.CopyFrom(request)
+        self.schedule_requests.append(clone)
+        return scheduling_pb2.ScheduleResponse(
+            decision=scheduling_pb2.DecisionRecord(
+                decision_id="scheduled-1",
+                execution_id=request.intent.execution_id,
+                stage_id=request.intent.stage_id,
+                snapshot_revision=request.snapshot.revision,
+                evaluation_context=request.evaluation_context,
+            )
         )
 
     def WatchDecisions(
@@ -212,6 +385,29 @@ async def test_async_client_publishes_and_deduplicates_stream() -> None:
     assert response.status == scheduling_pb2.INTENT_PUBLISH_STATUS_ACCEPTED
     decisions = [decision async for decision in client.watch_decisions()]
     assert [decision.decision_id for decision in decisions] == ["d1"]
+
+
+@pytest.mark.asyncio
+async def test_schedule_forwards_optional_evaluation_context() -> None:
+    stub = _Stub()
+    client = SchedulerClient(stub=stub)
+    intent = _build_intent(_builder())
+    snapshot = resource_pb2.ClusterSnapshot(snapshot_id="snapshot-1", revision=17)
+    context = scheduling_pb2.EvaluationContext(
+        tick_kind=scheduling_pb2.TICK_KIND_FAST,
+        decision_sequence=23,
+        cause="replay-step",
+        observed_revision=17,
+    )
+
+    decision = await client.schedule(intent, snapshot, evaluation_context=context)
+
+    assert len(stub.schedule_requests) == 1
+    request = stub.schedule_requests[0]
+    assert request.intent.execution_id == intent.execution_id
+    assert request.snapshot.snapshot_id == "snapshot-1"
+    assert request.evaluation_context == context
+    assert decision.evaluation_context == context
 
 
 class _ReconnectStub:
@@ -282,7 +478,7 @@ def test_demo_fixture_is_generated_proto_and_byte_stable() -> None:
     assert set(fixture) == {"execution_contract", "scheduling_intent", "trace"}
     rendered = render_demo_fixture(23)
     assert hashlib.sha256(rendered.encode()).hexdigest() == (
-        "0dc277875279816c0717e193576e4064cbd7c14a540d889e32cf098eb826b396"
+        "d013a1f7de596113fa8e5858647ae79d14c73cea8a4d0502c7fb7bc1edfd5f5f"
     )
     assert '"data_kind": "synthetic"' in rendered
 

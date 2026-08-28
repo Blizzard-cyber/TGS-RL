@@ -18,6 +18,7 @@ from adapters.compliance.runtime import (
 from adapters.contracts import (
     build_execution_contract,
     canonical_contract_id,
+    validate_contract_observation,
     validate_execution_contract,
 )
 from adapters.control import (
@@ -108,5 +109,6 @@ __all__ = [
     "execute_control_argv",
     "execute_control_request",
     "resolve_bridge_target",
+    "validate_contract_observation",
     "validate_execution_contract",
 ]

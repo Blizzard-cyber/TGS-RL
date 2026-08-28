@@ -4,7 +4,7 @@ from collections.abc import Callable
 from datetime import timedelta
 
 import pytest
-from tgsrl.v1 import trace_pb2
+from tgsrl.v1 import semantic_pb2, trace_pb2
 from tgsrl_runtime.aggregation import TraceAggregator
 from tgsrl_runtime.trace_ingest import TraceIngestError, TraceIngestor
 
@@ -181,6 +181,120 @@ def test_aggregator_separates_generations_and_excludes_clock_skew_from_duration(
     metrics = {metric.name: metric.value for metric in TraceAggregator().to_metrics(summary)}
     assert metrics["micro_stage_duration"] == 4.0
     assert metrics["completed_micro_stage_count"] == 1.0
+
+
+def test_summary_uses_causally_latest_observation_not_historical_max(
+    event_factory: EventFactory,
+) -> None:
+    early = _event(
+        event_factory,
+        "early",
+        sequence=1,
+        seconds=1,
+        event_type=trace_pb2.TRACE_EVENT_TYPE_SAMPLE_PRODUCED,
+    )
+    early.buffer_level = 11
+    early.contract_observation.source = "runtime"
+    early.contract_observation.event_id = "early"
+    early.contract_observation.phase_id = "decode"
+    early.contract_observation.policy_version = "policy-1"
+    early.contract_observation.observed_at.CopyFrom(early.occurred_at)
+    early.contract_observation.buffer_level = 11
+    early.contract_observation.safe_point = False
+    early.contract_observation.typed_facts.extend(
+        [
+            semantic_pb2.SemanticField(
+                key="buffer.level.current",
+                value=semantic_pb2.SemanticValue(uint64_value=11),
+            ),
+            semantic_pb2.SemanticField(
+                key="batch.accepted_samples",
+                value=semantic_pb2.SemanticValue(uint64_value=6),
+            ),
+        ]
+    )
+    early.contract_observation.accepted_samples = 6
+
+    late = _event(
+        event_factory,
+        "late",
+        sequence=2,
+        seconds=2,
+        event_type=trace_pb2.TRACE_EVENT_TYPE_PHASE_COMPLETED,
+    )
+    late.buffer_level = 3
+    late.safe_point = True
+    late.policy_version = "policy-2"
+    late.contract_observation.source = "runtime"
+    late.contract_observation.event_id = "late"
+    late.contract_observation.phase_id = "decode"
+    late.contract_observation.policy_version = "policy-2"
+    late.contract_observation.observed_at.CopyFrom(late.occurred_at)
+    late.contract_observation.buffer_level = 3
+    late.contract_observation.safe_point = True
+    late.contract_observation.typed_facts.extend(
+        [
+            semantic_pb2.SemanticField(
+                key="buffer.level.current",
+                value=semantic_pb2.SemanticValue(uint64_value=3),
+            ),
+            semantic_pb2.SemanticField(
+                key="runtime.safe_point",
+                value=semantic_pb2.SemanticValue(bool_value=True),
+            ),
+            semantic_pb2.SemanticField(
+                key="batch.accepted_samples",
+                value=semantic_pb2.SemanticValue(uint64_value=4),
+            ),
+        ]
+    )
+    late.contract_observation.accepted_samples = 4
+
+    summary = TraceAggregator().summarize([late, early])
+
+    assert summary.max_buffer_level == 11
+    assert summary.latest_buffer_level == 3
+    assert summary.latest_safe_point
+    assert summary.latest_policy_version == "policy-2"
+    assert summary.latest_event_id == "late"
+    assert summary.latest_observation is not None
+    assert summary.latest_observation.buffer_level == 3
+    assert summary.latest_observation.accepted_samples == 4
+
+
+def test_summary_preserves_missing_ess_presence(event_factory: EventFactory) -> None:
+    event = _event(
+        event_factory,
+        "sample",
+        sequence=1,
+        seconds=1,
+        event_type=trace_pb2.TRACE_EVENT_TYPE_SAMPLE_PRODUCED,
+    )
+    event.contract_observation.source = "runtime"
+    event.contract_observation.event_id = "sample"
+    event.contract_observation.phase_id = "decode"
+    event.contract_observation.policy_version = "policy-1"
+    event.contract_observation.observed_at.CopyFrom(event.occurred_at)
+    event.contract_observation.buffer_level = 2
+    event.contract_observation.typed_facts.extend(
+        [
+            semantic_pb2.SemanticField(
+                key="buffer.level.current",
+                value=semantic_pb2.SemanticValue(uint64_value=2),
+            ),
+            semantic_pb2.SemanticField(
+                key="batch.accepted_samples",
+                value=semantic_pb2.SemanticValue(uint64_value=1),
+            ),
+        ]
+    )
+    event.contract_observation.accepted_samples = 1
+
+    summary = TraceAggregator().summarize([event])
+
+    assert summary.latest_observation is not None
+    assert not summary.latest_observation.HasField("effective_sample_size")
+    assert not summary.latest_observation.HasField("effective_sample_size_ratio")
 
 
 def test_ingestor_orders_each_execution_causally_across_batches_and_clones(

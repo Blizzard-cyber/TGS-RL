@@ -9,7 +9,11 @@ from typing import ClassVar
 from google.protobuf import duration_pb2, timestamp_pb2
 from tgsrl.v1 import execution_pb2, resource_pb2, scheduling_pb2, trace_pb2
 
-from adapters.contracts import ContractValidationError, validate_execution_contract
+from adapters.contracts import (
+    ContractValidationError,
+    validate_contract_observation,
+    validate_execution_contract,
+)
 from tgsrl_runtime.proto_utils import timestamp_from_datetime
 
 _MAX_DURATION_SECONDS = 315_576_000_000
@@ -117,6 +121,16 @@ class IntentBuilder:
         key = (execution_id, stage_id)
         self._versions[key] = max(self._versions.get(key, 0), version)
 
+    @staticmethod
+    def clone_contract_observation(
+        observation: execution_pb2.ContractObservation | None,
+    ) -> execution_pb2.ContractObservation | None:
+        if observation is None:
+            return None
+        clone = execution_pb2.ContractObservation()
+        clone.CopyFrom(observation)
+        return clone
+
     def build(
         self,
         *,
@@ -137,6 +151,7 @@ class IntentBuilder:
         preferences: Mapping[str, float] | None = None,
         deterministic_seed: int = 0,
         version: int | None = None,
+        contract_observation: execution_pb2.ContractObservation | None = None,
     ) -> scheduling_pb2.SchedulingIntent:
         key = (execution_id, stage_id)
         previous = self._versions.get(key, 0)
@@ -172,6 +187,10 @@ class IntentBuilder:
             deterministic_seed=deterministic_seed,
             preferences=dict(preferences or {}),
         )
+        if contract_observation is not None:
+            intent.contract_observation.CopyFrom(
+                self.clone_contract_observation(contract_observation)
+            )
         self.validate(intent)
         self._versions[key] = selected_version
         return intent
@@ -224,6 +243,17 @@ class IntentBuilder:
             validate_execution_contract(intent.execution_contract)
         except ContractValidationError as error:
             raise IntentValidationError(f"invalid execution_contract: {error}") from error
+        if intent.HasField("contract_observation"):
+            try:
+                validate_contract_observation(intent.contract_observation)
+            except ContractValidationError as error:
+                raise IntentValidationError(f"invalid contract_observation: {error}") from error
+            if intent.contract_observation.phase_id != intent.stage_id:
+                raise IntentValidationError("contract_observation.phase_id must match stage_id")
+            if intent.contract_observation.policy_version != intent.policy_version:
+                raise IntentValidationError(
+                    "contract_observation.policy_version must match policy_version"
+                )
         contract_phases = {
             phase.phase_id: phase for phase in intent.execution_contract.phase_graph.phases
         }

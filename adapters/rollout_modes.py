@@ -4,7 +4,7 @@ from abc import ABC, abstractmethod
 from datetime import timedelta
 
 from google.protobuf import duration_pb2
-from tgsrl.v1 import execution_pb2, trace_pb2
+from tgsrl.v1 import execution_pb2, semantic_pb2, trace_pb2
 
 
 def _duration(seconds: float) -> duration_pb2.Duration:
@@ -18,6 +18,11 @@ class RolloutModeAdapter(ABC):
 
     name: str
     proto_value: int
+
+    @property
+    @abstractmethod
+    def max_policy_lag(self) -> int:
+        """Return the fixed scheduler-visible policy lag window for the mode."""
 
     def phases(self) -> tuple[execution_pb2.Phase, ...]:
         return (
@@ -64,6 +69,10 @@ class SyncRolloutAdapter(RolloutModeAdapter):
     name = "sync"
     proto_value = trace_pb2.ROLLOUT_MODE_SYNC
 
+    @property
+    def max_policy_lag(self) -> int:
+        return 0
+
     def commit_policy(self) -> execution_pb2.CommitPolicy:
         return execution_pb2.CommitPolicy(
             mode=execution_pb2.COMMIT_MODE_ALL_OR_NOTHING,
@@ -91,12 +100,22 @@ class SyncRolloutAdapter(RolloutModeAdapter):
         )
 
     def validity_rules(self) -> tuple[execution_pb2.ValidityRule, ...]:
+        expression = "sample.policy_lag <= 0"
         return (
             execution_pb2.ValidityRule(
-                rule_id="sync-policy-exact",
+                rule_id="sync-policy-window",
                 description="Synchronous rollout consumes the current policy only",
-                expression="sample.policy_lag == 0",
+                expression=expression,
                 failure_mode=execution_pb2.VALIDITY_FAILURE_MODE_REJECT,
+                predicate=execution_pb2.Condition(
+                    condition_id="sync-policy-window-predicate",
+                    display_name="Synchronous policy lag threshold",
+                    expression=expression,
+                    language="tgsrl.condition/v1",
+                    operator=execution_pb2.CONDITION_OPERATOR_LE,
+                    fact_path="sample.policy_lag",
+                    operands=[semantic_pb2.SemanticValue(uint64_value=0)],
+                ),
             ),
         )
 
@@ -112,6 +131,10 @@ class SyncRolloutAdapter(RolloutModeAdapter):
 class PartialAsyncRolloutAdapter(RolloutModeAdapter):
     name = "partial-async"
     proto_value = trace_pb2.ROLLOUT_MODE_PARTIALLY_ASYNC
+
+    @property
+    def max_policy_lag(self) -> int:
+        return 1
 
     def commit_policy(self) -> execution_pb2.CommitPolicy:
         return execution_pb2.CommitPolicy(
@@ -140,12 +163,22 @@ class PartialAsyncRolloutAdapter(RolloutModeAdapter):
         )
 
     def validity_rules(self) -> tuple[execution_pb2.ValidityRule, ...]:
+        expression = "sample.policy_lag <= 1"
         return (
             execution_pb2.ValidityRule(
                 rule_id="partial-async-policy-window",
-                description="Partially asynchronous samples use a bounded policy window",
-                expression="sample.policy_lag <= 1",
+                description="Partially asynchronous rollout uses a bounded policy window",
+                expression=expression,
                 failure_mode=execution_pb2.VALIDITY_FAILURE_MODE_REJECT,
+                predicate=execution_pb2.Condition(
+                    condition_id="partial-async-policy-window-predicate",
+                    display_name="Partially async policy lag threshold",
+                    expression=expression,
+                    language="tgsrl.condition/v1",
+                    operator=execution_pb2.CONDITION_OPERATOR_LE,
+                    fact_path="sample.policy_lag",
+                    operands=[semantic_pb2.SemanticValue(uint64_value=1)],
+                ),
             ),
         )
 
@@ -163,6 +196,10 @@ class PartialAsyncRolloutAdapter(RolloutModeAdapter):
 class FullAsyncRolloutAdapter(RolloutModeAdapter):
     name = "full-async"
     proto_value = trace_pb2.ROLLOUT_MODE_FULLY_ASYNC
+
+    @property
+    def max_policy_lag(self) -> int:
+        return 3
 
     def commit_policy(self) -> execution_pb2.CommitPolicy:
         return execution_pb2.CommitPolicy(
@@ -192,12 +229,22 @@ class FullAsyncRolloutAdapter(RolloutModeAdapter):
         )
 
     def validity_rules(self) -> tuple[execution_pb2.ValidityRule, ...]:
+        expression = "sample.policy_lag <= 3"
         return (
             execution_pb2.ValidityRule(
                 rule_id="full-async-policy-window",
-                description="Fully asynchronous samples stay inside a bounded window",
-                expression="sample.policy_lag <= 3",
+                description="Fully asynchronous rollout uses a bounded policy window",
+                expression=expression,
                 failure_mode=execution_pb2.VALIDITY_FAILURE_MODE_REJECT,
+                predicate=execution_pb2.Condition(
+                    condition_id="full-async-policy-window-predicate",
+                    display_name="Fully async policy lag threshold",
+                    expression=expression,
+                    language="tgsrl.condition/v1",
+                    operator=execution_pb2.CONDITION_OPERATOR_LE,
+                    fact_path="sample.policy_lag",
+                    operands=[semantic_pb2.SemanticValue(uint64_value=3)],
+                ),
             ),
         )
 

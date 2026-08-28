@@ -2,7 +2,7 @@
 
 from abc import ABC, abstractmethod
 
-from tgsrl.v1 import execution_pb2
+from tgsrl.v1 import execution_pb2, semantic_pb2
 
 
 def _phase(
@@ -88,16 +88,19 @@ class PPOAdapter(AlgorithmAdapter):
     def validity_rules(self) -> tuple[execution_pb2.ValidityRule, ...]:
         return (
             execution_pb2.ValidityRule(
-                rule_id="ppo-policy-window",
-                description="PPO samples must remain inside the configured policy window",
-                expression="sample.policy_lag <= contract.max_policy_lag",
-                failure_mode=execution_pb2.VALIDITY_FAILURE_MODE_REJECT,
-            ),
-            execution_pb2.ValidityRule(
                 rule_id="ppo-complete-batch",
                 description="The committed PPO batch must contain accepted samples",
                 expression="batch.accepted_samples > 0",
                 failure_mode=execution_pb2.VALIDITY_FAILURE_MODE_PAUSE,
+                predicate=execution_pb2.Condition(
+                    condition_id="ppo-complete-batch-predicate",
+                    display_name="PPO accepted sample threshold",
+                    expression="batch.accepted_samples > 0",
+                    language="tgsrl.condition/v1",
+                    operator=execution_pb2.CONDITION_OPERATOR_GT,
+                    fact_path="batch.accepted_samples",
+                    operands=[semantic_pb2.SemanticValue(uint64_value=0)],
+                ),
             ),
         )
 
@@ -144,15 +147,18 @@ class GRPOAdapter(AlgorithmAdapter):
     def validity_rules(self) -> tuple[execution_pb2.ValidityRule, ...]:
         return (
             execution_pb2.ValidityRule(
-                rule_id="grpo-policy-window",
-                description="Every sample in a GRPO group must remain in the policy window",
-                expression="group.max_policy_lag <= contract.max_policy_lag",
-                failure_mode=execution_pb2.VALIDITY_FAILURE_MODE_REJECT,
-            ),
-            execution_pb2.ValidityRule(
                 rule_id="grpo-group-complete",
                 description="A GRPO group is committed only when its membership is complete",
                 expression="group.accepted_samples == group.expected_samples",
                 failure_mode=execution_pb2.VALIDITY_FAILURE_MODE_PAUSE,
+                predicate=execution_pb2.Condition(
+                    condition_id="grpo-group-complete-predicate",
+                    display_name="GRPO expected sample coverage",
+                    expression="group.accepted_samples == group.expected_samples",
+                    language="tgsrl.condition/v1",
+                    operator=execution_pb2.CONDITION_OPERATOR_EQ,
+                    fact_path="group.accepted_samples",
+                    comparison_fact_path="group.expected_samples",
+                ),
             ),
         )

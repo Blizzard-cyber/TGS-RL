@@ -48,6 +48,7 @@ class IntentCoordinator:
             }
             preferences = {
                 "max_buffer_level": float(summary.max_buffer_level),
+                "latest_buffer_level": float(summary.latest_buffer_level),
                 "safe_point_count": float(summary.safe_point_count),
             }
             unit_count = max(int(unit.annotations.get("unit_count", "1")), 1)
@@ -73,6 +74,7 @@ class IntentCoordinator:
                     labels=labels,
                     preferences=preferences,
                     deterministic_seed=deterministic_seed,
+                    contract_observation=summary.latest_observation,
                 )
             )
         return intents
