@@ -857,6 +857,129 @@ func TestControlMetadataForBundleKeepsLegacyAndNewestCommittedCausality(t *testi
 	}
 }
 
+func TestControlMetadataForBundlePrefersCommittedLedgerOverStalePendingAnnotation(t *testing.T) {
+	client := NewMemoryClient()
+	backend, err := NewKubernetes(client)
+	if err != nil {
+		t.Fatal(err)
+	}
+	bundle := testBundle()
+	if _, err := backend.Apply(context.Background(), bundle); err != nil {
+		t.Fatal(err)
+	}
+
+	committed := ControlMetadata{
+		RequestID:       "request-committed",
+		IdempotencyKey:  "control-committed",
+		Action:          tgsrlv1.JobCommandType_JOB_COMMAND_TYPE_PAUSE,
+		BackendRevision: 2,
+		Committed:       true,
+	}
+	backend.controls[committed.IdempotencyKey] = controlRecord{
+		Digest:     "committed",
+		Request:    ControlRequest{RequestID: committed.RequestID, IdempotencyKey: committed.IdempotencyKey, Action: committed.Action},
+		BundleKeys: []string{bundle.Key},
+		Result:     &ControlResult{Accepted: true, BackendRevision: committed.BackendRevision},
+	}
+
+	object, found, err := client.Get(context.Background(), backend.adapter.BundleObject(bundle.Key))
+	if err != nil || !found {
+		t.Fatalf("get bundle: found=%v err=%v", found, err)
+	}
+	stalePending, err := encodeControlMetadata(*object, ControlMetadata{
+		RequestID:       "request-stale",
+		IdempotencyKey:  "control-stale",
+		Action:          tgsrlv1.JobCommandType_JOB_COMMAND_TYPE_RESUME,
+		BackendRevision: 3,
+		Committed:       false,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := client.Upsert(context.Background(), stalePending); err != nil {
+		t.Fatal(err)
+	}
+
+	metadata, found, err := backend.controlMetadataForBundle(context.Background(), bundle.Key)
+	if err != nil || !found {
+		t.Fatalf("controlMetadataForBundle found=%v err=%v", found, err)
+	}
+	if metadata != committed {
+		t.Fatalf("metadata = %+v, want committed ledger %+v", metadata, committed)
+	}
+}
+
+func TestKubernetesBackendRestoreCommittedLedgerAfterSecondControlMetadataWriteFailure(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "controls.json")
+	client := &committedMetadataFailureClient{MemoryClient: NewMemoryClient()}
+	first, err := NewKubernetes(client)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := first.SetControlStatePath(path); err != nil {
+		t.Fatal(err)
+	}
+	firstBundle, secondBundle, request := twoBundleControlFixture(t, first)
+
+	if _, err := first.Control(context.Background(), request); err != nil {
+		t.Fatal(err)
+	}
+	request2 := request
+	request2.Action = tgsrlv1.JobCommandType_JOB_COMMAND_TYPE_RESUME
+	request2.RequestID = "request-resume-both"
+	request2.IdempotencyKey = "resume-both"
+	client.failBundleKey = secondBundle.Key
+	client.failWrites = 1
+	if result, err := first.Control(context.Background(), request2); err == nil || result != nil {
+		t.Fatalf("second control result = %+v, err = %v; want committed metadata failure", result, err)
+	}
+
+	for _, bundle := range []*api.Bundle{firstBundle, secondBundle} {
+		object, found, err := client.Get(context.Background(), first.adapter.BundleObject(bundle.Key))
+		if err != nil || !found {
+			t.Fatalf("get bundle %s: found=%v err=%v", bundle.Key, found, err)
+		}
+		metadata, found, err := DecodeControlMetadata(object.Payload)
+		if err != nil || !found {
+			t.Fatalf("decode bundle %s metadata: %+v found=%v err=%v", bundle.Key, metadata, found, err)
+		}
+		if metadata.IdempotencyKey != request2.IdempotencyKey || metadata.BackendRevision != 2 || metadata.Committed {
+			t.Fatalf("bundle %s metadata = %+v, want second control pending annotation", bundle.Key, metadata)
+		}
+	}
+
+	restarted, err := NewKubernetes(client)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := restarted.SetControlStatePath(path); err != nil {
+		t.Fatal(err)
+	}
+	for _, bundle := range []*api.Bundle{firstBundle, secondBundle} {
+		snapshots, err := restarted.fakeSnapshots(context.Background(), bundle)
+		if err != nil {
+			t.Fatal(err)
+		}
+		snapshot := snapshots[len(snapshots)-1]
+		if !snapshot.ControlCommitted || snapshot.ControlRequestID != request2.RequestID || snapshot.ControlIdempotencyKey != request2.IdempotencyKey || snapshot.ControlBackendRevision != 2 {
+			t.Fatalf("bundle %s recovered causality = %+v", bundle.Key, snapshot)
+		}
+	}
+	if err := restarted.RestoreControlMetadata(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	for _, bundle := range []*api.Bundle{firstBundle, secondBundle} {
+		object, found, err := client.Get(context.Background(), restarted.adapter.BundleObject(bundle.Key))
+		if err != nil || !found {
+			t.Fatalf("get restored bundle %s: found=%v err=%v", bundle.Key, found, err)
+		}
+		metadata, found, err := DecodeControlMetadata(object.Payload)
+		if err != nil || !found || !metadata.Committed || metadata.IdempotencyKey != request2.IdempotencyKey || metadata.BackendRevision != 2 {
+			t.Fatalf("restored bundle %s metadata = %+v, found=%v err=%v", bundle.Key, metadata, found, err)
+		}
+	}
+}
+
 func testBundle() *api.Bundle {
 	return &api.Bundle{
 		Key:         "ns/bundle",

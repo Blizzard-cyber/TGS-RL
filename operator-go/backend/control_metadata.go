@@ -71,7 +71,7 @@ func (b *KubernetesBackend) setBundleControlMetadata(ctx context.Context, bundle
 
 func encodeControlMetadata(object ClientObject, metadata ControlMetadata) (ClientObject, error) {
 	existing, found, err := DecodeControlMetadata(object.Payload)
-	if err == nil && found && (existing.BackendRevision > metadata.BackendRevision || existing.BackendRevision == metadata.BackendRevision && existing.Committed && !metadata.Committed) {
+	if err == nil && found && shouldKeepExistingControlMetadata(existing, metadata) {
 		return object, nil
 	}
 	var payload map[string]any
@@ -140,16 +140,56 @@ func (b *KubernetesBackend) controlMetadataForBundle(ctx context.Context, key st
 	if ledgerErr != nil {
 		return ControlMetadata{}, false, ledgerErr
 	}
-	if ledgerFound {
-		// The accepted ledger is the durable commit point. Stale or pending
-		// annotations must not hide it after a partial metadata write. A newer
-		// committed annotation is retained for compatibility with objects
-		// written by a newer ledger revision that is not loaded locally.
-		if objectErr != nil || !objectFound || !objectMetadata.Committed || ledgerMetadata.BackendRevision >= objectMetadata.BackendRevision {
-			return ledgerMetadata, true, nil
-		}
+	if shouldPreferLedgerControlMetadata(objectMetadata, objectFound, objectErr, ledgerMetadata, ledgerFound) {
+		return ledgerMetadata, true, nil
 	}
 	return objectMetadata, objectFound, objectErr
+}
+
+func shouldKeepExistingControlMetadata(existing, incoming ControlMetadata) bool {
+	if existing.BackendRevision > incoming.BackendRevision {
+		return existing.Committed || !incoming.Committed
+	}
+	if existing.BackendRevision < incoming.BackendRevision {
+		return false
+	}
+	if sameControlIdentity(existing, incoming) {
+		return existing.Committed && !incoming.Committed
+	}
+	if existing.Committed != incoming.Committed {
+		return existing.Committed && !incoming.Committed
+	}
+	// Conflicting records at one backend revision should converge to the
+	// committed ledger view; pending writes must not replace them.
+	return !incoming.Committed
+}
+
+func shouldPreferLedgerControlMetadata(objectMetadata ControlMetadata, objectFound bool, objectErr error, ledgerMetadata ControlMetadata, ledgerFound bool) bool {
+	if !ledgerFound {
+		return false
+	}
+	if objectErr != nil || !objectFound {
+		return true
+	}
+	if !objectMetadata.Committed {
+		// Any uncommitted annotation is advisory only. Once the durable ledger
+		// accepts a control request, the committed ledger causality wins even if
+		// the object still carries a newer stale pending annotation.
+		return true
+	}
+	if objectMetadata.BackendRevision != ledgerMetadata.BackendRevision {
+		return ledgerMetadata.BackendRevision > objectMetadata.BackendRevision
+	}
+	// At the same backend revision, the ledger carries the authoritative
+	// request identity for this bundle. Divergent committed annotations are
+	// treated as stale or externally-written noise.
+	return !sameControlIdentity(objectMetadata, ledgerMetadata) || ledgerMetadata.Committed
+}
+
+func sameControlIdentity(left, right ControlMetadata) bool {
+	return left.RequestID == right.RequestID &&
+		left.IdempotencyKey == right.IdempotencyKey &&
+		left.Action == right.Action
 }
 
 func (b *KubernetesBackend) controlMetadataFromLedger(bundleKey string) (ControlMetadata, bool, error) {
