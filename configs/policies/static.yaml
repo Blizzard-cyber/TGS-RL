@@ -1,0 +1,62 @@
+schema_version: "tgsrl.io/policy-bundle/v1alpha1"
+policy_id: "static"
+policy_version: "1"
+status: "baseline"
+runtime_loader: false
+description: >-
+  Conservative deterministic policy for the local mock path. It does not
+  consume reward values and performs no learned or adaptive scoring.
+
+selection:
+  strategy: "stable-first-fit"
+  tiebreakers:
+    - "device_id"
+    - "pending_unit_id"
+  top_k: 1
+
+constraints:
+  require_capacity: true
+  require_capability: true
+  require_safe_point: true
+  require_current_intent: true
+  require_snapshot_revision_match: true
+  reject_unknown_capability: true
+
+fallback:
+  order:
+    - "last-valid-intent"
+    - "no-op"
+  permit_binpack: false
+  reason_required: true
+
+actions:
+  unsupported_action: "reject"
+  require_idempotency_key: true
+  require_explicit_rollback: true
+  require_generation_fence_for_l4: true
+
+protection:
+  enabled: true
+  cooldown: "500ms"
+  hysteresis: 0.05
+  max_actions_per_window: 8
+  window: "1m"
+  breaker_threshold: 3
+  breaker_reset_after: "5m"
+
+preemption:
+  enabled: false
+  strategy: "noop"
+  require_safe_point: true
+
+determinism:
+  explicit_seed_required: true
+  virtual_clock_required_for_replay: true
+  deterministic_proto_serialization: true
+  wall_clock_in_canonical_output: false
+
+safety:
+  reward_value_allowed: false
+  stale_intent_allowed: false
+  stale_snapshot_commit_allowed: false
+  partial_failure_is_success: false

@@ -1,0 +1,69 @@
+schema_version: "tgsrl.io/synthetic-scenario/v1alpha1"
+scenario_id: "tool-wait-v1"
+scenario_revision: 1
+status: "baseline"
+runtime_loader: false
+data_kind: "synthetic"
+seed: 20260827
+
+references:
+  compatibility_manifest: "compatibility/manifests/cpu-mock.yaml"
+  resource_profile: "compatibility/profiles/cpu-mock-v1.yaml"
+  capabilities: "configs/capabilities/mock.yaml"
+  policy: "configs/policies/static.yaml"
+
+clock:
+  kind: "virtual"
+  start_utc: "2026-01-01T00:00:00Z"
+
+workload:
+  algorithm: "grpo"
+  rollout_mode: "partially_async"
+  execution_id: "tool-wait-execution"
+  stage_id: "rollout"
+  unit_count: 2
+
+topology:
+  provider_source: "mock"
+  logical_devices:
+    - device_id: "mock-cpu-0"
+      kind: "cpu"
+      capacity:
+        cpu_millis: 4000
+        memory_bytes: 8589934592
+    - device_id: "mock-cpu-1"
+      kind: "cpu"
+      capacity:
+        cpu_millis: 4000
+        memory_bytes: 8589934592
+
+timeline:
+  - at_ms: 0
+    event_id: "decode-started"
+    phase_kind: "decode"
+    event_type: "phase_started"
+    safe_point: false
+  - at_ms: 100
+    event_id: "tool-wait-started"
+    phase_kind: "tool_wait"
+    event_type: "phase_started"
+    safe_point: true
+  - at_ms: 2100
+    event_id: "tool-wait-completed"
+    phase_kind: "tool_wait"
+    event_type: "phase_completed"
+    safe_point: true
+  - at_ms: 2200
+    event_id: "decode-completed"
+    phase_kind: "decode"
+    event_type: "phase_completed"
+    safe_point: true
+
+faults: []
+
+expected:
+  gap_classification: "tool_environment_wait"
+  source_remains_immutable: true
+  deterministic_replay: true
+  live_hardware_claim: false
+  performance_claim: false

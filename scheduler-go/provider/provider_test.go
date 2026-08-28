@@ -1,0 +1,925 @@
+package provider
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"sync"
+	"testing"
+	"time"
+
+	tgsrlv1 "github.com/Blizzard-cyber/TGS-RL/gen/go/tgsrl/v1"
+	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/types/known/timestamppb"
+)
+
+var _ ResourceProvider = (*MockResourceProvider)(nil)
+
+var fixtureNow = time.Date(2026, time.August, 27, 9, 0, 0, 0, time.UTC)
+
+func TestMockProviderReturnsMockLogicalDeviceClones(t *testing.T) {
+	binding := testBinding("sandbox-a", 1)
+	seed := Sandbox{
+		SandboxID:  "sandbox-a",
+		State:      SandboxStateRunning,
+		Generation: 1,
+		Binding:    binding,
+		Share:      0.5,
+		SafePoint:  true,
+	}
+	provider := newTestProvider(t, WithSandboxes(seed))
+	binding.DeviceIds[0] = "caller-mutated"
+
+	capabilities, err := provider.Capabilities(context.Background())
+	if err != nil {
+		t.Fatalf("Capabilities() error = %v", err)
+	}
+	if capabilities.GetSource() != "mock" {
+		t.Fatalf("Capabilities().Source = %q, want mock", capabilities.GetSource())
+	}
+	capabilities.Source = "caller-mutated"
+	capabilities.SupportedActions[0] = "caller-mutated"
+
+	devices, err := provider.ListDevices(context.Background())
+	if err != nil {
+		t.Fatalf("ListDevices() error = %v", err)
+	}
+	if len(devices) == 0 || devices[0].GetKind() != tgsrlv1.DeviceKind_DEVICE_KIND_CPU {
+		t.Fatalf("ListDevices() = %v, want logical CPU device", devices)
+	}
+	devices[0].Labels["provider"] = "caller-mutated"
+	devices[0].Capacity.CpuMillis = 1
+
+	sandbox, err := provider.GetSandbox(context.Background(), "sandbox-a")
+	if err != nil {
+		t.Fatalf("GetSandbox() error = %v", err)
+	}
+	if got := sandbox.Binding.GetDeviceIds()[0]; got != "mock-cpu-0" {
+		t.Fatalf("GetSandbox().Binding.DeviceIds[0] = %q, want mock-cpu-0", got)
+	}
+	sandbox.Binding.DeviceIds[0] = "return-mutated"
+
+	capabilitiesAgain, _ := provider.Capabilities(context.Background())
+	devicesAgain, _ := provider.ListDevices(context.Background())
+	sandboxAgain, _ := provider.GetSandbox(context.Background(), "sandbox-a")
+	if capabilitiesAgain.GetSource() != "mock" || capabilitiesAgain.GetSupportedActions()[0] == "caller-mutated" {
+		t.Fatalf("capability return aliases provider state: %v", capabilitiesAgain)
+	}
+	if devicesAgain[0].GetLabels()["provider"] != "mock" || devicesAgain[0].GetCapacity().GetCpuMillis() == 1 {
+		t.Fatalf("device return aliases provider state: %v", devicesAgain[0])
+	}
+	if got := sandboxAgain.Binding.GetDeviceIds()[0]; got != "mock-cpu-0" {
+		t.Fatalf("sandbox return aliases provider state: device = %q", got)
+	}
+
+	snapshot, err := provider.Snapshot(context.Background())
+	if err != nil {
+		t.Fatalf("Snapshot() error = %v", err)
+	}
+	if snapshot.GetRevision() != 1 || snapshot.GetAnnotations()["provider"] != "mock" {
+		t.Fatalf("Snapshot() = %v, want revision 1 and mock annotation", snapshot)
+	}
+}
+
+func TestExecuteActionVendorNeutralSemantics(t *testing.T) {
+	tests := []struct {
+		name           string
+		initialState   SandboxState
+		actionType     tgsrlv1.ActionType
+		level          tgsrlv1.ActionLevel
+		configure      func(*tgsrlv1.Action)
+		wantState      SandboxState
+		wantGeneration uint64
+		wantShare      float64
+		wantPriority   int32
+		wantOffloaded  bool
+		withoutSandbox bool
+	}{
+		{name: "bind", actionType: tgsrlv1.ActionType_ACTION_TYPE_BIND, level: tgsrlv1.ActionLevel_ACTION_LEVEL_L1, wantState: SandboxStateBound, wantGeneration: 1, withoutSandbox: true},
+		{name: "release", initialState: SandboxStateBound, actionType: tgsrlv1.ActionType_ACTION_TYPE_RELEASE, level: tgsrlv1.ActionLevel_ACTION_LEVEL_L1, wantState: SandboxStateTerminated, wantGeneration: 1},
+		{name: "set share", initialState: SandboxStateRunning, actionType: tgsrlv1.ActionType_ACTION_TYPE_SET_SHARE, level: tgsrlv1.ActionLevel_ACTION_LEVEL_L1, configure: func(action *tgsrlv1.Action) { action.Share = 0.75 }, wantState: SandboxStateRunning, wantGeneration: 1, wantShare: 0.75},
+		{name: "set priority", initialState: SandboxStateRunning, actionType: tgsrlv1.ActionType_ACTION_TYPE_SET_PRIORITY, level: tgsrlv1.ActionLevel_ACTION_LEVEL_L1, configure: func(action *tgsrlv1.Action) { action.Priority = 23 }, wantState: SandboxStateRunning, wantGeneration: 1, wantPriority: 23},
+		{name: "resize", initialState: SandboxStateRunning, actionType: tgsrlv1.ActionType_ACTION_TYPE_RESIZE, level: tgsrlv1.ActionLevel_ACTION_LEVEL_L1, configure: func(action *tgsrlv1.Action) { action.Binding.Resources.CpuMillis = 2000 }, wantState: SandboxStateRunning, wantGeneration: 1},
+		{name: "pause", initialState: SandboxStateRunning, actionType: tgsrlv1.ActionType_ACTION_TYPE_PAUSE, level: tgsrlv1.ActionLevel_ACTION_LEVEL_L2, wantState: SandboxStatePaused, wantGeneration: 1},
+		{name: "resume paused", initialState: SandboxStatePaused, actionType: tgsrlv1.ActionType_ACTION_TYPE_RESUME, level: tgsrlv1.ActionLevel_ACTION_LEVEL_L2, wantState: SandboxStateRunning, wantGeneration: 1},
+		{name: "sleep", initialState: SandboxStateRunning, actionType: tgsrlv1.ActionType_ACTION_TYPE_SLEEP, level: tgsrlv1.ActionLevel_ACTION_LEVEL_L3, wantState: SandboxStateSleeping, wantGeneration: 1},
+		{name: "offload", initialState: SandboxStatePaused, actionType: tgsrlv1.ActionType_ACTION_TYPE_OFFLOAD, level: tgsrlv1.ActionLevel_ACTION_LEVEL_L3, wantState: SandboxStateSleeping, wantGeneration: 1, wantOffloaded: true},
+		{name: "rebind", initialState: SandboxStateRunning, actionType: tgsrlv1.ActionType_ACTION_TYPE_REBIND, level: tgsrlv1.ActionLevel_ACTION_LEVEL_L4, wantState: SandboxStateBound, wantGeneration: 2},
+		{name: "recreate", initialState: SandboxStateRunning, actionType: tgsrlv1.ActionType_ACTION_TYPE_RECREATE, level: tgsrlv1.ActionLevel_ACTION_LEVEL_L4, wantState: SandboxStateBound, wantGeneration: 2},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			options := []MockOption{WithNow(func() time.Time { return fixtureNow })}
+			if !test.withoutSandbox {
+				options = append(options, WithSandboxes(testSandbox(test.initialState)))
+			}
+			provider := newTestProvider(t, options...)
+			action := testAction("action-1", "plan-1", "key-1", test.actionType, test.level, 1)
+			if test.configure != nil {
+				test.configure(action)
+			}
+
+			result, err := provider.ExecuteAction(context.Background(), action)
+			if err != nil {
+				t.Fatalf("ExecuteAction() error = %v", err)
+			}
+			if result.GetStatus() != tgsrlv1.ActionResultStatus_ACTION_RESULT_STATUS_SUCCEEDED {
+				t.Fatalf("ExecuteAction().Status = %s, want succeeded", result.GetStatus())
+			}
+			sandbox, err := provider.GetSandbox(context.Background(), "sandbox-a")
+			if err != nil {
+				t.Fatalf("GetSandbox() error = %v", err)
+			}
+			if sandbox.State != test.wantState || sandbox.Generation != test.wantGeneration {
+				t.Fatalf("sandbox state/generation = %s/%d, want %s/%d", sandbox.State, sandbox.Generation, test.wantState, test.wantGeneration)
+			}
+			if sandbox.Share != test.wantShare || sandbox.Priority != test.wantPriority || sandbox.Offloaded != test.wantOffloaded {
+				t.Fatalf("sandbox scalar state = share %v priority %d offloaded %v", sandbox.Share, sandbox.Priority, sandbox.Offloaded)
+			}
+			if test.actionType == tgsrlv1.ActionType_ACTION_TYPE_RESIZE && sandbox.Binding.GetResources().GetCpuMillis() != 2000 {
+				t.Fatalf("resized CPU = %d, want 2000", sandbox.Binding.GetResources().GetCpuMillis())
+			}
+		})
+	}
+}
+
+func TestExecuteActionIsIdempotentAndClonesResults(t *testing.T) {
+	provider := newTestProvider(t, WithSandboxes(testSandbox(SandboxStateRunning)))
+	action := testAction("share", "plan", "same-key", tgsrlv1.ActionType_ACTION_TYPE_SET_SHARE, tgsrlv1.ActionLevel_ACTION_LEVEL_L1, 1)
+	action.Share = 0.7
+
+	first, err := provider.ExecuteAction(context.Background(), action)
+	if err != nil {
+		t.Fatalf("first ExecuteAction() error = %v", err)
+	}
+	first.ErrorCode = "caller-mutated"
+	second, err := provider.ExecuteAction(context.Background(), proto.Clone(action).(*tgsrlv1.Action))
+	if err != nil {
+		t.Fatalf("duplicate ExecuteAction() error = %v", err)
+	}
+	if second.GetErrorCode() != "" || second.GetObservedRevision() != 2 {
+		t.Fatalf("duplicate result = %v, want pristine result at revision 2", second)
+	}
+	snapshot, _ := provider.Snapshot(context.Background())
+	if snapshot.GetRevision() != 2 {
+		t.Fatalf("revision after duplicate = %d, want 2", snapshot.GetRevision())
+	}
+
+	conflict := proto.Clone(action).(*tgsrlv1.Action)
+	conflict.Share = 0.9
+	result, err := provider.ExecuteAction(context.Background(), conflict)
+	if !errors.Is(err, ErrIdempotencyConflict) {
+		t.Fatalf("conflicting ExecuteAction() error = %v, want ErrIdempotencyConflict", err)
+	}
+	if result.GetErrorCode() != ErrorCodeIdempotencyConflict {
+		t.Fatalf("conflicting result code = %q, want %q", result.GetErrorCode(), ErrorCodeIdempotencyConflict)
+	}
+}
+
+func TestExecuteActionRejectsUnsupportedCapability(t *testing.T) {
+	capabilities := DefaultMockCapabilities()
+	capabilities.SupportedActions = removeString(capabilities.GetSupportedActions(), "pause")
+	provider := newTestProvider(t, WithCapabilities(capabilities), WithSandboxes(testSandbox(SandboxStateRunning)))
+	action := testAction("pause", "plan", "pause-key", tgsrlv1.ActionType_ACTION_TYPE_PAUSE, tgsrlv1.ActionLevel_ACTION_LEVEL_L2, 1)
+
+	result, err := provider.ExecuteAction(context.Background(), action)
+	if !errors.Is(err, ErrUnsupported) {
+		t.Fatalf("ExecuteAction() error = %v, want ErrUnsupported", err)
+	}
+	if result.GetErrorCode() != ErrorCodeUnsupported {
+		t.Fatalf("result error code = %q, want %q", result.GetErrorCode(), ErrorCodeUnsupported)
+	}
+	snapshot, _ := provider.Snapshot(context.Background())
+	if snapshot.GetRevision() != 1 {
+		t.Fatalf("revision after unsupported action = %d, want 1", snapshot.GetRevision())
+	}
+}
+
+func TestExecuteActionRejectsInvalidPreconditionsWithoutMutation(t *testing.T) {
+	tests := []struct {
+		name     string
+		sandbox  Sandbox
+		mutate   func(*tgsrlv1.Action)
+		wantErr  error
+		wantCode string
+	}{
+		{
+			name:    "stale revision",
+			sandbox: testSandbox(SandboxStateRunning),
+			mutate: func(action *tgsrlv1.Action) {
+				action.ExpectedSnapshotRevision = 99
+			},
+			wantErr:  ErrFailedPrecondition,
+			wantCode: ErrorCodeRevisionConflict,
+		},
+		{
+			name:    "stale generation",
+			sandbox: testSandbox(SandboxStateRunning),
+			mutate: func(action *tgsrlv1.Action) {
+				action.ExpectedGeneration = 99
+			},
+			wantErr:  ErrFailedPrecondition,
+			wantCode: ErrorCodeGenerationConflict,
+		},
+		{
+			name:    "safe point missing",
+			sandbox: func() Sandbox { sandbox := testSandbox(SandboxStateRunning); sandbox.SafePoint = false; return sandbox }(),
+			mutate: func(action *tgsrlv1.Action) {
+				action.RequiresSafePoint = true
+			},
+			wantErr:  ErrFailedPrecondition,
+			wantCode: ErrorCodeFailedPrecondition,
+		},
+		{
+			name:     "invalid transition",
+			sandbox:  testSandbox(SandboxStatePaused),
+			mutate:   func(*tgsrlv1.Action) {},
+			wantErr:  ErrFailedPrecondition,
+			wantCode: ErrorCodeFailedPrecondition,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			provider := newTestProvider(t, WithSandboxes(test.sandbox))
+			action := testAction("pause", "plan", "key", tgsrlv1.ActionType_ACTION_TYPE_PAUSE, tgsrlv1.ActionLevel_ACTION_LEVEL_L2, 1)
+			test.mutate(action)
+			result, err := provider.ExecuteAction(context.Background(), action)
+			if !errors.Is(err, test.wantErr) {
+				t.Fatalf("ExecuteAction() error = %v, want errors.Is(%v)", err, test.wantErr)
+			}
+			if result.GetErrorCode() != test.wantCode {
+				t.Fatalf("result error code = %q, want %q", result.GetErrorCode(), test.wantCode)
+			}
+			snapshot, _ := provider.Snapshot(context.Background())
+			if snapshot.GetRevision() != 1 {
+				t.Fatalf("revision after rejection = %d, want 1", snapshot.GetRevision())
+			}
+		})
+	}
+}
+
+func TestRequiredCapabilitiesMatchConservatively(t *testing.T) {
+	available := DefaultMockCapabilities()
+	available.Names = append(available.Names, "generation-fencing")
+	available.Attributes = map[string]string{"isolation": "sandbox"}
+	available.Algorithms = []string{"ppo"}
+	available.RolloutModes = []string{"sync"}
+	available.Revision = 2
+	available.Limits = map[string]float64{"partitions": 2}
+
+	tests := []struct {
+		name     string
+		required *tgsrlv1.CapabilitySet
+	}{
+		{name: "source", required: &tgsrlv1.CapabilitySet{Source: "nvidia"}},
+		{name: "revision", required: &tgsrlv1.CapabilitySet{Revision: 3}},
+		{name: "algorithm", required: &tgsrlv1.CapabilitySet{Algorithms: []string{"grpo"}}},
+		{name: "rollout mode", required: &tgsrlv1.CapabilitySet{RolloutModes: []string{"fully_async"}}},
+		{name: "exact capability name", required: &tgsrlv1.CapabilitySet{Names: []string{"generation_fencing"}}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			provider := newTestProvider(t, WithCapabilities(available), WithSandboxes(testSandbox(SandboxStateRunning)))
+			action := testAction("share", "plan", "key", tgsrlv1.ActionType_ACTION_TYPE_SET_SHARE, tgsrlv1.ActionLevel_ACTION_LEVEL_L1, 1)
+			action.Share = 0.5
+			action.RequiredCapabilities = test.required
+			result, err := provider.ExecuteAction(context.Background(), action)
+			if !errors.Is(err, ErrUnsupported) {
+				t.Fatalf("ExecuteAction() error = %v, want ErrUnsupported", err)
+			}
+			if result.GetErrorCode() != ErrorCodeUnsupported {
+				t.Fatalf("result error code = %q, want %q", result.GetErrorCode(), ErrorCodeUnsupported)
+			}
+		})
+	}
+}
+
+func TestBindValidatesLogicalDevice(t *testing.T) {
+	tests := []struct {
+		name    string
+		binding *tgsrlv1.Binding
+	}{
+		{name: "missing binding"},
+		{name: "unknown device", binding: &tgsrlv1.Binding{SandboxId: "sandbox-a", Generation: 1, DeviceIds: []string{"missing-device"}}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			provider := newTestProvider(t)
+			action := testAction("bind", "plan", "key", tgsrlv1.ActionType_ACTION_TYPE_BIND, tgsrlv1.ActionLevel_ACTION_LEVEL_L1, 1)
+			action.Binding = test.binding
+			result, err := provider.ExecuteAction(context.Background(), action)
+			if err == nil || (!errors.Is(err, ErrInvalidArgument) && !errors.Is(err, ErrFailedPrecondition)) {
+				t.Fatalf("ExecuteAction() error = %v, want invalid argument or failed precondition", err)
+			}
+			if result.GetStatus() != tgsrlv1.ActionResultStatus_ACTION_RESULT_STATUS_FAILED {
+				t.Fatalf("result status = %s, want failed", result.GetStatus())
+			}
+			if _, lookupErr := provider.GetSandbox(context.Background(), "sandbox-a"); !errors.Is(lookupErr, ErrNotFound) {
+				t.Fatalf("GetSandbox() error = %v, want ErrNotFound", lookupErr)
+			}
+		})
+	}
+}
+
+func TestExecuteActionDeadlineAndFailedRetry(t *testing.T) {
+	provider := newTestProvider(t,
+		WithSandboxes(testSandbox(SandboxStateRunning)),
+		WithFaults(FaultOptions{DelayByActionType: map[tgsrlv1.ActionType]time.Duration{
+			tgsrlv1.ActionType_ACTION_TYPE_PAUSE: 2 * time.Second,
+		}}),
+	)
+	action := testAction("pause", "plan", "timeout-key", tgsrlv1.ActionType_ACTION_TYPE_PAUSE, tgsrlv1.ActionLevel_ACTION_LEVEL_L2, 1)
+	action.Deadline = timestamppb.New(fixtureNow.Add(time.Second))
+
+	first, err := provider.ExecuteAction(context.Background(), action)
+	if !errors.Is(err, ErrDeadlineExceeded) {
+		t.Fatalf("first ExecuteAction() error = %v, want ErrDeadlineExceeded", err)
+	}
+	if first.GetErrorCode() != ErrorCodeDeadlineExceeded {
+		t.Fatalf("first result code = %q, want %q", first.GetErrorCode(), ErrorCodeDeadlineExceeded)
+	}
+	second, err := provider.ExecuteAction(context.Background(), proto.Clone(action).(*tgsrlv1.Action))
+	if !errors.Is(err, ErrDeadlineExceeded) {
+		t.Fatalf("duplicate failed ExecuteAction() error = %v, want recorded ErrDeadlineExceeded", err)
+	}
+	if !proto.Equal(first, second) {
+		t.Fatalf("duplicate failed result differs: first=%v second=%v", first, second)
+	}
+	sandbox, _ := provider.GetSandbox(context.Background(), "sandbox-a")
+	if sandbox.State != SandboxStateRunning {
+		t.Fatalf("sandbox state after timeout = %s, want running", sandbox.State)
+	}
+}
+
+func TestExecutePlanPartialFailureRollsBackInReverseAndIsIdempotent(t *testing.T) {
+	initial := testSandbox(SandboxStateRunning)
+	initial.Share = 0.25
+	initial.Priority = 3
+	provider := newTestProvider(t,
+		WithSandboxes(initial),
+		WithFaults(FaultOptions{PartialFailureAt: 3}),
+	)
+	first := testAction("share", "plan", "share-key", tgsrlv1.ActionType_ACTION_TYPE_SET_SHARE, tgsrlv1.ActionLevel_ACTION_LEVEL_L1, 1)
+	first.Order = 1
+	first.Share = 0.8
+	first.Rollback = &tgsrlv1.Rollback{ActionType: tgsrlv1.ActionType_ACTION_TYPE_SET_SHARE, TargetId: "sandbox-a"}
+	second := testAction("priority", "plan", "priority-key", tgsrlv1.ActionType_ACTION_TYPE_SET_PRIORITY, tgsrlv1.ActionLevel_ACTION_LEVEL_L1, 1)
+	second.Order = 2
+	second.Priority = 99
+	second.Rollback = &tgsrlv1.Rollback{ActionType: tgsrlv1.ActionType_ACTION_TYPE_SET_PRIORITY, TargetId: "sandbox-a"}
+	third := testAction("pause", "plan", "pause-key", tgsrlv1.ActionType_ACTION_TYPE_PAUSE, tgsrlv1.ActionLevel_ACTION_LEVEL_L2, 1)
+	third.Order = 3
+	third.Rollback = &tgsrlv1.Rollback{ActionType: tgsrlv1.ActionType_ACTION_TYPE_RESUME, TargetId: "sandbox-a"}
+	plan := &tgsrlv1.PlacementPlan{PlanId: "plan", SnapshotRevision: 1, Actions: []*tgsrlv1.Action{third, first, second}}
+
+	results, err := provider.ExecutePlan(context.Background(), plan)
+	if !errors.Is(err, ErrPartialFailure) {
+		t.Fatalf("ExecutePlan() error = %v, want ErrPartialFailure", err)
+	}
+	if len(results) != 3 {
+		t.Fatalf("len(results) = %d, want 3", len(results))
+	}
+	if results[0].GetActionId() != "share" || !results[0].GetRollbackAttempted() || results[0].GetRollbackStatus() != tgsrlv1.ActionResultStatus_ACTION_RESULT_STATUS_ROLLED_BACK {
+		t.Fatalf("first result = %v, want rolled back share", results[0])
+	}
+	if results[1].GetActionId() != "priority" || !results[1].GetRollbackAttempted() || results[1].GetRollbackStatus() != tgsrlv1.ActionResultStatus_ACTION_RESULT_STATUS_ROLLED_BACK {
+		t.Fatalf("second result = %v, want rolled back priority", results[1])
+	}
+	if results[2].GetStatus() != tgsrlv1.ActionResultStatus_ACTION_RESULT_STATUS_FAILED || results[2].GetErrorCode() != ErrorCodeInjectedFailure {
+		t.Fatalf("third result = %v, want injected failure", results[2])
+	}
+	sandbox, _ := provider.GetSandbox(context.Background(), "sandbox-a")
+	if sandbox.Share != initial.Share || sandbox.Priority != initial.Priority || sandbox.State != initial.State {
+		t.Fatalf("sandbox after rollback = %+v, want original %+v", sandbox, initial)
+	}
+	actionRetry, actionRetryErr := provider.ExecuteAction(context.Background(), proto.Clone(first).(*tgsrlv1.Action))
+	if actionRetryErr != nil {
+		t.Fatalf("rolled-back action retry error = %v", actionRetryErr)
+	}
+	if actionRetry.GetRollbackStatus() != tgsrlv1.ActionResultStatus_ACTION_RESULT_STATUS_ROLLED_BACK {
+		t.Fatalf("rolled-back action retry = %v, want recorded rollback result", actionRetry)
+	}
+	sandbox, _ = provider.GetSandbox(context.Background(), "sandbox-a")
+	if sandbox.Share != initial.Share {
+		t.Fatalf("rolled-back action retry reapplied share = %v, want %v", sandbox.Share, initial.Share)
+	}
+
+	results[0].ErrorCode = "caller-mutated"
+	snapshot, _ := provider.Snapshot(context.Background())
+	revision := snapshot.GetRevision()
+	retry, retryErr := provider.ExecutePlan(context.Background(), proto.Clone(plan).(*tgsrlv1.PlacementPlan))
+	if !errors.Is(retryErr, ErrPartialFailure) {
+		t.Fatalf("retry ExecutePlan() error = %v, want ErrPartialFailure", retryErr)
+	}
+	if retry[0].GetErrorCode() == "caller-mutated" {
+		t.Fatal("retry result aliases prior caller-owned result")
+	}
+	snapshot, _ = provider.Snapshot(context.Background())
+	if snapshot.GetRevision() != revision {
+		t.Fatalf("revision after plan retry = %d, want %d", snapshot.GetRevision(), revision)
+	}
+}
+
+func TestExecutePlanRejectsPlanIDReuseWithDifferentPayload(t *testing.T) {
+	provider := newTestProvider(t, WithSandboxes(testSandbox(SandboxStateRunning)))
+	action := testAction("share", "plan", "share-key", tgsrlv1.ActionType_ACTION_TYPE_SET_SHARE, tgsrlv1.ActionLevel_ACTION_LEVEL_L1, 1)
+	action.Share = 0.5
+	action.Rollback = &tgsrlv1.Rollback{ActionType: tgsrlv1.ActionType_ACTION_TYPE_SET_SHARE, TargetId: "sandbox-a"}
+	plan := &tgsrlv1.PlacementPlan{PlanId: "plan", SnapshotRevision: 1, Actions: []*tgsrlv1.Action{action}}
+	if _, err := provider.ExecutePlan(context.Background(), plan); err != nil {
+		t.Fatalf("first ExecutePlan() error = %v", err)
+	}
+
+	conflict := proto.Clone(plan).(*tgsrlv1.PlacementPlan)
+	conflict.Actions[0].ActionId = "different-action"
+	conflict.Actions[0].IdempotencyKey = "different-key"
+	if _, err := provider.ExecutePlan(context.Background(), conflict); !errors.Is(err, ErrIdempotencyConflict) {
+		t.Fatalf("conflicting ExecutePlan() error = %v, want ErrIdempotencyConflict", err)
+	}
+}
+
+func TestExecutePlanRequiresExplicitRollback(t *testing.T) {
+	provider := newTestProvider(t, WithSandboxes(testSandbox(SandboxStateRunning)))
+	action := testAction("share", "plan", "share-key", tgsrlv1.ActionType_ACTION_TYPE_SET_SHARE, tgsrlv1.ActionLevel_ACTION_LEVEL_L1, 1)
+	action.Share = 0.5
+	plan := &tgsrlv1.PlacementPlan{PlanId: "plan", SnapshotRevision: 1, Actions: []*tgsrlv1.Action{action}}
+
+	if _, err := provider.ExecutePlan(context.Background(), plan); !errors.Is(err, ErrInvalidArgument) {
+		t.Fatalf("ExecutePlan() error = %v, want ErrInvalidArgument for missing rollback", err)
+	}
+	snapshot, _ := provider.Snapshot(context.Background())
+	if snapshot.GetRevision() != 1 {
+		t.Fatalf("revision after invalid plan = %d, want 1", snapshot.GetRevision())
+	}
+}
+
+func TestExecutePlanUsesActionOrder(t *testing.T) {
+	provider := newTestProvider(t, WithSandboxes(testSandbox(SandboxStateRunning)))
+	pause := testAction("pause", "plan", "pause-key", tgsrlv1.ActionType_ACTION_TYPE_PAUSE, tgsrlv1.ActionLevel_ACTION_LEVEL_L2, 1)
+	pause.Order = 1
+	pause.Rollback = &tgsrlv1.Rollback{ActionType: tgsrlv1.ActionType_ACTION_TYPE_RESUME, TargetId: "sandbox-a"}
+	resume := testAction("resume", "plan", "resume-key", tgsrlv1.ActionType_ACTION_TYPE_RESUME, tgsrlv1.ActionLevel_ACTION_LEVEL_L2, 1)
+	resume.Order = 2
+	resume.Rollback = &tgsrlv1.Rollback{ActionType: tgsrlv1.ActionType_ACTION_TYPE_PAUSE, TargetId: "sandbox-a"}
+	plan := &tgsrlv1.PlacementPlan{PlanId: "plan", SnapshotRevision: 1, Actions: []*tgsrlv1.Action{resume, pause}}
+
+	results, err := provider.ExecutePlan(context.Background(), plan)
+	if err != nil {
+		t.Fatalf("ExecutePlan() error = %v", err)
+	}
+	if len(results) != 2 || results[0].GetActionId() != "pause" || results[1].GetActionId() != "resume" {
+		t.Fatalf("ExecutePlan() result order = %v, want pause then resume", results)
+	}
+	sandbox, _ := provider.GetSandbox(context.Background(), "sandbox-a")
+	if sandbox.State != SandboxStateRunning {
+		t.Fatalf("sandbox state = %s, want running", sandbox.State)
+	}
+}
+
+func TestExecutePlanMarksRemainingActionsSkipped(t *testing.T) {
+	provider := newTestProvider(t,
+		WithSandboxes(testSandbox(SandboxStateRunning)),
+		WithFaults(FaultOptions{PartialFailureAt: 2}),
+	)
+	share := testAction("share", "plan", "share-key", tgsrlv1.ActionType_ACTION_TYPE_SET_SHARE, tgsrlv1.ActionLevel_ACTION_LEVEL_L1, 1)
+	share.Share = 0.5
+	share.Order = 1
+	share.Rollback = &tgsrlv1.Rollback{ActionType: tgsrlv1.ActionType_ACTION_TYPE_SET_SHARE, TargetId: "sandbox-a"}
+	pause := testAction("pause", "plan", "pause-key", tgsrlv1.ActionType_ACTION_TYPE_PAUSE, tgsrlv1.ActionLevel_ACTION_LEVEL_L2, 1)
+	pause.Order = 2
+	pause.Rollback = &tgsrlv1.Rollback{ActionType: tgsrlv1.ActionType_ACTION_TYPE_RESUME, TargetId: "sandbox-a"}
+	priority := testAction("priority", "plan", "priority-key", tgsrlv1.ActionType_ACTION_TYPE_SET_PRIORITY, tgsrlv1.ActionLevel_ACTION_LEVEL_L1, 1)
+	priority.Priority = 42
+	priority.Order = 3
+	priority.Rollback = &tgsrlv1.Rollback{ActionType: tgsrlv1.ActionType_ACTION_TYPE_SET_PRIORITY, TargetId: "sandbox-a"}
+	plan := &tgsrlv1.PlacementPlan{PlanId: "plan", SnapshotRevision: 1, Actions: []*tgsrlv1.Action{share, pause, priority}}
+
+	results, err := provider.ExecutePlan(context.Background(), plan)
+	if !errors.Is(err, ErrPartialFailure) {
+		t.Fatalf("ExecutePlan() error = %v, want ErrPartialFailure", err)
+	}
+	if len(results) != 3 || results[2].GetStatus() != tgsrlv1.ActionResultStatus_ACTION_RESULT_STATUS_SKIPPED {
+		t.Fatalf("results = %v, want third action skipped", results)
+	}
+}
+
+func TestExecuteActionContextCancellation(t *testing.T) {
+	provider := newTestProvider(t,
+		WithSandboxes(testSandbox(SandboxStateRunning)),
+		WithFaults(FaultOptions{Delay: time.Second}),
+	)
+	action := testAction("pause", "plan", "key", tgsrlv1.ActionType_ACTION_TYPE_PAUSE, tgsrlv1.ActionLevel_ACTION_LEVEL_L2, 1)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	result, err := provider.ExecuteAction(ctx, action)
+	if !errors.Is(err, context.Canceled) || !errors.Is(err, ErrDeadlineExceeded) {
+		t.Fatalf("ExecuteAction() error = %v, want context.Canceled and ErrDeadlineExceeded", err)
+	}
+	if result.GetStatus() != tgsrlv1.ActionResultStatus_ACTION_RESULT_STATUS_FAILED {
+		t.Fatalf("result status = %s, want failed", result.GetStatus())
+	}
+	sandbox, _ := provider.GetSandbox(context.Background(), "sandbox-a")
+	if sandbox.State != SandboxStateRunning {
+		t.Fatalf("sandbox state after canceled action = %s, want running", sandbox.State)
+	}
+}
+
+func TestConfiguredRollbackFailureIsExplicit(t *testing.T) {
+	initial := testSandbox(SandboxStateRunning)
+	initial.Share = 0.25
+	provider := newTestProvider(t,
+		WithSandboxes(initial),
+		WithFaults(FaultOptions{
+			PartialFailureAt:      2,
+			FailRollbackActionIDs: map[string]InjectedFailure{"share": {Message: "rollback unavailable"}},
+		}),
+	)
+	share := testAction("share", "plan", "share-key", tgsrlv1.ActionType_ACTION_TYPE_SET_SHARE, tgsrlv1.ActionLevel_ACTION_LEVEL_L1, 1)
+	share.Share = 0.8
+	share.Order = 1
+	share.Rollback = &tgsrlv1.Rollback{ActionType: tgsrlv1.ActionType_ACTION_TYPE_SET_SHARE, TargetId: "sandbox-a"}
+	pause := testAction("pause", "plan", "pause-key", tgsrlv1.ActionType_ACTION_TYPE_PAUSE, tgsrlv1.ActionLevel_ACTION_LEVEL_L2, 1)
+	pause.Order = 2
+	pause.Rollback = &tgsrlv1.Rollback{ActionType: tgsrlv1.ActionType_ACTION_TYPE_RESUME, TargetId: "sandbox-a"}
+	plan := &tgsrlv1.PlacementPlan{PlanId: "plan", SnapshotRevision: 1, Actions: []*tgsrlv1.Action{share, pause}}
+
+	results, err := provider.ExecutePlan(context.Background(), plan)
+	if !errors.Is(err, ErrPartialFailure) {
+		t.Fatalf("ExecutePlan() error = %v, want ErrPartialFailure", err)
+	}
+	if !results[0].GetRollbackAttempted() || results[0].GetRollbackStatus() != tgsrlv1.ActionResultStatus_ACTION_RESULT_STATUS_FAILED {
+		t.Fatalf("first result = %v, want explicit failed rollback", results[0])
+	}
+	sandbox, _ := provider.GetSandbox(context.Background(), "sandbox-a")
+	if sandbox.Share != 0.8 {
+		t.Fatalf("share after failed rollback = %v, want committed 0.8", sandbox.Share)
+	}
+}
+
+func TestRollbackFailureIsNotUndoneByEarlierRollbackOnSameSandbox(t *testing.T) {
+	initial := testSandbox(SandboxStateRunning)
+	initial.Share = 0.25
+	initial.Priority = 3
+	provider := newTestProvider(t,
+		WithSandboxes(initial),
+		WithFaults(FaultOptions{
+			PartialFailureAt:      3,
+			FailRollbackActionIDs: map[string]InjectedFailure{"priority": {Message: "rollback unavailable"}},
+		}),
+	)
+	share := testAction("share", "plan", "share-key", tgsrlv1.ActionType_ACTION_TYPE_SET_SHARE, tgsrlv1.ActionLevel_ACTION_LEVEL_L1, 1)
+	share.Order = 1
+	share.Share = 0.8
+	share.Rollback = &tgsrlv1.Rollback{ActionType: tgsrlv1.ActionType_ACTION_TYPE_SET_SHARE, TargetId: "sandbox-a"}
+	priority := testAction("priority", "plan", "priority-key", tgsrlv1.ActionType_ACTION_TYPE_SET_PRIORITY, tgsrlv1.ActionLevel_ACTION_LEVEL_L1, 1)
+	priority.Order = 2
+	priority.Priority = 99
+	priority.Rollback = &tgsrlv1.Rollback{ActionType: tgsrlv1.ActionType_ACTION_TYPE_SET_PRIORITY, TargetId: "sandbox-a"}
+	pause := testAction("pause", "plan", "pause-key", tgsrlv1.ActionType_ACTION_TYPE_PAUSE, tgsrlv1.ActionLevel_ACTION_LEVEL_L2, 1)
+	pause.Order = 3
+	pause.Rollback = &tgsrlv1.Rollback{ActionType: tgsrlv1.ActionType_ACTION_TYPE_RESUME, TargetId: "sandbox-a"}
+
+	results, err := provider.ExecutePlan(context.Background(), &tgsrlv1.PlacementPlan{PlanId: "plan", SnapshotRevision: 1, Actions: []*tgsrlv1.Action{share, priority, pause}})
+	if !errors.Is(err, ErrPartialFailure) {
+		t.Fatalf("ExecutePlan() error = %v, want ErrPartialFailure", err)
+	}
+	if results[0].GetRollbackStatus() != tgsrlv1.ActionResultStatus_ACTION_RESULT_STATUS_ROLLED_BACK || results[1].GetRollbackStatus() != tgsrlv1.ActionResultStatus_ACTION_RESULT_STATUS_FAILED {
+		t.Fatalf("rollback results = %v, want share rolled back and priority rollback failed", results)
+	}
+	sandbox, lookupErr := provider.GetSandbox(context.Background(), "sandbox-a")
+	if lookupErr != nil {
+		t.Fatalf("GetSandbox() error = %v", lookupErr)
+	}
+	if sandbox.Share != initial.Share || sandbox.Priority != 99 {
+		t.Fatalf("sandbox after rollback = share %v priority %d, want %v/99", sandbox.Share, sandbox.Priority, initial.Share)
+	}
+}
+
+func TestOverlappingRollbackFailurePreservesLatestSideEffect(t *testing.T) {
+	initial := testSandbox(SandboxStateRunning)
+	initial.Share = 0.25
+	provider := newTestProvider(t,
+		WithSandboxes(initial),
+		WithFaults(FaultOptions{
+			PartialFailureAt:      3,
+			FailRollbackActionIDs: map[string]InjectedFailure{"share-latest": {Message: "rollback unavailable"}},
+		}),
+	)
+	first := testAction("share-first", "plan", "share-first-key", tgsrlv1.ActionType_ACTION_TYPE_SET_SHARE, tgsrlv1.ActionLevel_ACTION_LEVEL_L1, 1)
+	first.Order = 1
+	first.Share = 0.5
+	first.Rollback = &tgsrlv1.Rollback{ActionType: tgsrlv1.ActionType_ACTION_TYPE_SET_SHARE, TargetId: "sandbox-a"}
+	latest := testAction("share-latest", "plan", "share-latest-key", tgsrlv1.ActionType_ACTION_TYPE_SET_SHARE, tgsrlv1.ActionLevel_ACTION_LEVEL_L1, 1)
+	latest.Order = 2
+	latest.Share = 0.8
+	latest.Rollback = &tgsrlv1.Rollback{ActionType: tgsrlv1.ActionType_ACTION_TYPE_SET_SHARE, TargetId: "sandbox-a"}
+	pause := testAction("pause", "plan", "pause-key", tgsrlv1.ActionType_ACTION_TYPE_PAUSE, tgsrlv1.ActionLevel_ACTION_LEVEL_L2, 1)
+	pause.Order = 3
+	pause.Rollback = &tgsrlv1.Rollback{ActionType: tgsrlv1.ActionType_ACTION_TYPE_RESUME, TargetId: "sandbox-a"}
+
+	results, err := provider.ExecutePlan(context.Background(), &tgsrlv1.PlacementPlan{PlanId: "plan", SnapshotRevision: 1, Actions: []*tgsrlv1.Action{first, latest, pause}})
+	if !errors.Is(err, ErrPartialFailure) {
+		t.Fatalf("ExecutePlan() error = %v, want ErrPartialFailure", err)
+	}
+	if results[0].GetRollbackStatus() != tgsrlv1.ActionResultStatus_ACTION_RESULT_STATUS_ROLLED_BACK || results[1].GetRollbackStatus() != tgsrlv1.ActionResultStatus_ACTION_RESULT_STATUS_FAILED {
+		t.Fatalf("rollback results = %v, want first rolled back and latest rollback failed", results)
+	}
+	sandbox, lookupErr := provider.GetSandbox(context.Background(), "sandbox-a")
+	if lookupErr != nil {
+		t.Fatalf("GetSandbox() error = %v", lookupErr)
+	}
+	if sandbox.Share != latest.Share {
+		t.Fatalf("share after overlapping rollback = %v, want latest side effect %v", sandbox.Share, latest.Share)
+	}
+}
+
+func TestRollbackDoesNotOverwriteAnotherSandbox(t *testing.T) {
+	firstSandbox := testSandbox(SandboxStateRunning)
+	firstSandbox.Share = 0.25
+	secondSandbox := testSandbox(SandboxStateRunning)
+	secondSandbox.SandboxID = "sandbox-b"
+	secondSandbox.Binding = testBinding("sandbox-b", 1)
+	secondSandbox.Binding.BindingId = "binding-b"
+	secondSandbox.Priority = 3
+	provider := newTestProvider(t,
+		WithSandboxes(firstSandbox, secondSandbox),
+		WithFaults(FaultOptions{
+			PartialFailureAt:      3,
+			FailRollbackActionIDs: map[string]InjectedFailure{"priority-b": {Message: "rollback unavailable"}},
+		}),
+	)
+	share := testAction("share-a", "plan", "share-a-key", tgsrlv1.ActionType_ACTION_TYPE_SET_SHARE, tgsrlv1.ActionLevel_ACTION_LEVEL_L1, 1)
+	share.Order = 1
+	share.Share = 0.8
+	share.Rollback = &tgsrlv1.Rollback{ActionType: tgsrlv1.ActionType_ACTION_TYPE_SET_SHARE, TargetId: "sandbox-a"}
+	priority := testAction("priority-b", "plan", "priority-b-key", tgsrlv1.ActionType_ACTION_TYPE_SET_PRIORITY, tgsrlv1.ActionLevel_ACTION_LEVEL_L1, 1)
+	priority.Order = 2
+	priority.TargetId = "sandbox-b"
+	priority.SandboxId = "sandbox-b"
+	priority.Binding = testBinding("sandbox-b", 1)
+	priority.Priority = 99
+	priority.Rollback = &tgsrlv1.Rollback{ActionType: tgsrlv1.ActionType_ACTION_TYPE_SET_PRIORITY, TargetId: "sandbox-b"}
+	pause := testAction("pause", "plan", "pause-key", tgsrlv1.ActionType_ACTION_TYPE_PAUSE, tgsrlv1.ActionLevel_ACTION_LEVEL_L2, 1)
+	pause.Order = 3
+	pause.Rollback = &tgsrlv1.Rollback{ActionType: tgsrlv1.ActionType_ACTION_TYPE_RESUME, TargetId: "sandbox-a"}
+
+	results, err := provider.ExecutePlan(context.Background(), &tgsrlv1.PlacementPlan{PlanId: "plan", SnapshotRevision: 1, Actions: []*tgsrlv1.Action{share, priority, pause}})
+	if !errors.Is(err, ErrPartialFailure) {
+		t.Fatalf("ExecutePlan() error = %v, want ErrPartialFailure", err)
+	}
+	if results[0].GetRollbackStatus() != tgsrlv1.ActionResultStatus_ACTION_RESULT_STATUS_ROLLED_BACK || results[1].GetRollbackStatus() != tgsrlv1.ActionResultStatus_ACTION_RESULT_STATUS_FAILED {
+		t.Fatalf("rollback results = %v, want sandbox-a rolled back and sandbox-b rollback failed", results)
+	}
+	firstAfter, firstErr := provider.GetSandbox(context.Background(), "sandbox-a")
+	if firstErr != nil {
+		t.Fatalf("GetSandbox(sandbox-a) error = %v", firstErr)
+	}
+	secondAfter, secondErr := provider.GetSandbox(context.Background(), "sandbox-b")
+	if secondErr != nil {
+		t.Fatalf("GetSandbox(sandbox-b) error = %v", secondErr)
+	}
+	if firstAfter.Share != firstSandbox.Share || secondAfter.Priority != 99 {
+		t.Fatalf("sandboxes after rollback = a.share %v b.priority %d, want %v/99", firstAfter.Share, secondAfter.Priority, firstSandbox.Share)
+	}
+}
+
+func TestExecutePlanRejectsFalseRollbackDeclarations(t *testing.T) {
+	tests := []struct {
+		name     string
+		rollback *tgsrlv1.Rollback
+	}{
+		{name: "wrong action type", rollback: &tgsrlv1.Rollback{ActionType: tgsrlv1.ActionType_ACTION_TYPE_SET_PRIORITY, TargetId: "sandbox-a"}},
+		{name: "wrong target", rollback: &tgsrlv1.Rollback{ActionType: tgsrlv1.ActionType_ACTION_TYPE_SET_SHARE, TargetId: "sandbox-b"}},
+		{name: "unexpected restore binding", rollback: &tgsrlv1.Rollback{ActionType: tgsrlv1.ActionType_ACTION_TYPE_SET_SHARE, TargetId: "sandbox-a", RestoreBinding: testBinding("sandbox-a", 1)}},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			initial := testSandbox(SandboxStateRunning)
+			initial.Share = 0.25
+			provider := newTestProvider(t, WithSandboxes(initial))
+			action := testAction("share", "plan", "share-key", tgsrlv1.ActionType_ACTION_TYPE_SET_SHARE, tgsrlv1.ActionLevel_ACTION_LEVEL_L1, 1)
+			action.Share = 0.8
+			action.Rollback = test.rollback
+
+			if _, err := provider.ExecutePlan(context.Background(), &tgsrlv1.PlacementPlan{PlanId: "plan", SnapshotRevision: 1, Actions: []*tgsrlv1.Action{action}}); !errors.Is(err, ErrInvalidArgument) {
+				t.Fatalf("ExecutePlan() error = %v, want ErrInvalidArgument", err)
+			}
+			sandbox, lookupErr := provider.GetSandbox(context.Background(), "sandbox-a")
+			if lookupErr != nil {
+				t.Fatalf("GetSandbox() error = %v", lookupErr)
+			}
+			if sandbox.Share != initial.Share {
+				t.Fatalf("share after rejected plan = %v, want %v", sandbox.Share, initial.Share)
+			}
+		})
+	}
+}
+
+func TestExecutePlanRejectsMismatchedRestoreBindingAndRollsBackPriorMutation(t *testing.T) {
+	initial := testSandbox(SandboxStateRunning)
+	initial.Share = 0.25
+	provider := newTestProvider(t, WithSandboxes(initial))
+	share := testAction("share", "plan", "share-key", tgsrlv1.ActionType_ACTION_TYPE_SET_SHARE, tgsrlv1.ActionLevel_ACTION_LEVEL_L1, 1)
+	share.Order = 1
+	share.Share = 0.8
+	share.Rollback = &tgsrlv1.Rollback{ActionType: tgsrlv1.ActionType_ACTION_TYPE_SET_SHARE, TargetId: "sandbox-a"}
+	resize := testAction("resize", "plan", "resize-key", tgsrlv1.ActionType_ACTION_TYPE_RESIZE, tgsrlv1.ActionLevel_ACTION_LEVEL_L1, 1)
+	resize.Order = 2
+	resize.Binding.Resources.CpuMillis = 2000
+	mismatched := testBinding("sandbox-a", 1)
+	mismatched.Resources.CpuMillis = 500
+	resize.Rollback = &tgsrlv1.Rollback{ActionType: tgsrlv1.ActionType_ACTION_TYPE_RESIZE, TargetId: "sandbox-a", RestoreBinding: mismatched}
+
+	results, err := provider.ExecutePlan(context.Background(), &tgsrlv1.PlacementPlan{PlanId: "plan", SnapshotRevision: 1, Actions: []*tgsrlv1.Action{share, resize}})
+	if !errors.Is(err, ErrPartialFailure) {
+		t.Fatalf("ExecutePlan() error = %v, want ErrPartialFailure", err)
+	}
+	if results[0].GetRollbackStatus() != tgsrlv1.ActionResultStatus_ACTION_RESULT_STATUS_ROLLED_BACK || results[1].GetStatus() != tgsrlv1.ActionResultStatus_ACTION_RESULT_STATUS_FAILED {
+		t.Fatalf("results = %v, want first action rolled back and invalid resize failed", results)
+	}
+	sandbox, lookupErr := provider.GetSandbox(context.Background(), "sandbox-a")
+	if lookupErr != nil {
+		t.Fatalf("GetSandbox() error = %v", lookupErr)
+	}
+	if sandbox.Share != initial.Share || !proto.Equal(sandbox.Binding, initial.Binding) {
+		t.Fatalf("sandbox after invalid rollback compensation = %+v, want original state", sandbox)
+	}
+}
+
+func TestExecutePlanBindRollbackUsesBindingTarget(t *testing.T) {
+	provider := newTestProvider(t, WithFaults(FaultOptions{PartialFailureAt: 2}))
+	bind := testAction("bind", "plan", "bind-key", tgsrlv1.ActionType_ACTION_TYPE_BIND, tgsrlv1.ActionLevel_ACTION_LEVEL_L1, 1)
+	bind.Order = 1
+	bind.Rollback = &tgsrlv1.Rollback{ActionType: tgsrlv1.ActionType_ACTION_TYPE_RELEASE, TargetId: bind.GetBinding().GetBindingId()}
+	share := testAction("share", "plan", "share-key", tgsrlv1.ActionType_ACTION_TYPE_SET_SHARE, tgsrlv1.ActionLevel_ACTION_LEVEL_L1, 1)
+	share.Order = 2
+	share.Rollback = &tgsrlv1.Rollback{ActionType: tgsrlv1.ActionType_ACTION_TYPE_SET_SHARE, TargetId: "sandbox-a"}
+
+	results, err := provider.ExecutePlan(context.Background(), &tgsrlv1.PlacementPlan{PlanId: "plan", SnapshotRevision: 1, Actions: []*tgsrlv1.Action{bind, share}})
+	if !errors.Is(err, ErrPartialFailure) {
+		t.Fatalf("ExecutePlan() error = %v, want ErrPartialFailure", err)
+	}
+	if results[0].GetRollbackStatus() != tgsrlv1.ActionResultStatus_ACTION_RESULT_STATUS_ROLLED_BACK {
+		t.Fatalf("bind result = %v, want rolled back", results[0])
+	}
+	if _, lookupErr := provider.GetSandbox(context.Background(), "sandbox-a"); !errors.Is(lookupErr, ErrNotFound) {
+		t.Fatalf("GetSandbox() error = %v, want ErrNotFound after bind rollback", lookupErr)
+	}
+}
+
+func TestL4GenerationFencesLateEvent(t *testing.T) {
+	provider := newTestProvider(t, WithSandboxes(testSandbox(SandboxStateRunning)))
+	action := testAction("recreate", "plan", "recreate-key", tgsrlv1.ActionType_ACTION_TYPE_RECREATE, tgsrlv1.ActionLevel_ACTION_LEVEL_L4, 1)
+	if _, err := provider.ExecuteAction(context.Background(), action); err != nil {
+		t.Fatalf("ExecuteAction() error = %v", err)
+	}
+	before, _ := provider.Snapshot(context.Background())
+	err := provider.ApplySandboxEvent(context.Background(), SandboxEvent{
+		SandboxID:  "sandbox-a",
+		Generation: 1,
+		State:      SandboxStateRunning,
+	})
+	if !errors.Is(err, ErrGenerationFenced) {
+		t.Fatalf("ApplySandboxEvent() error = %v, want ErrGenerationFenced", err)
+	}
+	after, _ := provider.Snapshot(context.Background())
+	if after.GetRevision() != before.GetRevision() {
+		t.Fatalf("fenced event advanced revision from %d to %d", before.GetRevision(), after.GetRevision())
+	}
+	sandbox, _ := provider.GetSandbox(context.Background(), "sandbox-a")
+	if sandbox.Generation != 2 || sandbox.State != SandboxStateBound {
+		t.Fatalf("sandbox after late event = generation %d state %s, want 2/bound", sandbox.Generation, sandbox.State)
+	}
+}
+
+func TestApplySandboxEventClonesBinding(t *testing.T) {
+	provider := newTestProvider(t)
+	safePoint := true
+	binding := testBinding("sandbox-a", 1)
+	err := provider.ApplySandboxEvent(context.Background(), SandboxEvent{
+		SandboxID:  "sandbox-a",
+		Generation: 1,
+		State:      SandboxStateRunning,
+		Binding:    binding,
+		SafePoint:  &safePoint,
+	})
+	if err != nil {
+		t.Fatalf("ApplySandboxEvent() error = %v", err)
+	}
+	binding.DeviceIds[0] = "caller-mutated"
+	sandbox, err := provider.GetSandbox(context.Background(), "sandbox-a")
+	if err != nil {
+		t.Fatalf("GetSandbox() error = %v", err)
+	}
+	if sandbox.Binding.GetDeviceIds()[0] != "mock-cpu-0" || !sandbox.SafePoint {
+		t.Fatalf("sandbox event was not cloned or applied: %+v", sandbox)
+	}
+}
+
+func TestFaultConfigurationIsCloned(t *testing.T) {
+	failures := map[string]InjectedFailure{"pause": {Code: "UNAVAILABLE", Message: "mock outage"}}
+	provider := newTestProvider(t, WithSandboxes(testSandbox(SandboxStateRunning)), WithFaults(FaultOptions{FailActionIDs: failures}))
+	delete(failures, "pause")
+	action := testAction("pause", "plan", "key", tgsrlv1.ActionType_ACTION_TYPE_PAUSE, tgsrlv1.ActionLevel_ACTION_LEVEL_L2, 1)
+	result, err := provider.ExecuteAction(context.Background(), action)
+	if err == nil {
+		t.Fatal("ExecuteAction() error = nil, want configured failure")
+	}
+	if result.GetErrorCode() != "UNAVAILABLE" {
+		t.Fatalf("result code = %q, want UNAVAILABLE", result.GetErrorCode())
+	}
+}
+
+func TestConcurrentDuplicateActionHasOneSideEffect(t *testing.T) {
+	provider := newTestProvider(t, WithSandboxes(testSandbox(SandboxStateRunning)))
+	action := testAction("share", "plan", "same-key", tgsrlv1.ActionType_ACTION_TYPE_SET_SHARE, tgsrlv1.ActionLevel_ACTION_LEVEL_L1, 1)
+	action.Share = 0.6
+
+	const workers = 32
+	var waitGroup sync.WaitGroup
+	errorsFound := make(chan error, workers)
+	for range workers {
+		waitGroup.Add(1)
+		go func() {
+			defer waitGroup.Done()
+			result, err := provider.ExecuteAction(context.Background(), action)
+			if err != nil {
+				errorsFound <- err
+				return
+			}
+			if result.GetStatus() != tgsrlv1.ActionResultStatus_ACTION_RESULT_STATUS_SUCCEEDED {
+				errorsFound <- fmt.Errorf("status = %s", result.GetStatus())
+			}
+		}()
+	}
+	waitGroup.Wait()
+	close(errorsFound)
+	for err := range errorsFound {
+		t.Errorf("concurrent ExecuteAction() error = %v", err)
+	}
+	snapshot, _ := provider.Snapshot(context.Background())
+	if snapshot.GetRevision() != 2 {
+		t.Fatalf("revision after duplicate storm = %d, want 2", snapshot.GetRevision())
+	}
+}
+
+func newTestProvider(t *testing.T, options ...MockOption) *MockResourceProvider {
+	t.Helper()
+	options = append(options, WithNow(func() time.Time { return fixtureNow }))
+	provider, err := NewMockResourceProvider(options...)
+	if err != nil {
+		t.Fatalf("NewMockResourceProvider() error = %v", err)
+	}
+	return provider
+}
+
+func testSandbox(state SandboxState) Sandbox {
+	return Sandbox{
+		SandboxID:  "sandbox-a",
+		State:      state,
+		Generation: 1,
+		Binding:    testBinding("sandbox-a", 1),
+		SafePoint:  true,
+	}
+}
+
+func testBinding(sandboxID string, generation uint64) *tgsrlv1.Binding {
+	return &tgsrlv1.Binding{
+		BindingId:     "binding-a",
+		PendingUnitId: "unit-a",
+		DeviceIds:     []string{"mock-cpu-0"},
+		Resources:     &tgsrlv1.ResourceVector{CpuMillis: 1000, MemoryBytes: 1024},
+		SandboxId:     sandboxID,
+		Generation:    generation,
+	}
+}
+
+func testAction(actionID, planID, idempotencyKey string, actionType tgsrlv1.ActionType, level tgsrlv1.ActionLevel, revision uint64) *tgsrlv1.Action {
+	return &tgsrlv1.Action{
+		ActionId:                 actionID,
+		ActionType:               actionType,
+		Level:                    level,
+		TargetId:                 "sandbox-a",
+		SandboxId:                "sandbox-a",
+		Binding:                  testBinding("sandbox-a", 1),
+		PlanId:                   planID,
+		ExpectedGeneration:       1,
+		ExpectedSnapshotRevision: revision,
+		Deadline:                 timestamppb.New(fixtureNow.Add(time.Minute)),
+		IdempotencyKey:           idempotencyKey,
+	}
+}
+
+func removeString(values []string, unwanted string) []string {
+	result := make([]string, 0, len(values))
+	for _, value := range values {
+		if value != unwanted {
+			result = append(result, value)
+		}
+	}
+	return result
+}

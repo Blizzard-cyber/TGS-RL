@@ -1,0 +1,46 @@
+schema_version: "tgsrl.io/capability-set/v1alpha1"
+capability_id: "cpu-mock-v1"
+revision: 1
+source: "mock"
+measured_at: null
+semantics: "simulated"
+verification_status: "unit-tested-local-mock"
+runtime_loader: false
+
+names:
+  - "logical-cpu"
+
+attributes:
+  data_origin: "synthetic-or-replay"
+  hardware_backed: "false"
+  accelerator_vendor: "none"
+
+algorithms:
+  - "ppo"
+  - "grpo"
+
+rollout_modes:
+  - "sync"
+  - "partially_async"
+  - "fully_async"
+
+supported_actions:
+  - "set_share"
+  - "set_priority"
+  - "resize"
+  - "pause"
+  - "resume"
+  - "sleep"
+  - "offload"
+  - "rebind"
+  - "recreate"
+  - "bind"
+  - "release"
+
+limits: {}
+
+claims:
+  mock_only: true
+  live_gpu: false
+  hardware_latency: false
+  performance: false
