@@ -12,6 +12,7 @@ const decisionProtoFixture = {
   fallback: false,
   selected_plan: {
     plan_id: 'plan-1',
+    bindings: [{ pending_unit_id: 'unit-1', device_ids: ['gpu-node-1', 'gpu-node-2'] }],
     actions: [
       {
         action_id: 'act-1',
@@ -44,7 +45,7 @@ const decisionProtoFixture = {
       plan_id: 'plan-2',
       plan: {
         plan_id: 'plan-2',
-        bindings: [{ device_ids: ['gpu-node-9'] }],
+        bindings: [{ pending_unit_id: 'unit-1', device_ids: ['gpu-node-9'] }],
       },
     },
     {
@@ -52,7 +53,7 @@ const decisionProtoFixture = {
       plan_id: 'plan-1',
       plan: {
         plan_id: 'plan-1',
-        bindings: [{ device_ids: ['gpu-node-1', 'gpu-node-2'] }],
+        bindings: [{ pending_unit_id: 'unit-1', device_ids: ['gpu-node-1', 'gpu-node-2'] }],
       },
     },
   ],
@@ -781,18 +782,30 @@ describe('HttpApiClient contract', () => {
     });
   });
 
-  it('flattens candidate binding device ids and matches selected candidate by plan id', async () => {
+  it('matches selected candidates by binding identity and maps rejections separately', async () => {
     const fetchMock = vi.fn(async () =>
       jsonResponse({
         decision: {
           ...decisionProtoFixture,
+          selected_plan: {
+            plan_id: 'final-plan',
+            bindings: [
+              {
+                pending_unit_id: 'unit-1',
+                device_ids: ['gpu-node-2', 'gpu-node-1'],
+                generation: 3,
+                resources: { cpu_millis: 500, accelerator_units: 0.5 },
+              },
+            ],
+            actions: decisionProtoFixture.selected_plan.actions,
+          },
           candidates: [
             {
               candidate_id: 'cand-1',
               plan_id: 'plan-2',
               plan: {
                 plan_id: 'plan-2',
-                bindings: [{ device_ids: ['gpu-node-9'] }],
+                bindings: [{ pending_unit_id: 'unit-1', device_ids: ['gpu-node-9'] }],
               },
             },
             {
@@ -801,10 +814,21 @@ describe('HttpApiClient contract', () => {
               plan: {
                 plan_id: 'plan-1',
                 bindings: [
-                  { device_ids: ['gpu-node-1'] },
-                  { device_ids: ['gpu-node-2'] },
+                  {
+                    pending_unit_id: 'unit-1',
+                    device_ids: ['gpu-node-1', 'gpu-node-2'],
+                    generation: 3,
+                    resources: { accelerator_units: 0.5, cpu_millis: 500 },
+                  },
                 ],
               },
+            },
+          ],
+          rejected_candidates: [
+            {
+              candidate_id: 'rejected-1',
+              reason: 'CANDIDATE_REJECTION_REASON_CAPABILITY_MISMATCH',
+              detail: 'missing capability names: gpu',
             },
           ],
         },
@@ -819,6 +843,14 @@ describe('HttpApiClient contract', () => {
     expect(result.data?.candidates).toEqual([
       expect.objectContaining({ id: 'cand-1', deviceLabel: 'gpu-node-9', selected: false }),
       expect.objectContaining({ id: 'cand-2', deviceLabel: 'gpu-node-1, gpu-node-2', selected: true }),
+    ]);
+    expect(result.data?.selectedDecision?.selectedCandidate).toBe('cand-2');
+    expect(result.data?.rejectedCandidates).toEqual([
+      {
+        id: 'rejected-1',
+        reason: 'CANDIDATE_REJECTION_REASON_CAPABILITY_MISMATCH',
+        detail: 'missing capability names: gpu',
+      },
     ]);
     expect(result.data?.relatedActions[0]).toMatchObject({
       actionId: 'act-1',

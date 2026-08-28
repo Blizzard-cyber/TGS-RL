@@ -512,8 +512,10 @@ export function getDecisionExplorer(decisionId: string): DecisionExplorerResult 
     selectedDecision: decision,
     candidates: [
       { id: 'gpu-cell-4', deviceLabel: 'gpu-cell-4', score: 0.91, reason: 'Highest headroom among READY GPU cells.', selected: true },
-      { id: 'gpu-cell-2', deviceLabel: 'gpu-cell-2', score: 0.72, reason: 'Rejected due to safe-point conflict on learner sandbox.', selected: false },
-      { id: 'cpu-bank-2', deviceLabel: 'cpu-bank-2', score: 0.41, reason: 'Rejected because GPU capability is required.', selected: false },
+      { id: 'gpu-cell-2', deviceLabel: 'gpu-cell-2', score: 0.72, reason: 'Feasible candidate not selected by policy.', selected: false },
+    ],
+    rejectedCandidates: [
+      { id: 'cpu-bank-2', reason: 'CAPABILITY_MISMATCH', detail: 'GPU capability is required.' },
     ],
     relatedActions: decision.actions,
   };

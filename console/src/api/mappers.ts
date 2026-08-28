@@ -143,8 +143,9 @@ export function mapDecision(inputValue: unknown): DecisionRecord {
     };
   });
   const selectedPlanId = typeof selectedPlan.planId === 'string' ? selectedPlan.planId : undefined;
+  const selectedBindings = ensureArray<Record<string, unknown>>(selectedPlan.bindings);
   const selectedCandidate = ensureArray<Record<string, unknown>>(input.candidates).find(
-    (candidate) => String(candidate.planId ?? ensureObject(candidate.plan).planId ?? '') === selectedPlanId,
+    (candidate) => candidateMatchesSelectedBindings(candidate, selectedBindings),
   );
   return {
     id: String(input.decisionId ?? ''),
@@ -164,6 +165,60 @@ export function mapDecision(inputValue: unknown): DecisionRecord {
       : `Selected ${String(selectedPlanId ?? 'plan')} for stage ${String(input.stageId ?? '')}.`,
     actions,
   };
+}
+
+function normalizedDeviceIds(binding: Record<string, unknown>): string[] {
+  return ensureArray<unknown>(binding.deviceIds).map(String).sort();
+}
+
+function stableObject(value: unknown): string {
+  const normalized = (item: unknown): unknown => {
+    if (Array.isArray(item)) {
+      return item.map(normalized);
+    }
+    if (item !== null && typeof item === 'object') {
+      return Object.fromEntries(
+        Object.entries(item as Record<string, unknown>)
+          .sort(([left], [right]) => left.localeCompare(right))
+          .map(([key, nested]) => [key, normalized(nested)]),
+      );
+    }
+    return item;
+  };
+  return JSON.stringify(normalized(value));
+}
+
+function bindingIdentityMatches(
+  candidateBinding: Record<string, unknown>,
+  selectedBinding: Record<string, unknown>,
+): boolean {
+  if (String(candidateBinding.pendingUnitId ?? '') !== String(selectedBinding.pendingUnitId ?? '')) {
+    return false;
+  }
+  if (stableObject(normalizedDeviceIds(candidateBinding)) !== stableObject(normalizedDeviceIds(selectedBinding))) {
+    return false;
+  }
+  const candidateGeneration = candidateBinding.generation;
+  const selectedGeneration = selectedBinding.generation;
+  if (typeof candidateGeneration === 'number' && typeof selectedGeneration === 'number' && candidateGeneration !== selectedGeneration) {
+    return false;
+  }
+  const candidateResources = ensureObject(candidateBinding.resources);
+  const selectedResources = ensureObject(selectedBinding.resources);
+  if (Object.keys(candidateResources).length > 0 && Object.keys(selectedResources).length > 0) {
+    return stableObject(candidateResources) === stableObject(selectedResources);
+  }
+  return true;
+}
+
+function candidateMatchesSelectedBindings(
+  candidate: Record<string, unknown>,
+  selectedBindings: Record<string, unknown>[],
+): boolean {
+  const candidateBindings = ensureArray<Record<string, unknown>>(ensureObject(candidate.plan).bindings);
+  return candidateBindings.length > 0 && candidateBindings.every((candidateBinding) =>
+    selectedBindings.some((selectedBinding) => bindingIdentityMatches(candidateBinding, selectedBinding)),
+  );
 }
 
 export function mapTimelineEvent(inputValue: unknown, jobId: string): TimelineResponse['events'][number] {
@@ -357,11 +412,20 @@ export function mapDecisionExplorer(decision: unknown, jobId: string): DecisionE
         id: String(candidate.candidateId ?? ''),
         deviceLabel: deviceIds.join(', ') || String(candidate.candidateId ?? 'candidate'),
         score: typeof candidate.score === 'number' ? candidate.score : 0,
-        reason: String(candidate.detail ?? 'Candidate evaluated'),
-        selected:
-          String(candidate.planId ?? plan.planId ?? '') === String(mappedDecision.selectedPlanId ?? ''),
+        reason: String(candidate.detail ?? 'Feasible candidate'),
+        selected: candidateMatchesSelectedBindings(
+          candidate,
+          ensureArray<Record<string, unknown>>(ensureObject(rawDecision.selectedPlan).bindings),
+        ),
       };
     }),
+    rejectedCandidates: ensureArray<Record<string, unknown>>(rawDecision.rejectedCandidates).map(
+      (candidate) => ({
+        id: String(candidate.candidateId ?? ''),
+        reason: String(candidate.reason ?? 'CANDIDATE_REJECTION_REASON_UNKNOWN'),
+        detail: String(candidate.detail ?? 'Candidate rejected'),
+      }),
+    ),
     relatedActions: mappedDecision.actions,
   };
 }

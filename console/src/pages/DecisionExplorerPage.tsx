@@ -130,7 +130,7 @@ export function DecisionExplorerPage() {
             )}
           </SurfaceStateBoundary>
         </Panel>
-        <Panel title="Candidate analysis" subtitle="Selected candidate, rejection reasons, and action results.">
+        <Panel title="Candidate analysis" subtitle="Feasible candidates, rejected candidates, and action results.">
           <SurfaceStateBoundary result={explorerQuery.result} retry={explorerQuery.retry}>
             {(data) => (
               <>
@@ -159,11 +159,20 @@ export function DecisionExplorerPage() {
                     candidate.deviceLabel,
                     candidate.score.toFixed(2),
                     <Pill key={`${candidate.id}-selection`} tone={candidate.selected ? 'good' : 'warn'}>
-                      {candidate.selected ? 'Selected' : 'Rejected'}
+                      {candidate.selected ? 'Selected' : 'Feasible'}
                     </Pill>,
                     candidate.reason,
                   ])}
                   emptyLabel="No candidate records were retained for this decision."
+                />
+                <DataTable
+                  columns={['Rejected candidate', 'Reason', 'Detail']}
+                  rows={(data?.rejectedCandidates ?? []).map((candidate) => [
+                    candidate.id,
+                    titleCase(candidate.reason.replace(/^CANDIDATE_REJECTION_REASON_/, '')),
+                    candidate.detail,
+                  ])}
+                  emptyLabel="No rejected candidate evidence was retained for this decision."
                 />
                 <DataTable
                   columns={['Action', 'Sandbox', 'Status', 'Detail']}

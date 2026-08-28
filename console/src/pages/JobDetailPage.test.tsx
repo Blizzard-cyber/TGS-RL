@@ -110,7 +110,7 @@ describe('JobDetailPage controls', () => {
       listTimeline: async () => ready({ events: [] }),
       getTopology: async () => ready({ nodes: [], edges: [], lastUpdated: '' }),
       listSandboxes: async () => ready({ sandboxes: [] }),
-      getDecisionExplorer: async () => ready({ candidates: [], relatedActions: [] }),
+      getDecisionExplorer: async () => ready({ candidates: [], rejectedCandidates: [], relatedActions: [] }),
       listDecisions: async () => ready([]),
       listExperiments: async () => ready([]),
       createJob,

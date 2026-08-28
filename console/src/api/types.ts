@@ -194,6 +194,11 @@ export interface DecisionExplorerResult {
     reason: string;
     selected: boolean;
   }>;
+  rejectedCandidates: Array<{
+    id: string;
+    reason: string;
+    detail: string;
+  }>;
   relatedActions: DecisionAction[];
 }
 

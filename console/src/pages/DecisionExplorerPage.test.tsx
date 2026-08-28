@@ -104,7 +104,13 @@ describe('DecisionExplorerPage', () => {
           summary: `explorer ${decisionId}`,
           actions: [],
         },
-        candidates: [{ id: 'gpu-cell-4', deviceLabel: 'gpu-cell-4', score: 0.91, reason: 'best', selected: true }],
+        candidates: [
+          { id: 'gpu-cell-4', deviceLabel: 'gpu-cell-4', score: 0.91, reason: 'best', selected: true },
+          { id: 'gpu-cell-2', deviceLabel: 'gpu-cell-2', score: 0.72, reason: 'eligible', selected: false },
+        ],
+        rejectedCandidates: [
+          { id: 'cpu-bank-2', reason: 'CAPABILITY_MISMATCH', detail: 'GPU capability is required.' },
+        ],
         relatedActions: [],
       }),
     );
@@ -118,6 +124,9 @@ describe('DecisionExplorerPage', () => {
     );
 
     expect(await screen.findByText('dec-7104')).toBeInTheDocument();
+    expect(await screen.findByText('Feasible')).toBeInTheDocument();
+    expect(screen.getByText('CAPABILITY MISMATCH')).toBeInTheDocument();
+    expect(screen.getByText('GPU capability is required.')).toBeInTheDocument();
     await waitFor(() =>
       expect(getDecisionExplorer).toHaveBeenCalledWith('job-live-017', 'dec-7104', {
         filters: { mode: 'ready' },
@@ -242,6 +251,7 @@ describe('DecisionExplorerPage', () => {
           actions: [],
         },
         candidates: [],
+        rejectedCandidates: [],
         relatedActions: [],
       }),
     );
