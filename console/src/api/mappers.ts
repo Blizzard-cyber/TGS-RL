@@ -1,0 +1,409 @@
+import type {
+  DecisionExplorerResult,
+  DecisionRecord,
+  ExperimentSummary,
+  JobSummary,
+  OverviewResponse,
+  RunSummary,
+  SandboxResponse,
+  TimelineResponse,
+  TopologySnapshot,
+} from './types';
+import {
+  collectBindingDeviceIds,
+  createControlResult,
+  deriveOverviewHealth,
+  ensureArray,
+  ensureObject,
+  toDataKind,
+  toHealthFromRunState,
+  toJobState,
+  toRolloutMode,
+  toTimestamp,
+} from './helpers';
+
+export function mapJob(job: unknown, run?: RunSummary): JobSummary {
+  const input = ensureObject(job);
+  const labels = ensureObject(input.labels);
+  const desiredUnits = typeof input.desiredUnits === 'number' ? input.desiredUnits : 0;
+  return {
+    id: String(input.jobId ?? ''),
+    name: String(input.displayName ?? input.jobId ?? 'Unnamed job'),
+    algorithm: String(input.algorithm ?? 'Unknown'),
+    state: toJobState(typeof input.state === 'string' ? input.state : undefined),
+    rolloutMode: toRolloutMode(typeof input.rolloutMode === 'string' ? input.rolloutMode : undefined),
+    dataKind: toDataKind(typeof input.dataKind === 'string' ? input.dataKind : undefined),
+    queue: String(input.queue ?? 'default'),
+    priority: typeof input.priority === 'number' ? input.priority : 0,
+    desiredUnits,
+    activeUnits: run ? desiredUnits : 0,
+    gpuRequired: Object.keys(ensureObject(input.requiredCapabilities)).length > 0,
+    createdAt: toTimestamp(input.createdAt),
+    updatedAt: run?.startedAt ?? toTimestamp(input.createdAt),
+    owner: String(labels.owner ?? 'gateway'),
+    policyVersion: run?.policyVersion ?? String(labels.policy_version ?? ''),
+    traceId: run?.traceId ?? '',
+    executionId: '',
+    currentRunId: run?.id,
+    latestRunState: run?.state,
+    runCount: run ? 1 : 0,
+    health: run ? toHealthFromRunState(run.state) : 'degraded',
+  };
+}
+
+function toDecisionActionType(value: unknown, fallbackActionId: string): DecisionRecord['actions'][number]['type'] {
+  const normalized = String(value ?? fallbackActionId).toLowerCase();
+  if (normalized.includes('resize')) {
+    return 'resize';
+  }
+  if (normalized.includes('pause')) {
+    return 'pause';
+  }
+  if (normalized.includes('resume')) {
+    return 'resume';
+  }
+  if (normalized.includes('checkpoint')) {
+    return 'checkpoint';
+  }
+  if (normalized.includes('offload')) {
+    return 'offload';
+  }
+  return 'bind';
+}
+
+function toDecisionActionStatus(value: unknown): DecisionRecord['actions'][number]['status'] {
+  const normalized = String(value ?? '');
+  if (normalized === 'ACTION_RESULT_STATUS_FAILED') {
+    return 'failed';
+  }
+  if (normalized === 'ACTION_RESULT_STATUS_SKIPPED') {
+    return 'skipped';
+  }
+  if (normalized === 'ACTION_RESULT_STATUS_ROLLED_BACK') {
+    return 'rolled_back';
+  }
+  if (normalized === 'ACTION_RESULT_STATUS_SUCCEEDED') {
+    return 'succeeded';
+  }
+  return 'unknown';
+}
+
+export function mapRun(run: unknown): RunSummary {
+  const input = ensureObject(run);
+  const statuses = ensureArray<Record<string, unknown>>(input.componentStatus);
+  return {
+    id: String(input.runId ?? ''),
+    jobId: String(input.jobId ?? ''),
+    traceId: String(input.traceId ?? ''),
+    state: String(input.runState ?? input.state ?? 'JOB_RUN_STATE_UNKNOWN'),
+    attempt: typeof input.attempt === 'number' ? input.attempt : 0,
+    policyVersion: String(input.policyVersion ?? ''),
+    createdAt: toTimestamp(input.createdAt),
+    startedAt: typeof input.startedAt === 'string' ? input.startedAt : undefined,
+    completedAt: typeof input.completedAt === 'string' ? input.completedAt : undefined,
+    dataKind: toDataKind(typeof input.dataKind === 'string' ? input.dataKind : undefined),
+    componentHealth: statuses.map((status) => ({
+      component: String(status.component ?? 'unknown'),
+      health:
+        status.health === 'COMPONENT_HEALTH_FAILED'
+          ? 'failed'
+          : status.health === 'COMPONENT_HEALTH_DEGRADED'
+            ? 'degraded'
+            : status.health === 'COMPONENT_HEALTH_PROGRESSING'
+              ? 'progressing'
+              : 'healthy',
+      detail: String(status.detail ?? ''),
+    })),
+  };
+}
+
+export function mapDecision(inputValue: unknown): DecisionRecord {
+  const input = ensureObject(inputValue);
+  const selectedPlan = ensureObject(input.selectedPlan);
+  const planActions = ensureArray<Record<string, unknown>>(selectedPlan.actions);
+  const actionResults = ensureArray<Record<string, unknown>>(input.actionResults);
+  const actionResultById = new Map(
+    actionResults.map((actionResult) => [
+      String(actionResult.actionId ?? ''),
+      actionResult,
+    ]),
+  );
+  const actions: DecisionRecord['actions'] = (planActions.length ? planActions : actionResults).map((plannedAction) => {
+    const actionId = String(plannedAction.actionId ?? '');
+    const actionResult = actionResultById.get(actionId) ?? {};
+    const sandbox = ensureObject(plannedAction.sandbox);
+    const target = ensureObject(plannedAction.target);
+    return {
+      actionId,
+      type: toDecisionActionType(plannedAction.actionType ?? plannedAction.type, actionId),
+      sandboxId: String(plannedAction.sandboxId ?? sandbox.sandboxId ?? ''),
+      targetId: String(plannedAction.targetId ?? target.targetId ?? target.deviceId ?? ''),
+      status: toDecisionActionStatus(actionResult.status),
+      detail: String(actionResult.errorMessage ?? actionResult.errorCode ?? plannedAction.detail ?? 'Action completed'),
+    };
+  });
+  const selectedPlanId = typeof selectedPlan.planId === 'string' ? selectedPlan.planId : undefined;
+  const selectedCandidate = ensureArray<Record<string, unknown>>(input.candidates).find(
+    (candidate) => String(candidate.planId ?? ensureObject(candidate.plan).planId ?? '') === selectedPlanId,
+  );
+  return {
+    id: String(input.decisionId ?? ''),
+    sequence: typeof input.sequence === 'number' ? input.sequence : 0,
+    jobId: '',
+    runId: typeof input.runId === 'string' ? input.runId : undefined,
+    traceId: String(input.traceId ?? ''),
+    stageId: String(input.stageId ?? ''),
+    decidedAt: toTimestamp(input.decidedAt),
+    fallback: Boolean(input.fallback),
+    fallbackReason: typeof input.fallbackReason === 'string' ? input.fallbackReason : undefined,
+    selectedPlanId,
+    selectedCandidate: typeof selectedCandidate?.candidateId === 'string' ? selectedCandidate.candidateId : undefined,
+    policyVersion: String(input.policyVersion ?? ''),
+    summary: input.fallback
+      ? String(input.fallbackReason ?? 'Fallback decision')
+      : `Selected ${String(selectedPlanId ?? 'plan')} for stage ${String(input.stageId ?? '')}.`,
+    actions,
+  };
+}
+
+export function mapTimelineEvent(inputValue: unknown, jobId: string): TimelineResponse['events'][number] {
+  const input = ensureObject(inputValue);
+  const eventType = String(input.eventType ?? 'JOB_EVENT_TYPE_UNKNOWN');
+  const componentStatus = ensureObject(input.componentStatus);
+  const operation = ensureObject(input.operation);
+  const detail = typeof input.detail === 'string' ? input.detail : '';
+  return {
+    id: String(input.eventId ?? ''),
+    jobId,
+    runId: typeof input.runId === 'string' ? input.runId : undefined,
+    title: eventType.replace(/^JOB_EVENT_TYPE_/, '').replace(/_/g, ' '),
+    type:
+      eventType === 'JOB_EVENT_TYPE_JOB_STARTED'
+        ? 'phase-started'
+        : eventType === 'JOB_EVENT_TYPE_JOB_STOPPED'
+          ? 'phase-completed'
+          : eventType === 'JOB_EVENT_TYPE_COMPONENT_CHANGED'
+            ? 'backpressure'
+            : eventType === 'JOB_EVENT_TYPE_OPERATION_RECORDED'
+              ? 'decision-applied'
+              : 'policy-published',
+    occurredAt: toTimestamp(input.occurredAt),
+    sequence: typeof input.sequence === 'number' ? input.sequence : 0,
+    phase: String(componentStatus.component ?? operation.type ?? 'control-plane'),
+    sandboxId: undefined,
+    decisionId: undefined,
+    dataKind: toDataKind(typeof input.dataKind === 'string' ? input.dataKind : undefined),
+    severity:
+      componentStatus.health === 'COMPONENT_HEALTH_FAILED'
+        ? 'critical'
+        : componentStatus.health === 'COMPONENT_HEALTH_DEGRADED'
+          ? 'warn'
+          : 'info',
+    summary: detail || String(operation.reason ?? componentStatus.detail ?? eventType),
+  };
+}
+
+export function mapSandbox(inputValue: unknown, jobId: string): SandboxResponse['sandboxes'][number] {
+  const input = ensureObject(inputValue);
+  const binding = ensureObject(input.binding);
+  const resources = ensureObject(binding.resources);
+  const deviceIds = collectBindingDeviceIds(binding);
+  const state = String(input.state ?? 'RUNTIME_STATE_UNKNOWN').replace(/^RUNTIME_STATE_/, '').toLowerCase();
+  const sandboxState: SandboxResponse['sandboxes'][number]['state'] =
+    state === 'requested' ||
+    state === 'bound' ||
+    state === 'running' ||
+    state === 'paused' ||
+    state === 'sleeping' ||
+    state === 'terminated' ||
+    state === 'failed'
+      ? state
+      : 'unknown';
+  return {
+    id: String(input.sandboxId ?? ''),
+    jobId,
+    runId: typeof input.runId === 'string' ? input.runId : undefined,
+    state: sandboxState,
+    generation: typeof input.generation === 'number' ? input.generation : 0,
+    nodeLabel: deviceIds[0] ?? 'unbound',
+    gpuAttached: deviceIds.some((id) => id.toLowerCase().includes('gpu') || id.toLowerCase().includes('a100')),
+    share: typeof input.share === 'number' ? input.share : 0,
+    priority: typeof input.priority === 'number' ? input.priority : 0,
+    safePoint: Boolean(input.safePoint),
+    offloaded: Boolean(input.offloaded),
+    updatedAt: toTimestamp(input.observedAt),
+    bindingSummary: `devices=${deviceIds.join(', ') || 'none'}, cpu=${String(resources.cpuMillis ?? 0)}m`,
+  };
+}
+
+export function mapTopology(input: unknown, jobId: string): TopologySnapshot {
+  const payload = ensureObject(input);
+  const manifest = ensureObject(payload.manifest);
+  const runtimeUnits = ensureArray<Record<string, unknown>>(payload.runtimeUnits);
+  const sandboxRecords = ensureArray<Record<string, unknown>>(payload.sandboxes);
+  const run = ensureObject(payload.run);
+  const nodes = [
+    {
+      id: jobId,
+      label: String(run.displayName ?? jobId),
+      kind: 'job' as const,
+      status: 'ready' as const,
+      gpu: false,
+      utilization: runtimeUnits.length ? 0.7 : 0.1,
+    },
+    ...runtimeUnits.map((unit) => ({
+      id: String(unit.runtimeUnitId ?? ''),
+      label: String(unit.phaseId ?? unit.runtimeUnitId ?? ''),
+      kind: 'runtime' as const,
+      status:
+        String(unit.state ?? '').includes('FAILED')
+          ? 'down' as const
+          : String(unit.state ?? '').includes('PAUS')
+            ? 'degraded' as const
+            : String(unit.state ?? '').includes('RUNNING')
+              ? 'busy' as const
+              : 'ready' as const,
+      gpu: Object.keys(ensureObject(unit.requiredCapabilities)).length > 0,
+      utilization: String(unit.state ?? '').includes('RUNNING') ? 0.8 : 0.3,
+    })),
+    ...sandboxRecords.map((sandbox) => {
+      const mapped = mapSandbox(sandbox, jobId);
+      return {
+        id: mapped.id,
+        label: mapped.id,
+        kind: 'sandbox' as const,
+        status:
+          mapped.state === 'terminated' || mapped.state === 'failed'
+            ? 'down' as const
+            : mapped.state === 'paused' || mapped.state === 'sleeping' || mapped.state === 'unknown'
+              ? 'degraded' as const
+              : mapped.state === 'running'
+                ? 'busy' as const
+                : 'ready' as const,
+        gpu: mapped.gpuAttached,
+        share: mapped.share,
+        utilization: mapped.state === 'running' ? 0.75 : 0.2,
+      };
+    }),
+  ];
+  const edges = [
+    ...runtimeUnits.map((unit) => ({
+      from: jobId,
+      to: String(unit.runtimeUnitId ?? ''),
+      relation: 'feeds' as const,
+    })),
+    ...sandboxRecords.map((sandbox) => ({
+      from: String(sandbox.runId ?? jobId),
+      to: String(sandbox.sandboxId ?? ''),
+      relation: 'runs-in' as const,
+    })),
+  ];
+  return {
+    runId: typeof run.runId === 'string' ? run.runId : undefined,
+    manifestId: typeof manifest.manifestId === 'string' ? manifest.manifestId : undefined,
+    nodes,
+    edges,
+    lastUpdated: toTimestamp(run.createdAt ?? manifest.createdAt),
+  };
+}
+
+export function mapExperiment(inputValue: unknown): ExperimentSummary {
+  const input = ensureObject(inputValue);
+  const runs = ensureArray<Record<string, unknown>>(input.runs).map((run) => ({
+    id: String(run.experimentRunId ?? ''),
+    experimentId: String(run.experimentId ?? input.experimentId ?? ''),
+    runId: String(run.runId ?? ''),
+    label: String(run.runId ?? 'run'),
+    kind: (
+      String(run.kind ?? '').includes('REPLAY')
+        ? 'replay'
+        : String(run.kind ?? '').includes('LIVE')
+          ? 'live'
+          : 'simulation'
+    ) as 'replay' | 'live' | 'simulation',
+    dataKind: toDataKind(typeof run.dataKind === 'string' ? run.dataKind : undefined),
+    policyVersion: String(run.policyVersion ?? ''),
+    configHash: String(run.configHash ?? ''),
+    codeRevision: String(run.codeRevision ?? ''),
+    summary: String(ensureObject(run.annotations).summary ?? ''),
+    metrics: ensureArray<Record<string, unknown>>(run.metrics).map((metric) => ({
+      label: String(metric.name ?? 'metric'),
+      value: String(metric.value ?? ''),
+      delta: typeof metric.unit === 'string' ? metric.unit : undefined,
+    })),
+  }));
+  return {
+    id: String(input.experimentId ?? ''),
+    name: String(input.displayName ?? input.experimentId ?? 'Experiment'),
+    state:
+      String(input.state ?? 'EXPERIMENT_STATE_PENDING').replace(/^EXPERIMENT_STATE_/, '').toLowerCase() as ExperimentSummary['state'],
+    createdAt: toTimestamp(input.createdAt),
+    completedAt: typeof input.completedAt === 'string' ? input.completedAt : undefined,
+    summary: String(input.summary ?? 'No summary provided.'),
+    runs,
+  };
+}
+
+export function mapDecisionExplorer(decision: unknown, jobId: string): DecisionExplorerResult {
+  const rawDecision = ensureObject(decision);
+  const mappedDecision = mapDecision(rawDecision);
+  mappedDecision.jobId = jobId;
+  return {
+    selectedDecision: mappedDecision,
+    candidates: ensureArray<Record<string, unknown>>(rawDecision.candidates).map((candidate) => {
+      const plan = ensureObject(candidate.plan);
+      const deviceIds = collectBindingDeviceIds(plan);
+      return {
+        id: String(candidate.candidateId ?? ''),
+        deviceLabel: deviceIds.join(', ') || String(candidate.candidateId ?? 'candidate'),
+        score: typeof candidate.score === 'number' ? candidate.score : 0,
+        reason: String(candidate.detail ?? 'Candidate evaluated'),
+        selected:
+          String(candidate.planId ?? plan.planId ?? '') === String(mappedDecision.selectedPlanId ?? ''),
+      };
+    }),
+    relatedActions: mappedDecision.actions,
+  };
+}
+
+export function buildOverview(
+  mappedJobs: JobSummary[],
+  mappedExperiments: ExperimentSummary[],
+  health: Record<string, unknown>,
+  capabilities: Record<string, unknown>,
+): OverviewResponse {
+  return {
+    metrics: [
+      { label: 'Retained jobs', value: String(mappedJobs.length), tone: 'good' },
+      {
+        label: 'Gateway status',
+        value: String(health.status ?? 'unknown').toUpperCase(),
+        tone: String(health.status ?? '') === 'ok' ? 'good' : 'critical',
+      },
+      {
+        label: 'Protocol',
+        value: String(capabilities.protocolVersion ?? 'v0.0'),
+      },
+      {
+        label: 'Experiments',
+        value: String(mappedExperiments.length),
+      },
+    ],
+    jobs: mappedJobs,
+    experiments: mappedExperiments,
+    decisions: [],
+    capabilities: {
+      protocolVersion: String(capabilities.protocolVersion ?? 'v0.0'),
+      dataKinds: ensureArray<string>(capabilities.dataKinds),
+      pagination: String(ensureObject(capabilities.pagination).kind ?? 'opaque'),
+    },
+    systemHealth: {
+      status: String(health.status ?? 'unknown'),
+      observedAt: String(health.observedAt ?? ''),
+      counts: ensureObject(health.counts) as Record<string, number>,
+    },
+    alerts: deriveOverviewHealth(mappedJobs, health),
+  };
+}
+
+export { createControlResult };
