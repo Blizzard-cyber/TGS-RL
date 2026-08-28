@@ -79,6 +79,7 @@ message ReplayStepArtifact {
   SchedulingIntent intent = 3;
   ClusterSnapshot snapshot = 4;
   DecisionRecord recorded_decision = 5;
+  EvaluationContext evaluation_context = 6;
 }
 
 // ReplayDecisionArtifact captures one replayed scheduler output and its

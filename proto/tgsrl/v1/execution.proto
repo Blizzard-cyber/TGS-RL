@@ -3,6 +3,7 @@ syntax = "proto3";
 package tgsrl.v1;
 
 import "google/protobuf/duration.proto";
+import "google/protobuf/timestamp.proto";
 import "tgsrl/v1/semantic.proto";
 
 option go_package = "github.com/Blizzard-cyber/TGS-RL/gen/go/tgsrl/v1;tgsrlv1";
@@ -101,6 +102,7 @@ message ValidityRule {
   string description = 2;
   string expression = 3;
   ValidityFailureMode failure_mode = 4;
+  Condition predicate = 5;
 }
 
 // VersionConstraint constrains a named runtime or protocol component.
@@ -178,6 +180,87 @@ message Condition {
   map<string, string> attributes = 6;
   repeated SemanticValue operands = 7;
   repeated Condition predicates = 8;
+  string fact_path = 9;
+  string comparison_fact_path = 10;
+}
+
+// ContractClauseKind identifies the semantic dimension checked during contract
+// evaluation. The enum is stable and additive so evidence can be replayed.
+enum ContractClauseKind {
+  CONTRACT_CLAUSE_KIND_UNKNOWN = 0;
+  CONTRACT_CLAUSE_KIND_VALIDITY_RULE = 1;
+  CONTRACT_CLAUSE_KIND_CONDITION = 2;
+  CONTRACT_CLAUSE_KIND_VERSION_CONSTRAINT = 3;
+  CONTRACT_CLAUSE_KIND_BACKPRESSURE_POLICY = 4;
+  CONTRACT_CLAUSE_KIND_SAFE_POINT_POLICY = 5;
+  CONTRACT_CLAUSE_KIND_SAMPLE_FRESHNESS = 6;
+  CONTRACT_CLAUSE_KIND_POLICY_LAG = 7;
+  CONTRACT_CLAUSE_KIND_EFFECTIVE_SAMPLE_SIZE = 8;
+  CONTRACT_CLAUSE_KIND_SAMPLE_COVERAGE = 9;
+}
+
+// ContractEvaluationStatus captures the stable result of one clause check.
+enum ContractEvaluationStatus {
+  CONTRACT_EVALUATION_STATUS_UNKNOWN = 0;
+  CONTRACT_EVALUATION_STATUS_SATISFIED = 1;
+  CONTRACT_EVALUATION_STATUS_VIOLATED = 2;
+  CONTRACT_EVALUATION_STATUS_INDETERMINATE = 3;
+  CONTRACT_EVALUATION_STATUS_NOT_APPLICABLE = 4;
+}
+
+// ContractDecisionAction recommends what the scheduler should do next when a
+// contract clause is not currently satisfied.
+enum ContractDecisionAction {
+  CONTRACT_DECISION_ACTION_UNKNOWN = 0;
+  CONTRACT_DECISION_ACTION_ALLOW = 1;
+  CONTRACT_DECISION_ACTION_REJECT = 2;
+  CONTRACT_DECISION_ACTION_PAUSE_REQUIRED = 3;
+  CONTRACT_DECISION_ACTION_ABORT_REQUIRED = 4;
+  CONTRACT_DECISION_ACTION_BLOCK_PRODUCER_REQUIRED = 5;
+  CONTRACT_DECISION_ACTION_SHED_OLDEST_REQUIRED = 6;
+  CONTRACT_DECISION_ACTION_SHED_NEWEST_REQUIRED = 7;
+  CONTRACT_DECISION_ACTION_SCALE_OUT_REQUESTED = 8;
+  CONTRACT_DECISION_ACTION_WAIT_FOR_SAFE_POINT = 9;
+}
+
+// ContractObservation captures typed scheduler inputs without relying on wall
+// clock reconstruction outside the wire payload.
+message ContractObservation {
+  google.protobuf.Timestamp observed_at = 1;
+  google.protobuf.Timestamp oldest_sample_at = 2;
+  google.protobuf.Timestamp backpressure_started_at = 3;
+  optional uint64 policy_lag = 4;
+  optional bool sample_stale = 5;
+  optional uint64 buffer_level = 6;
+  optional double effective_sample_size = 7;
+  optional uint64 accepted_samples = 8;
+  optional uint64 expected_samples = 9;
+  optional bool safe_point = 10;
+  string source = 11;
+  string event_id = 12;
+  string phase_id = 13;
+  string policy_version = 14;
+  repeated SemanticField typed_facts = 15;
+  optional uint64 sample_count = 16;
+  optional double effective_sample_size_ratio = 17;
+}
+
+// ContractEvaluation preserves deterministic clause evidence for rejection,
+// auditing, and replay. It intentionally avoids embedding non-deterministic
+// wall-clock metadata beyond the captured observations.
+message ContractEvaluation {
+  string evaluation_id = 1;
+  string contract_id = 2;
+  ContractClauseKind clause_kind = 3;
+  string clause_id = 4;
+  ContractEvaluationStatus status = 5;
+  Condition predicate = 6;
+  repeated SemanticField observations = 7;
+  repeated SemanticField evidence = 8;
+  repeated string missing_keys = 9;
+  ValidityFailureMode failure_mode = 10;
+  ContractDecisionAction recommended_action = 11;
+  string detail = 12;
 }
 
 // ExecutionContract is the complete, scheduler-visible execution contract.

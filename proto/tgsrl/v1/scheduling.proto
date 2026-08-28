@@ -68,6 +68,27 @@ enum CandidateRejectionReason {
   CANDIDATE_REJECTION_REASON_EXPIRED = 5;
 }
 
+// TickKind records which scheduler loop produced or consumed a decision
+// surface. Keeping it on the wire avoids stringly typed loop metadata.
+enum TickKind {
+  TICK_KIND_UNKNOWN = 0;
+  TICK_KIND_FAST = 1;
+  TICK_KIND_MEDIUM = 2;
+  TICK_KIND_SLOW = 3;
+}
+
+// EvaluationContext captures deterministic scheduler inputs that explain why a
+// decision was taken on a particular tick.
+message EvaluationContext {
+  TickKind tick_kind = 1;
+  google.protobuf.Timestamp evaluation_time = 2;
+  uint64 decision_sequence = 3;
+  string cause = 4;
+  uint64 observed_revision = 5;
+  ContractObservation contract_observation = 6;
+  bool compatibility_defaults_applied = 7;
+}
+
 // SchedulingIntent is keyed by (execution_id, stage_id, version) and immutable
 // at that key. valid_until is authoritative; ttl is the requested lifetime from
 // submitted_at and must resolve to the same expiry. idempotency_key deduplicates
@@ -99,6 +120,7 @@ message SchedulingIntent {
   SemanticEnvelope semantic_context = 24;
   uint64 generation = 25;
   string cursor = 26;
+  ContractObservation contract_observation = 27;
 }
 
 // Binding assigns one pending unit to concrete devices.
@@ -139,6 +161,7 @@ message Action {
   bool requires_safe_point = 15;
   google.protobuf.Timestamp deadline = 16;
   string idempotency_key = 17;
+  TickKind tick_kind = 18;
 }
 
 // PlacementPlan is an immutable plan produced against one snapshot revision.
@@ -192,6 +215,7 @@ message CandidateRejection {
   string candidate_id = 1;
   CandidateRejectionReason reason = 2;
   string detail = 3;
+  ContractEvaluation contract_evaluation = 4;
 }
 
 // DecisionRecord contains the full auditable scheduler decision surface: all
@@ -223,6 +247,9 @@ message DecisionRecord {
   uint64 generation = 23;
   string cursor = 24;
   string job_id = 25;
+  TickKind tick_kind = 26;
+  EvaluationContext evaluation_context = 27;
+  repeated ContractEvaluation contract_evaluations = 28;
 }
 
 message PublishIntentRequest {
@@ -254,6 +281,7 @@ message GetSnapshotResponse {
 message ScheduleRequest {
   SchedulingIntent intent = 1;
   ClusterSnapshot snapshot = 2;
+  EvaluationContext evaluation_context = 3;
 }
 
 message ScheduleResponse {

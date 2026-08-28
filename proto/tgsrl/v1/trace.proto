@@ -90,6 +90,7 @@ message TraceEvent {
   string trace_id = 23;
   uint64 generation = 24;
   string cursor = 25;
+  ContractObservation contract_observation = 26;
 }
 
 // TraceEventBatch preserves order within one execution stream.
