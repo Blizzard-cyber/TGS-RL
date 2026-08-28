@@ -1,0 +1,107 @@
+syntax = "proto3";
+
+package tgsrl.v1;
+
+import "google/protobuf/duration.proto";
+import "google/protobuf/timestamp.proto";
+import "tgsrl/v1/execution.proto";
+import "tgsrl/v1/semantic.proto";
+
+option go_package = "github.com/Blizzard-cyber/TGS-RL/gen/go/tgsrl/v1;tgsrlv1";
+
+// Protocol release: v0.3. The proto files in this module are the single source
+// of truth for the wire contract; generated DTOs must never be edited by hand.
+// Compatibility rule: when deleting a field, reserve both its number and name
+// in the containing message. When deleting an enum value, reserve both its
+// number and name in the containing enum. Reserved identifiers are never reused.
+
+// RolloutMode describes how experience relates to the current policy.
+enum RolloutMode {
+  ROLLOUT_MODE_UNKNOWN = 0;
+  ROLLOUT_MODE_SYNC = 1;
+  ROLLOUT_MODE_PARTIALLY_ASYNC = 2;
+  ROLLOUT_MODE_FULLY_ASYNC = 3;
+}
+
+// DataKind keeps synthetic, replay, and live runs explicitly separated.
+enum DataKind {
+  DATA_KIND_UNKNOWN = 0;
+  DATA_KIND_SYNTHETIC = 1;
+  DATA_KIND_REPLAY = 2;
+  DATA_KIND_LIVE = 3;
+}
+
+// TraceEventType identifies the lifecycle transition recorded by a trace event.
+enum TraceEventType {
+  TRACE_EVENT_TYPE_UNKNOWN = 0;
+  TRACE_EVENT_TYPE_PHASE_STARTED = 1;
+  TRACE_EVENT_TYPE_PHASE_COMPLETED = 2;
+  TRACE_EVENT_TYPE_SAMPLE_PRODUCED = 3;
+  TRACE_EVENT_TYPE_SAMPLE_CONSUMED = 4;
+  TRACE_EVENT_TYPE_POLICY_PUBLISHED = 5;
+  TRACE_EVENT_TYPE_BACKPRESSURE_CHANGED = 6;
+  TRACE_EVENT_TYPE_SAFE_POINT_REACHED = 7;
+  TRACE_EVENT_TYPE_DECISION_APPLIED = 8;
+}
+
+// SemanticEnvelope carries typed, versioned semantic metadata without changing
+// the outer event or control-plane message shape.
+message SemanticEnvelope {
+  string envelope_id = 1;
+  string schema_version = 2;
+  string type_name = 3;
+  SemanticObject payload = 4;
+  map<string, string> attributes = 5;
+  string digest = 6;
+  repeated SemanticField typed_fields = 7;
+  string run_id = 8;
+  string trace_id = 9;
+  DataKind data_kind = 10;
+  uint64 generation = 11;
+  string cursor = 12;
+}
+
+// TraceEvent is the canonical replay and observability event. The algorithm,
+// rollout_mode, policy_version, buffer_level, safe_point, and decision_id fields
+// are deliberately present on every event so consumers do not infer them.
+message TraceEvent {
+  string event_id = 1;
+  string job_id = 2;
+  string execution_id = 3;
+  string phase_id = 4;
+  google.protobuf.Timestamp occurred_at = 5;
+  TraceEventType event_type = 6;
+  string algorithm = 7;
+  RolloutMode rollout_mode = 8;
+  string policy_version = 9;
+  uint64 buffer_level = 10;
+  bool safe_point = 11;
+  string decision_id = 12;
+  uint64 sequence = 13;
+  map<string, string> attributes = 14;
+  bytes payload = 15;
+  PhaseKind phase_kind = 16;
+  string raw_phase_label = 17;
+  string sandbox_id = 18;
+  string stage_id = 19;
+  string run_id = 20;
+  DataKind data_kind = 21;
+  SemanticEnvelope semantic_context = 22;
+  string trace_id = 23;
+  uint64 generation = 24;
+  string cursor = 25;
+}
+
+// TraceEventBatch preserves order within one execution stream.
+message TraceEventBatch {
+  string execution_id = 1;
+  uint64 first_sequence = 2;
+  repeated TraceEvent events = 3;
+  string run_id = 4;
+  string trace_id = 5;
+  DataKind data_kind = 6;
+  SemanticEnvelope semantic_context = 7;
+  uint64 last_sequence = 8;
+  string cursor = 9;
+  google.protobuf.Duration heartbeat_interval = 10;
+}

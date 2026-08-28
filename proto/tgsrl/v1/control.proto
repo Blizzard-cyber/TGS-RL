@@ -1,0 +1,388 @@
+syntax = "proto3";
+
+package tgsrl.v1;
+
+import "google/protobuf/timestamp.proto";
+import "tgsrl/v1/execution.proto";
+import "tgsrl/v1/job.proto";
+import "tgsrl/v1/resource.proto";
+import "tgsrl/v1/runtime.proto";
+import "tgsrl/v1/trace.proto";
+
+option go_package = "github.com/Blizzard-cyber/TGS-RL/gen/go/tgsrl/v1;tgsrlv1";
+
+// Protocol release: v0.3. The proto files in this module are the single source
+// of truth for the wire contract; generated DTOs must never be edited by hand.
+// Compatibility rule: when deleting a field, reserve both its number and name
+// in the containing message. When deleting an enum value, reserve both its
+// number and name in the containing enum. Reserved identifiers are never reused.
+
+// OperationType identifies a user- or controller-initiated lifecycle mutation.
+enum OperationType {
+  OPERATION_TYPE_UNKNOWN = 0;
+  OPERATION_TYPE_VALIDATE = 1;
+  OPERATION_TYPE_ADMIT = 2;
+  OPERATION_TYPE_START = 3;
+  OPERATION_TYPE_PAUSE = 4;
+  OPERATION_TYPE_RESUME = 5;
+  OPERATION_TYPE_STOP = 6;
+  OPERATION_TYPE_RETRY = 7;
+  OPERATION_TYPE_TERMINATE = 8;
+}
+
+// OperationState captures the execution state of a control-plane mutation.
+enum OperationState {
+  OPERATION_STATE_UNKNOWN = 0;
+  OPERATION_STATE_PENDING = 1;
+  OPERATION_STATE_RUNNING = 2;
+  OPERATION_STATE_SUCCEEDED = 3;
+  OPERATION_STATE_FAILED = 4;
+  OPERATION_STATE_CANCELLED = 5;
+}
+
+// ComponentHealth is the aggregated health status of a subsystem.
+enum ComponentHealth {
+  COMPONENT_HEALTH_UNKNOWN = 0;
+  COMPONENT_HEALTH_HEALTHY = 1;
+  COMPONENT_HEALTH_DEGRADED = 2;
+  COMPONENT_HEALTH_FAILED = 3;
+  COMPONENT_HEALTH_PROGRESSING = 4;
+}
+
+// JobEventType identifies major job lifecycle events.
+enum JobEventType {
+  JOB_EVENT_TYPE_UNKNOWN = 0;
+  JOB_EVENT_TYPE_JOB_CREATED = 1;
+  JOB_EVENT_TYPE_JOB_ADMITTED = 2;
+  JOB_EVENT_TYPE_JOB_STARTED = 3;
+  JOB_EVENT_TYPE_JOB_PAUSED = 4;
+  JOB_EVENT_TYPE_JOB_RESUMED = 5;
+  JOB_EVENT_TYPE_JOB_STOPPED = 6;
+  JOB_EVENT_TYPE_JOB_RETRIED = 7;
+  JOB_EVENT_TYPE_JOB_TERMINATED = 8;
+  JOB_EVENT_TYPE_OPERATION_RECORDED = 9;
+  JOB_EVENT_TYPE_COMPONENT_CHANGED = 10;
+}
+
+// JobRunState is the lifecycle state of one immutable execution run.
+enum JobRunState {
+  JOB_RUN_STATE_UNKNOWN = 0;
+  JOB_RUN_STATE_VALIDATING = 1;
+  JOB_RUN_STATE_ADMITTED = 2;
+  JOB_RUN_STATE_PREPARING = 3;
+  JOB_RUN_STATE_RUNNING = 4;
+  JOB_RUN_STATE_PAUSED = 5;
+  JOB_RUN_STATE_STOPPED = 6;
+  JOB_RUN_STATE_SUCCEEDED = 7;
+  JOB_RUN_STATE_FAILED = 8;
+  JOB_RUN_STATE_TERMINATED = 9;
+  JOB_RUN_STATE_WAITING = 10;
+  JOB_RUN_STATE_ADMITTING = 11;
+  JOB_RUN_STATE_STARTING = 12;
+  JOB_RUN_STATE_PAUSING = 13;
+  JOB_RUN_STATE_RESUMING = 14;
+  JOB_RUN_STATE_STOPPING = 15;
+  JOB_RUN_STATE_TERMINATING = 16;
+  JOB_RUN_STATE_RETRYING = 17;
+}
+
+// JobCommandType identifies a user-visible lifecycle command.
+enum JobCommandType {
+  JOB_COMMAND_TYPE_UNKNOWN = 0;
+  JOB_COMMAND_TYPE_START = 1;
+  JOB_COMMAND_TYPE_PAUSE = 2;
+  JOB_COMMAND_TYPE_RESUME = 3;
+  JOB_COMMAND_TYPE_STOP = 4;
+  JOB_COMMAND_TYPE_RETRY = 5;
+  JOB_COMMAND_TYPE_TERMINATE = 6;
+}
+
+// Operation records one idempotent lifecycle command against a job or run.
+message Operation {
+  string operation_id = 1;
+  OperationType type = 2;
+  OperationState state = 3;
+  string actor = 4;
+  string reason = 5;
+  google.protobuf.Timestamp created_at = 6;
+  google.protobuf.Timestamp completed_at = 7;
+  string error_code = 8;
+  string error_message = 9;
+  string job_id = 10;
+  string run_id = 11;
+  string trace_id = 12;
+  DataKind data_kind = 13;
+  SemanticEnvelope semantic_context = 14;
+  map<string, string> annotations = 15;
+  string request_id = 16;
+  string idempotency_key = 17;
+  uint64 sequence = 18;
+  string cursor = 19;
+}
+
+// ComponentStatus aggregates health and revision data from one subsystem.
+// observed_runtime_state and converged are only meaningful when
+// component == "runtime".
+message ComponentStatus {
+  string component = 1;
+  ComponentHealth health = 2;
+  string detail = 3;
+  string source = 4;
+  uint64 revision = 5;
+  google.protobuf.Timestamp observed_at = 6;
+  map<string, string> annotations = 7;
+  string job_id = 8;
+  string run_id = 9;
+  string trace_id = 10;
+  DataKind data_kind = 11;
+  SemanticEnvelope semantic_context = 12;
+  RuntimeState observed_runtime_state = 13;
+  bool converged = 14;
+}
+
+// JobRun is the immutable execution instance compiled from one RLTrainingJob.
+// run_state is the authoritative fine-grained lifecycle state. state is the
+// derived coarse job projection for higher-level consumers.
+message JobRun {
+  string run_id = 1;
+  string job_id = 2;
+  string trace_id = 3;
+  string display_name = 4;
+  JobState state = 5;
+  google.protobuf.Timestamp created_at = 6;
+  google.protobuf.Timestamp started_at = 7;
+  google.protobuf.Timestamp completed_at = 8;
+  uint64 attempt = 9;
+  FrameworkRuntimeSpec runtime = 10;
+  ExecutionContract execution_contract = 11;
+  RolloutMode rollout_mode = 12;
+  DataKind data_kind = 13;
+  string policy_version = 14;
+  uint64 random_seed = 15;
+  repeated ComponentStatus component_status = 16;
+  repeated Operation operations = 17;
+  map<string, string> labels = 18;
+  JobRunState run_state = 19;
+  string cursor = 21;
+  ResourceVector resources_per_unit = 22;
+  CapabilitySet required_capabilities = 23;
+  uint32 desired_units = 24;
+  int32 priority = 25;
+  string queue = 26;
+}
+
+// JobEvent is the immutable event stream for job and run lifecycle updates.
+message JobEvent {
+  string event_id = 1;
+  JobEventType event_type = 2;
+  string job_id = 3;
+  string run_id = 4;
+  string trace_id = 5;
+  google.protobuf.Timestamp occurred_at = 6;
+  JobState state = 7;
+  Operation operation = 8;
+  ComponentStatus component_status = 9;
+  string detail = 10;
+  DataKind data_kind = 11;
+  SemanticEnvelope semantic_context = 12;
+  map<string, string> annotations = 13;
+  JobRunState run_state = 14;
+  uint64 sequence = 15;
+  string cursor = 16;
+}
+
+message CreateJobRequest {
+  RLTrainingJob job = 1;
+  string request_id = 2;
+  string idempotency_key = 3;
+}
+
+message CreateJobResponse {
+  RLTrainingJob job = 1;
+  Operation operation = 2;
+}
+
+message ListJobsRequest {
+  uint64 limit = 1;
+  string page_token = 2;
+  DataKind data_kind = 3;
+  string after_job_id = 4;
+}
+
+message ListJobsResponse {
+  repeated RLTrainingJob jobs = 1;
+  string next_page_token = 2;
+}
+
+message GetJobRequest {
+  string job_id = 1;
+}
+
+message GetJobResponse {
+  RLTrainingJob job = 1;
+  string cursor = 2;
+}
+
+message ValidateJobRequest {
+  RLTrainingJob job = 1;
+  string request_id = 2;
+  string idempotency_key = 3;
+}
+
+message ValidateJobResponse {
+  bool valid = 1;
+  RLTrainingJob normalized_job = 2;
+  repeated string diagnostics = 3;
+  Operation operation = 4;
+}
+
+message AdmitJobRequest {
+  string job_id = 1;
+  string request_id = 2;
+  string idempotency_key = 3;
+  string reason = 4;
+}
+
+message AdmitJobResponse {
+  RLTrainingJob job = 1;
+  Operation operation = 2;
+}
+
+message CreateJobRunRequest {
+  // Legacy inline job payload. New callers should send job_id and omit job.
+  // If both job and job_id are present, job_id is authoritative and the server
+  // must validate job.job_id == job_id.
+  RLTrainingJob job = 1;
+  string request_id = 2;
+  string idempotency_key = 3;
+  // Authoritative job identity for run creation. Gateways should send job_id.
+  string job_id = 4;
+}
+
+message CreateJobRunResponse {
+  JobRun run = 1;
+}
+
+message ListJobRunsRequest {
+  string job_id = 1;
+  uint64 limit = 2;
+  string page_token = 3;
+  string after_run_id = 4;
+}
+
+message ListJobRunsResponse {
+  repeated JobRun runs = 1;
+  string next_page_token = 2;
+}
+
+message GetJobRunRequest {
+  string job_id = 1;
+  string run_id = 2;
+}
+
+message GetJobRunResponse {
+  JobRun run = 1;
+  string cursor = 2;
+}
+
+message ListJobEventsRequest {
+  string job_id = 1;
+  string run_id = 2;
+  string after_event_id = 3;
+  uint64 limit = 4;
+  uint64 after_sequence = 5;
+  string page_token = 6;
+}
+
+message ListJobEventsResponse {
+  repeated JobEvent events = 1;
+  string next_page_token = 2;
+  string cursor = 3;
+}
+
+message RecordOperationRequest {
+  Operation operation = 1;
+}
+
+message RecordOperationResponse {
+  Operation operation = 1;
+}
+
+message ListOperationsRequest {
+  string job_id = 1;
+  string run_id = 2;
+  OperationType type = 3;
+  OperationState state = 4;
+  uint64 limit = 5;
+  string page_token = 6;
+}
+
+message ListOperationsResponse {
+  repeated Operation operations = 1;
+  string next_page_token = 2;
+  string cursor = 3;
+}
+
+message ApplyJobCommandRequest {
+  string job_id = 1;
+  string run_id = 2;
+  JobCommandType command = 3;
+  string actor = 4;
+  string reason = 5;
+  string request_id = 6;
+  string idempotency_key = 7;
+}
+
+message ApplyJobCommandResponse {
+  Operation operation = 1;
+  JobRun run = 2;
+}
+
+message GetOperationRequest {
+  string operation_id = 1;
+}
+
+message GetOperationResponse {
+  Operation operation = 1;
+  string cursor = 2;
+}
+
+message WatchJobEventsRequest {
+  string job_id = 1;
+  string run_id = 2;
+  uint64 after_sequence = 3;
+  string after_event_id = 4;
+}
+
+message WatchJobEventsResponse {
+  JobEvent event = 1;
+  string cursor = 2;
+}
+
+message ReportComponentStatusRequest {
+  ComponentStatus component_status = 1;
+}
+
+message ReportComponentStatusResponse {
+  ComponentStatus component_status = 1;
+}
+
+// JobControlService owns job compilation, lifecycle operations, and event
+// publication across synthetic, replay, and live runs.
+service JobControlService {
+  rpc CreateJob(CreateJobRequest) returns (CreateJobResponse);
+  rpc ListJobs(ListJobsRequest) returns (ListJobsResponse);
+  rpc GetJob(GetJobRequest) returns (GetJobResponse);
+  rpc ValidateJob(ValidateJobRequest) returns (ValidateJobResponse);
+  rpc AdmitJob(AdmitJobRequest) returns (AdmitJobResponse);
+  rpc CreateJobRun(CreateJobRunRequest) returns (CreateJobRunResponse);
+  rpc ListJobRuns(ListJobRunsRequest) returns (ListJobRunsResponse);
+  rpc GetJobRun(GetJobRunRequest) returns (GetJobRunResponse);
+  rpc ListJobEvents(ListJobEventsRequest) returns (ListJobEventsResponse);
+  rpc RecordOperation(RecordOperationRequest) returns (RecordOperationResponse);
+  rpc ListOperations(ListOperationsRequest) returns (ListOperationsResponse);
+  rpc ApplyJobCommand(ApplyJobCommandRequest) returns (ApplyJobCommandResponse);
+  rpc GetOperation(GetOperationRequest) returns (GetOperationResponse);
+  rpc WatchJobEvents(WatchJobEventsRequest) returns (stream WatchJobEventsResponse);
+  rpc ReportComponentStatus(ReportComponentStatusRequest) returns (ReportComponentStatusResponse);
+}

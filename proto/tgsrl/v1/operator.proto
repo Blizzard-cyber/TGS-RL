@@ -1,0 +1,50 @@
+syntax = "proto3";
+
+package tgsrl.v1;
+
+import "google/protobuf/timestamp.proto";
+import "tgsrl/v1/control.proto";
+
+option go_package = "github.com/Blizzard-cyber/TGS-RL/gen/go/tgsrl/v1;tgsrlv1";
+
+// Protocol release: v0.3. The proto files in this module are the single source
+// of truth for the wire contract; generated DTOs must never be edited by hand.
+// Compatibility rule: when deleting a field, reserve both its number and name
+// in the containing message. When deleting an enum value, reserve both its
+// number and name in the containing enum. Reserved identifiers are never reused.
+
+// RuntimeControlTarget identifies one backend runtime target guarded by an
+// optional expected generation fence.
+message RuntimeControlTarget {
+  string runtime_unit_id = 1;
+  string sandbox_id = 2;
+  uint64 expected_generation = 3;
+}
+
+// ApplyRuntimeControlRequest submits one idempotent backend control request.
+message ApplyRuntimeControlRequest {
+  JobCommandType action = 1;
+  string job_id = 2;
+  string run_id = 3;
+  string trace_id = 4;
+  repeated RuntimeControlTarget targets = 5;
+  string request_id = 6;
+  string idempotency_key = 7;
+  string reason = 8;
+  google.protobuf.Timestamp deadline = 9;
+}
+
+// ApplyRuntimeControlResponse records whether the backend accepted or deduped
+// the control request at its current revision.
+message ApplyRuntimeControlResponse {
+  bool accepted = 1;
+  bool idempotent = 2;
+  uint64 backend_revision = 3;
+  string detail = 4;
+}
+
+// RuntimeBackendControlService owns unary backend control submission for
+// concrete runtime targets.
+service RuntimeBackendControlService {
+  rpc ApplyRuntimeControl(ApplyRuntimeControlRequest) returns (ApplyRuntimeControlResponse);
+}

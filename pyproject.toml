@@ -1,0 +1,80 @@
+[build-system]
+requires = ["setuptools>=75"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "tgsrl-runtime"
+version = "0.1.0"
+description = "End-to-end reinforcement-learning orchestration runtime for TGS-RL"
+requires-python = ">=3.12"
+dependencies = [
+  "grpcio>=1.70,<2",
+  "protobuf>=5.29.3,<6",
+]
+
+[dependency-groups]
+dev = [
+  "hypothesis>=6.130,<7",
+  "mypy>=1.15,<2",
+  "pytest>=8.3,<9",
+  "pytest-asyncio>=0.25,<1",
+  "ruff>=0.11,<1",
+  "types-grpcio>=1.0,<2",
+  "types-protobuf>=5.29,<7",
+]
+
+[tool.setuptools]
+packages = [
+  "adapters",
+  "adapters.compliance",
+  "adapters.execution",
+  "adapters.frameworks",
+  "adapters.rollout_engines",
+  "adapters.trainers",
+  "tgsrl_gateway",
+  "tgsrl_runtime",
+  "tgsrl_runtime._config",
+  "tgsrl_runtime.storage",
+  "tgsrl",
+  "tgsrl.v1",
+]
+
+[tool.setuptools.package-dir]
+adapters = "adapters"
+tgsrl_runtime = "runtime-python/tgsrl_runtime"
+tgsrl_gateway = "gateway-python/tgsrl_gateway"
+tgsrl = "gen/python/tgsrl"
+"tgsrl.v1" = "gen/python/tgsrl/v1"
+
+[project.scripts]
+tgsrl = "tgsrl_gateway.cli:main"
+tgsrl-gateway = "tgsrl_gateway.cli:main"
+tgsrl-runtime = "tgsrl_runtime.runtime_app:main"
+
+[tool.pytest.ini_options]
+addopts = "-ra --strict-config --strict-markers"
+testpaths = ["tests/python"]
+asyncio_mode = "auto"
+
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+extend-exclude = ["gen"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM", "RUF"]
+
+[tool.mypy]
+python_version = "3.12"
+files = ["adapters", "runtime-python/tgsrl_runtime", "tests/python"]
+check_untyped_defs = true
+disallow_incomplete_defs = true
+disallow_untyped_defs = true
+no_implicit_optional = true
+warn_redundant_casts = true
+warn_unused_ignores = true
+follow_imports = "skip"
+
+[[tool.mypy.overrides]]
+module = ["tgsrl.v1.*"]
+ignore_missing_imports = true

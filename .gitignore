@@ -1,0 +1,62 @@
+# Editors and operating-system metadata
+.DS_Store
+.idea/
+.vscode/
+*.swp
+
+# Local environment and secrets
+.env
+.env.*
+!.env.example
+.direnv/
+*.pem
+*.key
+*.crt
+*.p12
+*.pfx
+*.jks
+credentials.json
+kubeconfig
+kubeconfig.*
+
+# Go build and test output
+bin/
+/operator
+/scheduler
+/job-controller
+*.test
+*.out
+coverage/
+
+# Python environments and caches
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.hypothesis/
+.uv-temp-cache/
+.proto-gen.*/
+.coverage
+htmlcov/
+dist/
+build/
+*.egg-info/
+node_modules/
+*.tsbuildinfo
+
+# Local runtime state
+.cache/
+.tmp/
+tmp/
+/artifacts/
+*.db
+*.sqlite
+*.sqlite3
+*.db-shm
+*.db-wal
+*.journal
+*.checkpoint
+*.log

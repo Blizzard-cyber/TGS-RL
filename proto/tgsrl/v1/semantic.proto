@@ -1,0 +1,38 @@
+syntax = "proto3";
+
+package tgsrl.v1;
+
+option go_package = "github.com/Blizzard-cyber/TGS-RL/gen/go/tgsrl/v1;tgsrlv1";
+
+// Protocol release: v0.3. The proto files in this module are the single source
+// of truth for the wire contract; generated DTOs must never be edited by hand.
+// Compatibility rule: when deleting a field, reserve both its number and name
+// in the containing message. When deleting an enum value, reserve both its
+// number and name in the containing enum. Reserved identifiers are never reused.
+
+// SemanticValue is a recursive typed value used by portable semantic payloads.
+message SemanticValue {
+  oneof kind {
+    string string_value = 1;
+    int64 int64_value = 2;
+    uint64 uint64_value = 3;
+    double double_value = 4;
+    bool bool_value = 5;
+    bytes bytes_value = 6;
+    SemanticObject object_value = 7;
+    SemanticList list_value = 8;
+  }
+}
+
+message SemanticField {
+  string key = 1;
+  SemanticValue value = 2;
+}
+
+message SemanticObject {
+  repeated SemanticField fields = 1;
+}
+
+message SemanticList {
+  repeated SemanticValue values = 1;
+}

@@ -1,0 +1,183 @@
+syntax = "proto3";
+
+package tgsrl.v1;
+
+import "google/protobuf/timestamp.proto";
+import "tgsrl/v1/trace.proto";
+
+option go_package = "github.com/Blizzard-cyber/TGS-RL/gen/go/tgsrl/v1;tgsrlv1";
+
+// Protocol release: v0.3. The proto files in this module are the single source
+// of truth for the wire contract; generated DTOs must never be edited by hand.
+// Compatibility rule: when deleting a field, reserve both its number and name
+// in the containing message. When deleting an enum value, reserve both its
+// number and name in the containing enum. Reserved identifiers are never reused.
+
+// DeviceKind identifies the physical or virtual accelerator class.
+enum DeviceKind {
+  DEVICE_KIND_UNKNOWN = 0;
+  DEVICE_KIND_CPU = 1;
+  DEVICE_KIND_GPU = 2;
+  DEVICE_KIND_TPU = 3;
+  DEVICE_KIND_NPU = 4;
+  DEVICE_KIND_CUSTOM = 5;
+}
+
+// DeviceHealth is the scheduler-visible health of a device.
+enum DeviceHealth {
+  DEVICE_HEALTH_UNKNOWN = 0;
+  DEVICE_HEALTH_READY = 1;
+  DEVICE_HEALTH_DEGRADED = 2;
+  DEVICE_HEALTH_DRAINING = 3;
+  DEVICE_HEALTH_UNAVAILABLE = 4;
+}
+
+// AllocationState is the lifecycle state of an existing allocation.
+enum AllocationState {
+  ALLOCATION_STATE_UNKNOWN = 0;
+  ALLOCATION_STATE_PENDING = 1;
+  ALLOCATION_STATE_ACTIVE = 2;
+  ALLOCATION_STATE_RELEASING = 3;
+  ALLOCATION_STATE_RELEASED = 4;
+  ALLOCATION_STATE_FAILED = 5;
+}
+
+// CapabilityEvidence records how a capability claim was measured or asserted.
+message CapabilityEvidence {
+  string evidence_id = 1;
+  string source = 2;
+  uint64 revision = 3;
+  google.protobuf.Timestamp observed_at = 4;
+  string collector = 5;
+  string detail = 6;
+  map<string, string> attributes = 7;
+}
+
+// ResourceVector is a portable resource quantity. Accelerator units may be
+// fractional so schedulers can represent partitioned accelerators.
+message ResourceVector {
+  uint64 cpu_millis = 1;
+  uint64 memory_bytes = 2;
+  double accelerator_units = 3;
+  uint64 ephemeral_storage_bytes = 4;
+  uint64 network_bandwidth_bps = 5;
+}
+
+// CapabilitySet describes named and parameterized scheduling capabilities.
+message CapabilitySet {
+  repeated string names = 1;
+  map<string, string> attributes = 2;
+  repeated string algorithms = 3;
+  repeated string rollout_modes = 4;
+  string source = 5;
+  uint64 revision = 6;
+  google.protobuf.Timestamp measured_at = 7;
+  repeated string supported_actions = 8;
+  map<string, double> limits = 9;
+  repeated CapabilityEvidence evidence = 10;
+}
+
+// Device is a resource visible in a cluster snapshot. Device identifiers are
+// intentionally confined to snapshots and placement results, never intents.
+message Device {
+  string device_id = 1;
+  DeviceKind kind = 2;
+  DeviceHealth health = 3;
+  ResourceVector capacity = 4;
+  ResourceVector allocatable = 5;
+  CapabilitySet capabilities = 6;
+  map<string, string> labels = 7;
+}
+
+// Allocation describes resources already committed to a pending unit.
+message Allocation {
+  string allocation_id = 1;
+  string execution_id = 2;
+  string stage_id = 3;
+  uint64 intent_version = 4;
+  string job_id = 5;
+  string pending_unit_id = 6;
+  repeated string device_ids = 7;
+  ResourceVector resources = 8;
+  AllocationState state = 9;
+  google.protobuf.Timestamp created_at = 10;
+  google.protobuf.Timestamp expires_at = 11;
+  string run_id = 12;
+  string trace_id = 13;
+  DataKind data_kind = 14;
+  uint64 generation = 15;
+  string runtime_unit_id = 16;
+  string decision_id = 17;
+  string plan_id = 18;
+  string action_id = 19;
+}
+
+// PendingUnit is a device-independent unit waiting to be placed.
+message PendingUnit {
+  string pending_unit_id = 1;
+  string execution_id = 2;
+  string stage_id = 3;
+  uint64 intent_version = 4;
+  string job_id = 5;
+  ResourceVector requested_resources = 6;
+  CapabilitySet required_capabilities = 7;
+  int32 priority = 8;
+  google.protobuf.Timestamp queued_at = 9;
+  uint32 attempt = 10;
+  string run_id = 11;
+  string trace_id = 12;
+  DataKind data_kind = 13;
+  string runtime_unit_id = 14;
+}
+
+// ClusterSnapshot is an immutable scheduler input. revision is the monotonic
+// cluster-state revision used for optimistic concurrency and replay.
+message ClusterSnapshot {
+  string snapshot_id = 1;
+  uint64 revision = 2;
+  google.protobuf.Timestamp observed_at = 3;
+  repeated Device devices = 4;
+  repeated Allocation allocations = 5;
+  repeated PendingUnit pending_units = 6;
+  map<string, string> annotations = 7;
+  string run_id = 8;
+  string trace_id = 9;
+  DataKind data_kind = 10;
+  string cursor = 11;
+}
+
+// ResourceEventType identifies the provider-side resource change being
+// published into the scheduler event loop.
+enum ResourceEventType {
+  RESOURCE_EVENT_TYPE_UNKNOWN = 0;
+  RESOURCE_EVENT_TYPE_SNAPSHOT_PUBLISHED = 1;
+  RESOURCE_EVENT_TYPE_DEVICE_CHANGED = 2;
+  RESOURCE_EVENT_TYPE_ALLOCATION_CHANGED = 3;
+  RESOURCE_EVENT_TYPE_PENDING_UNIT_CHANGED = 4;
+  RESOURCE_EVENT_TYPE_CAPABILITY_REFRESHED = 5;
+}
+
+// ResourceEvent carries immutable provider updates into the Go event loop.
+message ResourceEvent {
+  string event_id = 1;
+  ResourceEventType event_type = 2;
+  uint64 provider_revision = 3;
+  string provider = 4;
+  google.protobuf.Timestamp observed_at = 5;
+  string idempotency_key = 6;
+  ClusterSnapshot snapshot = 7;
+  Device device = 8;
+  Allocation allocation = 9;
+  PendingUnit pending_unit = 10;
+  CapabilitySet capabilities = 11;
+  string run_id = 12;
+  string trace_id = 13;
+  DataKind data_kind = 14;
+  SemanticEnvelope semantic_context = 15;
+  uint64 generation = 16;
+  string cursor = 17;
+  string runtime_unit_id = 18;
+  string decision_id = 19;
+  string plan_id = 20;
+  string action_id = 21;
+}

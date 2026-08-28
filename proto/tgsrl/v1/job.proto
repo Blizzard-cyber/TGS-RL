@@ -1,0 +1,75 @@
+syntax = "proto3";
+
+package tgsrl.v1;
+
+import "google/protobuf/timestamp.proto";
+import "tgsrl/v1/execution.proto";
+import "tgsrl/v1/resource.proto";
+import "tgsrl/v1/trace.proto";
+
+option go_package = "github.com/Blizzard-cyber/TGS-RL/gen/go/tgsrl/v1;tgsrlv1";
+
+// Protocol release: v0.3. The proto files in this module are the single source
+// of truth for the wire contract; generated DTOs must never be edited by hand.
+// Compatibility rule: when deleting a field, reserve both its number and name
+// in the containing message. When deleting an enum value, reserve both its
+// number and name in the containing enum. Reserved identifiers are never reused.
+
+// JobState is the control-plane lifecycle state of an RL training job.
+enum JobState {
+  JOB_STATE_UNKNOWN = 0;
+  JOB_STATE_PENDING = 1;
+  JOB_STATE_RUNNING = 2;
+  JOB_STATE_PAUSED = 3;
+  JOB_STATE_SUCCEEDED = 4;
+  JOB_STATE_FAILED = 5;
+  JOB_STATE_CANCELLED = 6;
+}
+
+// FrameworkRuntimeSpec pins every compatibility-relevant runtime layer.
+// image_digest must be an immutable OCI digest (for example, sha256:...); image
+// tags, including "latest", are invalid. patch_set entries are immutable patch
+// IDs or content digests. Secrets are referenced and must not be embedded.
+message FrameworkRuntimeSpec {
+  string framework = 1;
+  string framework_version = 2;
+  string execution_backend = 3;
+  string execution_backend_version = 4;
+  string trainer = 5;
+  string trainer_version = 6;
+  string rollout_engine = 7;
+  string rollout_engine_version = 8;
+  string image_digest = 9;
+  string compatibility_profile = 10;
+  repeated string patch_set = 11;
+  repeated string command = 12;
+  repeated string args = 13;
+  map<string, string> environment = 14;
+  string working_directory = 15;
+  string artifact_uri = 16;
+  map<string, string> annotations = 17;
+}
+
+// RLTrainingJob is the top-level v0.3 job declaration. protocol_version must be
+// "v0.3" for this release; package tgsrl.v1 remains the stable API namespace.
+message RLTrainingJob {
+  string job_id = 1;
+  string display_name = 2;
+  string protocol_version = 3;
+  string algorithm = 4;
+  FrameworkRuntimeSpec runtime = 5;
+  ExecutionContract execution_contract = 6;
+  ResourceVector resources_per_unit = 7;
+  CapabilitySet required_capabilities = 8;
+  uint32 desired_units = 9;
+  int32 priority = 10;
+  string queue = 11;
+  JobState state = 12;
+  google.protobuf.Timestamp created_at = 13;
+  map<string, string> labels = 14;
+  RolloutMode rollout_mode = 15;
+  string model_ref = 16;
+  string dataset_ref = 17;
+  string policy_ref = 18;
+  DataKind data_kind = 19;
+}

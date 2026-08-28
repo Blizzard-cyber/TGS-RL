@@ -1,0 +1,412 @@
+syntax = "proto3";
+
+package tgsrl.v1;
+
+import "google/protobuf/timestamp.proto";
+import "tgsrl/v1/execution.proto";
+import "tgsrl/v1/resource.proto";
+import "tgsrl/v1/scheduling.proto";
+import "tgsrl/v1/trace.proto";
+
+option go_package = "github.com/Blizzard-cyber/TGS-RL/gen/go/tgsrl/v1;tgsrlv1";
+
+// Protocol release: v0.3. The proto files in this module are the single source
+// of truth for the wire contract; generated DTOs must never be edited by hand.
+// Compatibility rule: when deleting a field, reserve both its number and name
+// in the containing message. When deleting an enum value, reserve both its
+// number and name in the containing enum. Reserved identifiers are never reused.
+
+// RuntimeState is the scheduler-visible state of a runtime unit or sandbox.
+enum RuntimeState {
+  RUNTIME_STATE_UNKNOWN = 0;
+  RUNTIME_STATE_REQUESTED = 1;
+  RUNTIME_STATE_BOUND = 2;
+  RUNTIME_STATE_RUNNING = 3;
+  RUNTIME_STATE_PAUSED = 4;
+  RUNTIME_STATE_SLEEPING = 5;
+  RUNTIME_STATE_FAILED = 6;
+  RUNTIME_STATE_TERMINATED = 7;
+  RUNTIME_STATE_VALIDATING = 8;
+  RUNTIME_STATE_COMPILING = 9;
+  RUNTIME_STATE_PREPARING = 10;
+  RUNTIME_STATE_STARTING = 11;
+  RUNTIME_STATE_PAUSING = 12;
+  RUNTIME_STATE_RESUMING = 13;
+  RUNTIME_STATE_CHECKPOINTING = 14;
+  RUNTIME_STATE_STOPPING = 15;
+  RUNTIME_STATE_TERMINATING = 16;
+}
+
+// RuntimeUnitKind identifies the logical role of a runtime unit.
+enum RuntimeUnitKind {
+  RUNTIME_UNIT_KIND_UNKNOWN = 0;
+  RUNTIME_UNIT_KIND_TRAINER = 1;
+  RUNTIME_UNIT_KIND_ROLLOUT = 2;
+  RUNTIME_UNIT_KIND_REFERENCE = 3;
+  RUNTIME_UNIT_KIND_REWARD = 4;
+  RUNTIME_UNIT_KIND_ACTOR = 5;
+  RUNTIME_UNIT_KIND_OPTIMIZER = 6;
+}
+
+// SandboxEventType identifies runtime state changes emitted by the provider or
+// execution layer.
+enum SandboxEventType {
+  SANDBOX_EVENT_TYPE_UNKNOWN = 0;
+  SANDBOX_EVENT_TYPE_REQUESTED = 1;
+  SANDBOX_EVENT_TYPE_BOUND = 2;
+  SANDBOX_EVENT_TYPE_RUNNING = 3;
+  SANDBOX_EVENT_TYPE_PAUSED = 4;
+  SANDBOX_EVENT_TYPE_SLEEPING = 5;
+  SANDBOX_EVENT_TYPE_FAILED = 6;
+  SANDBOX_EVENT_TYPE_TERMINATED = 7;
+}
+
+// ObservedResourceKind identifies the external operator-side object being
+// observed for one runtime unit or sandbox.
+enum ObservedResourceKind {
+  OBSERVED_RESOURCE_KIND_UNKNOWN = 0;
+  OBSERVED_RESOURCE_KIND_KUEUE_WORKLOAD = 1;
+  OBSERVED_RESOURCE_KIND_KUBERNETES_JOB = 2;
+  OBSERVED_RESOURCE_KIND_KUBERNETES_POD = 3;
+  OBSERVED_RESOURCE_KIND_RESOURCE_CLAIM = 4;
+  OBSERVED_RESOURCE_KIND_RUNTIME_CLASS = 5;
+}
+
+// RuntimeEndpoint describes a reachable runtime adapter endpoint.
+message RuntimeEndpoint {
+  string name = 1;
+  string address = 2;
+  string protocol = 3;
+  uint32 port = 4;
+  map<string, string> attributes = 5;
+}
+
+// RuntimeArtifact is a typed runtime-side input or output reference.
+message RuntimeArtifact {
+  string artifact_id = 1;
+  string kind = 2;
+  string uri = 3;
+  string digest = 4;
+  google.protobuf.Timestamp observed_at = 5;
+  map<string, string> attributes = 6;
+}
+
+// RuntimeObservedResource is the typed operator-side observed state for one
+// compiled or running runtime unit.
+message RuntimeObservedResource {
+  string observed_resource_id = 1;
+  ObservedResourceKind kind = 2;
+  string namespace = 3;
+  string name = 4;
+  string uid = 5;
+  string status = 6;
+  uint64 generation = 7;
+  google.protobuf.Timestamp observed_at = 8;
+  map<string, string> attributes = 9;
+}
+
+// RuntimeManifest freezes runtime composition for one immutable run.
+message RuntimeManifest {
+  string manifest_id = 1;
+  string run_id = 2;
+  string job_id = 3;
+  string trace_id = 4;
+  string framework = 5;
+  string execution_backend = 6;
+  string trainer = 7;
+  string rollout_engine = 8;
+  repeated string image_digests = 9;
+  repeated string patch_set = 10;
+  string compatibility_profile = 11;
+  map<string, string> annotations = 12;
+  DataKind data_kind = 13;
+  SemanticEnvelope semantic_context = 14;
+  ExecutionContract execution_contract = 15;
+  ResourceVector resources_per_unit = 16;
+  CapabilitySet required_capabilities = 17;
+  uint32 desired_units = 18;
+  int32 priority = 19;
+  string queue = 20;
+  RolloutMode rollout_mode = 21;
+  string policy_version = 22;
+  uint64 deterministic_seed = 23;
+  repeated RuntimeArtifact artifacts = 24;
+  repeated string command = 25;
+  repeated string args = 26;
+  map<string, string> environment = 27;
+  string working_directory = 28;
+}
+
+// RuntimeUnit is the control-plane view of one execution role instance.
+message RuntimeUnit {
+  string runtime_unit_id = 1;
+  string run_id = 2;
+  string job_id = 3;
+  string trace_id = 4;
+  RuntimeUnitKind kind = 5;
+  string phase_id = 6;
+  PhaseKind phase_kind = 7;
+  RuntimeState state = 8;
+  uint64 generation = 9;
+  ResourceVector requested_resources = 10;
+  CapabilitySet required_capabilities = 11;
+  string sandbox_id = 12;
+  string execution_id = 13;
+  string stage_id = 14;
+  google.protobuf.Timestamp observed_at = 15;
+  map<string, string> annotations = 16;
+  DataKind data_kind = 17;
+  SemanticEnvelope semantic_context = 18;
+  repeated RuntimeEndpoint endpoints = 19;
+  repeated RuntimeArtifact artifacts = 20;
+  repeated RuntimeObservedResource observed_resources = 21;
+  string status_reason = 22;
+  string error_code = 23;
+  string error_message = 24;
+  int32 exit_code = 25;
+}
+
+// Sandbox is the scheduler-visible runtime instance bound to concrete devices.
+message Sandbox {
+  string sandbox_id = 1;
+  string run_id = 2;
+  string job_id = 3;
+  string trace_id = 4;
+  RuntimeState state = 5;
+  uint64 generation = 6;
+  Binding binding = 7;
+  double share = 8;
+  int32 priority = 9;
+  bool safe_point = 10;
+  bool offloaded = 11;
+  google.protobuf.Timestamp observed_at = 12;
+  DataKind data_kind = 13;
+  SemanticEnvelope semantic_context = 14;
+  repeated RuntimeObservedResource observed_resources = 15;
+  string status_reason = 16;
+  string error_code = 17;
+  string error_message = 18;
+}
+
+// SandboxEvent is an immutable runtime event fenced by sandbox generation.
+message SandboxEvent {
+  string event_id = 1;
+  SandboxEventType event_type = 2;
+  string sandbox_id = 3;
+  string run_id = 4;
+  string job_id = 5;
+  string trace_id = 6;
+  uint64 generation = 7;
+  RuntimeState state = 8;
+  Binding binding = 9;
+  bool safe_point = 10;
+  string detail = 11;
+  google.protobuf.Timestamp occurred_at = 12;
+  DataKind data_kind = 13;
+  SemanticEnvelope semantic_context = 14;
+  string runtime_unit_id = 15;
+  string decision_id = 16;
+  string plan_id = 17;
+  string action_id = 18;
+  uint64 provider_revision = 19;
+  string idempotency_key = 20;
+}
+
+message ValidateRuntimeRequest {
+  RuntimeManifest manifest = 1;
+  string request_id = 2;
+  string idempotency_key = 3;
+}
+
+message ValidateRuntimeResponse {
+  bool valid = 1;
+  RuntimeManifest normalized_manifest = 2;
+  repeated string diagnostics = 3;
+  string cursor = 4;
+}
+
+message CompileRuntimeRequest {
+  RuntimeManifest manifest = 1;
+  string request_id = 2;
+  string idempotency_key = 3;
+}
+
+message CompileRuntimeResponse {
+  RuntimeManifest manifest = 1;
+  repeated RuntimeUnit runtime_units = 2;
+  string cursor = 3;
+}
+
+message PrepareRuntimeRequest {
+  string run_id = 1;
+  string request_id = 2;
+  string idempotency_key = 3;
+}
+
+message PrepareRuntimeResponse {
+  RuntimeManifest manifest = 1;
+  repeated RuntimeUnit runtime_units = 2;
+  string cursor = 3;
+}
+
+message StartRuntimeRequest {
+  string run_id = 1;
+  string request_id = 2;
+  string idempotency_key = 3;
+}
+
+message StartRuntimeResponse {
+  RuntimeManifest manifest = 1;
+  repeated RuntimeUnit runtime_units = 2;
+  string cursor = 3;
+  repeated RuntimeArtifact artifacts = 4;
+}
+
+message PauseRuntimeRequest {
+  string run_id = 1;
+  string request_id = 2;
+  string idempotency_key = 3;
+  string reason = 4;
+}
+
+message PauseRuntimeResponse {
+  repeated RuntimeUnit runtime_units = 1;
+  string cursor = 2;
+}
+
+message ResumeRuntimeRequest {
+  string run_id = 1;
+  string request_id = 2;
+  string idempotency_key = 3;
+}
+
+message ResumeRuntimeResponse {
+  repeated RuntimeUnit runtime_units = 1;
+  string cursor = 2;
+}
+
+message CheckpointRuntimeRequest {
+  string run_id = 1;
+  string request_id = 2;
+  string idempotency_key = 3;
+  string checkpoint_ref = 4;
+}
+
+message CheckpointRuntimeResponse {
+  string checkpoint_ref = 1;
+  google.protobuf.Timestamp completed_at = 2;
+  string cursor = 3;
+  repeated RuntimeArtifact artifacts = 4;
+}
+
+message StopRuntimeRequest {
+  string run_id = 1;
+  string request_id = 2;
+  string idempotency_key = 3;
+  string reason = 4;
+}
+
+message StopRuntimeResponse {
+  repeated RuntimeUnit runtime_units = 1;
+  string cursor = 2;
+}
+
+message TerminateRuntimeRequest {
+  string run_id = 1;
+  string request_id = 2;
+  string idempotency_key = 3;
+  string reason = 4;
+}
+
+message TerminateRuntimeResponse {
+  repeated RuntimeUnit runtime_units = 1;
+  string cursor = 2;
+}
+
+message GetRuntimeManifestRequest {
+  string run_id = 1;
+}
+
+message GetRuntimeManifestResponse {
+  RuntimeManifest manifest = 1;
+  string cursor = 2;
+}
+
+message ListRuntimeUnitsRequest {
+  string run_id = 1;
+  string stage_id = 2;
+  uint64 limit = 3;
+  string page_token = 4;
+}
+
+message ListRuntimeUnitsResponse {
+  repeated RuntimeUnit runtime_units = 1;
+  string next_page_token = 2;
+  string cursor = 3;
+}
+
+message ListSandboxesRequest {
+  string run_id = 1;
+  string job_id = 2;
+  uint64 limit = 3;
+  string page_token = 4;
+}
+
+message ListSandboxesResponse {
+  repeated Sandbox sandboxes = 1;
+  string next_page_token = 2;
+  string cursor = 3;
+}
+
+message PublishSandboxEventRequest {
+  SandboxEvent event = 1;
+}
+
+message PublishSandboxEventResponse {
+  SandboxEvent event = 1;
+}
+
+message GetRuntimeStatusRequest {
+  string run_id = 1;
+}
+
+message GetRuntimeStatusResponse {
+  RuntimeManifest manifest = 1;
+  repeated RuntimeUnit runtime_units = 2;
+  repeated Sandbox sandboxes = 3;
+  string cursor = 4;
+}
+
+message WatchRuntimeEventsRequest {
+  string run_id = 1;
+  string job_id = 2;
+  string after_event_id = 3;
+  uint64 after_generation = 4;
+  string after_cursor = 5;
+}
+
+message WatchRuntimeEventsResponse {
+  SandboxEvent event = 1;
+  string cursor = 2;
+  uint64 sequence = 3;
+}
+
+// RuntimeControlService owns runtime manifest, unit, sandbox, and runtime
+// event publication surfaces.
+service RuntimeControlService {
+  rpc ValidateRuntime(ValidateRuntimeRequest) returns (ValidateRuntimeResponse);
+  rpc CompileRuntime(CompileRuntimeRequest) returns (CompileRuntimeResponse);
+  rpc PrepareRuntime(PrepareRuntimeRequest) returns (PrepareRuntimeResponse);
+  rpc StartRuntime(StartRuntimeRequest) returns (StartRuntimeResponse);
+  rpc PauseRuntime(PauseRuntimeRequest) returns (PauseRuntimeResponse);
+  rpc ResumeRuntime(ResumeRuntimeRequest) returns (ResumeRuntimeResponse);
+  rpc CheckpointRuntime(CheckpointRuntimeRequest) returns (CheckpointRuntimeResponse);
+  rpc StopRuntime(StopRuntimeRequest) returns (StopRuntimeResponse);
+  rpc TerminateRuntime(TerminateRuntimeRequest) returns (TerminateRuntimeResponse);
+  rpc GetRuntimeManifest(GetRuntimeManifestRequest) returns (GetRuntimeManifestResponse);
+  rpc ListRuntimeUnits(ListRuntimeUnitsRequest) returns (ListRuntimeUnitsResponse);
+  rpc ListSandboxes(ListSandboxesRequest) returns (ListSandboxesResponse);
+  rpc GetRuntimeStatus(GetRuntimeStatusRequest) returns (GetRuntimeStatusResponse);
+  rpc WatchRuntimeEvents(WatchRuntimeEventsRequest) returns (stream WatchRuntimeEventsResponse);
+  rpc PublishSandboxEvent(PublishSandboxEventRequest) returns (PublishSandboxEventResponse);
+}

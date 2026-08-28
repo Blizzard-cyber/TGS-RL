@@ -1,0 +1,278 @@
+syntax = "proto3";
+
+package tgsrl.v1;
+
+import "google/protobuf/timestamp.proto";
+import "tgsrl/v1/resource.proto";
+import "tgsrl/v1/scheduling.proto";
+import "tgsrl/v1/trace.proto";
+
+option go_package = "github.com/Blizzard-cyber/TGS-RL/gen/go/tgsrl/v1;tgsrlv1";
+
+// Protocol release: v0.3. The proto files in this module are the single source
+// of truth for the wire contract; generated DTOs must never be edited by hand.
+// Compatibility rule: when deleting a field, reserve both its number and name
+// in the containing message. When deleting an enum value, reserve both its
+// number and name in the containing enum. Reserved identifiers are never reused.
+
+// ReplayState captures lifecycle state for a replay run.
+enum ReplayState {
+  REPLAY_STATE_UNKNOWN = 0;
+  REPLAY_STATE_PENDING = 1;
+  REPLAY_STATE_RUNNING = 2;
+  REPLAY_STATE_PAUSED = 3;
+  REPLAY_STATE_COMPLETED = 4;
+  REPLAY_STATE_FAILED = 5;
+  REPLAY_STATE_CANCELLED = 6;
+}
+
+// ReplayCommandType identifies lifecycle commands for a replay.
+enum ReplayCommandType {
+  REPLAY_COMMAND_TYPE_UNKNOWN = 0;
+  REPLAY_COMMAND_TYPE_START = 1;
+  REPLAY_COMMAND_TYPE_PAUSE = 2;
+  REPLAY_COMMAND_TYPE_RESUME = 3;
+  REPLAY_COMMAND_TYPE_STOP = 4;
+  REPLAY_COMMAND_TYPE_TERMINATE = 5;
+}
+
+// ExperimentState captures lifecycle state for an experiment aggregate.
+enum ExperimentState {
+  EXPERIMENT_STATE_UNKNOWN = 0;
+  EXPERIMENT_STATE_PENDING = 1;
+  EXPERIMENT_STATE_RUNNING = 2;
+  EXPERIMENT_STATE_COMPLETED = 3;
+  EXPERIMENT_STATE_FAILED = 4;
+  EXPERIMENT_STATE_CANCELLED = 5;
+}
+
+// ExperimentRunKind distinguishes simulation, replay, and live runs.
+enum ExperimentRunKind {
+  EXPERIMENT_RUN_KIND_UNKNOWN = 0;
+  EXPERIMENT_RUN_KIND_SIMULATION = 1;
+  EXPERIMENT_RUN_KIND_REPLAY = 2;
+  EXPERIMENT_RUN_KIND_LIVE = 3;
+}
+
+// MetricValue records one numeric experiment or replay metric.
+message MetricValue {
+  string name = 1;
+  double value = 2;
+  string unit = 3;
+  map<string, string> attributes = 4;
+}
+
+// ReplayDecisionComparisonStatus captures how a replayed decision compared with
+// the recorded scheduler output.
+enum ReplayDecisionComparisonStatus {
+  REPLAY_DECISION_COMPARISON_STATUS_UNKNOWN = 0;
+  REPLAY_DECISION_COMPARISON_STATUS_NOT_RECORDED = 1;
+  REPLAY_DECISION_COMPARISON_STATUS_EQUIVALENT = 2;
+  REPLAY_DECISION_COMPARISON_STATUS_DIFFERENT = 3;
+}
+
+// ReplayStepArtifact captures one exact scheduler input tuple for deterministic
+// replay without packing critical data into ad-hoc attributes.
+message ReplayStepArtifact {
+  uint64 ordinal = 1;
+  TraceEvent event = 2;
+  SchedulingIntent intent = 3;
+  ClusterSnapshot snapshot = 4;
+  DecisionRecord recorded_decision = 5;
+}
+
+// ReplayDecisionArtifact captures one replayed scheduler output and its
+// semantic comparison with any recorded decision.
+message ReplayDecisionArtifact {
+  uint64 ordinal = 1;
+  string event_id = 2;
+  DecisionRecord decision = 3;
+  string semantic_digest = 4;
+  string expected_digest = 5;
+  ReplayDecisionComparisonStatus comparison_status = 6;
+}
+
+// Replay defines one immutable trace replay request and its progress.
+message Replay {
+  string replay_id = 1;
+  string run_id = 2;
+  string trace_id = 3;
+  ReplayState state = 4;
+  string source_trace_ref = 5;
+  double speed = 6;
+  uint64 seed = 7;
+  google.protobuf.Timestamp created_at = 8;
+  google.protobuf.Timestamp started_at = 9;
+  google.protobuf.Timestamp completed_at = 10;
+  uint64 applied_events = 11;
+  uint64 emitted_decisions = 12;
+  DataKind data_kind = 13;
+  SemanticEnvelope semantic_context = 14;
+  map<string, string> annotations = 15;
+  repeated MetricValue metrics = 16;
+  string cursor = 17;
+  repeated ReplayArtifact artifacts = 18;
+}
+
+// ExperimentRun references one constituent run in an experiment comparison.
+message ReplayArtifact {
+  string artifact_id = 1;
+  string replay_id = 2;
+  string kind = 3;
+  string uri = 4;
+  string digest = 5;
+  google.protobuf.Timestamp observed_at = 6;
+  map<string, string> attributes = 7;
+  string schema_version = 8;
+  // typed_payload is authoritative for critical replay semantics. kind remains
+  // for additive wire compatibility with older readers.
+  oneof typed_payload {
+    ReplayStepArtifact replay_step = 9;
+    ReplayDecisionArtifact replay_decision = 10;
+  }
+  string canonicalizer = 11;
+  string seed_mode = 12;
+  uint64 checkpoint_index = 13;
+}
+
+message ExperimentRun {
+  string experiment_run_id = 1;
+  string experiment_id = 2;
+  string run_id = 3;
+  string trace_id = 4;
+  ExperimentRunKind kind = 5;
+  DataKind data_kind = 6;
+  string config_hash = 7;
+  string code_revision = 8;
+  string policy_version = 9;
+  string replay_id = 10;
+  map<string, string> annotations = 11;
+  repeated MetricValue metrics = 12;
+  string result_cursor = 13;
+  string result_id = 14;
+  ReplayState replay_state = 15;
+}
+
+// ExperimentResult aggregates comparable outputs across experiment runs.
+message ExperimentResult {
+  string result_id = 1;
+  string experiment_id = 2;
+  google.protobuf.Timestamp observed_at = 3;
+  string summary = 4;
+  repeated MetricValue metrics = 5;
+  map<string, string> annotations = 6;
+  string trace_id = 7;
+  DataKind data_kind = 8;
+}
+
+// Experiment aggregates comparable runs while preserving data-kind boundaries.
+message Experiment {
+  string experiment_id = 1;
+  string display_name = 2;
+  ExperimentState state = 3;
+  google.protobuf.Timestamp created_at = 4;
+  google.protobuf.Timestamp completed_at = 5;
+  repeated ExperimentRun runs = 6;
+  string summary = 7;
+  SemanticEnvelope semantic_context = 8;
+  map<string, string> annotations = 9;
+  repeated ExperimentResult results = 10;
+  string cursor = 11;
+}
+
+message ListReplaysRequest {
+  uint64 limit = 1;
+  string page_token = 2;
+  string after_replay_id = 3;
+}
+
+message ListReplaysResponse {
+  repeated Replay replays = 1;
+  string next_page_token = 2;
+  string cursor = 3;
+}
+
+message CreateReplayRequest {
+  Replay replay = 1;
+  string request_id = 2;
+  string idempotency_key = 3;
+}
+
+message CreateReplayResponse {
+  Replay replay = 1;
+  string cursor = 2;
+}
+
+message GetReplayRequest {
+  string replay_id = 1;
+}
+
+message GetReplayResponse {
+  Replay replay = 1;
+  string cursor = 2;
+}
+
+message ApplyReplayCommandRequest {
+  string replay_id = 1;
+  ReplayCommandType command = 2;
+  string request_id = 3;
+  string idempotency_key = 4;
+}
+
+message ApplyReplayCommandResponse {
+  Replay replay = 1;
+  string cursor = 2;
+}
+
+message GetReplayStatusRequest {
+  string replay_id = 1;
+}
+
+message GetReplayStatusResponse {
+  Replay replay = 1;
+  string cursor = 2;
+}
+
+message ListExperimentsRequest {
+  uint64 limit = 1;
+  string page_token = 2;
+  string after_experiment_id = 3;
+}
+
+message ListExperimentsResponse {
+  repeated Experiment experiments = 1;
+  string next_page_token = 2;
+  string cursor = 3;
+}
+
+message CreateExperimentRequest {
+  Experiment experiment = 1;
+  string request_id = 2;
+  string idempotency_key = 3;
+}
+
+message CreateExperimentResponse {
+  Experiment experiment = 1;
+  string cursor = 2;
+}
+
+message GetExperimentRequest {
+  string experiment_id = 1;
+}
+
+message GetExperimentResponse {
+  Experiment experiment = 1;
+  string cursor = 2;
+}
+
+// ExperimentService owns replay and experiment comparison surfaces.
+service ExperimentService {
+  rpc ListReplays(ListReplaysRequest) returns (ListReplaysResponse);
+  rpc CreateReplay(CreateReplayRequest) returns (CreateReplayResponse);
+  rpc GetReplay(GetReplayRequest) returns (GetReplayResponse);
+  rpc ApplyReplayCommand(ApplyReplayCommandRequest) returns (ApplyReplayCommandResponse);
+  rpc GetReplayStatus(GetReplayStatusRequest) returns (GetReplayStatusResponse);
+  rpc ListExperiments(ListExperimentsRequest) returns (ListExperimentsResponse);
+  rpc CreateExperiment(CreateExperimentRequest) returns (CreateExperimentResponse);
+  rpc GetExperiment(GetExperimentRequest) returns (GetExperimentResponse);
+}

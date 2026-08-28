@@ -1,0 +1,307 @@
+syntax = "proto3";
+
+package tgsrl.v1;
+
+import "google/protobuf/duration.proto";
+import "google/protobuf/timestamp.proto";
+import "tgsrl/v1/execution.proto";
+import "tgsrl/v1/resource.proto";
+import "tgsrl/v1/trace.proto";
+
+option go_package = "github.com/Blizzard-cyber/TGS-RL/gen/go/tgsrl/v1;tgsrlv1";
+
+// Protocol release: v0.3. The proto files in this module are the single source
+// of truth for the wire contract; generated DTOs must never be edited by hand.
+// Compatibility rule: when deleting a field, reserve both its number and name
+// in the containing message. When deleting an enum value, reserve both its
+// number and name in the containing enum. Reserved identifiers are never reused.
+
+// ActionType identifies a mutation applied by a placement plan.
+enum ActionType {
+  ACTION_TYPE_UNKNOWN = 0;
+  ACTION_TYPE_SET_SHARE = 1;
+  ACTION_TYPE_SET_PRIORITY = 2;
+  ACTION_TYPE_PAUSE = 3;
+  ACTION_TYPE_RESUME = 4;
+  ACTION_TYPE_SLEEP = 5;
+  ACTION_TYPE_OFFLOAD = 6;
+  ACTION_TYPE_REBIND = 7;
+  ACTION_TYPE_RECREATE = 8;
+  ACTION_TYPE_BIND = 9;
+  ACTION_TYPE_RELEASE = 10;
+  ACTION_TYPE_RESIZE = 11;
+}
+
+// ActionLevel groups mutations by increasing disruption and cost.
+enum ActionLevel {
+  ACTION_LEVEL_UNKNOWN = 0;
+  ACTION_LEVEL_L1 = 1;
+  ACTION_LEVEL_L2 = 2;
+  ACTION_LEVEL_L3 = 3;
+  ACTION_LEVEL_L4 = 4;
+}
+
+// ActionResultStatus is the terminal state of an attempted action.
+enum ActionResultStatus {
+  ACTION_RESULT_STATUS_UNKNOWN = 0;
+  ACTION_RESULT_STATUS_SUCCEEDED = 1;
+  ACTION_RESULT_STATUS_FAILED = 2;
+  ACTION_RESULT_STATUS_SKIPPED = 3;
+  ACTION_RESULT_STATUS_ROLLED_BACK = 4;
+}
+
+// IntentPublishStatus describes the outcome of publishing an intent.
+enum IntentPublishStatus {
+  INTENT_PUBLISH_STATUS_UNKNOWN = 0;
+  INTENT_PUBLISH_STATUS_ACCEPTED = 1;
+  INTENT_PUBLISH_STATUS_DEDUPLICATED = 2;
+  INTENT_PUBLISH_STATUS_REJECTED = 3;
+}
+
+// CandidateRejectionReason categorizes why a candidate could not be selected.
+enum CandidateRejectionReason {
+  CANDIDATE_REJECTION_REASON_UNKNOWN = 0;
+  CANDIDATE_REJECTION_REASON_INSUFFICIENT_RESOURCES = 1;
+  CANDIDATE_REJECTION_REASON_CAPABILITY_MISMATCH = 2;
+  CANDIDATE_REJECTION_REASON_VALIDITY_RULE = 3;
+  CANDIDATE_REJECTION_REASON_VERSION_CONSTRAINT = 4;
+  CANDIDATE_REJECTION_REASON_EXPIRED = 5;
+}
+
+// SchedulingIntent is keyed by (execution_id, stage_id, version) and immutable
+// at that key. valid_until is authoritative; ttl is the requested lifetime from
+// submitted_at and must resolve to the same expiry. idempotency_key deduplicates
+// retries. The intent is device-independent: device IDs are forbidden here.
+message SchedulingIntent {
+  string execution_id = 1;
+  string stage_id = 2;
+  uint64 version = 3;
+  google.protobuf.Timestamp valid_until = 4;
+  google.protobuf.Duration ttl = 5;
+  string idempotency_key = 6;
+  google.protobuf.Timestamp submitted_at = 7;
+  string job_id = 8;
+  ResourceVector resources_per_unit = 9;
+  uint32 unit_count = 10;
+  CapabilitySet required_capabilities = 11;
+  ExecutionContract execution_contract = 12;
+  int32 priority = 13;
+  string queue = 14;
+  map<string, string> labels = 15;
+  RolloutMode rollout_mode = 16;
+  PhaseKind phase_kind = 17;
+  string policy_version = 18;
+  uint64 deterministic_seed = 19;
+  map<string, double> preferences = 20;
+  string run_id = 21;
+  string trace_id = 22;
+  DataKind data_kind = 23;
+  SemanticEnvelope semantic_context = 24;
+  uint64 generation = 25;
+  string cursor = 26;
+}
+
+// Binding assigns one pending unit to concrete devices.
+message Binding {
+  string binding_id = 1;
+  string pending_unit_id = 2;
+  repeated string device_ids = 3;
+  ResourceVector resources = 4;
+  string sandbox_id = 5;
+  uint64 generation = 6;
+  string runtime_unit_id = 7;
+}
+
+// Rollback describes the compensating operation for an action.
+message Rollback {
+  ActionType action_type = 1;
+  string target_id = 2;
+  Binding restore_binding = 3;
+  string reason = 4;
+}
+
+// Action is an ordered mutation and its explicit compensation.
+message Action {
+  string action_id = 1;
+  ActionType action_type = 2;
+  ActionLevel level = 3;
+  string target_id = 4;
+  Binding binding = 5;
+  double share = 6;
+  int32 priority = 7;
+  Rollback rollback = 8;
+  uint32 order = 9;
+  string plan_id = 10;
+  string sandbox_id = 11;
+  uint64 expected_generation = 12;
+  uint64 expected_snapshot_revision = 13;
+  CapabilitySet required_capabilities = 14;
+  bool requires_safe_point = 15;
+  google.protobuf.Timestamp deadline = 16;
+  string idempotency_key = 17;
+}
+
+// PlacementPlan is an immutable plan produced against one snapshot revision.
+message PlacementPlan {
+  string plan_id = 1;
+  string execution_id = 2;
+  string stage_id = 3;
+  uint64 intent_version = 4;
+  uint64 snapshot_revision = 5;
+  repeated Binding bindings = 6;
+  repeated Action actions = 7;
+  google.protobuf.Timestamp created_at = 8;
+  google.protobuf.Timestamp expires_at = 9;
+  string decision_id = 10;
+  string run_id = 11;
+  string trace_id = 12;
+  DataKind data_kind = 13;
+  SemanticEnvelope semantic_context = 14;
+  uint64 generation = 15;
+  string cursor = 16;
+  string job_id = 17;
+}
+
+// ActionResult records the outcome of an action and any compensation attempt.
+message ActionResult {
+  string action_id = 1;
+  ActionResultStatus status = 2;
+  google.protobuf.Timestamp started_at = 3;
+  google.protobuf.Timestamp completed_at = 4;
+  string error_code = 5;
+  string error_message = 6;
+  uint64 observed_revision = 7;
+  bool rollback_attempted = 8;
+  ActionResultStatus rollback_status = 9;
+  string plan_id = 10;
+  string idempotency_key = 11;
+  uint64 observed_generation = 12;
+  string cursor = 13;
+}
+
+// PlacementCandidate is a scored plan considered by the scheduler.
+message PlacementCandidate {
+  string candidate_id = 1;
+  PlacementPlan plan = 2;
+  double score = 3;
+  map<string, double> component_scores = 4;
+}
+
+// CandidateRejection captures a rejected candidate and the stable reason class.
+message CandidateRejection {
+  string candidate_id = 1;
+  CandidateRejectionReason reason = 2;
+  string detail = 3;
+}
+
+// DecisionRecord contains the full auditable scheduler decision surface: all
+// candidates, rejections, selected score, fallback state, input data kind, and
+// scheduler code revision.
+message DecisionRecord {
+  string decision_id = 1;
+  uint64 sequence = 2;
+  string execution_id = 3;
+  string stage_id = 4;
+  uint64 intent_version = 5;
+  uint64 snapshot_revision = 6;
+  repeated PlacementCandidate candidates = 7;
+  repeated CandidateRejection rejected_candidates = 8;
+  PlacementPlan selected_plan = 9;
+  double score = 10;
+  bool fallback = 11;
+  string fallback_reason = 12;
+  DataKind data_kind = 13;
+  string code_revision = 14;
+  google.protobuf.Timestamp decided_at = 15;
+  repeated ActionResult action_results = 16;
+  string policy_version = 17;
+  uint64 deterministic_seed = 18;
+  string config_revision = 19;
+  string run_id = 20;
+  string trace_id = 21;
+  SemanticEnvelope semantic_context = 22;
+  uint64 generation = 23;
+  string cursor = 24;
+  string job_id = 25;
+}
+
+message PublishIntentRequest {
+  SchedulingIntent intent = 1;
+}
+
+message PublishIntentResponse {
+  IntentPublishStatus status = 1;
+  string execution_id = 2;
+  string stage_id = 3;
+  uint64 version = 4;
+  string detail = 5;
+  string run_id = 6;
+  string trace_id = 7;
+  DataKind data_kind = 8;
+  string cursor = 9;
+}
+
+message GetSnapshotRequest {
+  uint64 minimum_revision = 1;
+  bool include_pending_units = 2;
+}
+
+message GetSnapshotResponse {
+  ClusterSnapshot snapshot = 1;
+  string cursor = 2;
+}
+
+message ScheduleRequest {
+  SchedulingIntent intent = 1;
+  ClusterSnapshot snapshot = 2;
+}
+
+message ScheduleResponse {
+  DecisionRecord decision = 1;
+  string cursor = 2;
+}
+
+message ListDecisionsRequest {
+  string job_id = 1;
+  string run_id = 2;
+  uint64 limit = 3;
+  string page_token = 4;
+}
+
+message ListDecisionsResponse {
+  repeated DecisionRecord decisions = 1;
+  string next_page_token = 2;
+  string cursor = 3;
+}
+
+message GetDecisionRequest {
+  string decision_id = 1;
+}
+
+message GetDecisionResponse {
+  DecisionRecord decision = 1;
+  string cursor = 2;
+}
+
+message WatchDecisionsRequest {
+  repeated string job_ids = 1;
+  uint64 after_sequence = 2;
+  google.protobuf.Duration heartbeat_interval = 3;
+  string after_decision_id = 4;
+}
+
+message WatchDecisionsResponse {
+  DecisionRecord decision = 1;
+  string cursor = 2;
+}
+
+// SchedulerService publishes device-independent demand and produces auditable
+// placement decisions against immutable cluster snapshots.
+service SchedulerService {
+  rpc PublishIntent(PublishIntentRequest) returns (PublishIntentResponse);
+  rpc GetSnapshot(GetSnapshotRequest) returns (GetSnapshotResponse);
+  rpc Schedule(ScheduleRequest) returns (ScheduleResponse);
+  rpc ListDecisions(ListDecisionsRequest) returns (ListDecisionsResponse);
+  rpc GetDecision(GetDecisionRequest) returns (GetDecisionResponse);
+  rpc WatchDecisions(WatchDecisionsRequest) returns (stream WatchDecisionsResponse);
+}

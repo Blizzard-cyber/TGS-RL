@@ -1,0 +1,195 @@
+syntax = "proto3";
+
+package tgsrl.v1;
+
+import "google/protobuf/duration.proto";
+import "tgsrl/v1/semantic.proto";
+
+option go_package = "github.com/Blizzard-cyber/TGS-RL/gen/go/tgsrl/v1;tgsrlv1";
+
+// Protocol release: v0.3. The proto files in this module are the single source
+// of truth for the wire contract; generated DTOs must never be edited by hand.
+// Compatibility rule: when deleting a field, reserve both its number and name
+// in the containing message. When deleting an enum value, reserve both its
+// number and name in the containing enum. Reserved identifiers are never reused.
+
+// PhaseKind identifies a stage in the reinforcement-learning execution graph.
+enum PhaseKind {
+  PHASE_KIND_UNKNOWN = 0;
+  PHASE_KIND_PREFILL = 1;
+  PHASE_KIND_DECODE = 2;
+  PHASE_KIND_TOOL_WAIT = 3;
+  PHASE_KIND_KV_RESTORE = 4;
+  PHASE_KIND_REFERENCE = 5;
+  PHASE_KIND_REWARD = 6;
+  PHASE_KIND_ACTOR = 7;
+  PHASE_KIND_OPTIMIZER = 8;
+  PHASE_KIND_WEIGHT_SYNC = 9;
+  PHASE_KIND_IDLE = 10;
+}
+
+// ValidityFailureMode defines the action taken when a validity rule fails.
+enum ValidityFailureMode {
+  VALIDITY_FAILURE_MODE_UNKNOWN = 0;
+  VALIDITY_FAILURE_MODE_REJECT = 1;
+  VALIDITY_FAILURE_MODE_PAUSE = 2;
+  VALIDITY_FAILURE_MODE_ABORT = 3;
+}
+
+// VersionOperator defines how a component version is compared with a constraint.
+enum VersionOperator {
+  VERSION_OPERATOR_UNKNOWN = 0;
+  VERSION_OPERATOR_EXACT = 1;
+  VERSION_OPERATOR_SEMVER = 2;
+  VERSION_OPERATOR_COMPATIBLE = 3;
+}
+
+// CommitMode defines the atomicity of a distributed phase commit.
+enum CommitMode {
+  COMMIT_MODE_UNKNOWN = 0;
+  COMMIT_MODE_ALL_OR_NOTHING = 1;
+  COMMIT_MODE_QUORUM = 2;
+  COMMIT_MODE_BEST_EFFORT = 3;
+}
+
+// BackpressureMode defines how producers react to a saturated rollout buffer.
+enum BackpressureMode {
+  BACKPRESSURE_MODE_UNKNOWN = 0;
+  BACKPRESSURE_MODE_BLOCK_PRODUCER = 1;
+  BACKPRESSURE_MODE_SHED_OLDEST = 2;
+  BACKPRESSURE_MODE_SHED_NEWEST = 3;
+  BACKPRESSURE_MODE_REQUEST_SCALE_OUT = 4;
+}
+
+// SafePointTrigger identifies the event that opens a safe mutation boundary.
+enum SafePointTrigger {
+  SAFE_POINT_TRIGGER_UNKNOWN = 0;
+  SAFE_POINT_TRIGGER_PHASE_BOUNDARY = 1;
+  SAFE_POINT_TRIGGER_INTERVAL = 2;
+  SAFE_POINT_TRIGGER_BUFFER_THRESHOLD = 3;
+  SAFE_POINT_TRIGGER_EXPLICIT = 4;
+}
+
+// Phase is a schedulable node in a phase graph.
+message Phase {
+  string phase_id = 1;
+  string display_name = 2;
+  PhaseKind kind = 3;
+  uint32 parallelism = 4;
+  uint32 max_attempts = 5;
+  map<string, string> labels = 6;
+}
+
+// PhaseEdge connects two phases. Condition is an implementation-independent
+// boolean expression evaluated against committed phase outputs.
+message PhaseEdge {
+  string from_phase_id = 1;
+  string to_phase_id = 2;
+  string condition = 3;
+}
+
+// PhaseGraph is the execution DAG for a training iteration.
+message PhaseGraph {
+  repeated Phase phases = 1;
+  repeated PhaseEdge edges = 2;
+  repeated string entry_phase_ids = 3;
+}
+
+// ValidityRule is a deterministic precondition or invariant.
+message ValidityRule {
+  string rule_id = 1;
+  string description = 2;
+  string expression = 3;
+  ValidityFailureMode failure_mode = 4;
+}
+
+// VersionConstraint constrains a named runtime or protocol component.
+message VersionConstraint {
+  string component = 1;
+  VersionOperator operator = 2;
+  string version = 3;
+  bool allow_prerelease = 4;
+  string source = 5;
+  uint64 revision = 6;
+}
+
+// CommitPolicy governs how a phase becomes visible to downstream phases.
+message CommitPolicy {
+  CommitMode mode = 1;
+  uint32 minimum_successful_units = 2;
+  uint32 max_retries = 3;
+  google.protobuf.Duration commit_timeout = 4;
+  bool require_safe_point = 5;
+}
+
+// BackpressurePolicy defines rollout-buffer watermarks and saturation behavior.
+message BackpressurePolicy {
+  BackpressureMode mode = 1;
+  uint64 low_watermark = 2;
+  uint64 high_watermark = 3;
+  uint64 maximum_buffer_level = 4;
+  google.protobuf.Duration stall_timeout = 5;
+}
+
+// SafePointPolicy defines when scheduling or policy mutations may be applied.
+message SafePointPolicy {
+  bool enabled = 1;
+  SafePointTrigger trigger = 2;
+  google.protobuf.Duration interval = 3;
+  google.protobuf.Duration maximum_wait = 4;
+  repeated string required_phase_ids = 5;
+}
+
+// Capabilities advertises execution semantics required by the contract.
+message Capabilities {
+  bool elastic_parallelism = 1;
+  bool deterministic_replay = 2;
+  bool transactional_commits = 3;
+  bool checkpoint_restore = 4;
+  bool policy_hot_swap = 5;
+  repeated string extensions = 6;
+}
+
+// Condition is a typed predicate used across control, scheduling, and runtime
+// surfaces. expression remains the portable fallback for systems that do not
+// understand the typed form.
+enum ConditionOperator {
+  CONDITION_OPERATOR_UNKNOWN = 0;
+  CONDITION_OPERATOR_EQ = 1;
+  CONDITION_OPERATOR_NE = 2;
+  CONDITION_OPERATOR_GT = 3;
+  CONDITION_OPERATOR_GE = 4;
+  CONDITION_OPERATOR_LT = 5;
+  CONDITION_OPERATOR_LE = 6;
+  CONDITION_OPERATOR_IN = 7;
+  CONDITION_OPERATOR_NOT_IN = 8;
+  CONDITION_OPERATOR_EXISTS = 9;
+  CONDITION_OPERATOR_AND = 10;
+  CONDITION_OPERATOR_OR = 11;
+  CONDITION_OPERATOR_NOT = 12;
+}
+
+message Condition {
+  string condition_id = 1;
+  string display_name = 2;
+  string expression = 3;
+  string language = 4;
+  ConditionOperator operator = 5;
+  map<string, string> attributes = 6;
+  repeated SemanticValue operands = 7;
+  repeated Condition predicates = 8;
+}
+
+// ExecutionContract is the complete, scheduler-visible execution contract.
+message ExecutionContract {
+  string contract_id = 1;
+  string version = 2;
+  PhaseGraph phase_graph = 3;
+  repeated ValidityRule validity_rules = 4;
+  repeated VersionConstraint version_constraints = 5;
+  CommitPolicy commit_policy = 6;
+  BackpressurePolicy backpressure_policy = 7;
+  SafePointPolicy safe_point_policy = 8;
+  Capabilities capabilities = 9;
+  repeated Condition conditions = 10;
+}
