@@ -72,6 +72,44 @@ func TestEvaluateRejectsTypedFactDuplicateConflict(t *testing.T) {
 	}
 }
 
+func TestEvaluateDedupesTypedFactDuplicateSameValue(t *testing.T) {
+	input := testInput()
+	input.Context.ContractObservation = &tgsrlv1.ContractObservation{
+		PolicyLag: ptrUint(4),
+		TypedFacts: []*tgsrlv1.SemanticField{{
+			Key:   "sample.policy_lag",
+			Value: semanticUint(4),
+		}},
+	}
+	input.Contract.ValidityRules = []*tgsrlv1.ValidityRule{{
+		RuleId:      "lag",
+		FailureMode: tgsrlv1.ValidityFailureMode_VALIDITY_FAILURE_MODE_REJECT,
+		Predicate: &tgsrlv1.Condition{
+			Operator: tgsrlv1.ConditionOperator_CONDITION_OPERATOR_EQ,
+			FactPath: "sample.policy_lag",
+			Operands: []*tgsrlv1.SemanticValue{semanticUint(4)},
+		},
+	}}
+
+	evals, _, err := Evaluate(input)
+	if err != nil {
+		t.Fatalf("Evaluate() error = %v", err)
+	}
+	var got *tgsrlv1.ContractEvaluation
+	for _, eval := range evals {
+		if eval.GetClauseId() == "lag" {
+			got = eval
+			break
+		}
+	}
+	if got == nil {
+		t.Fatal("missing lag evaluation")
+	}
+	if got.GetStatus() != tgsrlv1.ContractEvaluationStatus_CONTRACT_EVALUATION_STATUS_SATISFIED {
+		t.Fatalf("status = %v, want SATISFIED", got.GetStatus())
+	}
+}
+
 func TestEvaluateTypedPredicatesAndNestedLogic(t *testing.T) {
 	input := testInput()
 	policyLag := uint64(2)
@@ -192,16 +230,78 @@ func TestEvaluateMarksMissingAndTypeMismatchIndeterminate(t *testing.T) {
 	}
 }
 
-func TestEvaluateRejectsNaNAndInf(t *testing.T) {
-	for _, value := range []float64{math.NaN(), math.Inf(1)} {
+func TestEvaluateInvalidESSAndRatioBecomeIndeterminate(t *testing.T) {
+	for _, value := range []float64{math.NaN(), math.Inf(1), -1} {
+		input := testInput()
+		buffer := uint64(0)
+		input.Context.ContractObservation = &tgsrlv1.ContractObservation{
+			BufferLevel:         &buffer,
+			EffectiveSampleSize: &value,
+		}
+		input.Contract.Conditions = []*tgsrlv1.Condition{{
+			ConditionId: "ess",
+			Operator:    tgsrlv1.ConditionOperator_CONDITION_OPERATOR_GT,
+			FactPath:    "batch.effective_sample_size",
+			Operands:    []*tgsrlv1.SemanticValue{semanticDouble(1)},
+		}}
+
+		evals, _, err := Evaluate(input)
+		if err != nil {
+			t.Fatalf("Evaluate() error = %v", err)
+		}
+		var got *tgsrlv1.ContractEvaluation
+		for _, eval := range evals {
+			if eval.GetClauseId() == "ess" {
+				got = eval
+				break
+			}
+		}
+		if got == nil {
+			t.Fatal("missing ess evaluation")
+		}
+		if got.GetStatus() != tgsrlv1.ContractEvaluationStatus_CONTRACT_EVALUATION_STATUS_INDETERMINATE {
+			t.Fatalf("status = %v, want INDETERMINATE", got.GetStatus())
+		}
+		if len(got.GetEvidence()) == 0 {
+			t.Fatal("expected invalid ESS evidence")
+		}
+	}
+}
+
+func TestEvaluateInvalidRatioBecomesIndeterminate(t *testing.T) {
+	for _, value := range []float64{math.NaN(), math.Inf(1), -0.1} {
 		input := testInput()
 		buffer := uint64(0)
 		input.Context.ContractObservation = &tgsrlv1.ContractObservation{
 			BufferLevel:              &buffer,
 			EffectiveSampleSizeRatio: &value,
 		}
-		if _, _, err := Evaluate(input); err == nil {
-			t.Fatalf("Evaluate() unexpectedly succeeded for %v", value)
+		input.Contract.Conditions = []*tgsrlv1.Condition{{
+			ConditionId: "ratio",
+			Operator:    tgsrlv1.ConditionOperator_CONDITION_OPERATOR_GE,
+			FactPath:    "batch.effective_sample_size_ratio",
+			Operands:    []*tgsrlv1.SemanticValue{semanticDouble(0.5)},
+		}}
+
+		evals, _, err := Evaluate(input)
+		if err != nil {
+			t.Fatalf("Evaluate() error = %v", err)
+		}
+		var got *tgsrlv1.ContractEvaluation
+		for _, eval := range evals {
+			if eval.GetClauseId() == "ratio" {
+				got = eval
+				break
+			}
+		}
+		if got == nil {
+			t.Fatal("missing ratio evaluation")
+		}
+		if got.GetStatus() != tgsrlv1.ContractEvaluationStatus_CONTRACT_EVALUATION_STATUS_INDETERMINATE {
+			t.Fatalf("status = %v, want INDETERMINATE", got.GetStatus())
+		}
+		if len(got.GetEvidence()) == 0 {
+			t.Fatal("expected invalid ratio evidence")
 		}
 	}
 }
@@ -342,6 +442,76 @@ func TestEvaluateSafePointFullAsyncSemantics(t *testing.T) {
 	}
 	if aggregate.Action != tgsrlv1.ContractDecisionAction_CONTRACT_DECISION_ACTION_REJECT {
 		t.Fatalf("aggregate action = %v, want REJECT from version constraint", aggregate.Action)
+	}
+}
+
+func TestEvaluateSafePointFallsBackToSnapshotAnnotation(t *testing.T) {
+	input := testInput()
+	input.Contract.CommitPolicy.RequireSafePoint = true
+	input.Context.ContractObservation = &tgsrlv1.ContractObservation{
+		BufferLevel: ptrUint(0),
+	}
+	input.Intent.ExecutionId = "exec-1"
+	input.Intent.StageId = "stage-1"
+	input.Snapshot.Annotations = map[string]string{
+		"tgsrl.io/safe-point/exec-1/stage-1": "true",
+	}
+
+	evals, _, err := Evaluate(input)
+	if err != nil {
+		t.Fatalf("Evaluate() error = %v", err)
+	}
+	var safePoint *tgsrlv1.ContractEvaluation
+	for _, eval := range evals {
+		if eval.GetClauseKind() == tgsrlv1.ContractClauseKind_CONTRACT_CLAUSE_KIND_SAFE_POINT_POLICY {
+			safePoint = eval
+			break
+		}
+	}
+	if safePoint == nil {
+		t.Fatal("missing safe point evaluation")
+	}
+	if safePoint.GetStatus() != tgsrlv1.ContractEvaluationStatus_CONTRACT_EVALUATION_STATUS_SATISFIED {
+		t.Fatalf("safe point status = %v, want SATISFIED", safePoint.GetStatus())
+	}
+	foundKey := false
+	for _, evidence := range safePoint.GetEvidence() {
+		if evidence.GetKey() == "snapshot.safe_point.annotation_key" && evidence.GetValue().GetStringValue() == "tgsrl.io/safe-point/exec-1/stage-1" {
+			foundKey = true
+			break
+		}
+	}
+	if !foundKey {
+		t.Fatal("expected snapshot annotation fallback evidence")
+	}
+}
+
+func TestEvaluateSafePointFallsBackToGlobalSnapshotAnnotation(t *testing.T) {
+	input := testInput()
+	input.Contract.CommitPolicy.RequireSafePoint = true
+	input.Context.ContractObservation = &tgsrlv1.ContractObservation{
+		BufferLevel: ptrUint(0),
+	}
+	input.Snapshot.Annotations = map[string]string{
+		"tgsrl.io/safe-point": "true",
+	}
+
+	evals, _, err := Evaluate(input)
+	if err != nil {
+		t.Fatalf("Evaluate() error = %v", err)
+	}
+	var safePoint *tgsrlv1.ContractEvaluation
+	for _, eval := range evals {
+		if eval.GetClauseKind() == tgsrlv1.ContractClauseKind_CONTRACT_CLAUSE_KIND_SAFE_POINT_POLICY {
+			safePoint = eval
+			break
+		}
+	}
+	if safePoint == nil {
+		t.Fatal("missing safe point evaluation")
+	}
+	if safePoint.GetStatus() != tgsrlv1.ContractEvaluationStatus_CONTRACT_EVALUATION_STATUS_SATISFIED {
+		t.Fatalf("safe point status = %v, want SATISFIED", safePoint.GetStatus())
 	}
 }
 

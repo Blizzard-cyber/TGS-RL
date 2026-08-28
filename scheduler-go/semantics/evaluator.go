@@ -15,6 +15,7 @@ import (
 )
 
 const protocolVersion = "0.3.0"
+const safePointAnnotation = "tgsrl.io/safe-point"
 
 type Input struct {
 	Contract *tgsrlv1.ExecutionContract
@@ -115,12 +116,19 @@ func effectiveObservation(ctx *tgsrlv1.EvaluationContext, intent *tgsrlv1.Schedu
 
 type factRegistry struct {
 	values map[string]*tgsrlv1.SemanticValue
+	issues map[string]factIssue
+}
+
+type factIssue struct {
+	reason   string
+	evidence []*tgsrlv1.SemanticField
 }
 
 func buildFacts(input Input, obs *tgsrlv1.ContractObservation) (*factRegistry, error) {
 	values := map[string]*tgsrlv1.SemanticValue{
 		"intent.version.current": semanticUint(input.Intent.GetVersion()),
 	}
+	issues := map[string]factIssue{}
 
 	if obs != nil {
 		if obs.PolicyLag != nil {
@@ -134,6 +142,12 @@ func buildFacts(input Input, obs *tgsrlv1.ContractObservation) (*factRegistry, e
 		}
 		if obs.SafePoint != nil {
 			values["runtime.safe_point"] = semanticBool(obs.GetSafePoint())
+		} else if value, evidence, ok := snapshotSafePointFact(input.Snapshot, input.Intent); ok {
+			values["runtime.safe_point"] = semanticBool(value)
+			issues["runtime.safe_point"] = factIssue{
+				reason:   "runtime safe point resolved from snapshot annotation fallback",
+				evidence: evidence,
+			}
 		}
 		if obs.AcceptedSamples != nil {
 			values["batch.accepted_samples"] = semanticUint(obs.GetAcceptedSamples())
@@ -143,16 +157,28 @@ func buildFacts(input Input, obs *tgsrlv1.ContractObservation) (*factRegistry, e
 			values["group.expected_samples"] = semanticUint(obs.GetExpectedSamples())
 		}
 		if obs.EffectiveSampleSize != nil {
-			if !finite(obs.GetEffectiveSampleSize()) {
-				return nil, fmt.Errorf("observation effective_sample_size is not finite")
+			if !finite(obs.GetEffectiveSampleSize()) || obs.GetEffectiveSampleSize() < 0 {
+				issues["batch.effective_sample_size"] = factIssue{
+					reason: "effective_sample_size is invalid",
+					evidence: []*tgsrlv1.SemanticField{
+						semanticField("batch.effective_sample_size.invalid", semanticDouble(obs.GetEffectiveSampleSize())),
+					},
+				}
+			} else {
+				values["batch.effective_sample_size"] = semanticDouble(obs.GetEffectiveSampleSize())
 			}
-			values["batch.effective_sample_size"] = semanticDouble(obs.GetEffectiveSampleSize())
 		}
 		if obs.EffectiveSampleSizeRatio != nil {
-			if !finite(obs.GetEffectiveSampleSizeRatio()) {
-				return nil, fmt.Errorf("observation effective_sample_size_ratio is not finite")
+			if !finite(obs.GetEffectiveSampleSizeRatio()) || obs.GetEffectiveSampleSizeRatio() < 0 {
+				issues["batch.effective_sample_size_ratio"] = factIssue{
+					reason: "effective_sample_size_ratio is invalid",
+					evidence: []*tgsrlv1.SemanticField{
+						semanticField("batch.effective_sample_size_ratio.invalid", semanticDouble(obs.GetEffectiveSampleSizeRatio())),
+					},
+				}
+			} else {
+				values["batch.effective_sample_size_ratio"] = semanticDouble(obs.GetEffectiveSampleSizeRatio())
 			}
-			values["batch.effective_sample_size_ratio"] = semanticDouble(obs.GetEffectiveSampleSizeRatio())
 		}
 		if input.Context.GetEvaluationTime() != nil && obs.GetOldestSampleAt() != nil {
 			age := input.Context.GetEvaluationTime().AsTime().Sub(obs.GetOldestSampleAt().AsTime()).Milliseconds()
@@ -171,13 +197,27 @@ func buildFacts(input Input, obs *tgsrlv1.ContractObservation) (*factRegistry, e
 				if !proto.Equal(existing, field.GetValue()) {
 					return nil, fmt.Errorf("typed fact %q conflicts with registry", field.GetKey())
 				}
-				return nil, fmt.Errorf("typed fact %q duplicates registry", field.GetKey())
+				continue
+			}
+			if existing, exists := issues[field.GetKey()]; exists {
+				if len(existing.evidence) > 0 && proto.Equal(existing.evidence[0].GetValue(), field.GetValue()) {
+					delete(issues, field.GetKey())
+					values[field.GetKey()] = proto.Clone(field.GetValue()).(*tgsrlv1.SemanticValue)
+					continue
+				}
+				return nil, fmt.Errorf("typed fact %q conflicts with invalid registry fact", field.GetKey())
 			}
 			values[field.GetKey()] = proto.Clone(field.GetValue()).(*tgsrlv1.SemanticValue)
 		}
+	} else if value, evidence, ok := snapshotSafePointFact(input.Snapshot, input.Intent); ok {
+		values["runtime.safe_point"] = semanticBool(value)
+		issues["runtime.safe_point"] = factIssue{
+			reason:   "runtime safe point resolved from snapshot annotation fallback",
+			evidence: evidence,
+		}
 	}
 
-	return &factRegistry{values: values}, nil
+	return &factRegistry{values: values, issues: issues}, nil
 }
 
 type conditionResult struct {
@@ -325,6 +365,9 @@ func evaluateSafePoint(input Input, facts *factRegistry) *tgsrlv1.ContractEvalua
 		return finalizeEvaluation(input, base)
 	}
 	base.Observations = append(base.Observations, semanticField("runtime.safe_point", value))
+	if issue, exists := facts.issues["runtime.safe_point"]; exists {
+		base.Evidence = append(base.Evidence, issue.evidence...)
+	}
 	if value.GetBoolValue() {
 		base.Status = tgsrlv1.ContractEvaluationStatus_CONTRACT_EVALUATION_STATUS_SATISFIED
 		base.Detail = "runtime is at a safe point"
@@ -441,6 +484,14 @@ func evalLogicalNOT(facts *factRegistry, cond *tgsrlv1.Condition) conditionResul
 func evalExists(facts *factRegistry, cond *tgsrlv1.Condition) conditionResult {
 	value, ok := facts.values[cond.GetFactPath()]
 	if !ok {
+		if issue, exists := facts.issues[cond.GetFactPath()]; exists {
+			return conditionResult{
+				status:   tgsrlv1.ContractEvaluationStatus_CONTRACT_EVALUATION_STATUS_INDETERMINATE,
+				missing:  []string{cond.GetFactPath()},
+				evidence: issue.evidence,
+				detail:   issue.reason,
+			}
+		}
 		return conditionResult{
 			status:  tgsrlv1.ContractEvaluationStatus_CONTRACT_EVALUATION_STATUS_VIOLATED,
 			missing: []string{cond.GetFactPath()},
@@ -457,6 +508,14 @@ func evalExists(facts *factRegistry, cond *tgsrlv1.Condition) conditionResult {
 func evalBinaryCondition(facts *factRegistry, cond *tgsrlv1.Condition) conditionResult {
 	left, leftOk := facts.values[cond.GetFactPath()]
 	if !leftOk {
+		if issue, exists := facts.issues[cond.GetFactPath()]; exists {
+			return conditionResult{
+				status:   tgsrlv1.ContractEvaluationStatus_CONTRACT_EVALUATION_STATUS_INDETERMINATE,
+				missing:  []string{cond.GetFactPath()},
+				evidence: issue.evidence,
+				detail:   issue.reason,
+			}
+		}
 		return conditionResult{
 			status:  tgsrlv1.ContractEvaluationStatus_CONTRACT_EVALUATION_STATUS_INDETERMINATE,
 			missing: []string{cond.GetFactPath()},
@@ -506,6 +565,9 @@ func comparisonValue(facts *factRegistry, cond *tgsrlv1.Condition) (*tgsrlv1.Sem
 	if cond.GetComparisonFactPath() != "" {
 		value, ok := facts.values[cond.GetComparisonFactPath()]
 		if !ok {
+			if issue, exists := facts.issues[cond.GetComparisonFactPath()]; exists {
+				return nil, []string{cond.GetComparisonFactPath()}, fmt.Errorf(issue.reason)
+			}
 			return nil, []string{cond.GetComparisonFactPath()}, fmt.Errorf("missing comparison fact")
 		}
 		return value, nil, nil
@@ -761,13 +823,21 @@ func semanticString(value string) *tgsrlv1.SemanticValue {
 func stableFields(fields []*tgsrlv1.SemanticField) []*tgsrlv1.SemanticField {
 	filtered := make([]*tgsrlv1.SemanticField, 0, len(fields))
 	for _, field := range fields {
-		if field != nil && field.GetValue() != nil {
+		if field != nil {
 			filtered = append(filtered, field)
 		}
 	}
 	sort.SliceStable(filtered, func(i, j int) bool {
 		if filtered[i].GetKey() == filtered[j].GetKey() {
-			return filtered[i].GetValue().String() < filtered[j].GetValue().String()
+			left := ""
+			right := ""
+			if filtered[i].GetValue() != nil {
+				left = filtered[i].GetValue().String()
+			}
+			if filtered[j].GetValue() != nil {
+				right = filtered[j].GetValue().String()
+			}
+			return left < right
 		}
 		return filtered[i].GetKey() < filtered[j].GetKey()
 	})
@@ -814,6 +884,34 @@ func finiteSemanticValue(value *tgsrlv1.SemanticValue) bool {
 		}
 	}
 	return true
+}
+
+func snapshotSafePointFact(snapshot *tgsrlv1.ClusterSnapshot, intent *tgsrlv1.SchedulingIntent) (bool, []*tgsrlv1.SemanticField, bool) {
+	if snapshot == nil || intent == nil {
+		return false, nil, false
+	}
+	keys := []string{
+		safePointAnnotation + "/" + intent.GetExecutionId() + "/" + intent.GetStageId(),
+		safePointAnnotation,
+		"safe_point/" + intent.GetExecutionId() + "/" + intent.GetStageId(),
+		"safe_point",
+	}
+	for _, key := range keys {
+		if raw, exists := snapshot.GetAnnotations()[key]; exists {
+			value, err := strconv.ParseBool(strings.TrimSpace(raw))
+			if err != nil {
+				return false, []*tgsrlv1.SemanticField{
+					semanticField("snapshot.safe_point.annotation_key", semanticString(key)),
+					semanticField("snapshot.safe_point.annotation_raw", semanticString(raw)),
+				}, false
+			}
+			return value, []*tgsrlv1.SemanticField{
+				semanticField("snapshot.safe_point.annotation_key", semanticString(key)),
+				semanticField("snapshot.safe_point.annotation_raw", semanticString(raw)),
+			}, true
+		}
+	}
+	return false, nil, false
 }
 
 func actionFor(status tgsrlv1.ContractEvaluationStatus, mode tgsrlv1.ValidityFailureMode) tgsrlv1.ContractDecisionAction {
