@@ -251,7 +251,7 @@ def test_validate_rejects_contract_observation_mismatches() -> None:
         IntentBuilder.validate(intent)
 
 
-def test_intent_coordinator_writes_latest_observation_as_authority() -> None:
+def test_intent_coordinator_writes_stage_matched_observation_as_authority() -> None:
     coordinator = IntentCoordinator(builder=_builder())
     manifest = runtime_pb2.RuntimeManifest(
         manifest_id="manifest-1",
@@ -288,6 +288,22 @@ def test_intent_coordinator_writes_latest_observation_as_authority() -> None:
         stage_id="decode",
         data_kind=trace_pb2.DATA_KIND_SYNTHETIC,
     )
+    reward_runtime_unit = runtime_pb2.RuntimeUnit(
+        runtime_unit_id="unit-2",
+        run_id="run-1",
+        job_id="job-1",
+        trace_id="trace-1",
+        kind=runtime_pb2.RUNTIME_UNIT_KIND_ROLLOUT,
+        phase_id="reward",
+        phase_kind=execution_pb2.PHASE_KIND_REWARD,
+        state=runtime_pb2.RUNTIME_STATE_REQUESTED,
+        requested_resources=resource_pb2.ResourceVector(cpu_millis=1000, memory_bytes=1 << 30),
+        required_capabilities=resource_pb2.CapabilitySet(names=["runtime-unit"]),
+        execution_id="execution-1",
+        stage_id="reward",
+        data_kind=trace_pb2.DATA_KIND_SYNTHETIC,
+    )
+    decode_observation = _observation()
     summary = TraceSummary(
         event_count=2,
         safe_point_count=1,
@@ -299,22 +315,26 @@ def test_intent_coordinator_writes_latest_observation_as_authority() -> None:
         latest_policy_version="policy-1",
         latest_phase_id="decode",
         latest_event_id="evt-1",
-        latest_observation=_observation(),
+        latest_observation=decode_observation,
         micro_stage_count=1,
         completed_micro_stage_count=1,
         incomplete_micro_stage_count=0,
         total_micro_stage_seconds=1.0,
         micro_stages=(),
+        latest_observations_by_stage={"decode": decode_observation},
     )
 
-    intents = coordinator.build_for_units(manifest, [runtime_unit], summary)
+    intents = coordinator.build_for_units(manifest, [runtime_unit, reward_runtime_unit], summary)
 
-    assert len(intents) == 1
-    intent = intents[0]
-    assert intent.contract_observation.event_id == "evt-1"
-    assert intent.contract_observation.buffer_level == 4
-    assert intent.preferences["max_buffer_level"] == 11.0
-    assert intent.preferences["latest_buffer_level"] == 4.0
+    assert len(intents) == 2
+    decode_intent, reward_intent = intents
+    assert decode_intent.stage_id == "decode"
+    assert decode_intent.contract_observation.event_id == "evt-1"
+    assert decode_intent.contract_observation.buffer_level == 4
+    assert decode_intent.preferences["max_buffer_level"] == 11.0
+    assert decode_intent.preferences["latest_buffer_level"] == 4.0
+    assert reward_intent.stage_id == "reward"
+    assert not reward_intent.HasField("contract_observation")
 
 
 class _Stream:

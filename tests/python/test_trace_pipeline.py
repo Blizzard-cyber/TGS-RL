@@ -260,6 +260,114 @@ def test_summary_uses_causally_latest_observation_not_historical_max(
     assert summary.latest_observation is not None
     assert summary.latest_observation.buffer_level == 3
     assert summary.latest_observation.accepted_samples == 4
+    decode_observation = summary.latest_observation_for_stage("decode")
+    assert decode_observation is not None
+    assert decode_observation.event_id == "late"
+
+
+def test_summary_tracks_latest_observation_per_stage_without_cross_stage_leakage(
+    event_factory: EventFactory,
+) -> None:
+    decode = _event(
+        event_factory,
+        "decode-late",
+        stage_id="decode",
+        sequence=2,
+        seconds=2,
+        event_type=trace_pb2.TRACE_EVENT_TYPE_SAMPLE_PRODUCED,
+    )
+    decode.policy_version = "policy-decode"
+    decode.contract_observation.source = "runtime"
+    decode.contract_observation.event_id = "decode-late"
+    decode.contract_observation.phase_id = "decode"
+    decode.contract_observation.policy_version = "policy-decode"
+    decode.contract_observation.observed_at.CopyFrom(decode.occurred_at)
+    decode.contract_observation.buffer_level = 5
+    decode.contract_observation.safe_point = False
+    decode.contract_observation.policy_lag = 1
+    decode.contract_observation.typed_facts.extend(
+        [
+            semantic_pb2.SemanticField(
+                key="sample.policy_lag",
+                value=semantic_pb2.SemanticValue(uint64_value=1),
+            ),
+            semantic_pb2.SemanticField(
+                key="buffer.level.current",
+                value=semantic_pb2.SemanticValue(uint64_value=5),
+            ),
+            semantic_pb2.SemanticField(
+                key="group.accepted_samples",
+                value=semantic_pb2.SemanticValue(uint64_value=3),
+            ),
+            semantic_pb2.SemanticField(
+                key="group.expected_samples",
+                value=semantic_pb2.SemanticValue(uint64_value=4),
+            ),
+        ]
+    )
+    decode.contract_observation.accepted_samples = 3
+    decode.contract_observation.expected_samples = 4
+
+    reward = _event(
+        event_factory,
+        "reward-late",
+        stage_id="reward",
+        sequence=3,
+        seconds=3,
+        event_type=trace_pb2.TRACE_EVENT_TYPE_PHASE_COMPLETED,
+    )
+    reward.policy_version = "policy-reward"
+    reward.buffer_level = 9
+    reward.safe_point = True
+    reward.contract_observation.source = "runtime"
+    reward.contract_observation.event_id = "reward-late"
+    reward.contract_observation.phase_id = "reward"
+    reward.contract_observation.policy_version = "policy-reward"
+    reward.contract_observation.observed_at.CopyFrom(reward.occurred_at)
+    reward.contract_observation.buffer_level = 9
+    reward.contract_observation.safe_point = True
+    reward.contract_observation.sample_stale = True
+    reward.contract_observation.typed_facts.extend(
+        [
+            semantic_pb2.SemanticField(
+                key="sample.stale",
+                value=semantic_pb2.SemanticValue(bool_value=True),
+            ),
+            semantic_pb2.SemanticField(
+                key="buffer.level.current",
+                value=semantic_pb2.SemanticValue(uint64_value=9),
+            ),
+            semantic_pb2.SemanticField(
+                key="runtime.safe_point",
+                value=semantic_pb2.SemanticValue(bool_value=True),
+            ),
+            semantic_pb2.SemanticField(
+                key="batch.accepted_samples",
+                value=semantic_pb2.SemanticValue(uint64_value=7),
+            ),
+        ]
+    )
+    reward.contract_observation.accepted_samples = 7
+
+    summary = TraceAggregator().summarize([reward, decode])
+
+    assert summary.latest_observation is not None
+    assert summary.latest_observation.event_id == "reward-late"
+    assert set(summary.latest_observations_by_stage) == {"decode", "reward"}
+    decode_observation = summary.latest_observation_for_stage("decode")
+    reward_observation = summary.latest_observation_for_stage("reward")
+    assert decode_observation is not None
+    assert reward_observation is not None
+    assert decode_observation.event_id == "decode-late"
+    assert decode_observation.phase_id == "decode"
+    assert decode_observation.policy_version == "policy-decode"
+    assert decode_observation.policy_lag == 1
+    assert not decode_observation.sample_stale
+    assert reward_observation.event_id == "reward-late"
+    assert reward_observation.phase_id == "reward"
+    assert reward_observation.policy_version == "policy-reward"
+    assert reward_observation.sample_stale
+    assert summary.latest_observation_for_stage("missing") is None
 
 
 def test_summary_preserves_missing_ess_presence(event_factory: EventFactory) -> None:

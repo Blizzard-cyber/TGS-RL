@@ -74,7 +74,7 @@ class IntentCoordinator:
                     labels=labels,
                     preferences=preferences,
                     deterministic_seed=deterministic_seed,
-                    contract_observation=summary.latest_observation,
+                    contract_observation=summary.latest_observation_for_stage(unit.stage_id),
                 )
             )
         return intents

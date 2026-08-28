@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Iterable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 
 from tgsrl.v1 import execution_pb2, experiment_pb2, semantic_pb2, trace_pb2
@@ -65,6 +65,14 @@ class TraceSummary:
     incomplete_micro_stage_count: int
     total_micro_stage_seconds: float
     micro_stages: tuple[MicroStageAggregate, ...]
+    latest_observations_by_stage: dict[str, execution_pb2.ContractObservation] = field(
+        default_factory=dict
+    )
+
+    def latest_observation_for_stage(
+        self, stage_id: str
+    ) -> execution_pb2.ContractObservation | None:
+        return self.latest_observations_by_stage.get(stage_id)
 
 
 def _event_time(event: trace_pb2.TraceEvent) -> datetime:
@@ -153,11 +161,7 @@ def _latest_observation_from_event(
     typed_facts = _typed_fact_map(observation)
 
     latest_policy_lag = _uint64_fact(typed_facts, "sample.policy_lag")
-    if latest_policy_lag is None and "policy_lag" in event.attributes:
-        latest_policy_lag = int(event.attributes["policy_lag"])
     latest_sample_stale = _bool_fact(typed_facts, "sample.stale")
-    if latest_sample_stale is None and event.attributes.get("stale") in {"true", "false"}:
-        latest_sample_stale = event.attributes["stale"] == "true"
     latest_buffer_level = _uint64_fact(typed_facts, "buffer.level.current")
     if latest_buffer_level is None:
         latest_buffer_level = int(event.buffer_level)
@@ -355,6 +359,7 @@ class TraceAggregator:
         max_buffer_level = 0
         latest_observation: execution_pb2.ContractObservation | None = None
         latest_event: trace_pb2.TraceEvent | None = None
+        latest_events_by_stage: dict[str, trace_pb2.TraceEvent] = {}
         for event in normalized:
             phase_counts[event.phase_id] = phase_counts.get(event.phase_id, 0) + 1
             safe_point_count += int(event.safe_point)
@@ -365,6 +370,13 @@ class TraceAggregator:
             if latest_event is None or _causal_key(event) >= _causal_key(latest_event):
                 latest_event = event
                 latest_observation = _latest_observation_from_event(event)
+            latest_stage_event = latest_events_by_stage.get(event.stage_id)
+            if latest_stage_event is None or _causal_key(event) >= _causal_key(latest_stage_event):
+                latest_events_by_stage[event.stage_id] = event
+        latest_observations_by_stage = {
+            stage_id: _latest_observation_from_event(stage_event)
+            for stage_id, stage_event in sorted(latest_events_by_stage.items())
+        }
         micro_stages = self.aggregate_micro_stages(normalized)
         completed = tuple(stage for stage in micro_stages if stage.complete)
         return TraceSummary(
@@ -386,6 +398,7 @@ class TraceAggregator:
                 stage.duration.total_seconds() for stage in completed if stage.duration is not None
             ),
             micro_stages=micro_stages,
+            latest_observations_by_stage=latest_observations_by_stage,
         )
 
     def to_metrics(self, summary: TraceSummary) -> list[experiment_pb2.MetricValue]:
