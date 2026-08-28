@@ -1,0 +1,109 @@
+# 维护者开发指南
+
+本页面向修改源码、协议或构建流程的维护者。运行产品栈请先阅读
+[快速上手](../getting-started.md)。
+
+## 常用检查
+
+```bash
+make test             # Go、Python、API、Console 与 Proto round-trip
+make lint             # Go vet、Buf lint、Ruff 与 mypy
+make race             # Go race detector
+make demo             # Python → Scheduler → Mock Provider 最小进程演示
+make product-e2e      # 完整后端产品流与恢复检查
+make check-generated  # 验证 Proto 生成物
+make check-governance # 校验 SBOM、兼容性证据与 patch ledger
+make check-public-content # 扫描工作树与可达历史中的私有链接、路径和凭据样式
+```
+
+完整本地回归：
+
+```bash
+git diff --check
+make lint
+make test
+make race
+make demo > /tmp/tgsrl-demo.json
+make product-e2e
+make check-generated
+docker compose config -q
+make check-governance
+make check-public-content
+```
+
+`make check-public-content` 同时扫描工作树与全部可达历史；合并前默认扫描必须通过。CI 的
+governance job 使用完整历史（`fetch-depth: 0`）执行同一检查，不接受仅扫描当前工作树的
+结果替代。
+
+`make demo` 只覆盖最小调度闭环；`make product-e2e` 覆盖完整后端流程但不启动浏览器
+Console。Compose 或[快速上手](../getting-started.md)中的手动命令可启动六个组件。
+
+## 代码入口
+
+| 系统 | 主要目录 | 可执行入口 |
+|---|---|---|
+| Job & Product Control | `gateway-python/`、`job-controller-go/`、`console/` | `tgsrl-gateway`、`job-controller-go/cmd/job-controller`、Vite |
+| Runtime, Trace & Experiments | `runtime-python/`、`adapters/` | `tgsrl-runtime` |
+| Scheduling & Infrastructure Control | `scheduler-go/`、`operator-go/`、`cmd/operator/` | Scheduler main、Operator main |
+| Shared contracts and storage | `proto/`、`gen/`、`storage/` | Buf generators and repository packages |
+
+具体启动入口以 `Makefile` 和各命令的 `--help` 为准。
+
+## 修改 Proto
+
+`proto/tgsrl/v1/` 是跨语言消息的唯一来源，不要手工编辑 `gen/`。
+
+```bash
+make proto
+git diff -- gen/
+make check-generated
+make proto-roundtrip
+```
+
+兼容规则：
+
+- 新增字段使用新的 field number；
+- 删除字段时同时 reserve number 和 name；
+- 枚举保留 `UNKNOWN = 0`；
+- 破坏性变更必须更新 schema release 并运行 Buf breaking check；
+- Go 与 Python 对同一契约的校验语义必须一致；
+- 不维护与 Proto 同义的手写影子 DTO。
+
+## 数据与迁移
+
+- Scheduler 的 checkpoint/journal、Job Controller 的 snapshot/journal 和 Operator cursor
+  都应使用原子替换并保持向后可诊断的失败行为。
+- Runtime SQLite schema 位于 `runtime-python/tgsrl_runtime/storage/migrations/`；新增迁移后
+  运行 `scripts/check-migrations.sh`。
+- 持久化测试必须覆盖重启读取、损坏输入、幂等写入和 cursor 边界。
+- 不应把“数据已落盘”表述为“工作流一定自动续跑”；恢复语义要逐组件验证。
+
+## 依赖与生成物
+
+- Go 依赖由 `go.mod` / `go.sum` 锁定；
+- Python 依赖由 `pyproject.toml` / `uv.lock` 锁定；
+- Console 依赖由 `console/package.json` / `console/package-lock.json` 锁定；
+- 工具链与运行时依赖记录在 `compatibility/bom/runtime.yaml`；
+- 下游 patch 登记在 `upstream/PATCHES.md`；
+- 不使用 `latest` 等浮动版本表达可复现构建。
+
+## CI
+
+CI 分别验证：
+
+- Proto lint、生成物一致性和兼容性；
+- Scheduler、Job Controller、Operator、共享 storage 的 Go 测试与 race；
+- Runtime、Adapter、Gateway/SDK/HTTP API 的 Python lint、类型检查与测试；
+- Console 的类型检查、lint、测试和构建；
+- 跨语言 Proto round-trip 与最小进程演示；
+- 完整后端产品流、重启恢复和幂等性；
+- SBOM、兼容性证据、patch ledger 与公开内容检查。
+
+这些检查证明本地契约和控制流，不代表真实 GPU、Kubernetes 集群或训练性能已经验证。
+
+## 文档约定
+
+- README 和 `docs/guides/` 只描述用户当前可执行的行为；
+- 架构、状态权威和恢复边界写入 `docs/design/`；
+- 可用性与验证级别以 `docs/reference/current-capabilities.md` 为准；
+- 公开文档不得包含内部链接、内部文档 ID、访问凭据、个人信息或私有环境数据。
