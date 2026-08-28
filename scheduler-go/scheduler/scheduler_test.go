@@ -1,6 +1,7 @@
 package scheduler
 
 import (
+	"fmt"
 	"math"
 	"math/rand"
 	"strings"
@@ -115,6 +116,129 @@ func TestEvaluateIsStableAcrossInputOrder(t *testing.T) {
 	}
 	if !proto.Equal(basePlan, permutedPlan) || !proto.Equal(baseRecord, permutedRecord) {
 		t.Fatalf("input permutation changed decision\nbase plan: %v\npermuted plan: %v\nbase record: %v\npermuted record: %v", basePlan, permutedPlan, baseRecord, permutedRecord)
+	}
+}
+
+func TestEvaluateLargeDecisionThresholdKeepsChoiceAcross4096Boundary(t *testing.T) {
+	atLimitSnapshot, atLimitIntent := largeSingleUnitFixture(t, 4096)
+	aboveLimitSnapshot, aboveLimitIntent := largeSingleUnitFixture(t, 4097)
+
+	atLimitPlan, atLimitRecord, err := testScheduler(t, FallbackNoOp).Evaluate(atLimitSnapshot, atLimitIntent)
+	if err != nil {
+		t.Fatalf("Evaluate(at limit) error = %v", err)
+	}
+	aboveLimitPlan, aboveLimitRecord, err := testScheduler(t, FallbackNoOp).Evaluate(aboveLimitSnapshot, aboveLimitIntent)
+	if err != nil {
+		t.Fatalf("Evaluate(above limit) error = %v", err)
+	}
+
+	if atLimitRecord.GetFallback() || aboveLimitRecord.GetFallback() {
+		t.Fatalf("unexpected fallback at limit=%v above=%v", atLimitRecord.GetFallbackReason(), aboveLimitRecord.GetFallbackReason())
+	}
+	if !proto.Equal(atLimitPlan, aboveLimitPlan) {
+		t.Fatalf("threshold crossing changed selected plan\nat limit: %v\nabove: %v", atLimitPlan, aboveLimitPlan)
+	}
+	if atLimitRecord.GetScore() != aboveLimitRecord.GetScore() {
+		t.Fatalf("threshold crossing changed score: at limit=%f above=%f", atLimitRecord.GetScore(), aboveLimitRecord.GetScore())
+	}
+	if got, want := len(atLimitRecord.GetCandidates()), 4096; got != want {
+		t.Fatalf("at-limit candidate evidence = %d, want %d", got, want)
+	}
+	if got, want := len(aboveLimitRecord.GetCandidates()), 0; got != want {
+		t.Fatalf("above-limit candidate evidence = %d, want %d", got, want)
+	}
+
+	atLimitSelected := selectedCandidateForBinding(t, atLimitRecord, atLimitPlan.GetBindings()[0])
+	if candidateDevice, candidateUnit := candidateSortKeys(atLimitSelected); candidateDevice != firstDeviceID(aboveLimitPlan) || candidateUnit != aboveLimitPlan.GetBindings()[0].GetPendingUnitId() {
+		t.Fatalf("threshold crossing changed selected binding surface: at limit=(%q,%q) above=(%q,%q)", candidateUnit, candidateDevice, aboveLimitPlan.GetBindings()[0].GetPendingUnitId(), firstDeviceID(aboveLimitPlan))
+	}
+}
+
+func TestEvaluateLargeDecisionIsStableAcrossInputOrder(t *testing.T) {
+	baseSnapshot, intent := largeSingleUnitFixture(t, 4097)
+	permuted := proto.Clone(baseSnapshot).(*tgsrlv1.ClusterSnapshot)
+	random := rand.New(rand.NewSource(20260828))
+	random.Shuffle(len(permuted.Devices), func(i, j int) {
+		permuted.Devices[i], permuted.Devices[j] = permuted.Devices[j], permuted.Devices[i]
+	})
+
+	basePlan, baseRecord, err := testScheduler(t, FallbackNoOp).Evaluate(baseSnapshot, intent)
+	if err != nil {
+		t.Fatalf("base Evaluate() error = %v", err)
+	}
+	permutedPlan, permutedRecord, err := testScheduler(t, FallbackNoOp).Evaluate(permuted, intent)
+	if err != nil {
+		t.Fatalf("permuted Evaluate() error = %v", err)
+	}
+	if !proto.Equal(basePlan, permutedPlan) || !proto.Equal(baseRecord, permutedRecord) {
+		t.Fatalf("large-decision device permutation changed decision\nbase plan: %v\npermuted plan: %v\nbase record: %v\npermuted record: %v", basePlan, permutedPlan, baseRecord, permutedRecord)
+	}
+}
+
+func TestEvaluateSelectedBindingsMapToRecordedCandidates(t *testing.T) {
+	snapshot, intent := validFixture()
+	plan, record, err := testScheduler(t, FallbackNoOp).Evaluate(snapshot, intent)
+	if err != nil {
+		t.Fatalf("Evaluate() error = %v", err)
+	}
+	if record.GetFallback() {
+		t.Fatalf("unexpected fallback: %s", record.GetFallbackReason())
+	}
+	for _, binding := range plan.GetBindings() {
+		candidate := selectedCandidateForBinding(t, record, binding)
+		candidateBinding := candidate.GetPlan().GetBindings()[0]
+		if !proto.Equal(candidateBinding, binding) {
+			t.Fatalf("binding %+v does not match recorded candidate binding %+v", binding, candidateBinding)
+		}
+	}
+}
+
+func TestEvaluateLargeDecisionConsumesResourcesAfterEachSelection(t *testing.T) {
+	snapshot, intent := largeMultiUnitConsumptionFixture(t)
+
+	plan, record, err := testScheduler(t, FallbackNoOp).Evaluate(snapshot, intent)
+	if err != nil {
+		t.Fatalf("Evaluate() error = %v", err)
+	}
+	if record.GetFallback() {
+		t.Fatalf("unexpected fallback: %s", record.GetFallbackReason())
+	}
+	if got, want := len(plan.GetBindings()), 2; got != want {
+		t.Fatalf("bindings = %d, want %d", got, want)
+	}
+	if got, want := plan.GetBindings()[0].GetDeviceIds()[0], "device-a"; got != want {
+		t.Fatalf("first binding device = %q, want %q", got, want)
+	}
+	if got, want := plan.GetBindings()[1].GetDeviceIds()[0], "device-b"; got != want {
+		t.Fatalf("second binding device = %q, want %q", got, want)
+	}
+	if plan.GetBindings()[0].GetDeviceIds()[0] == plan.GetBindings()[1].GetDeviceIds()[0] {
+		t.Fatal("multi-unit selection reused a fully consumed device")
+	}
+}
+
+func TestEvaluateDecisionSurfaceHasTotalOrder(t *testing.T) {
+	snapshot, intent := orderedDecisionSurfaceFixture(t)
+
+	_, record, err := testScheduler(t, FallbackNoOp).Evaluate(snapshot, intent)
+	if err != nil {
+		t.Fatalf("Evaluate() error = %v", err)
+	}
+	if record.GetFallback() {
+		t.Fatalf("unexpected fallback: %s", record.GetFallbackReason())
+	}
+	if len(record.GetCandidates()) < 2 || len(record.GetRejectedCandidates()) < 2 {
+		t.Fatalf("need multiple candidates and rejections, got %d/%d", len(record.GetCandidates()), len(record.GetRejectedCandidates()))
+	}
+	for index := 1; index < len(record.GetCandidates()); index++ {
+		if !candidateOrdered(record.GetCandidates()[index-1], record.GetCandidates()[index]) {
+			t.Fatalf("candidates out of order at %d: prev=%+v next=%+v", index, record.GetCandidates()[index-1], record.GetCandidates()[index])
+		}
+	}
+	for index := 1; index < len(record.GetRejectedCandidates()); index++ {
+		if !rejectionOrdered(record.GetRejectedCandidates()[index-1], record.GetRejectedCandidates()[index]) {
+			t.Fatalf("rejections out of order at %d: prev=%+v next=%+v", index, record.GetRejectedCandidates()[index-1], record.GetRejectedCandidates()[index])
+		}
 	}
 }
 
@@ -587,4 +711,130 @@ func activeAllocation(id, executionID, stageID string, version uint64, deviceID 
 		Resources:     proto.Clone(resources).(*tgsrlv1.ResourceVector),
 		State:         tgsrlv1.AllocationState_ALLOCATION_STATE_ACTIVE,
 	}
+}
+
+func largeSingleUnitFixture(t testing.TB, deviceCount int) (*tgsrlv1.ClusterSnapshot, *tgsrlv1.SchedulingIntent) {
+	t.Helper()
+	if deviceCount < 1 {
+		t.Fatalf("deviceCount = %d, want >= 1", deviceCount)
+	}
+	snapshot, intent := validFixture()
+	intent.UnitCount = 1
+	snapshot.PendingUnits = []*tgsrlv1.PendingUnit{pendingUnitByID(t, snapshot, "unit-a")}
+	prototype := proto.Clone(snapshot.GetDevices()[0]).(*tgsrlv1.Device)
+	devices := make([]*tgsrlv1.Device, 0, deviceCount)
+	devices = append(devices, deviceWithAllocatable(prototype, "device-best", 1000))
+	for index := 1; index < deviceCount; index++ {
+		devices = append(devices, deviceWithAllocatable(prototype, fmt.Sprintf("device-%04d", index), 400))
+	}
+	snapshot.Devices = devices
+	return snapshot, intent
+}
+
+func largeMultiUnitConsumptionFixture(t testing.TB) (*tgsrlv1.ClusterSnapshot, *tgsrlv1.SchedulingIntent) {
+	t.Helper()
+	snapshot, intent := validFixture()
+	intent.ResourcesPerUnit = &tgsrlv1.ResourceVector{
+		CpuMillis:             600,
+		MemoryBytes:           100,
+		AcceleratorUnits:      .25,
+		EphemeralStorageBytes: 10,
+		NetworkBandwidthBps:   10,
+	}
+	for _, unit := range snapshot.PendingUnits {
+		unit.RequestedResources = proto.Clone(intent.GetResourcesPerUnit()).(*tgsrlv1.ResourceVector)
+	}
+
+	prototype := proto.Clone(snapshot.GetDevices()[0]).(*tgsrlv1.Device)
+	devices := []*tgsrlv1.Device{
+		deviceWithAllocatable(prototype, "device-a", 1000),
+		deviceWithAllocatable(prototype, "device-b", 1000),
+	}
+	for index := 0; index < 2047; index++ {
+		bad := deviceWithAllocatable(prototype, fmt.Sprintf("device-z%04d", index), 1000)
+		bad.Health = tgsrlv1.DeviceHealth_DEVICE_HEALTH_DRAINING
+		devices = append(devices, bad)
+	}
+	snapshot.Devices = devices
+	return snapshot, intent
+}
+
+func orderedDecisionSurfaceFixture(t testing.TB) (*tgsrlv1.ClusterSnapshot, *tgsrlv1.SchedulingIntent) {
+	t.Helper()
+	snapshot, intent := validFixture()
+	intent.UnitCount = 1
+	snapshot.PendingUnits = []*tgsrlv1.PendingUnit{pendingUnitByID(t, snapshot, "unit-a")}
+
+	prototype := proto.Clone(snapshot.GetDevices()[0]).(*tgsrlv1.Device)
+	goodA := deviceWithAllocatable(prototype, "device-a", 900)
+	goodB := deviceWithAllocatable(prototype, "device-b", 900)
+	badCapability := deviceWithAllocatable(prototype, "device-y", 900)
+	badCapability.Capabilities.Names = []string{"other"}
+	badHealth := deviceWithAllocatable(prototype, "device-z", 900)
+	badHealth.Health = tgsrlv1.DeviceHealth_DEVICE_HEALTH_DRAINING
+	snapshot.Devices = []*tgsrlv1.Device{badCapability, goodB, badHealth, goodA}
+	return snapshot, intent
+}
+
+func pendingUnitByID(t testing.TB, snapshot *tgsrlv1.ClusterSnapshot, id string) *tgsrlv1.PendingUnit {
+	t.Helper()
+	for _, unit := range snapshot.GetPendingUnits() {
+		if unit.GetPendingUnitId() == id {
+			return proto.Clone(unit).(*tgsrlv1.PendingUnit)
+		}
+	}
+	t.Fatalf("pending unit %q not found", id)
+	return nil
+}
+
+func deviceWithAllocatable(prototype *tgsrlv1.Device, id string, cpu uint64) *tgsrlv1.Device {
+	device := proto.Clone(prototype).(*tgsrlv1.Device)
+	device.DeviceId = id
+	device.Capacity.CpuMillis = cpu
+	device.Allocatable.CpuMillis = cpu
+	return device
+}
+
+func selectedCandidateForBinding(t testing.TB, record *tgsrlv1.DecisionRecord, binding *tgsrlv1.Binding) *tgsrlv1.PlacementCandidate {
+	t.Helper()
+	candidate := findCandidateByUnitAndDevice(record, binding.GetPendingUnitId(), binding.GetDeviceIds()[0])
+	if candidate == nil {
+		t.Fatalf("no recorded candidate for pending=%q device=%q", binding.GetPendingUnitId(), binding.GetDeviceIds()[0])
+	}
+	return candidate
+}
+
+func findCandidateByUnitAndDevice(record *tgsrlv1.DecisionRecord, pendingUnitID, deviceID string) *tgsrlv1.PlacementCandidate {
+	for _, candidate := range record.GetCandidates() {
+		candidateDeviceID, candidatePendingUnitID := candidateSortKeys(candidate)
+		if candidatePendingUnitID == pendingUnitID && candidateDeviceID == deviceID {
+			return candidate
+		}
+	}
+	return nil
+}
+
+func candidateOrdered(left, right *tgsrlv1.PlacementCandidate) bool {
+	if left.GetScore() != right.GetScore() {
+		return left.GetScore() > right.GetScore()
+	}
+	leftDevice, leftUnit := candidateSortKeys(left)
+	rightDevice, rightUnit := candidateSortKeys(right)
+	if leftDevice != rightDevice {
+		return leftDevice < rightDevice
+	}
+	if leftUnit != rightUnit {
+		return leftUnit < rightUnit
+	}
+	return left.GetCandidateId() <= right.GetCandidateId()
+}
+
+func rejectionOrdered(left, right *tgsrlv1.CandidateRejection) bool {
+	if left.GetCandidateId() != right.GetCandidateId() {
+		return left.GetCandidateId() < right.GetCandidateId()
+	}
+	if left.GetReason() != right.GetReason() {
+		return left.GetReason() < right.GetReason()
+	}
+	return left.GetDetail() <= right.GetDetail()
 }
