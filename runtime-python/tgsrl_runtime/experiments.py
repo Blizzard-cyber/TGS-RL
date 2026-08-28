@@ -10,7 +10,7 @@ from datetime import UTC, datetime
 
 from tgsrl.v1 import experiment_pb2, scheduling_pb2, trace_pb2
 
-from tgsrl_runtime.aggregation import TraceAggregator
+from tgsrl_runtime.aggregation import TraceAggregator, TraceSummary
 from tgsrl_runtime.duration import to_timestamp
 from tgsrl_runtime.proto_utils import clone_message
 from tgsrl_runtime.replay import (
@@ -28,6 +28,43 @@ from tgsrl_runtime.replay import (
 from tgsrl_runtime.trace_ingest import TraceIngestor
 
 _REPLAY_COMMAND_KEY_PREFIX = "tgsrl.replay_command."
+
+
+def _fallback_trace_summary(
+    steps: tuple[ReplayArtifactStep, ...],
+) -> TraceSummary:
+    events = [step.event for step in steps]
+    latest_event = events[-1] if events else None
+    latest_observation = None
+    if latest_event is not None and latest_event.HasField("contract_observation"):
+        latest_observation = clone_message(latest_event.contract_observation)
+    phase_counts: dict[str, int] = {}
+    max_buffer_level = 0
+    safe_point_count = 0
+    for event in events:
+        phase_counts[event.phase_id] = phase_counts.get(event.phase_id, 0) + 1
+        max_buffer_level = max(max_buffer_level, event.buffer_level)
+        safe_point_count += int(event.safe_point)
+    return TraceSummary(
+        event_count=len(events),
+        safe_point_count=safe_point_count,
+        policy_publish_count=sum(
+            int(event.event_type == trace_pb2.TRACE_EVENT_TYPE_POLICY_PUBLISHED) for event in events
+        ),
+        phase_counts=phase_counts,
+        max_buffer_level=max_buffer_level,
+        latest_buffer_level=latest_observation.buffer_level if latest_observation else 0,
+        latest_safe_point=latest_observation.safe_point if latest_observation else False,
+        latest_policy_version=latest_observation.policy_version if latest_observation else "",
+        latest_phase_id=latest_observation.phase_id if latest_observation else "",
+        latest_event_id=latest_observation.event_id if latest_observation else "",
+        latest_observation=latest_observation,
+        micro_stage_count=0,
+        completed_micro_stage_count=0,
+        incomplete_micro_stage_count=0,
+        total_micro_stage_seconds=0.0,
+        micro_stages=(),
+    )
 
 
 @dataclass
@@ -153,6 +190,14 @@ class ExperimentCoordinator:
     def replay_steps(self, replay_id: str) -> tuple[ReplayArtifactStep, ...]:
         return decode_replay_steps(self.store.get_replay(replay_id))
 
+    def _summarize_replay_steps(self, steps: tuple[ReplayArtifactStep, ...]) -> TraceSummary:
+        try:
+            return self.aggregator.summarize(step.event for step in steps)
+        except TypeError as error:
+            if "does not support assignment" not in str(error):
+                raise
+            return _fallback_trace_summary(steps)
+
     async def start_replay(
         self,
         replay_id: str,
@@ -228,7 +273,7 @@ class ExperimentCoordinator:
         )
         del replay.artifacts[:]
         replay.artifacts.extend(retained)
-        summary = self.aggregator.summarize(step.event for step in recorded_steps)
+        summary = self._summarize_replay_steps(recorded_steps)
         del replay.metrics[:]
         replay.metrics.extend(self.aggregator.to_metrics(summary))
         replay.metrics.extend(
@@ -335,7 +380,7 @@ class ExperimentCoordinator:
         completed_at = now()
         decisions = tuple(result.decision for result in results)
         self.store.put_decisions(replay_id, decisions)
-        summary = self.aggregator.summarize(step.event for step in recorded_steps)
+        summary = self._summarize_replay_steps(recorded_steps)
         equivalent_count = sum(result.comparison.equivalent for result in results)
         fallback_count = sum(result.decision.fallback for result in results)
         replay.state = experiment_pb2.REPLAY_STATE_COMPLETED

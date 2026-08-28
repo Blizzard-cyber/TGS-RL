@@ -3,16 +3,27 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 from collections.abc import Callable, Iterable
 from dataclasses import replace
 from datetime import UTC, datetime
+from typing import cast
 
 import pytest
 from google.protobuf import timestamp_pb2
 from google.protobuf.message import Message
-from tgsrl.v1 import experiment_pb2, resource_pb2, scheduling_pb2, trace_pb2
+from tgsrl.v1 import (
+    execution_pb2,
+    experiment_pb2,
+    resource_pb2,
+    scheduling_pb2,
+    semantic_pb2,
+    trace_pb2,
+)
 from tgsrl_runtime.experiments import ExperimentCoordinator
 from tgsrl_runtime.replay import (
+    DECISION_CANONICALIZER_V1,
+    REPLAY_ARTIFACT_SCHEMA_V1,
     DecisionCanonicalizer,
     DecisionStatus,
     ReplayArtifactStep,
@@ -22,6 +33,7 @@ from tgsrl_runtime.replay import (
     decode_decision_artifacts,
     decode_replay_steps,
     encode_replay_step_artifact,
+    replay_step_digest,
 )
 from tgsrl_runtime.trace_ingest import TraceIngestor
 
@@ -60,6 +72,20 @@ def _clone_decision(
 
 def _wire(message: Message) -> bytes:
     return message.SerializeToString(deterministic=True)
+
+
+def _clone_message[MessageT: Message](message: MessageT) -> MessageT:
+    clone = type(message)()
+    clone.CopyFrom(message)
+    return clone
+
+
+def _artifact_digest(parts: Iterable[bytes]) -> str:
+    digest = hashlib.sha256()
+    for part in parts:
+        digest.update(len(part).to_bytes(8, "big"))
+        digest.update(part)
+    return digest.hexdigest()
 
 
 def _decision(
@@ -115,6 +141,50 @@ def _decision(
     )
     candidate_plan = scheduling_pb2.PlacementPlan()
     candidate_plan.CopyFrom(plan)
+    observation = execution_pb2.ContractObservation(
+        observed_at=_timestamp(ordinal),
+        oldest_sample_at=_timestamp(max(0, ordinal - 1)),
+        source="replay-test",
+        event_id=f"event-{ordinal}",
+        phase_id=f"stage-{ordinal}",
+        policy_version=policy_version or f"policy-{ordinal}",
+        accepted_samples=10 + ordinal,
+        expected_samples=20 + ordinal,
+    )
+    evaluation = execution_pb2.ContractEvaluation(
+        evaluation_id=f"evaluation-{ordinal}",
+        contract_id="contract-1",
+        clause_kind=execution_pb2.CONTRACT_CLAUSE_KIND_POLICY_LAG,
+        clause_id=f"clause-{ordinal}",
+        status=execution_pb2.CONTRACT_EVALUATION_STATUS_SATISFIED,
+        predicate=execution_pb2.Condition(
+            fact_path="sample.policy_lag",
+            comparison_fact_path="contract.max_policy_lag",
+        ),
+        observations=[
+            semantic_pb2.SemanticField(
+                key="policy_lag",
+                value=semantic_pb2.SemanticValue(uint64_value=ordinal),
+            ),
+            semantic_pb2.SemanticField(
+                key="buffer_level",
+                value=semantic_pb2.SemanticValue(uint64_value=10 + ordinal),
+            ),
+        ],
+        evidence=[
+            semantic_pb2.SemanticField(
+                key="accepted_samples",
+                value=semantic_pb2.SemanticValue(uint64_value=10 + ordinal),
+            ),
+            semantic_pb2.SemanticField(
+                key="expected_samples",
+                value=semantic_pb2.SemanticValue(uint64_value=20 + ordinal),
+            ),
+        ],
+        missing_keys=["contract.safe_point", "contract.latency_budget"],
+        recommended_action=execution_pb2.CONTRACT_DECISION_ACTION_ALLOW,
+        detail="stable deterministic evidence",
+    )
     return scheduling_pb2.DecisionRecord(
         decision_id=f"decision-{volatile}",
         sequence=1000 + ordinal,
@@ -145,6 +215,16 @@ def _decision(
         generation=3,
         cursor=f"decision-cursor-{volatile}",
         job_id="job-1",
+        tick_kind=scheduling_pb2.TICK_KIND_FAST,
+        evaluation_context=scheduling_pb2.EvaluationContext(
+            tick_kind=scheduling_pb2.TICK_KIND_FAST,
+            evaluation_time=_timestamp(30 + ordinal),
+            decision_sequence=1000 + ordinal,
+            cause="recorded-decision",
+            observed_revision=100 + ordinal,
+            contract_observation=observation,
+        ),
+        contract_evaluations=[evaluation],
     )
 
 
@@ -192,6 +272,20 @@ def _steps(
                     trace_id="trace-1",
                     data_kind=trace_pb2.DATA_KIND_REPLAY,
                 ),
+                evaluation_context=scheduling_pb2.EvaluationContext(
+                    tick_kind=scheduling_pb2.TICK_KIND_FAST,
+                    evaluation_time=_timestamp(ordinal),
+                    decision_sequence=ordinal,
+                    cause="recorded-step",
+                    observed_revision=100 + ordinal,
+                    contract_observation=execution_pb2.ContractObservation(
+                        observed_at=_timestamp(ordinal),
+                        source="event",
+                        event_id=f"event-{ordinal}",
+                        phase_id=f"stage-{ordinal}",
+                        policy_version=f"policy-{ordinal}",
+                    ),
+                ),
                 recorded_decision=expected[ordinal - 1],
             )
         )
@@ -209,19 +303,32 @@ class RecordingScheduler:
         self._decisions = list(decisions)
         self.fail_on_call = fail_on_call
         self.mutate_inputs = mutate_inputs
-        self.calls: list[tuple[scheduling_pb2.SchedulingIntent, resource_pb2.ClusterSnapshot]] = []
+        self.calls: list[
+            tuple[
+                scheduling_pb2.SchedulingIntent,
+                resource_pb2.ClusterSnapshot,
+                scheduling_pb2.EvaluationContext | None,
+            ]
+        ] = []
         self.returned: list[scheduling_pb2.DecisionRecord] = []
 
     async def schedule(
         self,
         intent: scheduling_pb2.SchedulingIntent,
         snapshot: resource_pb2.ClusterSnapshot,
+        evaluation_context: scheduling_pb2.EvaluationContext | None = None,
     ) -> scheduling_pb2.DecisionRecord:
-        self.calls.append((_clone_intent(intent), _clone_snapshot(snapshot)))
+        cloned_context = None
+        if evaluation_context is not None:
+            cloned_context = scheduling_pb2.EvaluationContext()
+            cloned_context.CopyFrom(evaluation_context)
+        self.calls.append((_clone_intent(intent), _clone_snapshot(snapshot), cloned_context))
         call_number = len(self.calls)
         if self.mutate_inputs:
             intent.labels["scheduler_mutation"] = "true"
             snapshot.annotations["scheduler_mutation"] = "true"
+            if evaluation_context is not None:
+                evaluation_context.cause = "mutated-by-scheduler"
         if self.fail_on_call == call_number:
             raise RuntimeError(f"scheduler failed on call {call_number}")
         returned = _clone_decision(self._decisions[call_number - 1])
@@ -256,6 +363,35 @@ def test_replay_step_artifacts_round_trip_and_reject_tampering(
         decode_replay_steps(replay)
 
 
+def test_replay_step_digest_changes_with_context_and_is_stable_for_permuted_evidence() -> None:
+    step = _steps(
+        lambda event_id, **_: trace_pb2.TraceEvent(event_id=event_id, occurred_at=_timestamp(1)),
+        count=1,
+    )[0]
+    baseline = replay_step_digest(step)
+
+    reordered = _clone_message(step)
+    evaluation = reordered.recorded_decision.contract_evaluations[0]
+    observations = list(evaluation.observations)
+    evidence = list(evaluation.evidence)
+    missing = list(evaluation.missing_keys)
+    del evaluation.observations[:]
+    del evaluation.evidence[:]
+    del evaluation.missing_keys[:]
+    evaluation.observations.extend(reversed(observations))
+    evaluation.evidence.extend(reversed(evidence))
+    evaluation.missing_keys.extend(reversed(missing))
+    assert DecisionCanonicalizer().digest(step.recorded_decision) == DecisionCanonicalizer().digest(
+        reordered.recorded_decision
+    )
+
+    changed = _clone_message(step)
+    changed.evaluation_context.cause = "different-cause"
+
+    assert replay_step_digest(reordered) != baseline
+    assert replay_step_digest(changed) != baseline
+
+
 def test_decision_canonicalizer_ignores_recursive_volatile_identity_and_time() -> None:
     recorded = _decision(1, volatile="recorded")
     replayed = _decision(1, volatile="replayed")
@@ -273,6 +409,26 @@ def test_decision_canonicalizer_ignores_recursive_volatile_identity_and_time() -
     assert canonicalizer.digest(recorded) == canonicalizer.digest(replayed)
     assert comparison.status is DecisionStatus.EQUIVALENT
     assert comparison.equivalent
+    assert comparison.expected_digest == comparison.actual_digest
+
+
+def test_decision_canonicalizer_v2_ignores_contract_evaluation_ordering() -> None:
+    recorded = _decision(1, volatile="recorded")
+    replayed = _clone_decision(recorded)
+    evaluation = replayed.contract_evaluations[0]
+    observations = list(evaluation.observations)
+    evidence = list(evaluation.evidence)
+    missing = list(evaluation.missing_keys)
+    del evaluation.observations[:]
+    del evaluation.evidence[:]
+    del evaluation.missing_keys[:]
+    evaluation.observations.extend(reversed(observations))
+    evaluation.evidence.extend(reversed(evidence))
+    evaluation.missing_keys.extend(reversed(missing))
+
+    comparison = DecisionCanonicalizer().compare(recorded, replayed)
+
+    assert comparison.status is DecisionStatus.EQUIVALENT
     assert comparison.expected_digest == comparison.actual_digest
 
 
@@ -337,6 +493,13 @@ async def test_runner_schedules_every_exact_artifact_in_ordinal_order_and_compar
         "snapshot-2",
         "snapshot-3",
     ]
+    contexts = [cast(scheduling_pb2.EvaluationContext, call[2]) for call in scheduler.calls]
+    assert all(context is not None for context in contexts)
+    assert [context.cause for context in contexts] == [
+        "recorded-step",
+        "recorded-step",
+        "recorded-step",
+    ]
     assert [result.ordinal for result in results] == [1, 2, 3]
     assert [result.event_id for result in results] == [
         "event-1",
@@ -368,6 +531,9 @@ async def test_recorded_seed_mode_preserves_seed_and_rejects_conflicts(
     ).run()
 
     assert [call[0].deterministic_seed for call in scheduler.calls] == [11, 11]
+    contexts = [cast(scheduling_pb2.EvaluationContext, call[2]) for call in scheduler.calls]
+    assert all(context is not None for context in contexts)
+    assert [context.decision_sequence for context in contexts] == [1, 2]
     conflicting = RecordingScheduler([_decision(1)])
     with pytest.raises(ReplayError, match="recorded intent seed conflicts"):
         await SchedulerReplayRunner(
@@ -495,6 +661,81 @@ async def test_checkpoint_rejects_changed_artifact_or_seed_configuration(
     )
     with pytest.raises(ReplayError, match="seed configuration"):
         changed_seed.restore(checkpoint, [result])
+
+
+def test_decode_replay_steps_synthesizes_legacy_context_and_accepts_v1_digest(
+    event_factory: EventFactory,
+) -> None:
+    step = _steps(event_factory, count=1)[0]
+    step.event.contract_observation.CopyFrom(
+        execution_pb2.ContractObservation(
+            observed_at=_timestamp(1),
+            source="event",
+            event_id=step.event.event_id,
+            phase_id=step.event.phase_id,
+            policy_version="policy-1",
+        )
+    )
+    legacy = experiment_pb2.ReplayArtifact(
+        artifact_id="replay-1:step:1:legacy",
+        replay_id="replay-1",
+        kind="scheduler-replay-step",
+        uri="inline://replays/replay-1/steps/1",
+        digest=replay_step_digest(step, schema_version=REPLAY_ARTIFACT_SCHEMA_V1),
+        observed_at=step.event.occurred_at,
+        schema_version=REPLAY_ARTIFACT_SCHEMA_V1,
+        replay_step=experiment_pb2.ReplayStepArtifact(
+            ordinal=step.ordinal,
+            event=step.event,
+            intent=step.intent,
+            snapshot=step.snapshot,
+            recorded_decision=step.recorded_decision,
+        ),
+    )
+    replay = experiment_pb2.Replay(replay_id="replay-1", artifacts=[legacy])
+
+    decoded = decode_replay_steps(replay)[0]
+
+    assert decoded.evaluation_context.tick_kind == scheduling_pb2.TICK_KIND_FAST
+    assert decoded.evaluation_context.cause == "replay-compat"
+    assert decoded.evaluation_context.decision_sequence == step.recorded_decision.sequence
+    assert decoded.evaluation_context.observed_revision == step.snapshot.revision
+    assert decoded.evaluation_context.evaluation_time == step.recorded_decision.decided_at
+    assert decoded.evaluation_context.compatibility_defaults_applied
+    assert decoded.evaluation_context.contract_observation.event_id == step.event.event_id
+
+
+def test_decode_decision_artifacts_accepts_v1_canonicalizer() -> None:
+    decision = _decision(1)
+    artifact = experiment_pb2.ReplayArtifact(
+        artifact_id="replay-1:decision:1:legacy",
+        replay_id="replay-1",
+        kind="scheduler-decision",
+        uri="inline://replays/replay-1/decisions/1",
+        observed_at=_timestamp(1),
+        schema_version=REPLAY_ARTIFACT_SCHEMA_V1,
+        canonicalizer=DECISION_CANONICALIZER_V1,
+        replay_decision=experiment_pb2.ReplayDecisionArtifact(
+            ordinal=1,
+            event_id="event-1",
+            decision=decision,
+            semantic_digest=DecisionCanonicalizer().digest(decision),
+            expected_digest=DecisionCanonicalizer().digest(decision),
+            comparison_status=experiment_pb2.REPLAY_DECISION_COMPARISON_STATUS_EQUIVALENT,
+        ),
+    )
+    artifact.digest = _artifact_digest(
+        [
+            REPLAY_ARTIFACT_SCHEMA_V1.encode(),
+            b"1",
+            _wire(decision),
+        ]
+    )
+    replay = experiment_pb2.Replay(replay_id="replay-1", artifacts=[artifact])
+
+    decoded = decode_decision_artifacts(replay)
+
+    assert [_wire(item) for item in decoded] == [_wire(decision)]
 
 
 def _coordinator(
@@ -697,10 +938,11 @@ async def test_concurrent_replay_start_with_same_key_executes_once(
             self,
             intent: scheduling_pb2.SchedulingIntent,
             snapshot: resource_pb2.ClusterSnapshot,
+            evaluation_context: scheduling_pb2.EvaluationContext | None = None,
         ) -> scheduling_pb2.DecisionRecord:
             entered.set()
             await release.wait()
-            return await super().schedule(intent, snapshot)
+            return await super().schedule(intent, snapshot, evaluation_context=evaluation_context)
 
     scheduler = BlockingScheduler([_decision(1)])
 

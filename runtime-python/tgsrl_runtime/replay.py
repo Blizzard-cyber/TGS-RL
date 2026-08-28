@@ -12,7 +12,7 @@ from typing import ClassVar, Protocol, TypeAlias
 from google.protobuf import json_format, timestamp_pb2
 from google.protobuf.descriptor import FieldDescriptor
 from google.protobuf.message import Message
-from tgsrl.v1 import experiment_pb2, resource_pb2, scheduling_pb2, trace_pb2
+from tgsrl.v1 import execution_pb2, experiment_pb2, resource_pb2, scheduling_pb2, trace_pb2
 
 from tgsrl_runtime.trace import TraceNormalizer, clone_event
 
@@ -27,7 +27,11 @@ class ReplayArtifactError(ReplayError):
 
 REPLAY_STEP_ARTIFACT_KIND = "scheduler-replay-step"
 REPLAY_DECISION_ARTIFACT_KIND = "scheduler-decision"
-REPLAY_ARTIFACT_SCHEMA = "tgsrl.replay-artifact.v1"
+REPLAY_ARTIFACT_SCHEMA_V1 = "tgsrl.replay-artifact.v1"
+REPLAY_ARTIFACT_SCHEMA_V2 = "tgsrl.replay-artifact.v2"
+REPLAY_ARTIFACT_SCHEMA = REPLAY_ARTIFACT_SCHEMA_V2
+DECISION_CANONICALIZER_V1 = "decision-semantic-v1"
+DECISION_CANONICALIZER_V2 = "decision-semantic-v2"
 
 
 class SeedMode(StrEnum):
@@ -91,7 +95,7 @@ class ReplayCheckpoint:
     seed: int
     decision_count: int = 0
     decision_digest: str = hashlib.sha256(b"").hexdigest()
-    canonicalizer_version: str = "decision-semantic-v1"
+    canonicalizer_version: str = DECISION_CANONICALIZER_V2
     seed_mode: str = SeedMode.RECORDED
 
 
@@ -120,6 +124,7 @@ class ReplayScheduler(Protocol):
         self,
         intent: scheduling_pb2.SchedulingIntent,
         snapshot: resource_pb2.ClusterSnapshot,
+        evaluation_context: scheduling_pb2.EvaluationContext | None = None,
     ) -> scheduling_pb2.DecisionRecord: ...
 
 
@@ -129,6 +134,70 @@ def _artifact_digest(parts: Iterable[bytes]) -> str:
         digest.update(len(part).to_bytes(8, "big"))
         digest.update(part)
     return digest.hexdigest()
+
+
+def _copy_message[MessageT: Message](message: MessageT) -> MessageT:
+    clone = type(message)()
+    clone.CopyFrom(message)
+    return clone
+
+
+def _step_dynamic_observation(
+    step: ReplayArtifactStep,
+) -> execution_pb2.ContractObservation | None:
+    if step.event.HasField("contract_observation"):
+        return _copy_message(step.event.contract_observation)
+    if step.intent.HasField("contract_observation"):
+        return _copy_message(step.intent.contract_observation)
+    return None
+
+
+def synthesize_evaluation_context(
+    step: ReplayArtifactStep,
+) -> scheduling_pb2.EvaluationContext:
+    """Create a stable compatibility context for legacy replay steps."""
+    context = scheduling_pb2.EvaluationContext(
+        tick_kind=scheduling_pb2.TICK_KIND_FAST,
+        decision_sequence=(
+            step.recorded_decision.sequence if step.HasField("recorded_decision") else 0
+        ),
+        cause="replay-compat",
+        observed_revision=step.snapshot.revision,
+    )
+    if step.HasField("recorded_decision") and step.recorded_decision.HasField("decided_at"):
+        context.evaluation_time.CopyFrom(step.recorded_decision.decided_at)
+    observation = _step_dynamic_observation(step)
+    if observation is not None and "contract_observation" in context.DESCRIPTOR.fields_by_name:
+        context.contract_observation.CopyFrom(observation)
+    if "compatibility_defaults_applied" in context.DESCRIPTOR.fields_by_name:
+        context.compatibility_defaults_applied = True
+    return context
+
+
+def resolve_evaluation_context(
+    step: ReplayArtifactStep,
+) -> scheduling_pb2.EvaluationContext:
+    """Return an explicit replay-step context, synthesizing legacy defaults when absent."""
+    if step.HasField("evaluation_context"):
+        context = _copy_message(step.evaluation_context)
+    else:
+        context = synthesize_evaluation_context(step)
+    observation = _step_dynamic_observation(step)
+    if (
+        observation is not None
+        and "contract_observation" in context.DESCRIPTOR.fields_by_name
+        and not context.HasField("contract_observation")
+    ):
+        context.contract_observation.CopyFrom(observation)
+    return context
+
+
+def _decision_artifact_canonicalizer(schema_version: str) -> str:
+    if schema_version == REPLAY_ARTIFACT_SCHEMA_V1:
+        return DECISION_CANONICALIZER_V1
+    if schema_version == REPLAY_ARTIFACT_SCHEMA_V2:
+        return DECISION_CANONICALIZER_V2
+    raise ReplayArtifactError("unsupported decision artifact schema")
 
 
 def encode_replay_step_artifact(
@@ -141,7 +210,8 @@ def encode_replay_step_artifact(
         raise ReplayArtifactError("replay step ordinal must be positive")
     if not step.event.HasField("occurred_at"):
         raise ReplayArtifactError("replay step event occurred_at is required")
-    digest = replay_step_digest(step)
+    evaluation_context = resolve_evaluation_context(step)
+    digest = replay_step_digest(step, schema_version=REPLAY_ARTIFACT_SCHEMA_V2)
     return experiment_pb2.ReplayArtifact(
         artifact_id=f"{replay_id}:step:{step.ordinal}:{digest[:16]}",
         replay_id=replay_id,
@@ -149,18 +219,21 @@ def encode_replay_step_artifact(
         uri=f"inline://replays/{replay_id}/steps/{step.ordinal}",
         digest=digest,
         observed_at=step.event.occurred_at,
-        schema_version=REPLAY_ARTIFACT_SCHEMA,
+        schema_version=REPLAY_ARTIFACT_SCHEMA_V2,
         replay_step=experiment_pb2.ReplayStepArtifact(
             ordinal=step.ordinal,
             event=step.event,
             intent=step.intent,
             snapshot=step.snapshot,
             recorded_decision=step.recorded_decision,
+            evaluation_context=evaluation_context,
         ),
     )
 
 
-def replay_step_digest(step: ReplayArtifactStep) -> str:
+def replay_step_digest(
+    step: ReplayArtifactStep, *, schema_version: str = REPLAY_ARTIFACT_SCHEMA_V2
+) -> str:
     """Return the stable identity of one exact replay scheduler input."""
     event = step.event.SerializeToString(deterministic=True)
     intent = step.intent.SerializeToString(deterministic=True)
@@ -170,16 +243,19 @@ def replay_step_digest(step: ReplayArtifactStep) -> str:
         if step.HasField("recorded_decision")
         else b""
     )
-    return _artifact_digest(
-        [
-            REPLAY_ARTIFACT_SCHEMA.encode(),
-            str(step.ordinal).encode(),
-            event,
-            intent,
-            snapshot,
-            recorded,
-        ]
-    )
+    parts = [
+        schema_version.encode(),
+        str(step.ordinal).encode(),
+        event,
+        intent,
+        snapshot,
+        recorded,
+    ]
+    if schema_version == REPLAY_ARTIFACT_SCHEMA_V2:
+        parts.append(resolve_evaluation_context(step).SerializeToString(deterministic=True))
+    elif schema_version != REPLAY_ARTIFACT_SCHEMA_V1:
+        raise ReplayArtifactError("unsupported replay artifact schema")
+    return _artifact_digest(parts)
 
 
 def decode_replay_step_artifact(
@@ -189,7 +265,7 @@ def decode_replay_step_artifact(
         raise ReplayArtifactError(f"unsupported replay artifact kind: {artifact.kind}")
     if artifact.replay_id != replay_id:
         raise ReplayArtifactError("artifact replay_id does not match its Replay")
-    if artifact.schema_version != REPLAY_ARTIFACT_SCHEMA:
+    if artifact.schema_version not in {REPLAY_ARTIFACT_SCHEMA_V1, REPLAY_ARTIFACT_SCHEMA_V2}:
         raise ReplayArtifactError("unsupported replay artifact schema")
     if artifact.WhichOneof("typed_payload") != "replay_step":
         raise ReplayArtifactError("replay artifact lacks typed replay_step payload")
@@ -207,19 +283,22 @@ def decode_replay_step_artifact(
         if typed.HasField("recorded_decision")
         else b""
     )
-    expected_digest = _artifact_digest(
-        [
-            REPLAY_ARTIFACT_SCHEMA.encode(),
-            str(ordinal).encode(),
-            event_wire,
-            intent_wire,
-            snapshot_wire,
-            decision_wire,
-        ]
-    )
+    digest_parts = [
+        artifact.schema_version.encode(),
+        str(ordinal).encode(),
+        event_wire,
+        intent_wire,
+        snapshot_wire,
+        decision_wire,
+    ]
+    if artifact.schema_version == REPLAY_ARTIFACT_SCHEMA_V2:
+        digest_parts.append(resolve_evaluation_context(typed).SerializeToString(deterministic=True))
+    expected_digest = _artifact_digest(digest_parts)
     if artifact.digest != expected_digest:
         raise ReplayArtifactError("replay artifact digest mismatch")
-    return _clone_message(typed)
+    decoded = _clone_message(typed)
+    decoded.evaluation_context.CopyFrom(resolve_evaluation_context(typed))
+    return decoded
 
 
 def decode_replay_steps(replay: experiment_pb2.Replay) -> tuple[ReplayArtifactStep, ...]:
@@ -260,7 +339,7 @@ def encode_decision_artifact(
     decision_wire = result.decision.SerializeToString(deterministic=True)
     digest = _artifact_digest(
         [
-            REPLAY_ARTIFACT_SCHEMA.encode(),
+            REPLAY_ARTIFACT_SCHEMA_V2.encode(),
             str(result.ordinal).encode(),
             decision_wire,
         ]
@@ -274,8 +353,8 @@ def encode_decision_artifact(
         uri=f"inline://replays/{replay_id}/decisions/{result.ordinal}",
         digest=digest,
         observed_at=observed,
-        schema_version=REPLAY_ARTIFACT_SCHEMA,
-        canonicalizer=DecisionCanonicalizer.version,
+        schema_version=REPLAY_ARTIFACT_SCHEMA_V2,
+        canonicalizer=DECISION_CANONICALIZER_V2,
         replay_decision=experiment_pb2.ReplayDecisionArtifact(
             ordinal=result.ordinal,
             event_id=result.event_id,
@@ -294,14 +373,15 @@ def decode_decision_artifacts(
     for artifact in replay.artifacts:
         if artifact.kind != REPLAY_DECISION_ARTIFACT_KIND:
             continue
-        if artifact.schema_version != REPLAY_ARTIFACT_SCHEMA:
+        if artifact.schema_version not in {REPLAY_ARTIFACT_SCHEMA_V1, REPLAY_ARTIFACT_SCHEMA_V2}:
             raise ReplayArtifactError("unsupported decision artifact schema")
         if artifact.WhichOneof("typed_payload") != "replay_decision":
             raise ReplayArtifactError("decision artifact lacks typed replay_decision payload")
         typed = artifact.replay_decision
         if artifact.replay_id != replay.replay_id:
             raise ReplayArtifactError("decision artifact replay_id does not match its Replay")
-        if artifact.canonicalizer != DecisionCanonicalizer.version:
+        expected_canonicalizer = _decision_artifact_canonicalizer(artifact.schema_version)
+        if artifact.canonicalizer != expected_canonicalizer:
             raise ReplayArtifactError("unsupported decision canonicalizer version")
         if typed.ordinal <= 0 or not typed.HasField("decision"):
             raise ReplayArtifactError("typed replay_decision fields are incomplete")
@@ -309,7 +389,7 @@ def decode_decision_artifacts(
         decision_wire = typed.decision.SerializeToString(deterministic=True)
         expected = _artifact_digest(
             [
-                REPLAY_ARTIFACT_SCHEMA.encode(),
+                artifact.schema_version.encode(),
                 str(ordinal).encode(),
                 decision_wire,
             ]
@@ -332,7 +412,8 @@ def _clone_message[MessageT: Message](message: MessageT) -> MessageT:
 class DecisionCanonicalizer:
     """Canonicalize scheduler output while excluding volatile run-local identity."""
 
-    version = "decision-semantic-v1"
+    version = DECISION_CANONICALIZER_V2
+    legacy_version = DECISION_CANONICALIZER_V1
     _volatile_fields: ClassVar[frozenset[str]] = frozenset(
         {
             "action_id",
@@ -350,6 +431,9 @@ class DecisionCanonicalizer:
             "sequence",
             "started_at",
         }
+    )
+    _unordered_repeated_fields: ClassVar[frozenset[str]] = frozenset(
+        {"contract_evaluations", "observations", "evidence", "missing_keys"}
     )
 
     def semantic_bytes(self, decision: scheduling_pb2.DecisionRecord) -> bytes:
@@ -389,15 +473,23 @@ class DecisionCanonicalizer:
             actual_digest,
         )
 
-    def _strip_volatile(self, value: object) -> object:
+    def _strip_volatile(self, value: object, path: tuple[str, ...] = ()) -> object:
         if isinstance(value, dict):
-            return {
-                key: self._strip_volatile(item)
+            normalized_dict: dict[str, object] = {
+                key: self._strip_volatile(item, (*path, key))
                 for key, item in sorted(value.items())
                 if key not in self._volatile_fields
             }
+            return normalized_dict
         if isinstance(value, list):
-            return [self._strip_volatile(item) for item in value]
+            normalized_list = [self._strip_volatile(item, path) for item in value]
+            if path and path[-1] in self._unordered_repeated_fields:
+                normalized_list.sort(
+                    key=lambda item: json.dumps(
+                        item, sort_keys=True, separators=(",", ":"), ensure_ascii=True
+                    )
+                )
+            return normalized_list
         return value
 
     def _clear_volatile(self, message: Message) -> None:
@@ -582,8 +674,11 @@ class SchedulerReplayRunner:
         recorded = self._steps[self._index]
         intent = _clone_message(recorded.intent)
         snapshot = _clone_message(recorded.snapshot)
+        evaluation_context = resolve_evaluation_context(recorded)
         self._apply_seed(intent, recorded.ordinal)
-        decision = await self.scheduler.schedule(intent, snapshot)
+        decision = await self.scheduler.schedule(
+            intent, snapshot, evaluation_context=_copy_message(evaluation_context)
+        )
         expected = recorded.recorded_decision if recorded.HasField("recorded_decision") else None
         comparison = self.canonicalizer.compare(expected, decision)
         result = ReplayStepResult(
@@ -662,10 +757,9 @@ class SchedulerReplayRunner:
     def _digest_steps(self) -> str:
         digest = hashlib.sha256()
         for step in self._steps:
-            for message in (step.event, step.intent, step.snapshot):
-                wire = message.SerializeToString(deterministic=True)
-                digest.update(len(wire).to_bytes(8, "big"))
-                digest.update(wire)
+            wire = replay_step_digest(step, schema_version=REPLAY_ARTIFACT_SCHEMA_V2).encode()
+            digest.update(len(wire).to_bytes(8, "big"))
+            digest.update(wire)
         return digest.hexdigest()
 
     def _decision_digest(self) -> str:

@@ -75,9 +75,13 @@ class SchedulerClient:
         self,
         intent: scheduling_pb2.SchedulingIntent,
         snapshot: resource_pb2.ClusterSnapshot,
+        evaluation_context: scheduling_pb2.EvaluationContext | None = None,
     ) -> scheduling_pb2.DecisionRecord:
+        request = scheduling_pb2.ScheduleRequest(intent=intent, snapshot=snapshot)
+        if evaluation_context is not None:
+            request.evaluation_context.CopyFrom(evaluation_context)
         response = await self._stub.Schedule(
-            scheduling_pb2.ScheduleRequest(intent=intent, snapshot=snapshot),
+            request,
             timeout=self.timeout,
         )
         decision = scheduling_pb2.DecisionRecord()
