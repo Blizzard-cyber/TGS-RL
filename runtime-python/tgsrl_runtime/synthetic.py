@@ -192,8 +192,19 @@ class SyntheticWorkload:
                         value=semantic_pb2.SemanticValue(double_value=effective_sample_size_ratio),
                     )
                 )
+            observed_at = timestamp_from_datetime(occurred_at)
+            fact_observations = [
+                execution_pb2.ObservedFact(
+                    fact=fact,
+                    observed_at=observed_at,
+                    source="synthetic",
+                    revision=sequence_base
+                    + int(event_type == trace_pb2.TRACE_EVENT_TYPE_PHASE_COMPLETED),
+                )
+                for fact in typed_facts
+            ]
             observation = execution_pb2.ContractObservation(
-                observed_at=timestamp_from_datetime(occurred_at),
+                observed_at=observed_at,
                 policy_lag=policy_lag,
                 sample_stale=sample_stale,
                 buffer_level=buffer_level,
@@ -204,6 +215,7 @@ class SyntheticWorkload:
                 phase_id=phase_id,
                 policy_version="policy-1",
                 typed_facts=typed_facts,
+                fact_observations=fact_observations,
                 sample_count=sample_count or 0,
             )
             if expected_samples is not None:

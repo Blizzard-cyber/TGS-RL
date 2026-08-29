@@ -3,6 +3,7 @@ syntax = "proto3";
 package tgsrl.v1;
 
 import "google/protobuf/timestamp.proto";
+import "tgsrl/v1/execution.proto";
 import "tgsrl/v1/trace.proto";
 
 option go_package = "github.com/Blizzard-cyber/TGS-RL/gen/go/tgsrl/v1;tgsrlv1";
@@ -75,6 +76,7 @@ message CapabilitySet {
   repeated string supported_actions = 8;
   map<string, double> limits = 9;
   repeated CapabilityEvidence evidence = 10;
+  repeated ComponentVersion component_versions = 11;
 }
 
 // Device is a resource visible in a cluster snapshot. Device identifiers are

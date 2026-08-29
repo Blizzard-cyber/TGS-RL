@@ -45,6 +45,66 @@ enum VersionOperator {
   VERSION_OPERATOR_COMPATIBLE = 3;
 }
 
+// ObservationDisposition defines the deterministic scheduler response to a
+// missing or stale observation. UNKNOWN is invalid for an active policy.
+enum ObservationDisposition {
+  OBSERVATION_DISPOSITION_UNKNOWN = 0;
+  OBSERVATION_DISPOSITION_BLOCK = 1;
+  OBSERVATION_DISPOSITION_HOLD = 2;
+  OBSERVATION_DISPOSITION_DEGRADE = 3;
+  OBSERVATION_DISPOSITION_NOT_APPLICABLE = 4;
+}
+
+// ComponentKind identifies a versioned protocol or execution component.
+enum ComponentKind {
+  COMPONENT_KIND_UNKNOWN = 0;
+  COMPONENT_KIND_PROTOCOL = 1;
+  COMPONENT_KIND_SCHEDULER = 2;
+  COMPONENT_KIND_RUNTIME = 3;
+  COMPONENT_KIND_OPERATOR = 4;
+  COMPONENT_KIND_PROVIDER = 5;
+  COMPONENT_KIND_FRAMEWORK_ADAPTER = 6;
+  COMPONENT_KIND_ROLLOUT_ENGINE = 7;
+  COMPONENT_KIND_TRAINER = 8;
+  COMPONENT_KIND_CUDA_DRIVER = 9;
+  COMPONENT_KIND_EXECUTION_BACKEND = 10;
+}
+
+// ObservationPolicy controls how an observation's absence or age affects a
+// contract evaluation. maximum_age is measured only against EvaluationContext
+// evaluation_time so evaluation and replay use the same clock.
+message ObservationPolicy {
+  google.protobuf.Duration maximum_age = 1;
+  ObservationDisposition missing = 2;
+  ObservationDisposition stale = 3;
+}
+
+// CriticalFactPolicy attaches an observation policy to a typed fact path.
+message CriticalFactPolicy {
+  string fact_path = 1;
+  ObservationPolicy observation_policy = 2;
+}
+
+// ObservedFact carries a value together with the metadata needed to assess its
+// freshness without reconstructing wall-clock state.
+message ObservedFact {
+  SemanticField fact = 1;
+  google.protobuf.Timestamp observed_at = 2;
+  string source = 3;
+  uint64 revision = 4;
+}
+
+// ComponentVersion is one observed version of a concrete execution component.
+message ComponentVersion {
+  ComponentKind kind = 1;
+  string name = 2;
+  string version = 3;
+  google.protobuf.Timestamp observed_at = 4;
+  string source = 5;
+  uint64 revision = 6;
+  map<string, string> attributes = 7;
+}
+
 // CommitMode defines the atomicity of a distributed phase commit.
 enum CommitMode {
   COMMIT_MODE_UNKNOWN = 0;
@@ -113,6 +173,8 @@ message VersionConstraint {
   bool allow_prerelease = 4;
   string source = 5;
   uint64 revision = 6;
+  ComponentKind component_kind = 7;
+  ObservationPolicy observation_policy = 8;
 }
 
 // CommitPolicy governs how a phase becomes visible to downstream phases.
@@ -243,6 +305,8 @@ message ContractObservation {
   repeated SemanticField typed_facts = 15;
   optional uint64 sample_count = 16;
   optional double effective_sample_size_ratio = 17;
+  repeated ObservedFact fact_observations = 18;
+  repeated ComponentVersion component_versions = 19;
 }
 
 // ContractEvaluation preserves deterministic clause evidence for rejection,
@@ -261,6 +325,7 @@ message ContractEvaluation {
   ValidityFailureMode failure_mode = 10;
   ContractDecisionAction recommended_action = 11;
   string detail = 12;
+  ObservationDisposition observation_disposition = 13;
 }
 
 // ExecutionContract is the complete, scheduler-visible execution contract.
@@ -275,4 +340,5 @@ message ExecutionContract {
   SafePointPolicy safe_point_policy = 8;
   Capabilities capabilities = 9;
   repeated Condition conditions = 10;
+  repeated CriticalFactPolicy critical_fact_policies = 11;
 }

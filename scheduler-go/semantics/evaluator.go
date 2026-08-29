@@ -9,12 +9,16 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	tgsrlv1 "github.com/Blizzard-cyber/TGS-RL/gen/go/tgsrl/v1"
 	"google.golang.org/protobuf/proto"
 )
 
-const protocolVersion = "0.3.0"
+// ProtocolVersion is the canonical wire-protocol release implemented by this
+// scheduler. It is the only component version the evaluator may supply from
+// code; every other component version must be observed on an input surface.
+const ProtocolVersion = "0.3.0"
 const safePointAnnotation = "tgsrl.io/safe-point"
 
 // SafePointResolution is the immutable safe-point fact shared by contract
@@ -54,6 +58,12 @@ func Evaluate(input Input) ([]*tgsrlv1.ContractEvaluation, AggregateResult, erro
 	if input.Context == nil {
 		return nil, AggregateResult{}, errors.New("context is nil")
 	}
+	if input.Context.GetEvaluationTime() == nil {
+		return nil, AggregateResult{}, errors.New("evaluation context time is missing")
+	}
+	if err := input.Context.GetEvaluationTime().CheckValid(); err != nil {
+		return nil, AggregateResult{}, fmt.Errorf("evaluation context time is invalid: %w", err)
+	}
 
 	if input.SafePoint == nil {
 		resolved := ResolveSafePoint(input.Snapshot, input.Intent, input.Context, safePointAnnotation)
@@ -64,10 +74,15 @@ func Evaluate(input Input) ([]*tgsrlv1.ContractEvaluation, AggregateResult, erro
 	if err != nil {
 		return nil, AggregateResult{}, err
 	}
+	versions, err := buildComponentRegistry(input, obs)
+	if err != nil {
+		return nil, AggregateResult{}, err
+	}
 
 	evals := make([]*tgsrlv1.ContractEvaluation, 0,
 		len(input.Contract.GetValidityRules())+
 			len(input.Contract.GetConditions())+
+			len(input.Contract.GetCriticalFactPolicies())+
 			len(input.Contract.GetVersionConstraints())+2)
 
 	for _, rule := range input.Contract.GetValidityRules() {
@@ -76,8 +91,11 @@ func Evaluate(input Input) ([]*tgsrlv1.ContractEvaluation, AggregateResult, erro
 	for _, cond := range input.Contract.GetConditions() {
 		evals = append(evals, evaluateConditionClause(input, facts, cond))
 	}
+	for _, policy := range input.Contract.GetCriticalFactPolicies() {
+		evals = append(evals, evaluateCriticalFactPolicy(input, facts, policy))
+	}
 	for _, constraint := range input.Contract.GetVersionConstraints() {
-		evals = append(evals, evaluateVersionConstraint(input, facts, constraint))
+		evals = append(evals, evaluateVersionConstraint(input, versions, constraint))
 	}
 	if input.Contract.GetBackpressurePolicy() != nil {
 		evals = append(evals, evaluateBackpressure(input, facts, input.Contract.GetBackpressurePolicy()))
@@ -104,7 +122,7 @@ func Aggregate(evals []*tgsrlv1.ContractEvaluation) AggregateResult {
 		if !isBlocking(eval) {
 			continue
 		}
-		if best == nil || actionPriority(eval.GetRecommendedAction()) > actionPriority(best.GetRecommendedAction()) {
+		if best == nil || aggregatePriorityGreater(eval, best) {
 			best = eval
 		}
 	}
@@ -116,6 +134,29 @@ func Aggregate(evals []*tgsrlv1.ContractEvaluation) AggregateResult {
 	result.BlockingAction = blockingAction(best.GetRecommendedAction())
 	result.FallbackReason = fmt.Sprintf("%s:%s:%s", best.GetClauseKind().String(), best.GetClauseId(), best.GetStatus().String())
 	return result
+}
+
+func aggregatePriorityGreater(candidate, current *tgsrlv1.ContractEvaluation) bool {
+	candidateDisposition := dispositionPriority(candidate.GetObservationDisposition())
+	currentDisposition := dispositionPriority(current.GetObservationDisposition())
+	if candidateDisposition != currentDisposition {
+		return candidateDisposition > currentDisposition
+	}
+	return actionPriority(candidate.GetRecommendedAction()) > actionPriority(current.GetRecommendedAction())
+}
+
+func dispositionPriority(disposition tgsrlv1.ObservationDisposition) int {
+	switch disposition {
+	case tgsrlv1.ObservationDisposition_OBSERVATION_DISPOSITION_BLOCK:
+		return 2
+	case tgsrlv1.ObservationDisposition_OBSERVATION_DISPOSITION_HOLD:
+		return 1
+	default:
+		// Legacy evaluations have no disposition. DEGRADE and NOT_APPLICABLE
+		// are non-blocking, but keep them at the same neutral rank so this
+		// comparator remains safe for direct callers.
+		return 0
+	}
 }
 
 func effectiveObservation(ctx *tgsrlv1.EvaluationContext, intent *tgsrlv1.SchedulingIntent) *tgsrlv1.ContractObservation {
@@ -180,8 +221,27 @@ func stableSafePointKeys(configuredKey, executionID, stageID string) []string {
 }
 
 type factRegistry struct {
-	values map[string]*tgsrlv1.SemanticValue
-	issues map[string]factIssue
+	values         map[string]*tgsrlv1.SemanticValue
+	metadata       map[string]observationMetadata
+	origins        map[string]observationOrigin
+	issues         map[string]factIssue
+	policies       map[string]*tgsrlv1.ObservationPolicy
+	evaluationTime time.Time
+}
+
+type observationOrigin uint8
+
+const (
+	originBuiltIn observationOrigin = iota + 1
+	originLegacy
+	originExplicit
+)
+
+type observationMetadata struct {
+	observedAt time.Time
+	present    bool
+	source     string
+	revision   uint64
 }
 
 type factIssue struct {
@@ -190,99 +250,168 @@ type factIssue struct {
 }
 
 func buildFacts(input Input, obs *tgsrlv1.ContractObservation) (*factRegistry, error) {
-	values := map[string]*tgsrlv1.SemanticValue{
-		"intent.version.current": semanticUint(input.Intent.GetVersion()),
+	evaluationTime := input.Context.GetEvaluationTime().AsTime().UTC()
+	registry := &factRegistry{
+		values:         make(map[string]*tgsrlv1.SemanticValue),
+		metadata:       make(map[string]observationMetadata),
+		origins:        make(map[string]observationOrigin),
+		issues:         make(map[string]factIssue),
+		policies:       make(map[string]*tgsrlv1.ObservationPolicy),
+		evaluationTime: evaluationTime,
 	}
-	issues := map[string]factIssue{}
+	for _, critical := range input.Contract.GetCriticalFactPolicies() {
+		if critical == nil || strings.TrimSpace(critical.GetFactPath()) == "" || critical.GetObservationPolicy() == nil {
+			return nil, errors.New("critical fact policy is malformed")
+		}
+		path := strings.TrimSpace(critical.GetFactPath())
+		if _, exists := registry.policies[path]; exists {
+			return nil, fmt.Errorf("critical fact policy %q is duplicated", path)
+		}
+		if err := validateObservationPolicy(critical.GetObservationPolicy()); err != nil {
+			return nil, fmt.Errorf("critical fact policy %q: %w", path, err)
+		}
+		registry.policies[path] = proto.Clone(critical.GetObservationPolicy()).(*tgsrlv1.ObservationPolicy)
+	}
+	if err := registry.register("intent.version.current", semanticUint(input.Intent.GetVersion()), observationMetadata{}, originBuiltIn); err != nil {
+		return nil, err
+	}
 	if input.SafePoint != nil && input.SafePoint.Present {
-		values["runtime.safe_point"] = semanticBool(input.SafePoint.Value)
+		if err := registry.register("runtime.safe_point", semanticBool(input.SafePoint.Value), observationMetadata{}, originBuiltIn); err != nil {
+			return nil, err
+		}
 	}
 	if input.SafePoint != nil && len(input.SafePoint.Evidence) > 0 {
-		issues["runtime.safe_point"] = factIssue{
+		registry.issues["runtime.safe_point"] = factIssue{
 			reason:   "runtime safe point resolved from snapshot annotation fallback",
 			evidence: stableFields(input.SafePoint.Evidence),
 		}
 	}
 
 	if obs != nil {
+		metadata, err := legacyObservationMetadata(obs)
+		if err != nil {
+			return nil, err
+		}
+		register := func(path string, value *tgsrlv1.SemanticValue) error {
+			return registry.register(path, value, metadata, originLegacy)
+		}
 		if obs.PolicyLag != nil {
-			values["sample.policy_lag"] = semanticUint(obs.GetPolicyLag())
+			if err := register("sample.policy_lag", semanticUint(obs.GetPolicyLag())); err != nil {
+				return nil, err
+			}
 		}
 		if obs.SampleStale != nil {
-			values["sample.stale"] = semanticBool(obs.GetSampleStale())
+			if err := register("sample.stale", semanticBool(obs.GetSampleStale())); err != nil {
+				return nil, err
+			}
 		}
 		if obs.BufferLevel != nil {
-			values["buffer.level.current"] = semanticUint(obs.GetBufferLevel())
+			if err := register("buffer.level.current", semanticUint(obs.GetBufferLevel())); err != nil {
+				return nil, err
+			}
 		}
 		if obs.AcceptedSamples != nil {
-			values["batch.accepted_samples"] = semanticUint(obs.GetAcceptedSamples())
-			values["group.accepted_samples"] = semanticUint(obs.GetAcceptedSamples())
+			if err := register("batch.accepted_samples", semanticUint(obs.GetAcceptedSamples())); err != nil {
+				return nil, err
+			}
+			if err := register("group.accepted_samples", semanticUint(obs.GetAcceptedSamples())); err != nil {
+				return nil, err
+			}
 		}
 		if obs.ExpectedSamples != nil {
-			values["group.expected_samples"] = semanticUint(obs.GetExpectedSamples())
+			if err := register("group.expected_samples", semanticUint(obs.GetExpectedSamples())); err != nil {
+				return nil, err
+			}
+		}
+		if obs.SampleCount != nil {
+			if err := register("sample.sample_count", semanticUint(obs.GetSampleCount())); err != nil {
+				return nil, err
+			}
 		}
 		if obs.EffectiveSampleSize != nil {
 			if !finite(obs.GetEffectiveSampleSize()) || obs.GetEffectiveSampleSize() < 0 {
-				issues["batch.effective_sample_size"] = factIssue{
+				registry.issues["batch.effective_sample_size"] = factIssue{
 					reason: "effective_sample_size is invalid",
 					evidence: []*tgsrlv1.SemanticField{
 						semanticField("batch.effective_sample_size.invalid", semanticDouble(obs.GetEffectiveSampleSize())),
 					},
 				}
 			} else {
-				values["batch.effective_sample_size"] = semanticDouble(obs.GetEffectiveSampleSize())
+				if err := register("batch.effective_sample_size", semanticDouble(obs.GetEffectiveSampleSize())); err != nil {
+					return nil, err
+				}
 			}
 		}
 		if obs.EffectiveSampleSizeRatio != nil {
 			if !finite(obs.GetEffectiveSampleSizeRatio()) || obs.GetEffectiveSampleSizeRatio() < 0 {
-				issues["batch.effective_sample_size_ratio"] = factIssue{
+				registry.issues["batch.effective_sample_size_ratio"] = factIssue{
 					reason: "effective_sample_size_ratio is invalid",
 					evidence: []*tgsrlv1.SemanticField{
 						semanticField("batch.effective_sample_size_ratio.invalid", semanticDouble(obs.GetEffectiveSampleSizeRatio())),
 					},
 				}
 			} else {
-				values["batch.effective_sample_size_ratio"] = semanticDouble(obs.GetEffectiveSampleSizeRatio())
+				if err := register("batch.effective_sample_size_ratio", semanticDouble(obs.GetEffectiveSampleSizeRatio())); err != nil {
+					return nil, err
+				}
 			}
 		}
-		if input.Context.GetEvaluationTime() != nil && obs.GetOldestSampleAt() != nil {
-			age := input.Context.GetEvaluationTime().AsTime().Sub(obs.GetOldestSampleAt().AsTime()).Milliseconds()
-			if age >= 0 {
-				values["sample.age_ms"] = semanticInt(age)
+		if obs.GetOldestSampleAt() != nil {
+			if err := obs.GetOldestSampleAt().CheckValid(); err != nil {
+				return nil, fmt.Errorf("observation oldest_sample_at is invalid: %w", err)
+			}
+			age := evaluationTime.Sub(obs.GetOldestSampleAt().AsTime().UTC()).Milliseconds()
+			if age < 0 {
+				registry.issues["sample.age_ms"] = invalidObservationIssue("oldest sample timestamp is after evaluation time", obs.GetOldestSampleAt().AsTime().UTC(), evaluationTime)
+			} else if err := registry.register("sample.age_ms", semanticInt(age), metadata, originLegacy); err != nil {
+				return nil, err
 			}
 		}
 		for _, field := range obs.GetTypedFacts() {
-			if field == nil || field.GetKey() == "" || field.GetValue() == nil {
-				continue
+			if field == nil || strings.TrimSpace(field.GetKey()) == "" || field.GetKey() != strings.TrimSpace(field.GetKey()) || field.GetValue() == nil {
+				return nil, errors.New("observation typed fact is malformed")
 			}
 			if !finiteSemanticValue(field.GetValue()) {
 				return nil, fmt.Errorf("observation typed fact %q is not finite", field.GetKey())
 			}
-			if existing, exists := values[field.GetKey()]; exists {
-				if !proto.Equal(existing, field.GetValue()) {
-					return nil, fmt.Errorf("typed fact %q conflicts with registry", field.GetKey())
-				}
-				continue
+			if err := validateFactValue(field.GetKey(), field.GetValue()); err != nil {
+				return nil, fmt.Errorf("observation typed fact %q: %w", field.GetKey(), err)
 			}
-			if existing, exists := issues[field.GetKey()]; exists {
-				if len(existing.evidence) > 0 && proto.Equal(existing.evidence[0].GetValue(), field.GetValue()) {
-					delete(issues, field.GetKey())
-					values[field.GetKey()] = proto.Clone(field.GetValue()).(*tgsrlv1.SemanticValue)
-					continue
-				}
+			if _, exists := registry.issues[field.GetKey()]; exists {
 				return nil, fmt.Errorf("typed fact %q conflicts with invalid registry fact", field.GetKey())
 			}
-			values[field.GetKey()] = proto.Clone(field.GetValue()).(*tgsrlv1.SemanticValue)
+			if err := registry.register(field.GetKey(), field.GetValue(), metadata, originLegacy); err != nil {
+				return nil, err
+			}
+		}
+		for _, observed := range obs.GetFactObservations() {
+			if observed == nil || observed.GetFact() == nil || strings.TrimSpace(observed.GetFact().GetKey()) == "" || observed.GetFact().GetKey() != strings.TrimSpace(observed.GetFact().GetKey()) || observed.GetFact().GetValue() == nil {
+				return nil, errors.New("observed fact is malformed")
+			}
+			if !finiteSemanticValue(observed.GetFact().GetValue()) {
+				return nil, fmt.Errorf("observed fact %q is not finite", observed.GetFact().GetKey())
+			}
+			if err := validateFactValue(observed.GetFact().GetKey(), observed.GetFact().GetValue()); err != nil {
+				return nil, fmt.Errorf("observed fact %q: %w", observed.GetFact().GetKey(), err)
+			}
+			observedMetadata, err := explicitObservationMetadata(observed.GetObservedAt(), observed.GetSource(), observed.GetRevision())
+			if err != nil {
+				return nil, fmt.Errorf("observed fact %q: %w", observed.GetFact().GetKey(), err)
+			}
+			if err := registry.register(observed.GetFact().GetKey(), observed.GetFact().GetValue(), observedMetadata, originExplicit); err != nil {
+				return nil, err
+			}
 		}
 	}
-	return &factRegistry{values: values, issues: issues}, nil
+	return registry, nil
 }
 
 type conditionResult struct {
-	status   tgsrlv1.ContractEvaluationStatus
-	missing  []string
-	evidence []*tgsrlv1.SemanticField
-	detail   string
+	status      tgsrlv1.ContractEvaluationStatus
+	missing     []string
+	evidence    []*tgsrlv1.SemanticField
+	detail      string
+	disposition tgsrlv1.ObservationDisposition
 }
 
 func evaluateValidityRule(input Input, facts *factRegistry, rule *tgsrlv1.ValidityRule) *tgsrlv1.ContractEvaluation {
@@ -296,7 +425,11 @@ func evaluateValidityRule(input Input, facts *factRegistry, rule *tgsrlv1.Validi
 	result := evalCondition(facts, rule.GetPredicate())
 	applyConditionResult(base, result)
 	base.Detail = fallbackDetail(result.detail, rule.GetDescription())
-	base.RecommendedAction = actionFor(base.Status, rule.GetFailureMode())
+	if result.disposition == tgsrlv1.ObservationDisposition_OBSERVATION_DISPOSITION_UNKNOWN {
+		base.RecommendedAction = actionFor(base.Status, rule.GetFailureMode())
+	} else {
+		base.RecommendedAction = actionForObservationDisposition(result.disposition)
+	}
 	return finalizeEvaluation(input, base)
 }
 
@@ -305,65 +438,25 @@ func evaluateConditionClause(input Input, facts *factRegistry, cond *tgsrlv1.Con
 	result := evalCondition(facts, cond)
 	applyConditionResult(base, result)
 	base.Detail = result.detail
-	base.RecommendedAction = actionFor(base.Status, base.GetFailureMode())
-	return finalizeEvaluation(input, base)
-}
-
-func evaluateVersionConstraint(input Input, facts *factRegistry, constraint *tgsrlv1.VersionConstraint) *tgsrlv1.ContractEvaluation {
-	base := newEvaluation(input, tgsrlv1.ContractClauseKind_CONTRACT_CLAUSE_KIND_VERSION_CONSTRAINT, constraint.GetComponent(), nil, tgsrlv1.ValidityFailureMode_VALIDITY_FAILURE_MODE_REJECT)
-	value, ok := facts.values["intent.version.current"]
-	base.Observations = append(base.Observations, semanticField("intent.version.current", value))
-	if !ok || value == nil {
-		base.Status = tgsrlv1.ContractEvaluationStatus_CONTRACT_EVALUATION_STATUS_INDETERMINATE
-		base.MissingKeys = []string{"intent.version.current"}
-		base.Detail = "missing intent.version.current"
+	if result.disposition == tgsrlv1.ObservationDisposition_OBSERVATION_DISPOSITION_UNKNOWN {
 		base.RecommendedAction = actionFor(base.Status, base.GetFailureMode())
-		return finalizeEvaluation(input, base)
-	}
-	if !strings.EqualFold(strings.TrimSpace(constraint.GetComponent()), "protocol") {
-		base.Status = tgsrlv1.ContractEvaluationStatus_CONTRACT_EVALUATION_STATUS_NOT_APPLICABLE
-		base.Detail = "unsupported component"
-		base.RecommendedAction = tgsrlv1.ContractDecisionAction_CONTRACT_DECISION_ACTION_ALLOW
-		return finalizeEvaluation(input, base)
-	}
-	required, err := normalizeVersion(constraint.GetVersion())
-	if err != nil {
-		base.Status = tgsrlv1.ContractEvaluationStatus_CONTRACT_EVALUATION_STATUS_INDETERMINATE
-		base.Detail = "invalid required protocol version"
-		base.RecommendedAction = actionFor(base.Status, base.GetFailureMode())
-		return finalizeEvaluation(input, base)
-	}
-	base.Evidence = append(base.Evidence,
-		semanticField("protocol.version.current", semanticString(protocolVersion)),
-		semanticField("protocol.version.required", semanticString(required)),
-		semanticField("protocol.version.operator", semanticString(constraint.GetOperator().String())),
-	)
-	compatible := false
-	switch constraint.GetOperator() {
-	case tgsrlv1.VersionOperator_VERSION_OPERATOR_EXACT, tgsrlv1.VersionOperator_VERSION_OPERATOR_SEMVER:
-		compatible = required == protocolVersion
-	case tgsrlv1.VersionOperator_VERSION_OPERATOR_COMPATIBLE:
-		compatible = protocolCompatible(protocolVersion, required)
-	default:
-		base.Status = tgsrlv1.ContractEvaluationStatus_CONTRACT_EVALUATION_STATUS_INDETERMINATE
-		base.Detail = "unknown version operator"
-		base.RecommendedAction = actionFor(base.Status, base.GetFailureMode())
-		return finalizeEvaluation(input, base)
-	}
-	if compatible {
-		base.Status = tgsrlv1.ContractEvaluationStatus_CONTRACT_EVALUATION_STATUS_SATISFIED
-		base.Detail = "protocol version compatible"
-		base.RecommendedAction = tgsrlv1.ContractDecisionAction_CONTRACT_DECISION_ACTION_ALLOW
 	} else {
-		base.Status = tgsrlv1.ContractEvaluationStatus_CONTRACT_EVALUATION_STATUS_VIOLATED
-		base.Detail = "protocol version incompatible"
-		base.RecommendedAction = actionFor(base.Status, base.GetFailureMode())
+		base.RecommendedAction = actionForObservationDisposition(result.disposition)
 	}
 	return finalizeEvaluation(input, base)
 }
 
 func evaluateBackpressure(input Input, facts *factRegistry, policy *tgsrlv1.BackpressurePolicy) *tgsrlv1.ContractEvaluation {
 	base := newEvaluation(input, tgsrlv1.ContractClauseKind_CONTRACT_CLAUSE_KIND_BACKPRESSURE_POLICY, "backpressure", nil, tgsrlv1.ValidityFailureMode_VALIDITY_FAILURE_MODE_REJECT)
+	if guard, guarded := facts.observationGuard("buffer.level.current"); guarded {
+		base.Evidence = append(base.Evidence, guard.evidence...)
+		if guard.status != tgsrlv1.ContractEvaluationStatus_CONTRACT_EVALUATION_STATUS_UNKNOWN {
+			applyConditionResult(base, guard)
+			base.Detail = guard.detail
+			base.RecommendedAction = actionForObservationDisposition(guard.disposition)
+			return finalizeEvaluation(input, base)
+		}
+	}
 	current, ok := facts.values["buffer.level.current"]
 	if !ok {
 		base.Status = tgsrlv1.ContractEvaluationStatus_CONTRACT_EVALUATION_STATUS_INDETERMINATE
@@ -413,6 +506,12 @@ func evaluateSafePoint(input Input, facts *factRegistry) *tgsrlv1.ContractEvalua
 		base.Status = tgsrlv1.ContractEvaluationStatus_CONTRACT_EVALUATION_STATUS_NOT_APPLICABLE
 		base.Detail = "safe point not required for commit"
 		base.RecommendedAction = tgsrlv1.ContractDecisionAction_CONTRACT_DECISION_ACTION_ALLOW
+		return finalizeEvaluation(input, base)
+	}
+	if guard, guarded := facts.observationGuard("runtime.safe_point"); guarded && guard.status != tgsrlv1.ContractEvaluationStatus_CONTRACT_EVALUATION_STATUS_UNKNOWN {
+		applyConditionResult(base, guard)
+		base.Detail = guard.detail
+		base.RecommendedAction = actionForObservationDisposition(guard.disposition)
 		return finalizeEvaluation(input, base)
 	}
 	if !ok {
@@ -480,10 +579,12 @@ func evalLogicalAND(facts *factRegistry, cond *tgsrlv1.Condition) conditionResul
 		res := evalCondition(facts, pred)
 		combined.evidence = append(combined.evidence, res.evidence...)
 		combined.missing = append(combined.missing, res.missing...)
+		combined.disposition = strongerDisposition(combined.disposition, res.disposition)
 		switch res.status {
 		case tgsrlv1.ContractEvaluationStatus_CONTRACT_EVALUATION_STATUS_VIOLATED:
 			combined.status = res.status
 			combined.detail = "AND predicate violated"
+			combined.disposition = res.disposition
 			return combined
 		case tgsrlv1.ContractEvaluationStatus_CONTRACT_EVALUATION_STATUS_INDETERMINATE:
 			indeterminate = true
@@ -505,10 +606,12 @@ func evalLogicalOR(facts *factRegistry, cond *tgsrlv1.Condition) conditionResult
 		res := evalCondition(facts, pred)
 		combined.evidence = append(combined.evidence, res.evidence...)
 		combined.missing = append(combined.missing, res.missing...)
+		combined.disposition = strongerDisposition(combined.disposition, res.disposition)
 		switch res.status {
 		case tgsrlv1.ContractEvaluationStatus_CONTRACT_EVALUATION_STATUS_SATISFIED:
 			combined.status = res.status
 			combined.detail = "OR predicate satisfied"
+			combined.disposition = tgsrlv1.ObservationDisposition_OBSERVATION_DISPOSITION_UNKNOWN
 			return combined
 		case tgsrlv1.ContractEvaluationStatus_CONTRACT_EVALUATION_STATUS_INDETERMINATE:
 			indeterminate = true
@@ -529,6 +632,10 @@ func evalLogicalNOT(facts *factRegistry, cond *tgsrlv1.Condition) conditionResul
 		}
 	}
 	res := evalCondition(facts, cond.GetPredicates()[0])
+	if res.disposition != tgsrlv1.ObservationDisposition_OBSERVATION_DISPOSITION_UNKNOWN {
+		res.detail = "NOT predicate observation unavailable: " + res.detail
+		return res
+	}
 	switch res.status {
 	case tgsrlv1.ContractEvaluationStatus_CONTRACT_EVALUATION_STATUS_SATISFIED:
 		res.status = tgsrlv1.ContractEvaluationStatus_CONTRACT_EVALUATION_STATUS_VIOLATED
@@ -540,6 +647,10 @@ func evalLogicalNOT(facts *factRegistry, cond *tgsrlv1.Condition) conditionResul
 }
 
 func evalExists(facts *factRegistry, cond *tgsrlv1.Condition) conditionResult {
+	guard, guarded := facts.observationGuard(cond.GetFactPath())
+	if guarded && guard.status != tgsrlv1.ContractEvaluationStatus_CONTRACT_EVALUATION_STATUS_UNKNOWN {
+		return guard
+	}
 	value, ok := facts.values[cond.GetFactPath()]
 	if !ok {
 		if issue, exists := facts.issues[cond.GetFactPath()]; exists {
@@ -558,12 +669,24 @@ func evalExists(facts *factRegistry, cond *tgsrlv1.Condition) conditionResult {
 	}
 	return conditionResult{
 		status:   tgsrlv1.ContractEvaluationStatus_CONTRACT_EVALUATION_STATUS_SATISFIED,
-		evidence: []*tgsrlv1.SemanticField{semanticField(cond.GetFactPath(), value)},
+		evidence: append(guard.evidence, semanticField(cond.GetFactPath(), value)),
 		detail:   "fact exists",
 	}
 }
 
 func evalBinaryCondition(facts *factRegistry, cond *tgsrlv1.Condition) conditionResult {
+	leftGuard, leftGuarded := facts.observationGuard(cond.GetFactPath())
+	if leftGuarded && leftGuard.status != tgsrlv1.ContractEvaluationStatus_CONTRACT_EVALUATION_STATUS_UNKNOWN {
+		return leftGuard
+	}
+	rightGuard := conditionResult{}
+	if cond.GetComparisonFactPath() != "" {
+		var rightGuarded bool
+		rightGuard, rightGuarded = facts.observationGuard(cond.GetComparisonFactPath())
+		if rightGuarded && rightGuard.status != tgsrlv1.ContractEvaluationStatus_CONTRACT_EVALUATION_STATUS_UNKNOWN {
+			return rightGuard
+		}
+	}
 	left, leftOk := facts.values[cond.GetFactPath()]
 	if !leftOk {
 		if issue, exists := facts.issues[cond.GetFactPath()]; exists {
@@ -592,7 +715,8 @@ func evalBinaryCondition(facts *factRegistry, cond *tgsrlv1.Condition) condition
 		}
 	}
 	result, evalErr := compareValues(cond.GetOperator(), left, right)
-	evidence := []*tgsrlv1.SemanticField{semanticField(cond.GetFactPath(), left)}
+	evidence := append(leftGuard.evidence, rightGuard.evidence...)
+	evidence = append(evidence, semanticField(cond.GetFactPath(), left))
 	if cond.GetComparisonFactPath() != "" {
 		evidence = append(evidence, semanticField(cond.GetComparisonFactPath(), right))
 	} else {
@@ -817,6 +941,7 @@ func applyConditionResult(eval *tgsrlv1.ContractEvaluation, result conditionResu
 	eval.Status = result.status
 	eval.MissingKeys = stableStrings(result.missing)
 	eval.Evidence = stableFields(result.evidence)
+	eval.ObservationDisposition = result.disposition
 }
 
 func finalizeEvaluation(input Input, eval *tgsrlv1.ContractEvaluation) *tgsrlv1.ContractEvaluation {
@@ -828,11 +953,9 @@ func finalizeEvaluation(input Input, eval *tgsrlv1.ContractEvaluation) *tgsrlv1.
 }
 
 func evaluationID(input Input, eval *tgsrlv1.ContractEvaluation) string {
-	parts := []string{
+	contextParts := []string{
 		input.Contract.GetContractId(),
 		input.Contract.GetVersion(),
-		eval.GetClauseKind().String(),
-		eval.GetClauseId(),
 		strconv.FormatUint(input.Intent.GetVersion(), 10),
 		strconv.FormatUint(input.Snapshot.GetRevision(), 10),
 		input.Context.GetTickKind().String(),
@@ -842,9 +965,19 @@ func evaluationID(input Input, eval *tgsrlv1.ContractEvaluation) string {
 		strconv.FormatBool(input.Context.GetCompatibilityDefaultsApplied()),
 	}
 	if input.Context.GetEvaluationTime() != nil {
-		parts = append(parts, input.Context.GetEvaluationTime().AsTime().UTC().Format("2006-01-02T15:04:05.999999999Z"))
+		contextParts = append(contextParts, input.Context.GetEvaluationTime().AsTime().UTC().Format(time.RFC3339Nano))
 	}
-	sum := sha256.Sum256([]byte(strings.Join(parts, "|")))
+	canonical := proto.Clone(eval).(*tgsrlv1.ContractEvaluation)
+	canonical.EvaluationId = ""
+	wire, err := proto.MarshalOptions{Deterministic: true}.Marshal(canonical)
+	if err != nil {
+		// ContractEvaluation contains no marshaling extensions that can fail. Keep
+		// a deterministic fail-closed identity if a future generated surface does.
+		wire = []byte("marshal-error:" + err.Error())
+	}
+	material := append([]byte(strings.Join(contextParts, "|")), 0)
+	material = append(material, wire...)
+	sum := sha256.Sum256(material)
 	return "eval-sha256-" + hex.EncodeToString(sum[:])
 }
 
@@ -944,6 +1077,17 @@ func finiteSemanticValue(value *tgsrlv1.SemanticValue) bool {
 	return true
 }
 
+func validateFactValue(path string, value *tgsrlv1.SemanticValue) error {
+	switch path {
+	case "batch.effective_sample_size", "batch.effective_sample_size_ratio":
+		doubleValue, ok := value.GetKind().(*tgsrlv1.SemanticValue_DoubleValue)
+		if !ok || !finite(doubleValue.DoubleValue) || doubleValue.DoubleValue < 0 {
+			return errors.New("must be a finite non-negative double")
+		}
+	}
+	return nil
+}
+
 func actionFor(status tgsrlv1.ContractEvaluationStatus, mode tgsrlv1.ValidityFailureMode) tgsrlv1.ContractDecisionAction {
 	if status == tgsrlv1.ContractEvaluationStatus_CONTRACT_EVALUATION_STATUS_SATISFIED ||
 		status == tgsrlv1.ContractEvaluationStatus_CONTRACT_EVALUATION_STATUS_NOT_APPLICABLE {
@@ -992,12 +1136,23 @@ func blockingAction(action tgsrlv1.ContractDecisionAction) string {
 }
 
 func isBlocking(eval *tgsrlv1.ContractEvaluation) bool {
+	switch eval.GetObservationDisposition() {
+	case tgsrlv1.ObservationDisposition_OBSERVATION_DISPOSITION_BLOCK,
+		tgsrlv1.ObservationDisposition_OBSERVATION_DISPOSITION_HOLD:
+		return true
+	case tgsrlv1.ObservationDisposition_OBSERVATION_DISPOSITION_DEGRADE,
+		tgsrlv1.ObservationDisposition_OBSERVATION_DISPOSITION_NOT_APPLICABLE:
+		return false
+	}
 	switch eval.GetRecommendedAction() {
 	case tgsrlv1.ContractDecisionAction_CONTRACT_DECISION_ACTION_ABORT_REQUIRED,
 		tgsrlv1.ContractDecisionAction_CONTRACT_DECISION_ACTION_PAUSE_REQUIRED,
-		tgsrlv1.ContractDecisionAction_CONTRACT_DECISION_ACTION_REJECT:
-		return true
-	case tgsrlv1.ContractDecisionAction_CONTRACT_DECISION_ACTION_WAIT_FOR_SAFE_POINT:
+		tgsrlv1.ContractDecisionAction_CONTRACT_DECISION_ACTION_REJECT,
+		tgsrlv1.ContractDecisionAction_CONTRACT_DECISION_ACTION_WAIT_FOR_SAFE_POINT,
+		tgsrlv1.ContractDecisionAction_CONTRACT_DECISION_ACTION_BLOCK_PRODUCER_REQUIRED,
+		tgsrlv1.ContractDecisionAction_CONTRACT_DECISION_ACTION_SHED_OLDEST_REQUIRED,
+		tgsrlv1.ContractDecisionAction_CONTRACT_DECISION_ACTION_SHED_NEWEST_REQUIRED,
+		tgsrlv1.ContractDecisionAction_CONTRACT_DECISION_ACTION_SCALE_OUT_REQUESTED:
 		return true
 	default:
 		return false
@@ -1013,6 +1168,11 @@ func actionPriority(action tgsrlv1.ContractDecisionAction) int {
 		return 2
 	case tgsrlv1.ContractDecisionAction_CONTRACT_DECISION_ACTION_REJECT:
 		return 1
+	case tgsrlv1.ContractDecisionAction_CONTRACT_DECISION_ACTION_BLOCK_PRODUCER_REQUIRED,
+		tgsrlv1.ContractDecisionAction_CONTRACT_DECISION_ACTION_SHED_OLDEST_REQUIRED,
+		tgsrlv1.ContractDecisionAction_CONTRACT_DECISION_ACTION_SHED_NEWEST_REQUIRED,
+		tgsrlv1.ContractDecisionAction_CONTRACT_DECISION_ACTION_SCALE_OUT_REQUESTED:
+		return 1
 	default:
 		return 0
 	}
@@ -1025,47 +1185,185 @@ func fallbackDetail(primary, fallback string) string {
 	return fallback
 }
 
+type semanticVersion struct {
+	major      uint64
+	minor      uint64
+	patch      uint64
+	prerelease []string
+	build      []string
+}
+
 func normalizeVersion(value string) (string, error) {
-	if value != strings.TrimSpace(value) || value == "" {
-		return "", errors.New("version must be non-empty")
+	parsed, err := parseSemanticVersion(value)
+	if err != nil {
+		return "", err
 	}
-	value = strings.TrimPrefix(strings.TrimPrefix(value, "v"), "V")
-	base, prerelease, hasPrerelease := strings.Cut(value, "-")
-	parts := strings.Split(base, ".")
-	if len(parts) != 2 && len(parts) != 3 {
-		return "", errors.New("version must have 2 or 3 components")
+	result := fmt.Sprintf("%d.%d.%d", parsed.major, parsed.minor, parsed.patch)
+	if len(parsed.prerelease) > 0 {
+		result += "-" + strings.Join(parsed.prerelease, ".")
 	}
-	normalized := make([]string, 3)
-	for i, part := range parts {
-		number, err := strconv.ParseUint(part, 10, 32)
-		if err != nil {
-			return "", errors.New("version components must be numeric")
-		}
-		normalized[i] = strconv.FormatUint(number, 10)
-	}
-	if len(parts) == 2 {
-		normalized[2] = "0"
-	}
-	result := strings.Join(normalized, ".")
-	if hasPrerelease {
-		result += "-" + prerelease
+	if len(parsed.build) > 0 {
+		result += "+" + strings.Join(parsed.build, ".")
 	}
 	return result, nil
 }
 
-func protocolCompatible(current, required string) bool {
-	currentBase, _, _ := strings.Cut(current, "-")
-	requiredBase, _, _ := strings.Cut(required, "-")
-	currentParts := strings.Split(currentBase, ".")
-	requiredParts := strings.Split(requiredBase, ".")
-	if len(currentParts) != 3 || len(requiredParts) != 3 {
+// NormalizeSemanticVersion normalizes the version syntax shared by contract
+// validation and evaluation. Two-component legacy protocol versions retain
+// compatibility and are normalized by appending a zero patch component.
+func NormalizeSemanticVersion(value string) (string, error) {
+	return normalizeVersion(value)
+}
+
+func parseSemanticVersion(value string) (semanticVersion, error) {
+	if value == "" || value != strings.TrimSpace(value) {
+		return semanticVersion{}, errors.New("version must be non-empty and canonical")
+	}
+	value = strings.TrimPrefix(strings.TrimPrefix(value, "v"), "V")
+	coreAndPre, buildPart, hasBuild := strings.Cut(value, "+")
+	if hasBuild && (buildPart == "" || strings.Contains(buildPart, "+")) {
+		return semanticVersion{}, errors.New("version build metadata is invalid")
+	}
+	core, prereleasePart, hasPrerelease := strings.Cut(coreAndPre, "-")
+	parts := strings.Split(core, ".")
+	if len(parts) != 2 && len(parts) != 3 {
+		return semanticVersion{}, errors.New("version must have 2 or 3 numeric components")
+	}
+	values := [3]uint64{}
+	for index, part := range parts {
+		if !validNumericIdentifier(part) {
+			return semanticVersion{}, errors.New("version components must be canonical uint32 values")
+		}
+		number, err := strconv.ParseUint(part, 10, 32)
+		if err != nil {
+			return semanticVersion{}, errors.New("version components must be canonical uint32 values")
+		}
+		values[index] = number
+	}
+	parsed := semanticVersion{major: values[0], minor: values[1], patch: values[2]}
+	if hasPrerelease {
+		parsed.prerelease = strings.Split(prereleasePart, ".")
+		if !validVersionIdentifiers(parsed.prerelease, true) {
+			return semanticVersion{}, errors.New("version prerelease is invalid")
+		}
+	}
+	if hasBuild {
+		parsed.build = strings.Split(buildPart, ".")
+		if !validVersionIdentifiers(parsed.build, false) {
+			return semanticVersion{}, errors.New("version build metadata is invalid")
+		}
+	}
+	return parsed, nil
+}
+
+func validNumericIdentifier(value string) bool {
+	if value == "" || (len(value) > 1 && value[0] == '0') {
 		return false
 	}
-	if currentParts[0] != requiredParts[0] {
-		return false
-	}
-	if currentParts[0] == "0" {
-		return currentParts[1] == requiredParts[1]
+	for _, character := range value {
+		if character < '0' || character > '9' {
+			return false
+		}
 	}
 	return true
+}
+
+func validVersionIdentifiers(values []string, prerelease bool) bool {
+	if len(values) == 0 {
+		return false
+	}
+	for _, value := range values {
+		if value == "" {
+			return false
+		}
+		numeric := true
+		for _, character := range value {
+			if (character < '0' || character > '9') && (character < 'A' || character > 'Z') && (character < 'a' || character > 'z') && character != '-' {
+				return false
+			}
+			if character < '0' || character > '9' {
+				numeric = false
+			}
+		}
+		if prerelease && numeric && len(value) > 1 && value[0] == '0' {
+			return false
+		}
+	}
+	return true
+}
+
+func compareSemanticVersions(left, right semanticVersion) int {
+	for _, pair := range [][2]uint64{{left.major, right.major}, {left.minor, right.minor}, {left.patch, right.patch}} {
+		if pair[0] < pair[1] {
+			return -1
+		}
+		if pair[0] > pair[1] {
+			return 1
+		}
+	}
+	if len(left.prerelease) == 0 && len(right.prerelease) == 0 {
+		return 0
+	}
+	if len(left.prerelease) == 0 {
+		return 1
+	}
+	if len(right.prerelease) == 0 {
+		return -1
+	}
+	for index := 0; index < len(left.prerelease) && index < len(right.prerelease); index++ {
+		leftPart, rightPart := left.prerelease[index], right.prerelease[index]
+		if leftPart == rightPart {
+			continue
+		}
+		leftNumeric, rightNumeric := numericPrerelease(leftPart), numericPrerelease(rightPart)
+		switch {
+		case leftNumeric && !rightNumeric:
+			return -1
+		case !leftNumeric && rightNumeric:
+			return 1
+		case leftNumeric && rightNumeric:
+			if len(leftPart) < len(rightPart) || (len(leftPart) == len(rightPart) && leftPart < rightPart) {
+				return -1
+			}
+			return 1
+		case leftPart < rightPart:
+			return -1
+		default:
+			return 1
+		}
+	}
+	if len(left.prerelease) < len(right.prerelease) {
+		return -1
+	}
+	if len(left.prerelease) > len(right.prerelease) {
+		return 1
+	}
+	return 0
+}
+
+func numericPrerelease(value string) bool {
+	for _, character := range value {
+		if character < '0' || character > '9' {
+			return false
+		}
+	}
+	return value != ""
+}
+
+func protocolCompatible(current, required string) bool {
+	actual, actualErr := parseSemanticVersion(current)
+	minimum, requiredErr := parseSemanticVersion(required)
+	if actualErr != nil || requiredErr != nil || actual.major != minimum.major || compareSemanticVersions(actual, minimum) < 0 {
+		return false
+	}
+	if actual.major == 0 {
+		return actual.minor == minimum.minor
+	}
+	return true
+}
+
+// VersionsCompatible reports whether current is within required's compatible
+// SemVer window and is not older than required.
+func VersionsCompatible(current, required string) bool {
+	return protocolCompatible(current, required)
 }

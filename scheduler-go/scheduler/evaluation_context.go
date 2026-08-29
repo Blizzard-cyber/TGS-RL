@@ -52,6 +52,11 @@ func (s *Scheduler) normalizeEvaluationContext(input *tgsrlv1.EvaluationContext)
 		defaultsApplied = true
 		ctx.TickKind = tgsrlv1.TickKind_TICK_KIND_FAST
 	}
+	if ctx.GetContractObservation() != nil {
+		if err := validateContractObservation("evaluation_context.contract_observation", ctx.GetContractObservation()); err != nil {
+			return nil, time.Time{}, 0, err
+		}
+	}
 	ctx.CompatibilityDefaultsApplied = ctx.GetCompatibilityDefaultsApplied() || defaultsApplied
 
 	return ctx, now, sequence, nil
@@ -119,11 +124,23 @@ func semanticsBlocking(evaluation *tgsrlv1.ContractEvaluation) bool {
 	if evaluation == nil {
 		return false
 	}
+	switch evaluation.GetObservationDisposition() {
+	case tgsrlv1.ObservationDisposition_OBSERVATION_DISPOSITION_BLOCK,
+		tgsrlv1.ObservationDisposition_OBSERVATION_DISPOSITION_HOLD:
+		return true
+	case tgsrlv1.ObservationDisposition_OBSERVATION_DISPOSITION_DEGRADE,
+		tgsrlv1.ObservationDisposition_OBSERVATION_DISPOSITION_NOT_APPLICABLE:
+		return false
+	}
 	switch evaluation.GetRecommendedAction() {
 	case tgsrlv1.ContractDecisionAction_CONTRACT_DECISION_ACTION_ABORT_REQUIRED,
 		tgsrlv1.ContractDecisionAction_CONTRACT_DECISION_ACTION_PAUSE_REQUIRED,
 		tgsrlv1.ContractDecisionAction_CONTRACT_DECISION_ACTION_REJECT,
-		tgsrlv1.ContractDecisionAction_CONTRACT_DECISION_ACTION_WAIT_FOR_SAFE_POINT:
+		tgsrlv1.ContractDecisionAction_CONTRACT_DECISION_ACTION_WAIT_FOR_SAFE_POINT,
+		tgsrlv1.ContractDecisionAction_CONTRACT_DECISION_ACTION_BLOCK_PRODUCER_REQUIRED,
+		tgsrlv1.ContractDecisionAction_CONTRACT_DECISION_ACTION_SHED_OLDEST_REQUIRED,
+		tgsrlv1.ContractDecisionAction_CONTRACT_DECISION_ACTION_SHED_NEWEST_REQUIRED,
+		tgsrlv1.ContractDecisionAction_CONTRACT_DECISION_ACTION_SCALE_OUT_REQUESTED:
 		return true
 	default:
 		return false

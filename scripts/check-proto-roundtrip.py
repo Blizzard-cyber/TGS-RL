@@ -7,6 +7,7 @@ from datetime import UTC, datetime, timedelta
 from io import BytesIO
 from pathlib import Path
 
+from google.protobuf import duration_pb2
 from tgsrl.v1 import (
     control_pb2,
     execution_pb2,
@@ -76,10 +77,32 @@ def main() -> None:
                 value=semantic_pb2.SemanticValue(uint64_value=4),
             )
         ],
+        fact_observations=[
+            execution_pb2.ObservedFact(
+                fact=semantic_pb2.SemanticField(
+                    key="sample.policy_lag",
+                    value=semantic_pb2.SemanticValue(uint64_value=4),
+                ),
+                source="roundtrip-runtime",
+                revision=41,
+            )
+        ],
+        component_versions=[
+            execution_pb2.ComponentVersion(
+                kind=execution_pb2.COMPONENT_KIND_EXECUTION_BACKEND,
+                name="execution-backend-primary",
+                version="1.2.3-rc.1",
+                source="roundtrip-registry",
+                revision=42,
+                attributes={"region": "test"},
+            )
+        ],
     )
     observation.observed_at.FromDatetime(datetime(2026, 8, 27, tzinfo=UTC))
     observation.oldest_sample_at.FromDatetime(datetime(2026, 8, 27, 0, 0, 1, tzinfo=UTC))
     observation.backpressure_started_at.FromDatetime(datetime(2026, 8, 27, 0, 0, 2, tzinfo=UTC))
+    observation.fact_observations[0].observed_at.CopyFrom(observation.observed_at)
+    observation.component_versions[0].observed_at.CopyFrom(observation.observed_at)
     intent = IntentBuilder(clock=lambda: datetime(2026, 8, 27, tzinfo=UTC)).build(
         execution_id="roundtrip-execution",
         stage_id="decode",
@@ -97,6 +120,7 @@ def main() -> None:
             source="mock",
             revision=1,
             supported_actions=["bind"],
+            component_versions=[observation.component_versions[0]],
         ),
         deterministic_seed=42,
         labels={"data_kind": "synthetic"},
@@ -121,6 +145,26 @@ def main() -> None:
             attributes={"surface": "proto-roundtrip"},
             digest="sha256:roundtrip",
         )
+    )
+    version_constraint = intent.execution_contract.version_constraints[0]
+    version_constraint.allow_prerelease = True
+    version_constraint.source = "roundtrip-registry"
+    version_constraint.revision = 42
+    version_constraint.component_kind = execution_pb2.COMPONENT_KIND_PROTOCOL
+    version_constraint.observation_policy.CopyFrom(
+        execution_pb2.ObservationPolicy(
+            maximum_age=duration_pb2.Duration(seconds=30),
+            missing=execution_pb2.OBSERVATION_DISPOSITION_BLOCK,
+            stale=execution_pb2.OBSERVATION_DISPOSITION_HOLD,
+        )
+    )
+    intent.execution_contract.critical_fact_policies.add(
+        fact_path="sample.policy_lag",
+        observation_policy=execution_pb2.ObservationPolicy(
+            maximum_age=duration_pb2.Duration(seconds=10),
+            missing=execution_pb2.OBSERVATION_DISPOSITION_DEGRADE,
+            stale=execution_pb2.OBSERVATION_DISPOSITION_NOT_APPLICABLE,
+        ),
     )
     plan = scheduling_pb2.PlacementPlan(
         plan_id="roundtrip-plan",
@@ -160,28 +204,78 @@ def main() -> None:
             )
         ],
     )
+    evaluation = execution_pb2.ContractEvaluation(
+        evaluation_id="eval-1",
+        contract_id=contract.contract_id,
+        clause_kind=execution_pb2.CONTRACT_CLAUSE_KIND_POLICY_LAG,
+        clause_id="lag-bound",
+        status=execution_pb2.CONTRACT_EVALUATION_STATUS_INDETERMINATE,
+        observation_disposition=execution_pb2.OBSERVATION_DISPOSITION_HOLD,
+        recommended_action=execution_pb2.CONTRACT_DECISION_ACTION_PAUSE_REQUIRED,
+        detail="roundtrip coverage",
+    )
+    decision = scheduling_pb2.DecisionRecord(
+        decision_id="decision-1",
+        execution_id=intent.execution_id,
+        stage_id=intent.stage_id,
+        tick_kind=scheduling_pb2.TICK_KIND_FAST,
+        evaluation_context=scheduling_pb2.EvaluationContext(
+            tick_kind=scheduling_pb2.TICK_KIND_FAST,
+            evaluation_time=observation.observed_at,
+            decision_sequence=7,
+            cause="roundtrip",
+            observed_revision=21,
+        ),
+        contract_evaluations=[evaluation],
+    )
+    manifest = runtime_pb2.RuntimeManifest(
+        manifest_id="roundtrip-manifest",
+        run_id=intent.run_id,
+        job_id=intent.job_id,
+        trace_id=intent.trace_id,
+        framework="torch",
+        execution_backend="execution-backend-primary",
+        trainer="trainer-primary",
+        rollout_engine="rollout-primary",
+        component_versions=[observation.component_versions[0]],
+    )
     original_intent = intent.SerializeToString(deterministic=True)
     original_plan = plan.SerializeToString(deterministic=True)
+    original_decision = decision.SerializeToString(deterministic=True)
+    original_manifest = manifest.SerializeToString(deterministic=True)
     completed = subprocess.run(
         ["go", "run", "./scripts/proto-roundtrip-go.go"],
         cwd=root,
-        input=_frame(original_intent) + _frame(original_plan),
+        input=(
+            _frame(original_intent)
+            + _frame(original_plan)
+            + _frame(original_decision)
+            + _frame(original_manifest)
+        ),
         stdout=subprocess.PIPE,
         check=True,
     )
     output = BytesIO(completed.stdout)
     intent_output = _read_frame(output)
     plan_output = _read_frame(output)
+    decision_output = _read_frame(output)
+    manifest_output = _read_frame(output)
     if output.read():
         raise SystemExit("unexpected trailing round-trip bytes")
     decoded = scheduling_pb2.SchedulingIntent.FromString(intent_output)
     decoded_plan = scheduling_pb2.PlacementPlan.FromString(plan_output)
+    decoded_decision = scheduling_pb2.DecisionRecord.FromString(decision_output)
+    decoded_manifest = runtime_pb2.RuntimeManifest.FromString(manifest_output)
     if decoded != intent:
         raise SystemExit("Go round-trip changed SchedulingIntent semantics")
     if intent_output != original_intent:
         raise SystemExit("Go round-trip changed deterministic wire bytes")
     if decoded_plan != plan or plan_output != original_plan:
         raise SystemExit("Go round-trip changed PlacementPlan semantics or wire bytes")
+    if decoded_decision != decision or decision_output != original_decision:
+        raise SystemExit("Go round-trip changed DecisionRecord semantics or wire bytes")
+    if decoded_manifest != manifest or manifest_output != original_manifest:
+        raise SystemExit("Go round-trip changed RuntimeManifest semantics or wire bytes")
     # Touch the new generated surfaces so import regressions fail fast even when
     # the core wire fixture only round-trips SchedulingIntent.
     evaluation = execution_pb2.ContractEvaluation(
@@ -210,6 +304,7 @@ def main() -> None:
             )
         ],
         recommended_action=execution_pb2.CONTRACT_DECISION_ACTION_ALLOW,
+        observation_disposition=execution_pb2.OBSERVATION_DISPOSITION_DEGRADE,
         detail="roundtrip coverage",
     )
     decision = scheduling_pb2.DecisionRecord(
@@ -254,6 +349,16 @@ def main() -> None:
     )
     assert runtime_pb2.WatchRuntimeEventsResponse(sequence=1).sequence == 1
     assert intent.contract_observation.buffer_level == 16
+    assert intent.contract_observation.fact_observations[0].revision == 41
+    assert intent.contract_observation.component_versions[0].attributes["region"] == "test"
+    assert intent.required_capabilities.component_versions[0].revision == 42
+    assert manifest.component_versions[0].name == "execution-backend-primary"
+    assert intent.execution_contract.version_constraints[0].observation_policy.stale == (
+        execution_pb2.OBSERVATION_DISPOSITION_HOLD
+    )
+    assert intent.execution_contract.critical_fact_policies[0].observation_policy.missing == (
+        execution_pb2.OBSERVATION_DISPOSITION_DEGRADE
+    )
     assert decision.contract_evaluations[0].predicate.fact_path == "sample.policy_lag"
     assert (
         decision.contract_evaluations[0].predicate.comparison_fact_path == "contract.max_policy_lag"

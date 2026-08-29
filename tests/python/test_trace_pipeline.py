@@ -4,7 +4,7 @@ from collections.abc import Callable
 from datetime import timedelta
 
 import pytest
-from tgsrl.v1 import semantic_pb2, trace_pb2
+from tgsrl.v1 import execution_pb2, semantic_pb2, trace_pb2
 from tgsrl_runtime.aggregation import TraceAggregator
 from tgsrl_runtime.trace_ingest import TraceIngestError, TraceIngestor
 
@@ -403,6 +403,105 @@ def test_summary_preserves_missing_ess_presence(event_factory: EventFactory) -> 
     assert summary.latest_observation is not None
     assert not summary.latest_observation.HasField("effective_sample_size")
     assert not summary.latest_observation.HasField("effective_sample_size_ratio")
+
+
+def test_summary_merges_provenance_per_stage_by_event_causal_order(
+    event_factory: EventFactory,
+) -> None:
+    early = _event(
+        event_factory,
+        "early",
+        stage_id="decode",
+        sequence=1,
+        seconds=1,
+        event_type=trace_pb2.TRACE_EVENT_TYPE_SAMPLE_PRODUCED,
+    )
+    early.contract_observation.CopyFrom(
+        execution_pb2.ContractObservation(
+            observed_at=early.occurred_at,
+            source="runtime",
+            event_id="early",
+            phase_id="decode",
+            policy_version="policy-1",
+            accepted_samples=4,
+            typed_facts=[
+                semantic_pb2.SemanticField(
+                    key="batch.accepted_samples",
+                    value=semantic_pb2.SemanticValue(uint64_value=4),
+                )
+            ],
+            fact_observations=[
+                execution_pb2.ObservedFact(
+                    fact=semantic_pb2.SemanticField(
+                        key="batch.accepted_samples",
+                        value=semantic_pb2.SemanticValue(uint64_value=4),
+                    ),
+                    observed_at=early.occurred_at,
+                    source="sampler",
+                    revision=0,
+                )
+            ],
+        )
+    )
+    late = _event(
+        event_factory,
+        "late",
+        stage_id="decode",
+        sequence=2,
+        seconds=5,
+        event_type=trace_pb2.TRACE_EVENT_TYPE_PHASE_COMPLETED,
+    )
+    late.safe_point = True
+    late.contract_observation.CopyFrom(
+        execution_pb2.ContractObservation(
+            observed_at=late.occurred_at,
+            source="runtime",
+            event_id="late",
+            phase_id="decode",
+            policy_version="policy-1",
+            safe_point=True,
+            typed_facts=[
+                semantic_pb2.SemanticField(
+                    key="runtime.safe_point",
+                    value=semantic_pb2.SemanticValue(bool_value=True),
+                )
+            ],
+            fact_observations=[
+                execution_pb2.ObservedFact(
+                    fact=semantic_pb2.SemanticField(
+                        key="runtime.safe_point",
+                        value=semantic_pb2.SemanticValue(bool_value=True),
+                    ),
+                    observed_at=late.occurred_at,
+                    source="runtime",
+                    revision=2,
+                )
+            ],
+        )
+    )
+    other = _event(
+        event_factory,
+        "other",
+        stage_id="reward",
+        sequence=3,
+        seconds=6,
+        event_type=trace_pb2.TRACE_EVENT_TYPE_PHASE_COMPLETED,
+    )
+
+    summary = TraceAggregator().summarize([other, late, early])
+    merged = summary.latest_observation_for_stage("decode")
+
+    assert merged is not None
+    facts = {item.fact.key: item for item in merged.fact_observations}
+    assert facts["batch.accepted_samples"].fact.value.uint64_value == 4
+    assert facts["batch.accepted_samples"].observed_at == early.occurred_at
+    assert facts["batch.accepted_samples"].revision == 0
+    assert facts["runtime.safe_point"].observed_at == late.occurred_at
+    reward_observation = summary.latest_observation_for_stage("reward")
+    assert reward_observation is not None
+    assert "batch.accepted_samples" not in {
+        item.fact.key for item in reward_observation.fact_observations
+    }
 
 
 def test_ingestor_orders_each_execution_causally_across_batches_and_clones(

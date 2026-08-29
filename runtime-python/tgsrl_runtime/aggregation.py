@@ -6,8 +6,10 @@ from collections.abc import Iterable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 
+from google.protobuf import timestamp_pb2
 from tgsrl.v1 import execution_pb2, experiment_pb2, semantic_pb2, trace_pb2
 
+from adapters.contracts import ContractValidationError, validate_contract_observation
 from tgsrl_runtime.trace import TraceNormalizer
 
 
@@ -95,6 +97,37 @@ def _typed_fact_map(
     return {field.key: field.value for field in observation.typed_facts}
 
 
+def _clone_observed_fact(
+    fact: execution_pb2.ObservedFact,
+) -> execution_pb2.ObservedFact:
+    clone = execution_pb2.ObservedFact()
+    clone.CopyFrom(fact)
+    return clone
+
+
+def _clone_component_version(
+    version: execution_pb2.ComponentVersion,
+) -> execution_pb2.ComponentVersion:
+    clone = execution_pb2.ComponentVersion()
+    clone.CopyFrom(version)
+    return clone
+
+
+def _source_revision(event: trace_pb2.TraceEvent) -> int:
+    raw_revision = event.attributes.get("source_revision", str(event.sequence))
+    try:
+        revision = int(raw_revision)
+    except ValueError as error:
+        raise ContractValidationError(
+            f"source_revision must be an integer for event {event.event_id}"
+        ) from error
+    if revision < 0:
+        raise ContractValidationError(
+            f"source_revision must be non-negative for event {event.event_id}"
+        )
+    return max(revision, 1)
+
+
 def _uint64_fact(
     facts: dict[str, semantic_pb2.SemanticValue],
     key: str,
@@ -159,6 +192,71 @@ def _latest_observation_from_event(
     else:
         observation = execution_pb2.ContractObservation()
     typed_facts = _typed_fact_map(observation)
+    explicit_facts: dict[str, execution_pb2.ObservedFact] = {}
+    for item in observation.fact_observations:
+        key = item.fact.key
+        if key in explicit_facts:
+            raise ContractValidationError(
+                f"contract observation fact_observations contains duplicate key {key!r}"
+            )
+        explicit_facts[key] = _clone_observed_fact(item)
+    for key, observed in explicit_facts.items():
+        legacy = typed_facts.get(key)
+        if legacy is not None and legacy != observed.fact.value:
+            raise ContractValidationError(
+                f"contract observation fact_observations {key} conflicts with typed_facts"
+            )
+        typed_facts[key] = observed.fact.value
+    scalar_bindings = (
+        ("policy_lag", "sample.policy_lag", "uint64_value"),
+        ("sample_stale", "sample.stale", "bool_value"),
+        ("buffer_level", "buffer.level.current", "uint64_value"),
+        ("effective_sample_size", "batch.effective_sample_size", "double_value"),
+        ("safe_point", "runtime.safe_point", "bool_value"),
+        ("sample_count", "sample.sample_count", "uint64_value"),
+        (
+            "effective_sample_size_ratio",
+            "batch.effective_sample_size_ratio",
+            "double_value",
+        ),
+    )
+    for field_name, fact_path, value_kind in scalar_bindings:
+        observed = explicit_facts.get(fact_path)
+        if observed is None or not observation.HasField(field_name):
+            continue
+        if observed.fact.value.WhichOneof("kind") != value_kind or getattr(
+            observed.fact.value, value_kind
+        ) != getattr(observation, field_name):
+            raise ContractValidationError(
+                f"contract observation fact_observations {fact_path} conflicts with {field_name}"
+            )
+    if observation.HasField("accepted_samples"):
+        accepted = [
+            explicit_facts[path]
+            for path in ("batch.accepted_samples", "group.accepted_samples")
+            if path in explicit_facts
+        ]
+        if any(
+            item.fact.value.WhichOneof("kind") != "uint64_value"
+            or item.fact.value.uint64_value != observation.accepted_samples
+            for item in accepted
+        ):
+            raise ContractValidationError(
+                "contract observation fact_observations conflicts with accepted_samples"
+            )
+    expected = explicit_facts.get("group.expected_samples")
+    if (
+        expected is not None
+        and observation.HasField("expected_samples")
+        and (
+            expected.fact.value.WhichOneof("kind") != "uint64_value"
+            or expected.fact.value.uint64_value != observation.expected_samples
+        )
+    ):
+        raise ContractValidationError(
+            "contract observation fact_observations group.expected_samples conflicts with "
+            "expected_samples"
+        )
 
     latest_policy_lag = _uint64_fact(typed_facts, "sample.policy_lag")
     latest_sample_stale = _bool_fact(typed_facts, "sample.stale")
@@ -176,7 +274,12 @@ def _latest_observation_from_event(
     latest_ess = _double_fact(typed_facts, "batch.effective_sample_size")
     latest_ess_ratio = _double_fact(typed_facts, "batch.effective_sample_size_ratio")
 
-    observation.source = observation.source or "trace-summary"
+    source = observation.source or "trace-summary"
+    observed_at = timestamp_pb2.Timestamp()
+    observed_at.CopyFrom(
+        observation.observed_at if observation.HasField("observed_at") else event.occurred_at
+    )
+    observation.source = source
     observation.event_id = event.event_id
     observation.phase_id = event.phase_id
     observation.policy_version = event.policy_version
@@ -249,9 +352,89 @@ def _latest_observation_from_event(
                 double=observation.effective_sample_size_ratio,
             )
         )
+    rebuilt_facts.sort(key=lambda item: item.key)
     del observation.typed_facts[:]
     observation.typed_facts.extend(rebuilt_facts)
+    del observation.fact_observations[:]
+    for fact in rebuilt_facts:
+        explicit = explicit_facts.get(fact.key)
+        if explicit is not None:
+            observation.fact_observations.append(explicit)
+            continue
+        observation.fact_observations.append(
+            execution_pb2.ObservedFact(
+                fact=fact,
+                observed_at=observed_at,
+                source=source,
+                revision=_source_revision(event),
+            )
+        )
+    validate_contract_observation(observation)
     return observation
+
+
+def _merged_observation_from_events(
+    events: Iterable[trace_pb2.TraceEvent],
+) -> execution_pb2.ContractObservation:
+    ordered = sorted(events, key=_causal_key)
+    if not ordered:
+        raise ValueError("at least one trace event is required")
+    facts: dict[str, execution_pb2.ObservedFact] = {}
+    versions: dict[tuple[int, str], execution_pb2.ComponentVersion] = {}
+    latest: execution_pb2.ContractObservation | None = None
+    for event in ordered:
+        current = _latest_observation_from_event(event)
+        latest = current
+        for fact in current.fact_observations:
+            facts[fact.fact.key] = _clone_observed_fact(fact)
+        for version in current.component_versions:
+            versions[(version.kind, version.name.casefold())] = _clone_component_version(version)
+    assert latest is not None
+    merged = execution_pb2.ContractObservation()
+    merged.CopyFrom(latest)
+    del merged.fact_observations[:]
+    merged.fact_observations.extend(facts[key] for key in sorted(facts))
+    del merged.typed_facts[:]
+    merged.typed_facts.extend(facts[key].fact for key in sorted(facts))
+    del merged.component_versions[:]
+    merged.component_versions.extend(
+        versions[key] for key in sorted(versions, key=lambda item: (item[0], item[1]))
+    )
+
+    fact_values = _typed_fact_map(merged)
+    scalar_bindings = (
+        ("policy_lag", "sample.policy_lag", "uint64_value"),
+        ("sample_stale", "sample.stale", "bool_value"),
+        ("buffer_level", "buffer.level.current", "uint64_value"),
+        ("effective_sample_size", "batch.effective_sample_size", "double_value"),
+        ("safe_point", "runtime.safe_point", "bool_value"),
+        ("sample_count", "sample.sample_count", "uint64_value"),
+        (
+            "effective_sample_size_ratio",
+            "batch.effective_sample_size_ratio",
+            "double_value",
+        ),
+    )
+    for field_name, fact_path, value_kind in scalar_bindings:
+        value = fact_values.get(fact_path)
+        if value is None:
+            merged.ClearField(field_name)
+        else:
+            setattr(merged, field_name, getattr(value, value_kind))
+    accepted_paths = [
+        path for path in ("batch.accepted_samples", "group.accepted_samples") if path in fact_values
+    ]
+    if len(accepted_paths) == 1:
+        merged.accepted_samples = fact_values[accepted_paths[0]].uint64_value
+    else:
+        merged.ClearField("accepted_samples")
+    expected = fact_values.get("group.expected_samples")
+    if expected is None:
+        merged.ClearField("expected_samples")
+    else:
+        merged.expected_samples = expected.uint64_value
+    validate_contract_observation(merged)
+    return merged
 
 
 class TraceAggregator:
@@ -359,7 +542,7 @@ class TraceAggregator:
         max_buffer_level = 0
         latest_observation: execution_pb2.ContractObservation | None = None
         latest_event: trace_pb2.TraceEvent | None = None
-        latest_events_by_stage: dict[str, trace_pb2.TraceEvent] = {}
+        events_by_stage: dict[str, list[trace_pb2.TraceEvent]] = {}
         for event in normalized:
             phase_counts[event.phase_id] = phase_counts.get(event.phase_id, 0) + 1
             safe_point_count += int(event.safe_point)
@@ -369,14 +552,13 @@ class TraceAggregator:
             max_buffer_level = max(max_buffer_level, event.buffer_level)
             if latest_event is None or _causal_key(event) >= _causal_key(latest_event):
                 latest_event = event
-                latest_observation = _latest_observation_from_event(event)
-            latest_stage_event = latest_events_by_stage.get(event.stage_id)
-            if latest_stage_event is None or _causal_key(event) >= _causal_key(latest_stage_event):
-                latest_events_by_stage[event.stage_id] = event
+            events_by_stage.setdefault(event.stage_id, []).append(event)
         latest_observations_by_stage = {
-            stage_id: _latest_observation_from_event(stage_event)
-            for stage_id, stage_event in sorted(latest_events_by_stage.items())
+            stage_id: _merged_observation_from_events(stage_events)
+            for stage_id, stage_events in sorted(events_by_stage.items())
         }
+        if latest_event is not None:
+            latest_observation = latest_observations_by_stage[latest_event.stage_id]
         micro_stages = self.aggregate_micro_stages(normalized)
         completed = tuple(stage for stage in micro_stages if stage.complete)
         return TraceSummary(

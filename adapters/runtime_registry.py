@@ -2,17 +2,22 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
+from datetime import UTC, datetime
+from importlib import metadata
 
 from tgsrl.v1 import execution_pb2, job_pb2, resource_pb2, runtime_pb2, trace_pb2
 
 from adapters.compliance.runtime import (
     ExecutionBackendAdapter,
     FrameworkAdapter,
+    ManifestValidationError,
     RolloutEngineAdapter,
     SupportReport,
     TrainerAdapter,
 )
+from adapters.contracts import validate_component_version
 from adapters.execution import FakeExecutionBackendAdapter, RayExecutionBackendAdapter
 from adapters.frameworks import FakeFrameworkAdapter, OpenRLHFFrameworkAdapter, VerlFrameworkAdapter
 from adapters.rollout_engines import (
@@ -29,9 +34,157 @@ def _clone_manifest(manifest: runtime_pb2.RuntimeManifest) -> runtime_pb2.Runtim
     return clone
 
 
-def runtime_manifest_from_job(job: job_pb2.RLTrainingJob) -> runtime_pb2.RuntimeManifest:
+_COMPONENT_FIELDS: tuple[tuple[str, str, int], ...] = (
+    ("framework", "framework_version", execution_pb2.COMPONENT_KIND_FRAMEWORK_ADAPTER),
+    (
+        "execution_backend",
+        "execution_backend_version",
+        execution_pb2.COMPONENT_KIND_EXECUTION_BACKEND,
+    ),
+    ("trainer", "trainer_version", execution_pb2.COMPONENT_KIND_TRAINER),
+    (
+        "rollout_engine",
+        "rollout_engine_version",
+        execution_pb2.COMPONENT_KIND_ROLLOUT_ENGINE,
+    ),
+)
+_ADAPTER_DISTRIBUTIONS: dict[tuple[int, str], str] = {
+    (execution_pb2.COMPONENT_KIND_FRAMEWORK_ADAPTER, "fake"): "tgsrl-runtime",
+    (execution_pb2.COMPONENT_KIND_FRAMEWORK_ADAPTER, "mock"): "tgsrl-runtime",
+    (execution_pb2.COMPONENT_KIND_FRAMEWORK_ADAPTER, "verl"): "verl",
+    (execution_pb2.COMPONENT_KIND_FRAMEWORK_ADAPTER, "openrlhf"): "openrlhf",
+    (execution_pb2.COMPONENT_KIND_EXECUTION_BACKEND, "fake"): "tgsrl-runtime",
+    (execution_pb2.COMPONENT_KIND_EXECUTION_BACKEND, "mock"): "tgsrl-runtime",
+    (execution_pb2.COMPONENT_KIND_EXECUTION_BACKEND, "ray"): "ray",
+    (execution_pb2.COMPONENT_KIND_TRAINER, "fake"): "tgsrl-runtime",
+    (execution_pb2.COMPONENT_KIND_TRAINER, "mock"): "tgsrl-runtime",
+    (execution_pb2.COMPONENT_KIND_TRAINER, "pytorch"): "torch",
+    (execution_pb2.COMPONENT_KIND_ROLLOUT_ENGINE, "fake"): "tgsrl-runtime",
+    (execution_pb2.COMPONENT_KIND_ROLLOUT_ENGINE, "mock"): "tgsrl-runtime",
+    (execution_pb2.COMPONENT_KIND_ROLLOUT_ENGINE, "vllm"): "vllm",
+    (execution_pb2.COMPONENT_KIND_ROLLOUT_ENGINE, "sglang"): "sglang",
+}
+_RUNTIME_DISTRIBUTION = "tgsrl-runtime"
+_DECLARED_COMPONENT_FIELDS: dict[int, str] = {
+    kind: name_field for name_field, _version_field, kind in _COMPONENT_FIELDS
+}
+_DECLARED_SOURCE = "job.runtime"
+_DECLARED_PROVENANCE = "declared"
+_RESOLVED_SOURCE = "runtime-adapter-registry"
+_RESOLVED_PROVENANCE = "observed/resolved"
+
+
+def _component_version(
+    *,
+    kind: int,
+    name: str,
+    version: str,
+    observed_at: datetime,
+    source: str,
+    provenance: str,
+    attributes: dict[str, str] | None = None,
+) -> execution_pb2.ComponentVersion:
+    if observed_at.tzinfo is None:
+        raise ValueError("component version observed_at must be timezone-aware")
+    component = execution_pb2.ComponentVersion(
+        kind=kind,
+        name=name,
+        version=version,
+        source=source,
+        revision=1,
+        attributes={"provenance": provenance} | (attributes or {}),
+    )
+    component.observed_at.FromDatetime(observed_at.astimezone(UTC))
+    validate_component_version(component)
+    return component
+
+
+def _declared_component_versions(
+    job: job_pb2.RLTrainingJob, observed_at: datetime
+) -> list[execution_pb2.ComponentVersion]:
+    versions: list[execution_pb2.ComponentVersion] = []
+    for name_field, version_field, kind in _COMPONENT_FIELDS:
+        name = getattr(job.runtime, name_field) or "fake"
+        version = getattr(job.runtime, version_field)
+        if not version:
+            continue
+        versions.append(
+            _component_version(
+                kind=kind,
+                name=name,
+                version=version,
+                observed_at=observed_at,
+                source="job.runtime",
+                provenance="declared",
+                attributes={"field": version_field},
+            )
+        )
+    return versions
+
+
+def _installed_distribution_version(distribution: str) -> str | None:
+    try:
+        version = metadata.version(distribution)
+    except metadata.PackageNotFoundError:
+        return None
+    return version if version and version == version.strip() else None
+
+
+def _validate_manifest_component_versions(manifest: runtime_pb2.RuntimeManifest) -> None:
+    seen: dict[tuple[int, str], execution_pb2.ComponentVersion] = {}
+    for index, component in enumerate(manifest.component_versions):
+        field = f"manifest.component_versions[{index}]"
+        try:
+            validate_component_version(component, field=field)
+        except ValueError as error:
+            raise ManifestValidationError(str(error)) from error
+        identity = (component.kind, component.name.casefold())
+        existing = seen.get(identity)
+        if existing is not None:
+            detail = "duplicate" if existing.version == component.version else "conflicting"
+            raise ManifestValidationError(
+                f"{field} has a {detail} kind/name identity for {component.name!r}"
+            )
+        seen[identity] = component
+
+        provenance = component.attributes.get("provenance", "")
+        if component.source != _DECLARED_SOURCE or provenance != _DECLARED_PROVENANCE:
+            raise ManifestValidationError(
+                f"{field} accepts only declared versions with source={_DECLARED_SOURCE!r} "
+                f"and provenance={_DECLARED_PROVENANCE!r}; resolved provenance is "
+                "added only by the trusted runtime adapter registry"
+            )
+        selected_field = _DECLARED_COMPONENT_FIELDS.get(component.kind)
+        if selected_field is None:
+            raise ManifestValidationError(
+                f"{field} declared kind is not a selectable runtime component"
+            )
+        selected_name = getattr(manifest, selected_field)
+        if component.name.casefold() != selected_name.casefold():
+            raise ManifestValidationError(
+                f"{field} name {component.name!r} does not match selected "
+                f"{selected_field}={selected_name!r}"
+            )
+
+
+def runtime_manifest_from_job(
+    job: job_pb2.RLTrainingJob, *, observed_at: datetime | None = None
+) -> runtime_pb2.RuntimeManifest:
     """Build a runtime manifest from the latest job/runtime product inputs."""
     runtime = job.runtime
+    has_version_pins = any(
+        getattr(runtime, version_field) for _, version_field, _ in _COMPONENT_FIELDS
+    )
+    declaration_time = observed_at
+    if has_version_pins:
+        if declaration_time is None and job.HasField("created_at"):
+            declaration_time = job.created_at.ToDatetime(tzinfo=UTC)
+        if declaration_time is None:
+            raise ValueError(
+                "job.created_at or an explicit observed_at is required for version pins"
+            )
+        if declaration_time.tzinfo is None:
+            raise ValueError("component version observed_at must be timezone-aware")
     semantic_context = trace_pb2.SemanticEnvelope(
         envelope_id=f"manifest:{job.job_id}",
         schema_version="v1",
@@ -64,6 +217,11 @@ def runtime_manifest_from_job(job: job_pb2.RLTrainingJob) -> runtime_pb2.Runtime
         args=list(runtime.args),
         environment=dict(runtime.environment),
         working_directory=runtime.working_directory,
+        component_versions=(
+            _declared_component_versions(job, declaration_time)
+            if declaration_time is not None
+            else []
+        ),
     )
 
 
@@ -139,6 +297,7 @@ class RuntimeAdapterBundle:
     def normalized_manifest(
         self, manifest: runtime_pb2.RuntimeManifest
     ) -> runtime_pb2.RuntimeManifest:
+        _validate_manifest_component_versions(manifest)
         normalized = _clone_manifest(manifest)
         normalized.CopyFrom(self.framework.validate_manifest(normalized))
         normalized.CopyFrom(self.execution.validate_manifest(normalized))
@@ -201,7 +360,14 @@ class RuntimeAdapterBundle:
 class RuntimeAdapterRegistry:
     """Stable component registry for fake and real-boundary adapters."""
 
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        *,
+        version_resolver: Callable[[str], str | None] = _installed_distribution_version,
+        clock: Callable[[], datetime] | None = None,
+    ) -> None:
+        self._version_resolver = version_resolver
+        self._clock = clock or (lambda: datetime.now(tz=UTC))
         self._frameworks: dict[str, FrameworkAdapter] = {
             adapter.component_name: adapter
             for adapter in (
@@ -230,6 +396,46 @@ class RuntimeAdapterRegistry:
             )
         }
         self._rollout["mock"] = self._rollout["fake"]
+
+    def resolved_component_versions(
+        self,
+        manifest: runtime_pb2.RuntimeManifest,
+        *,
+        observed_at: datetime | None = None,
+    ) -> list[execution_pb2.ComponentVersion]:
+        """Resolve installed component versions from the explicit registry only."""
+        timestamp = observed_at or self._clock()
+        if timestamp.tzinfo is None:
+            raise ValueError("component version clock must be timezone-aware")
+        selected = [
+            (execution_pb2.COMPONENT_KIND_RUNTIME, "tgsrl-runtime", _RUNTIME_DISTRIBUTION),
+            *(
+                (kind, getattr(manifest, name_field), distribution)
+                for name_field, _version_field, kind in _COMPONENT_FIELDS
+                if (
+                    distribution := _ADAPTER_DISTRIBUTIONS.get(
+                        (kind, getattr(manifest, name_field).casefold())
+                    )
+                )
+            ),
+        ]
+        resolved: list[execution_pb2.ComponentVersion] = []
+        for kind, name, distribution in selected:
+            version = self._version_resolver(distribution)
+            if version is None:
+                continue
+            resolved.append(
+                _component_version(
+                    kind=kind,
+                    name=name,
+                    version=version,
+                    observed_at=timestamp,
+                    source="runtime-adapter-registry",
+                    provenance="observed/resolved",
+                    attributes={"distribution": distribution},
+                )
+            )
+        return resolved
 
     def bundle_for(self, manifest: runtime_pb2.RuntimeManifest) -> RuntimeAdapterBundle:
         return RuntimeAdapterBundle(

@@ -63,6 +63,16 @@ def test_synthetic_workload_emits_algorithm_specific_typed_observation_paths() -
     assert "group.accepted_samples" in grpo_keys
     assert "group.expected_samples" in grpo_keys
     assert "sample.policy_lag" in ppo_keys & grpo_keys
+    for event in (ppo_event, grpo_event):
+        observation = event.contract_observation
+        assert [item.fact.key for item in observation.fact_observations] == [
+            item.key for item in observation.typed_facts
+        ]
+        assert all(
+            item.observed_at == observation.observed_at for item in observation.fact_observations
+        )
+        assert all(item.source == "synthetic" for item in observation.fact_observations)
+        assert all(item.revision > 0 for item in observation.fact_observations)
 
 
 def test_synthetic_workload_preserves_ess_presence_and_absence() -> None:

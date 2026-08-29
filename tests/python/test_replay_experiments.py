@@ -474,6 +474,53 @@ def test_replay_step_digest_changes_with_context_and_is_stable_for_permuted_evid
     assert replay_step_digest(changed) != baseline
 
 
+def test_replay_step_digest_covers_fact_provenance_and_component_versions() -> None:
+    step = _steps(
+        lambda event_id, **_: trace_pb2.TraceEvent(event_id=event_id, occurred_at=_timestamp(1)),
+        count=1,
+    )[0]
+    observation = step.evaluation_context.contract_observation
+    observation.fact_observations.append(
+        execution_pb2.ObservedFact(
+            fact=semantic_pb2.SemanticField(
+                key="sample.policy_lag",
+                value=semantic_pb2.SemanticValue(uint64_value=1),
+            ),
+            observed_at=_timestamp(1),
+            source="runtime",
+            revision=1,
+        )
+    )
+    observation.component_versions.append(
+        execution_pb2.ComponentVersion(
+            kind=execution_pb2.COMPONENT_KIND_RUNTIME,
+            name="tgsrl-runtime",
+            version="0.1.0",
+            observed_at=_timestamp(1),
+            source="runtime-adapter-registry",
+            revision=1,
+        )
+    )
+    baseline = replay_step_digest(step)
+
+    changed_fact_time = _clone_message(step)
+    changed_fact_time.evaluation_context.contract_observation.fact_observations[
+        0
+    ].observed_at.CopyFrom(_timestamp(2))
+    changed_component = _clone_message(step)
+    changed_component.evaluation_context.contract_observation.component_versions[
+        0
+    ].version = "0.2.0"
+    changed_disposition = _clone_message(step)
+    changed_disposition.recorded_decision.contract_evaluations[
+        0
+    ].observation_disposition = execution_pb2.OBSERVATION_DISPOSITION_DEGRADE
+
+    assert replay_step_digest(changed_fact_time) != baseline
+    assert replay_step_digest(changed_component) != baseline
+    assert replay_step_digest(changed_disposition) != baseline
+
+
 def test_replay_step_digest_covers_semantic_evaluation_evidence() -> None:
     step = _steps(
         lambda event_id, **_: trace_pb2.TraceEvent(event_id=event_id, occurred_at=_timestamp(1)),

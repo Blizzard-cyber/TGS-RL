@@ -1,6 +1,9 @@
 """Smoke tests for newly generated proto surfaces."""
 
-from google.protobuf import timestamp_pb2
+from typing import Any
+
+from google.protobuf import descriptor as descriptor_mod
+from google.protobuf import duration_pb2, timestamp_pb2
 from tgsrl.v1 import (
     control_pb2,
     execution_pb2,
@@ -15,6 +18,29 @@ from tgsrl.v1 import (
 
 
 def test_generated_proto_surfaces_are_importable() -> None:
+    observation_policy = execution_pb2.ObservationPolicy(
+        maximum_age=duration_pb2.Duration(seconds=30),
+        missing=execution_pb2.OBSERVATION_DISPOSITION_BLOCK,
+        stale=execution_pb2.OBSERVATION_DISPOSITION_HOLD,
+    )
+    observed_fact = execution_pb2.ObservedFact(
+        fact=semantic_pb2.SemanticField(
+            key="sample.policy_lag",
+            value=semantic_pb2.SemanticValue(uint64_value=4),
+        ),
+        observed_at=timestamp_pb2.Timestamp(seconds=1),
+        source="runtime",
+        revision=7,
+    )
+    component_version = execution_pb2.ComponentVersion(
+        kind=execution_pb2.COMPONENT_KIND_EXECUTION_BACKEND,
+        name="execution-backend-primary",
+        version="1.2.3-rc.1",
+        observed_at=timestamp_pb2.Timestamp(seconds=1),
+        source="runtime-registry",
+        revision=9,
+        attributes={"region": "test"},
+    )
     observation = execution_pb2.ContractObservation(
         source="runtime",
         event_id="event-1",
@@ -67,6 +93,8 @@ def test_generated_proto_surfaces_are_importable() -> None:
                 value=semantic_pb2.SemanticValue(bool_value=True),
             ),
         ],
+        fact_observations=[observed_fact],
+        component_versions=[component_version],
     )
     observation.observed_at.CopyFrom(timestamp_pb2.Timestamp(seconds=1))
     observation.oldest_sample_at.CopyFrom(timestamp_pb2.Timestamp(seconds=2))
@@ -98,7 +126,27 @@ def test_generated_proto_surfaces_are_importable() -> None:
             )
         ],
         recommended_action=execution_pb2.CONTRACT_DECISION_ACTION_ALLOW,
+        observation_disposition=execution_pb2.OBSERVATION_DISPOSITION_DEGRADE,
         detail="within policy lag threshold",
+    )
+    contract = execution_pb2.ExecutionContract(
+        version_constraints=[
+            execution_pb2.VersionConstraint(
+                component="execution-backend-primary",
+                operator=execution_pb2.VERSION_OPERATOR_COMPATIBLE,
+                version="1.2.0",
+                allow_prerelease=True,
+                source="runtime-registry",
+                revision=9,
+                component_kind=execution_pb2.COMPONENT_KIND_EXECUTION_BACKEND,
+                observation_policy=observation_policy,
+            )
+        ],
+        critical_fact_policies=[
+            execution_pb2.CriticalFactPolicy(
+                fact_path="sample.policy_lag", observation_policy=observation_policy
+            )
+        ],
     )
 
     intent = scheduling_pb2.SchedulingIntent(
@@ -108,6 +156,7 @@ def test_generated_proto_surfaces_are_importable() -> None:
         run_id="run-1",
         trace_id="trace-1",
         data_kind=trace_pb2.DATA_KIND_REPLAY,
+        execution_contract=contract,
         contract_observation=observation,
     )
     intent.semantic_context.CopyFrom(
@@ -129,6 +178,14 @@ def test_generated_proto_surfaces_are_importable() -> None:
     assert intent.trace_id == "trace-1"
     assert intent.contract_observation.phase_id == "decode"
     assert intent.contract_observation.policy_lag == 4
+    assert intent.contract_observation.fact_observations[0].revision == 7
+    assert intent.contract_observation.component_versions[0].kind == (
+        execution_pb2.COMPONENT_KIND_EXECUTION_BACKEND
+    )
+    assert intent.execution_contract.version_constraints[0].observation_policy == (
+        observation_policy
+    )
+    assert intent.execution_contract.critical_fact_policies[0].fact_path == ("sample.policy_lag")
 
     evidence = resource_pb2.CapabilityEvidence(
         evidence_id="cap-1",
@@ -136,8 +193,12 @@ def test_generated_proto_surfaces_are_importable() -> None:
         revision=1,
         collector="unit-test",
     )
-    capabilities = resource_pb2.CapabilitySet(evidence=[evidence])
+    capabilities = resource_pb2.CapabilitySet(
+        evidence=[evidence], component_versions=[component_version]
+    )
+    intent.required_capabilities.CopyFrom(capabilities)
     assert capabilities.evidence[0].collector == "unit-test"
+    assert intent.required_capabilities.component_versions[0].name == ("execution-backend-primary")
 
     run = control_pb2.JobRun(
         run_id="run-1",
@@ -158,6 +219,7 @@ def test_generated_proto_surfaces_are_importable() -> None:
         args=["--epochs", "1"],
         environment={"MODE": "test"},
         working_directory="/workspace/run",
+        component_versions=[component_version],
     )
     experiment = experiment_pb2.Experiment(experiment_id="exp-1", display_name="contract smoke")
     record = scheduling_pb2.DecisionRecord(
@@ -239,6 +301,7 @@ def test_generated_proto_surfaces_are_importable() -> None:
     assert run.component_status[0].converged
     assert manifest.command[0] == "python"
     assert manifest.environment["MODE"] == "test"
+    assert manifest.component_versions[0].kind == (execution_pb2.COMPONENT_KIND_EXECUTION_BACKEND)
     assert experiment.display_name == "contract smoke"
     assert control.action == control_pb2.JOB_COMMAND_TYPE_PAUSE
     assert control.targets[0].expected_generation == 3
@@ -262,5 +325,198 @@ def test_generated_proto_surfaces_are_importable() -> None:
     assert record.contract_evaluations[0].recommended_action == (
         execution_pb2.CONTRACT_DECISION_ACTION_ALLOW
     )
+    assert record.contract_evaluations[0].observation_disposition == (
+        execution_pb2.OBSERVATION_DISPOSITION_DEGRADE
+    )
     assert trace_event.contract_observation.event_id == "event-1"
     assert replay_step.evaluation_context.tick_kind == scheduling_pb2.TICK_KIND_MEDIUM
+
+
+def test_pr2_execution_descriptors_match_wire_contract() -> None:
+    repeated = descriptor_mod.FieldDescriptor.LABEL_REPEATED
+    optional = descriptor_mod.FieldDescriptor.LABEL_OPTIONAL
+    message = descriptor_mod.FieldDescriptor.TYPE_MESSAGE
+    enum = descriptor_mod.FieldDescriptor.TYPE_ENUM
+
+    def assert_field(
+        message_type: Any,
+        name: str,
+        number: int,
+        label: int,
+        field_type: int,
+        type_name: str | None = None,
+    ) -> None:
+        field = message_type.DESCRIPTOR.fields_by_name[name]
+        assert (field.number, field.label, field.type) == (number, label, field_type)
+        if type_name is not None:
+            target = field.message_type or field.enum_type
+            assert target.full_name == type_name
+
+    assert_field(
+        execution_pb2.ObservationPolicy,
+        "maximum_age",
+        1,
+        optional,
+        message,
+        "google.protobuf.Duration",
+    )
+    assert_field(
+        execution_pb2.ObservationPolicy,
+        "missing",
+        2,
+        optional,
+        enum,
+        "tgsrl.v1.ObservationDisposition",
+    )
+    assert_field(
+        execution_pb2.ObservationPolicy,
+        "stale",
+        3,
+        optional,
+        enum,
+        "tgsrl.v1.ObservationDisposition",
+    )
+    assert_field(execution_pb2.ObservedFact, "fact", 1, optional, message, "tgsrl.v1.SemanticField")
+    assert_field(
+        execution_pb2.ObservedFact, "observed_at", 2, optional, message, "google.protobuf.Timestamp"
+    )
+    assert_field(
+        execution_pb2.ObservedFact,
+        "source",
+        3,
+        optional,
+        descriptor_mod.FieldDescriptor.TYPE_STRING,
+    )
+    assert_field(
+        execution_pb2.ObservedFact,
+        "revision",
+        4,
+        optional,
+        descriptor_mod.FieldDescriptor.TYPE_UINT64,
+    )
+    assert_field(
+        execution_pb2.ComponentVersion, "kind", 1, optional, enum, "tgsrl.v1.ComponentKind"
+    )
+    for name, number, field_type in (
+        ("name", 2, descriptor_mod.FieldDescriptor.TYPE_STRING),
+        ("version", 3, descriptor_mod.FieldDescriptor.TYPE_STRING),
+        ("source", 5, descriptor_mod.FieldDescriptor.TYPE_STRING),
+        ("revision", 6, descriptor_mod.FieldDescriptor.TYPE_UINT64),
+    ):
+        assert_field(execution_pb2.ComponentVersion, name, number, optional, field_type)
+    assert_field(
+        execution_pb2.ComponentVersion,
+        "observed_at",
+        4,
+        optional,
+        message,
+        "google.protobuf.Timestamp",
+    )
+    assert_field(
+        execution_pb2.ComponentVersion,
+        "attributes",
+        7,
+        repeated,
+        message,
+        "tgsrl.v1.ComponentVersion.AttributesEntry",
+    )
+    assert_field(
+        execution_pb2.VersionConstraint,
+        "component_kind",
+        7,
+        optional,
+        enum,
+        "tgsrl.v1.ComponentKind",
+    )
+    assert_field(
+        execution_pb2.VersionConstraint,
+        "observation_policy",
+        8,
+        optional,
+        message,
+        "tgsrl.v1.ObservationPolicy",
+    )
+    assert_field(
+        execution_pb2.ContractObservation,
+        "fact_observations",
+        18,
+        repeated,
+        message,
+        "tgsrl.v1.ObservedFact",
+    )
+    assert_field(
+        execution_pb2.ContractObservation,
+        "component_versions",
+        19,
+        repeated,
+        message,
+        "tgsrl.v1.ComponentVersion",
+    )
+    assert_field(
+        execution_pb2.ContractEvaluation,
+        "observation_disposition",
+        13,
+        optional,
+        enum,
+        "tgsrl.v1.ObservationDisposition",
+    )
+    assert_field(
+        execution_pb2.ExecutionContract,
+        "critical_fact_policies",
+        11,
+        repeated,
+        message,
+        "tgsrl.v1.CriticalFactPolicy",
+    )
+    assert_field(
+        execution_pb2.CriticalFactPolicy,
+        "fact_path",
+        1,
+        optional,
+        descriptor_mod.FieldDescriptor.TYPE_STRING,
+    )
+    assert_field(
+        execution_pb2.CriticalFactPolicy,
+        "observation_policy",
+        2,
+        optional,
+        message,
+        "tgsrl.v1.ObservationPolicy",
+    )
+    assert_field(
+        resource_pb2.CapabilitySet,
+        "component_versions",
+        11,
+        repeated,
+        message,
+        "tgsrl.v1.ComponentVersion",
+    )
+    assert_field(
+        runtime_pb2.RuntimeManifest,
+        "component_versions",
+        29,
+        repeated,
+        message,
+        "tgsrl.v1.ComponentVersion",
+    )
+
+    assert execution_pb2.ObservationDisposition.items() == [
+        ("OBSERVATION_DISPOSITION_UNKNOWN", 0),
+        ("OBSERVATION_DISPOSITION_BLOCK", 1),
+        ("OBSERVATION_DISPOSITION_HOLD", 2),
+        ("OBSERVATION_DISPOSITION_DEGRADE", 3),
+        ("OBSERVATION_DISPOSITION_NOT_APPLICABLE", 4),
+    ]
+    assert execution_pb2.ComponentKind.items() == [
+        ("COMPONENT_KIND_UNKNOWN", 0),
+        ("COMPONENT_KIND_PROTOCOL", 1),
+        ("COMPONENT_KIND_SCHEDULER", 2),
+        ("COMPONENT_KIND_RUNTIME", 3),
+        ("COMPONENT_KIND_OPERATOR", 4),
+        ("COMPONENT_KIND_PROVIDER", 5),
+        ("COMPONENT_KIND_FRAMEWORK_ADAPTER", 6),
+        ("COMPONENT_KIND_ROLLOUT_ENGINE", 7),
+        ("COMPONENT_KIND_TRAINER", 8),
+        ("COMPONENT_KIND_CUDA_DRIVER", 9),
+        ("COMPONENT_KIND_EXECUTION_BACKEND", 10),
+    ]

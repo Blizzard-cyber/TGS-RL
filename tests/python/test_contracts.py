@@ -5,7 +5,7 @@ import re
 from collections.abc import Callable
 
 import pytest
-from google.protobuf import duration_pb2
+from google.protobuf import duration_pb2, timestamp_pb2
 from tgsrl.v1 import execution_pb2, semantic_pb2
 
 from adapters import (
@@ -187,7 +187,8 @@ def _refresh_contract_id(contract: execution_pb2.ExecutionContract) -> None:
         ("v0.3", "0.3.0"),
         ("V0.3.0", "0.3.0"),
         ("0.3.1-rc.2", "0.3.1-rc.2"),
-        ("001.002", "1.2.0"),
+        ("1.2.3+build.9", "1.2.3+build.9"),
+        ("1.2-rc.1+build-7", "1.2.0-rc.1+build-7"),
         ("4294967295.0.0", "4294967295.0.0"),
     ],
 )
@@ -205,6 +206,10 @@ def test_version_normalization_matches_go(value: str, normalized: str) -> None:
         "1.x",
         "1.2.3.4",
         "1.2-",
+        "001.002",
+        "1.2.3+",
+        "1.2.3+build+other",
+        "1.2.3-01",
         "4294967296.0",
     ],
 )
@@ -216,9 +221,15 @@ def test_version_normalization_rejects_non_go_syntax(value: str) -> None:
 @pytest.mark.parametrize(
     ("current", "required", "compatible"),
     [
-        ("0.3.0", "0.3.99", True),
+        ("0.3.0", "0.3.0", True),
+        ("0.3.5", "0.3.0", True),
+        ("0.3.0", "0.3.99", False),
         ("0.3.0", "v0.4", False),
-        ("1.2.3", "1.99.0", True),
+        ("1.2.3", "1.2.3-alpha", True),
+        ("1.2.3+build.9", "1.2.3+build.1", True),
+        ("1.2.3", "1.99.0", False),
+        ("1.0.0-alpha", "1.0.0-alpha.1", False),
+        ("1.0.0-rc.1", "1.0.0-beta.11", True),
         ("1.2.3", "2.0.0", False),
     ],
 )
@@ -229,9 +240,8 @@ def test_compatible_operator_version_window(current: str, required: str, compati
 @pytest.mark.parametrize(
     ("operator", "version"),
     [
-        (execution_pb2.VERSION_OPERATOR_EXACT, "v0.3"),
         (execution_pb2.VERSION_OPERATOR_SEMVER, "V0.3.0"),
-        (execution_pb2.VERSION_OPERATOR_COMPATIBLE, "0.3.999-prerelease"),
+        (execution_pb2.VERSION_OPERATOR_COMPATIBLE, "0.3.0"),
     ],
 )
 def test_protocol_constraint_accepts_scheduler_compatible_versions(
@@ -250,7 +260,9 @@ def test_protocol_constraint_accepts_scheduler_compatible_versions(
     ("operator", "version"),
     [
         (execution_pb2.VERSION_OPERATOR_EXACT, "0.3.1"),
+        (execution_pb2.VERSION_OPERATOR_EXACT, "v0.3"),
         (execution_pb2.VERSION_OPERATOR_SEMVER, "0.3.1"),
+        (execution_pb2.VERSION_OPERATOR_COMPATIBLE, "0.3.999-prerelease"),
         (execution_pb2.VERSION_OPERATOR_COMPATIBLE, "0.4.0"),
         (execution_pb2.VERSION_OPERATOR_COMPATIBLE, "1.3.0"),
     ],
@@ -270,6 +282,8 @@ def test_protocol_constraint_rejects_scheduler_incompatible_versions(
 def test_protocol_constraint_is_required() -> None:
     contract = build_execution_contract(PPOAdapter(), SyncRolloutAdapter())
     contract.version_constraints[0].component = "runtime"
+    contract.version_constraints[0].component_kind = execution_pb2.COMPONENT_KIND_RUNTIME
+    contract.version_constraints[0].observation_policy.CopyFrom(_observation_policy())
     _refresh_contract_id(contract)
     with pytest.raises(ContractValidationError, match=r"protocol.*required"):
         validate_execution_contract(contract)
@@ -282,6 +296,93 @@ def test_version_constraint_components_deduplicate_case_insensitively() -> None:
     duplicate.component = "PROTOCOL"
     _refresh_contract_id(contract)
     with pytest.raises(ContractValidationError, match="unique ignoring case"):
+        validate_execution_contract(contract)
+
+
+def _observation_policy(seconds: int = 30) -> execution_pb2.ObservationPolicy:
+    return execution_pb2.ObservationPolicy(
+        maximum_age=duration_pb2.Duration(seconds=seconds),
+        missing=execution_pb2.OBSERVATION_DISPOSITION_BLOCK,
+        stale=execution_pb2.OBSERVATION_DISPOSITION_HOLD,
+    )
+
+
+@pytest.mark.parametrize(
+    ("mutation", "error"),
+    [
+        (lambda policy: setattr(policy, "fact_path", " Sample.PolicyLag"), "fact_path"),
+        (lambda policy: policy.ClearField("observation_policy"), "observation_policy"),
+        (
+            lambda policy: policy.observation_policy.maximum_age.CopyFrom(duration_pb2.Duration()),
+            "maximum_age",
+        ),
+        (
+            lambda policy: setattr(
+                policy.observation_policy,
+                "missing",
+                execution_pb2.OBSERVATION_DISPOSITION_UNKNOWN,
+            ),
+            "missing",
+        ),
+        (lambda policy: setattr(policy.observation_policy, "stale", 99), "stale"),
+    ],
+)
+def test_critical_fact_policy_validation(
+    mutation: Callable[[execution_pb2.CriticalFactPolicy], None], error: str
+) -> None:
+    contract = build_execution_contract(PPOAdapter(), SyncRolloutAdapter())
+    policy = contract.critical_fact_policies.add(
+        fact_path="sample.policy_lag", observation_policy=_observation_policy()
+    )
+    mutation(policy)
+    _refresh_contract_id(contract)
+
+    with pytest.raises(ContractValidationError, match=error):
+        validate_execution_contract(contract)
+
+
+def test_critical_fact_policy_paths_are_unique() -> None:
+    contract = build_execution_contract(PPOAdapter(), SyncRolloutAdapter())
+    contract.critical_fact_policies.extend(
+        [
+            execution_pb2.CriticalFactPolicy(
+                fact_path="extension.custom_fact", observation_policy=_observation_policy()
+            ),
+            execution_pb2.CriticalFactPolicy(
+                fact_path="extension.custom_fact", observation_policy=_observation_policy()
+            ),
+        ]
+    )
+    _refresh_contract_id(contract)
+
+    with pytest.raises(ContractValidationError, match="unique"):
+        validate_execution_contract(contract)
+
+
+def test_typed_version_constraint_requires_matching_kind_policy_and_unique_identity() -> None:
+    contract = build_execution_contract(PPOAdapter(), SyncRolloutAdapter())
+    constraint = contract.version_constraints.add(
+        component="ray",
+        component_kind=execution_pb2.COMPONENT_KIND_EXECUTION_BACKEND,
+        operator=execution_pb2.VERSION_OPERATOR_SEMVER,
+        version="2.9.0",
+    )
+    _refresh_contract_id(contract)
+    with pytest.raises(ContractValidationError, match="observation_policy"):
+        validate_execution_contract(contract)
+
+    constraint.observation_policy.CopyFrom(_observation_policy())
+    constraint.component = "runtime"
+    _refresh_contract_id(contract)
+    with pytest.raises(ContractValidationError, match="conflicts with component_kind"):
+        validate_execution_contract(contract)
+
+    constraint.component = "ray"
+    duplicate = contract.version_constraints.add()
+    duplicate.CopyFrom(constraint)
+    duplicate.component = "RAY"
+    _refresh_contract_id(contract)
+    with pytest.raises(ContractValidationError, match="identity must be unique"):
         validate_execution_contract(contract)
 
 
@@ -447,4 +548,72 @@ def test_contract_observation_rejects_wrong_registry_path_for_accepted_samples()
     observation.observed_at.seconds = 1
 
     with pytest.raises(ContractValidationError, match=r"not allowed|batch\.accepted_samples"):
+        validate_contract_observation(observation)
+
+
+def test_contract_observation_accepts_consistent_provenance_dual_write() -> None:
+    fact = semantic_pb2.SemanticField(
+        key="sample.policy_lag",
+        value=semantic_pb2.SemanticValue(uint64_value=2),
+    )
+    observation = execution_pb2.ContractObservation(
+        observed_at=timestamp_pb2.Timestamp(seconds=3),
+        source="runtime",
+        event_id="evt-1",
+        phase_id="decode",
+        policy_version="policy-1",
+        policy_lag=2,
+        typed_facts=[fact],
+        fact_observations=[
+            execution_pb2.ObservedFact(
+                fact=fact,
+                observed_at=timestamp_pb2.Timestamp(seconds=1),
+                source="collector",
+                revision=7,
+            )
+        ],
+        component_versions=[
+            execution_pb2.ComponentVersion(
+                kind=execution_pb2.COMPONENT_KIND_EXECUTION_BACKEND,
+                name="ray",
+                version="2.9.0",
+                observed_at=timestamp_pb2.Timestamp(seconds=1),
+                source="runtime-adapter-registry",
+                revision=1,
+                attributes={"provenance": "observed/resolved"},
+            )
+        ],
+    )
+
+    validate_contract_observation(observation)
+
+
+def test_contract_observation_rejects_conflicting_provenance_dual_write() -> None:
+    observation = execution_pb2.ContractObservation(
+        observed_at=timestamp_pb2.Timestamp(seconds=3),
+        source="runtime",
+        event_id="evt-1",
+        phase_id="decode",
+        policy_version="policy-1",
+        policy_lag=2,
+        typed_facts=[
+            semantic_pb2.SemanticField(
+                key="sample.policy_lag",
+                value=semantic_pb2.SemanticValue(uint64_value=2),
+            )
+        ],
+        fact_observations=[
+            execution_pb2.ObservedFact(
+                fact=semantic_pb2.SemanticField(
+                    key="sample.policy_lag",
+                    value=semantic_pb2.SemanticValue(uint64_value=3),
+                ),
+                observed_at=timestamp_pb2.Timestamp(seconds=1),
+                source="collector",
+                revision=7,
+            )
+        ],
+    )
+
+    with pytest.raises(ContractValidationError, match="conflicts with typed_facts"):
         validate_contract_observation(observation)

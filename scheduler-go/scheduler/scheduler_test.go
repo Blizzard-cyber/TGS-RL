@@ -430,16 +430,16 @@ func TestProtocolVersionNormalizationAndCompatibility(t *testing.T) {
 			t.Errorf("NormalizeProtocolVersion(%q) unexpectedly succeeded", invalidVersion)
 		}
 	}
-	if !protocolCompatible(ProtocolVersion, "0.3.99-rc.2") {
-		t.Fatal("0.3 prerelease should remain compatible with protocol 0.3")
+	if protocolCompatible(ProtocolVersion, "0.3.99-rc.2") {
+		t.Fatal("an older 0.3 release must not satisfy a newer compatible minimum")
 	}
-	for _, version := range []string{"0.3.999-rc.2", "v0.3.0-alpha.beta.7"} {
+	for _, version := range []string{"0.3.0-alpha.2", "v0.3.0-alpha.beta.7"} {
 		normalized, err := NormalizeProtocolVersion(version)
 		if err != nil {
 			t.Fatalf("NormalizeProtocolVersion(%q) error = %v", version, err)
 		}
 		if !protocolCompatible(ProtocolVersion, normalized) {
-			t.Fatalf("dotted prerelease %q normalized to %q should be protocol-compatible", version, normalized)
+			t.Fatalf("current release should satisfy older dotted prerelease %q normalized to %q", version, normalized)
 		}
 	}
 }

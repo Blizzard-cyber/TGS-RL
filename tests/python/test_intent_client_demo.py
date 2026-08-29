@@ -535,7 +535,7 @@ def test_demo_fixture_is_generated_proto_and_byte_stable() -> None:
     assert set(fixture) == {"execution_contract", "scheduling_intent", "trace"}
     rendered = render_demo_fixture(23)
     assert hashlib.sha256(rendered.encode()).hexdigest() == (
-        "456265b178b5e48049793ddb963179709e58eeff61c895595fd34b502e0fe3e3"
+        "7dc72148d6ed0e9388ddb8d29e855083af2b410b0d1efb1f3d4a10db6d522f29"
     )
     assert '"data_kind": "synthetic"' in rendered
 

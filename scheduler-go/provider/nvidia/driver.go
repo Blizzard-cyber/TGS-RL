@@ -9,10 +9,12 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	tgsrlv1 "github.com/Blizzard-cyber/TGS-RL/gen/go/tgsrl/v1"
 	"github.com/Blizzard-cyber/TGS-RL/scheduler-go/provider"
 	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
 const (
@@ -21,6 +23,10 @@ const (
 	ErrorCodeUnavailable  = "UNAVAILABLE"
 	commandNvidiaSMI      = "nvidia-smi"
 	commandNvidiaModprobe = "nvidia-modprobe"
+
+	// capabilityObservationRevision identifies this capability observation
+	// shape. It is an evidence revision, not a component semantic version.
+	capabilityObservationRevision uint64 = 1
 )
 
 // Command describes one structured argv-only driver command.
@@ -194,51 +200,68 @@ func (d *UnavailableDriver) Reconcile(_ context.Context, _ *DriverState, _ *tgsr
 // capability when command discovery and device enumeration succeed.
 type LocalDriver struct {
 	runner Runner
+	now    func() time.Time
 }
 
 func NewLocalDriver() *LocalDriver {
-	return &LocalDriver{runner: execRunner{}}
+	return newLocalDriver(execRunner{}, time.Now)
 }
 
 func NewLocalDriverWithRunner(runner Runner) *LocalDriver {
+	return newLocalDriver(runner, time.Now)
+}
+
+func newLocalDriver(runner Runner, now func() time.Time) *LocalDriver {
 	if runner == nil {
 		runner = execRunner{}
 	}
-	return &LocalDriver{runner: runner}
+	if now == nil {
+		now = time.Now
+	}
+	return &LocalDriver{runner: runner, now: now}
 }
 
 func (d *LocalDriver) ID() string { return "local" }
 
 func (d *LocalDriver) Probe(ctx context.Context) (*ProbeResult, error) {
-	if _, err := exec.LookPath(commandNvidiaSMI); err != nil {
-		return &ProbeResult{
-			Available:    false,
-			Reason:       "nvidia-smi not found",
-			Capabilities: unavailableCapabilities("nvidia-smi not found"),
-		}, nil
-	}
-	command, err := NewCommandBuilder(commandNvidiaSMI).Arg("--query-gpu=index,uuid,memory.total,name", "--format=csv,noheader,nounits").Build()
+	observedAt := d.now().UTC()
+	command, err := NewCommandBuilder(commandNvidiaSMI).Arg("--query-gpu=index,uuid,memory.total,name,driver_version", "--format=csv,noheader,nounits").Build()
 	if err != nil {
 		return nil, err
 	}
 	output, err := d.runner.Run(ctx, command)
 	if err != nil {
+		reason := "nvidia probe failed"
+		if errors.Is(err, exec.ErrNotFound) {
+			reason = "nvidia-smi not found"
+		}
 		return &ProbeResult{
 			Available:    false,
-			Reason:       "nvidia probe failed",
-			Capabilities: unavailableCapabilities("nvidia probe failed"),
+			Reason:       reason,
+			Capabilities: unavailableCapabilities(reason),
 		}, nil
 	}
-	devices, parseErr := parseProbeDevices(output)
-	if parseErr != nil || len(devices) == 0 {
+	devices, driverVersion, parseErr := parseProbeDevices(output)
+	if parseErr != nil {
+		reason := "invalid nvidia probe output: " + parseErr.Error()
+		return &ProbeResult{
+			Available:    false,
+			Reason:       reason,
+			Capabilities: unavailableCapabilities(reason),
+		}, nil
+	}
+	if len(devices) == 0 {
 		return &ProbeResult{
 			Available:    false,
 			Reason:       "no usable nvidia devices discovered",
 			Capabilities: unavailableCapabilities("no usable nvidia devices discovered"),
 		}, nil
 	}
-	capabilities := localCapabilities()
+	capabilities := localCapabilities(driverVersion, observedAt)
 	capabilities.Attributes["probe"] = "local"
+	for _, device := range devices {
+		device.Capabilities = cloneCapabilities(capabilities)
+	}
 	return &ProbeResult{
 		Available:    true,
 		Devices:      devices,
@@ -269,10 +292,26 @@ func (d *LocalDriver) Reconcile(ctx context.Context, _ *DriverState, _ *tgsrlv1.
 	}, nil
 }
 
-func localCapabilities() *tgsrlv1.CapabilitySet {
+func localCapabilities(driverVersion string, observedAt time.Time) *tgsrlv1.CapabilitySet {
 	capabilities := defaultCapabilities(true)
 	capabilities.SupportedActions = nil
 	capabilities.Attributes["execution_mode"] = "conservative"
+	capabilities.MeasuredAt = timestamppb.New(observedAt.UTC())
+	// This package has no authoritative provider build-version source, so it
+	// deliberately advertises only the NVIDIA driver version observed from
+	// nvidia-smi instead of inventing a provider semantic version.
+	capabilities.ComponentVersions = []*tgsrlv1.ComponentVersion{{
+		Kind:       tgsrlv1.ComponentKind_COMPONENT_KIND_CUDA_DRIVER,
+		Name:       "nvidia-driver",
+		Version:    driverVersion,
+		ObservedAt: timestamppb.New(observedAt.UTC()),
+		Source:     commandNvidiaSMI,
+		Revision:   capabilities.GetRevision(),
+		Attributes: map[string]string{
+			"query_field": "driver_version",
+			"scope":       "nvidia-kernel-driver",
+		},
+	}}
 	return capabilities
 }
 
@@ -402,7 +441,7 @@ func defaultCapabilities(available bool) *tgsrlv1.CapabilitySet {
 		Algorithms:       []string{"grpo", "ppo"},
 		RolloutModes:     []string{"fully_async", "partially_async", "sync"},
 		Source:           ProviderID,
-		Revision:         1,
+		Revision:         capabilityObservationRevision,
 		SupportedActions: supportedActionNames(),
 		Limits:           map[string]float64{"max_share": 1},
 		Attributes:       map[string]string{"driver": "nvidia"},
@@ -467,28 +506,38 @@ func cloneProbeResult(result *ProbeResult) *ProbeResult {
 	}
 }
 
-func parseProbeDevices(output []byte) ([]*tgsrlv1.Device, error) {
+func parseProbeDevices(output []byte) ([]*tgsrlv1.Device, string, error) {
 	reader := csv.NewReader(strings.NewReader(strings.TrimSpace(string(output))))
 	reader.TrimLeadingSpace = true
 	records, err := reader.ReadAll()
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
 	devices := make([]*tgsrlv1.Device, 0, len(records))
-	for _, record := range records {
-		if len(record) < 4 {
-			continue
+	driverVersion := ""
+	for index, record := range records {
+		if len(record) != 5 {
+			return nil, "", fmt.Errorf("row %d has %d fields, want 5", index+1, len(record))
 		}
-		index := strings.TrimSpace(record[0])
+		deviceIndex := strings.TrimSpace(record[0])
 		uuid := strings.TrimSpace(record[1])
 		memoryMB, _ := strconv.ParseInt(strings.TrimSpace(record[2]), 10, 64)
 		name := strings.TrimSpace(record[3])
-		if index == "" || uuid == "" {
-			continue
+		observedDriverVersion := strings.TrimSpace(record[4])
+		if deviceIndex == "" || uuid == "" {
+			return nil, "", fmt.Errorf("row %d is missing index or uuid", index+1)
+		}
+		if !isAuthoritativeDriverVersion(observedDriverVersion) {
+			return nil, "", fmt.Errorf("row %d has unavailable driver_version", index+1)
+		}
+		if driverVersion == "" {
+			driverVersion = observedDriverVersion
+		} else if observedDriverVersion != driverVersion {
+			return nil, "", fmt.Errorf("conflicting nvidia driver versions %q and %q", driverVersion, observedDriverVersion)
 		}
 		memoryBytes := uint64(memoryMB) << 20
 		devices = append(devices, &tgsrlv1.Device{
-			DeviceId:     "nvidia-gpu-" + index,
+			DeviceId:     "nvidia-gpu-" + deviceIndex,
 			Kind:         tgsrlv1.DeviceKind_DEVICE_KIND_GPU,
 			Health:       tgsrlv1.DeviceHealth_DEVICE_HEALTH_READY,
 			Capacity:     &tgsrlv1.ResourceVector{AcceleratorUnits: 1, MemoryBytes: memoryBytes},
@@ -501,5 +550,14 @@ func parseProbeDevices(output []byte) ([]*tgsrlv1.Device, error) {
 			},
 		})
 	}
-	return devices, nil
+	return devices, driverVersion, nil
+}
+
+func isAuthoritativeDriverVersion(version string) bool {
+	switch strings.ToLower(strings.TrimSpace(version)) {
+	case "", "n/a", "not available", "not supported", "unknown":
+		return false
+	default:
+		return true
+	}
 }

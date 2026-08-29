@@ -5,14 +5,14 @@ import math
 import re
 from itertools import pairwise
 
-from google.protobuf import duration_pb2
+from google.protobuf import duration_pb2, timestamp_pb2
 from tgsrl.v1 import execution_pb2, semantic_pb2
 
 from adapters.algorithms import AlgorithmAdapter
 from adapters.rollout_modes import RolloutModeAdapter
 
 _CONTRACT_VERSION = re.compile(r"^1\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$")
-_VERSION = re.compile(r"^[vV]?[0-9]+(?:\.[0-9]+){1,2}(?:-[0-9A-Za-z.-]+)?$")
+_VERSION_IDENTIFIER = re.compile(r"^[0-9A-Za-z-]+$")
 _MAX_DURATION_SECONDS = 315_576_000_000
 _MAX_UINT32 = (1 << 32) - 1
 _CONTRACT_ID_PREFIX = "contract-sha256-"
@@ -39,6 +39,18 @@ _ALLOWED_FACT_PATHS: dict[str, frozenset[str]] = {
     ),
 }
 _ALL_ALLOWED_FACT_PATHS = frozenset().union(*_ALLOWED_FACT_PATHS.values())
+_COMPONENT_KIND_ALIASES = {
+    "protocol": execution_pb2.COMPONENT_KIND_PROTOCOL,
+    "scheduler": execution_pb2.COMPONENT_KIND_SCHEDULER,
+    "runtime": execution_pb2.COMPONENT_KIND_RUNTIME,
+    "operator": execution_pb2.COMPONENT_KIND_OPERATOR,
+    "provider": execution_pb2.COMPONENT_KIND_PROVIDER,
+    "framework_adapter": execution_pb2.COMPONENT_KIND_FRAMEWORK_ADAPTER,
+    "rollout_engine": execution_pb2.COMPONENT_KIND_ROLLOUT_ENGINE,
+    "trainer": execution_pb2.COMPONENT_KIND_TRAINER,
+    "cuda_driver": execution_pb2.COMPONENT_KIND_CUDA_DRIVER,
+    "execution_backend": execution_pb2.COMPONENT_KIND_EXECUTION_BACKEND,
+}
 _LEAF_OPERATORS = frozenset(
     {
         execution_pb2.CONDITION_OPERATOR_EQ,
@@ -151,6 +163,13 @@ def _validate_positive_duration(duration: duration_pb2.Duration, field: str) -> 
 
 def _canonical_nonempty(value: str) -> bool:
     return bool(value) and value == value.strip()
+
+
+def _validate_timestamp_field(value: timestamp_pb2.Timestamp, field: str) -> None:
+    try:
+        value.ToDatetime()
+    except (OverflowError, ValueError) as error:
+        raise ContractValidationError(f"{field} is not a valid protobuf timestamp") from error
 
 
 def _fact_path_type(path: str) -> str:
@@ -343,6 +362,44 @@ def _validate_semantic_field(
     )
 
 
+def validate_component_version(
+    version: execution_pb2.ComponentVersion,
+    *,
+    field: str = "component_version",
+) -> None:
+    """Validate one sourced component-version observation."""
+    if (
+        version.kind == execution_pb2.COMPONENT_KIND_UNKNOWN
+        or version.kind not in execution_pb2.ComponentKind.values()
+    ):
+        raise ContractValidationError(f"{field}.kind must be recognized and non-UNKNOWN")
+    for field_name in ("name", "version", "source"):
+        if not _canonical_nonempty(getattr(version, field_name)):
+            raise ContractValidationError(f"{field}.{field_name} must be nonblank and canonical")
+    if not version.HasField("observed_at"):
+        raise ContractValidationError(f"{field}.observed_at is required")
+    _validate_timestamp_field(version.observed_at, f"{field}.observed_at")
+    if any(
+        not _canonical_nonempty(key) or not _canonical_nonempty(value)
+        for key, value in version.attributes.items()
+    ):
+        raise ContractValidationError(f"{field}.attributes must be nonblank and canonical")
+    _component_identity(version.kind, version.name, field=field, allow_legacy_alias=False)
+
+
+def component_version_identity(
+    version: execution_pb2.ComponentVersion,
+    *,
+    field: str = "component_version",
+) -> tuple[int, str]:
+    """Validate a component version and return its canonical kind/name identity."""
+    validate_component_version(version, field=field)
+    identity, _ = _component_identity(
+        version.kind, version.name, field=field, allow_legacy_alias=False
+    )
+    return identity
+
+
 def _validate_unique_ids(values: list[str], field: str, *, case_insensitive: bool = False) -> None:
     if any(not _canonical_nonempty(value) for value in values):
         raise ContractValidationError(
@@ -353,43 +410,164 @@ def _validate_unique_ids(values: list[str], field: str, *, case_insensitive: boo
         raise ContractValidationError(f"{field} values must be unique")
 
 
-def normalize_version(value: str) -> str:
-    """Normalize the scheduler's accepted two/three-component version syntax."""
-    if value != value.strip() or not _VERSION.fullmatch(value):
-        raise ContractValidationError(
-            "version must be numeric major.minor or major.minor.patch with an optional "
-            "v prefix and prerelease suffix"
-        )
+def _parse_version(
+    value: str,
+) -> tuple[int, int, int, tuple[str, ...], tuple[str, ...]]:
+    if not _canonical_nonempty(value):
+        raise ContractValidationError("version must be non-empty and canonical")
     without_prefix = value[1:] if value.startswith(("v", "V")) else value
-    base, separator, prerelease = without_prefix.partition("-")
-    normalized: list[str] = []
-    try:
-        for component in base.split("."):
-            number = int(component, 10)
-            if number > _MAX_UINT32:
-                raise ValueError
-            normalized.append(str(number))
-    except ValueError as error:
-        raise ContractValidationError(
-            "version components must be uint32 decimal numbers"
-        ) from error
-    if len(normalized) == 2:
-        normalized.append("0")
-    result = ".".join(normalized)
-    if separator:
-        result += f"-{prerelease}"
+    core_and_prerelease, build_separator, build_text = without_prefix.partition("+")
+    if build_separator and (not build_text or "+" in build_text):
+        raise ContractValidationError("version build metadata is invalid")
+    core, prerelease_separator, prerelease_text = core_and_prerelease.partition("-")
+    components = core.split(".")
+    if len(components) not in {2, 3}:
+        raise ContractValidationError("version must have 2 or 3 numeric components")
+    numbers: list[int] = []
+    for component in components:
+        if (
+            not component.isascii()
+            or not component.isdecimal()
+            or (len(component) > 1 and component.startswith("0"))
+        ):
+            raise ContractValidationError("version components must be canonical uint32 values")
+        number = int(component, 10)
+        if number > _MAX_UINT32:
+            raise ContractValidationError("version components must be canonical uint32 values")
+        numbers.append(number)
+    if len(numbers) == 2:
+        numbers.append(0)
+
+    prerelease = tuple(prerelease_text.split(".")) if prerelease_separator else ()
+    build = tuple(build_text.split(".")) if build_separator else ()
+    for identifiers, field, reject_numeric_leading_zero in (
+        (prerelease, "prerelease", True),
+        (build, "build metadata", False),
+    ):
+        if any(
+            not identifier
+            or _VERSION_IDENTIFIER.fullmatch(identifier) is None
+            or (
+                reject_numeric_leading_zero
+                and identifier.isdecimal()
+                and len(identifier) > 1
+                and identifier.startswith("0")
+            )
+            for identifier in identifiers
+        ):
+            raise ContractValidationError(f"version {field} is invalid")
+    return numbers[0], numbers[1], numbers[2], prerelease, build
+
+
+def normalize_version(value: str) -> str:
+    """Normalize the scheduler's accepted SemVer syntax."""
+    major, minor, patch, prerelease, build = _parse_version(value)
+    result = f"{major}.{minor}.{patch}"
+    if prerelease:
+        result += "-" + ".".join(prerelease)
+    if build:
+        result += "+" + ".".join(build)
     return result
+
+
+def _compare_versions(
+    left: tuple[int, int, int, tuple[str, ...], tuple[str, ...]],
+    right: tuple[int, int, int, tuple[str, ...], tuple[str, ...]],
+) -> int:
+    left_core = left[:3]
+    right_core = right[:3]
+    if left_core != right_core:
+        return -1 if left_core < right_core else 1
+    left_prerelease = left[3]
+    right_prerelease = right[3]
+    if not left_prerelease or not right_prerelease:
+        if not left_prerelease and not right_prerelease:
+            return 0
+        return 1 if not left_prerelease else -1
+    for left_part, right_part in zip(left_prerelease, right_prerelease, strict=False):
+        if left_part == right_part:
+            continue
+        left_numeric = left_part.isdecimal()
+        right_numeric = right_part.isdecimal()
+        if left_numeric != right_numeric:
+            return -1 if left_numeric else 1
+        if left_numeric:
+            return -1 if int(left_part) < int(right_part) else 1
+        return -1 if left_part < right_part else 1
+    if len(left_prerelease) == len(right_prerelease):
+        return 0
+    return -1 if len(left_prerelease) < len(right_prerelease) else 1
 
 
 def versions_compatible(current: str, required: str) -> bool:
     """Apply Go scheduler compatibility: pre-1.0 minor, post-1.0 major."""
-    current_parts = normalize_version(current).split(".")
-    required_parts = normalize_version(required).split(".")
-    if current_parts[0] != required_parts[0]:
+    current_version = _parse_version(current)
+    required_version = _parse_version(required)
+    if current_version[0] != required_version[0]:
         return False
-    if current_parts[0] == "0":
-        return current_parts[1] == required_parts[1]
+    if _compare_versions(current_version, required_version) < 0:
+        return False
+    if current_version[0] == 0:
+        return current_version[1] == required_version[1]
     return True
+
+
+def _validate_observation_policy(policy: execution_pb2.ObservationPolicy, *, field: str) -> None:
+    if policy.HasField("maximum_age"):
+        _validate_positive_duration(policy.maximum_age, f"{field}.maximum_age")
+    for name in ("missing", "stale"):
+        disposition = getattr(policy, name)
+        if (
+            disposition == execution_pb2.OBSERVATION_DISPOSITION_UNKNOWN
+            or disposition not in execution_pb2.ObservationDisposition.values()
+        ):
+            raise ContractValidationError(f"{field}.{name} must be recognized and non-UNKNOWN")
+
+
+def _component_identity(
+    kind: int,
+    name: str,
+    *,
+    field: str,
+    allow_legacy_alias: bool,
+) -> tuple[tuple[int, str], bool]:
+    if not _canonical_nonempty(name):
+        raise ContractValidationError(f"{field}.name must be nonblank and canonical")
+    canonical = name.casefold().replace("-", "_")
+    alias_kind = _COMPONENT_KIND_ALIASES.get(canonical)
+    if kind == execution_pb2.COMPONENT_KIND_UNKNOWN:
+        if not allow_legacy_alias or alias_kind is None:
+            raise ContractValidationError(f"{field}.kind must be recognized and non-UNKNOWN")
+        return (alias_kind, canonical), True
+    if kind not in execution_pb2.ComponentKind.values():
+        raise ContractValidationError(f"{field}.kind must be recognized")
+    if alias_kind is not None and alias_kind != kind:
+        raise ContractValidationError(f"{field}.name alias conflicts with kind")
+    return (kind, canonical), False
+
+
+def _version_constraint_identity(
+    constraint: execution_pb2.VersionConstraint, *, field: str
+) -> tuple[tuple[int, str], bool]:
+    if not _canonical_nonempty(constraint.component):
+        raise ContractValidationError(f"{field}.component must be nonblank and canonical")
+    try:
+        return _component_identity(
+            constraint.component_kind,
+            constraint.component,
+            field=field,
+            allow_legacy_alias=True,
+        )
+    except ContractValidationError as error:
+        message = (
+            str(error)
+            .replace(f"{field}.name", f"{field}.component")
+            .replace(f"{field}.kind", f"{field}.component_kind")
+        )
+        message = message.replace("conflicts with kind", "conflicts with component_kind")
+        if constraint.component_kind == execution_pb2.COMPONENT_KIND_UNKNOWN:
+            message = f"{field}.component legacy component must use a recognized canonical alias"
+        raise ContractValidationError(message) from error
 
 
 def validate_execution_contract(contract: execution_pb2.ExecutionContract) -> None:
@@ -511,26 +689,38 @@ def validate_execution_contract(contract: execution_pb2.ExecutionContract) -> No
 
     if not contract.version_constraints:
         raise ContractValidationError("at least one version constraint is required")
-    components: set[str] = set()
+    components: set[tuple[int, str]] = set()
     protocol_found = False
-    for constraint in contract.version_constraints:
-        if not _canonical_nonempty(constraint.component):
-            raise ContractValidationError(
-                "version constraint component must have no surrounding whitespace"
-            )
-        required_version = normalize_version(constraint.version)
+    for index, constraint in enumerate(contract.version_constraints):
+        field = f"version_constraints[{index}]"
         if (
             constraint.operator == execution_pb2.VERSION_OPERATOR_UNKNOWN
             or constraint.operator not in execution_pb2.VersionOperator.values()
         ):
             raise ContractValidationError("version constraint operator must be recognized")
-        component = constraint.component.lower()
-        if component in components:
+        if constraint.operator == execution_pb2.VERSION_OPERATOR_EXACT:
+            if not _canonical_nonempty(constraint.version):
+                raise ContractValidationError(f"{field}.version must be nonblank and canonical")
+            required_version = constraint.version
+        else:
+            required_version = normalize_version(constraint.version)
+        if constraint.source and not _canonical_nonempty(constraint.source):
+            raise ContractValidationError(f"{field}.source must be canonical when present")
+        identity, legacy = _version_constraint_identity(constraint, field=field)
+        if identity in components:
             raise ContractValidationError(
-                "version constraint components must be unique ignoring case"
+                "version constraint kind and name identity must be unique ignoring case"
             )
-        components.add(component)
-        if constraint.component.casefold() != "protocol":
+        components.add(identity)
+        if constraint.HasField("observation_policy"):
+            _validate_observation_policy(
+                constraint.observation_policy, field=f"{field}.observation_policy"
+            )
+        elif not legacy or identity[0] != execution_pb2.COMPONENT_KIND_PROTOCOL:
+            raise ContractValidationError(
+                f"{field}.observation_policy must be present for typed or non-protocol constraints"
+            )
+        if identity[0] != execution_pb2.COMPONENT_KIND_PROTOCOL:
             continue
         protocol_found = True
         if constraint.operator == execution_pb2.VERSION_OPERATOR_COMPATIBLE:
@@ -544,6 +734,22 @@ def validate_execution_contract(contract: execution_pb2.ExecutionContract) -> No
             )
     if not protocol_found:
         raise ContractValidationError("protocol version constraint is required")
+
+    critical_fact_paths: list[str] = []
+    for index, critical in enumerate(contract.critical_fact_policies):
+        field = f"critical_fact_policies[{index}]"
+        if (
+            not _canonical_nonempty(critical.fact_path)
+            or _FACT_PATH_PATTERN.fullmatch(critical.fact_path) is None
+        ):
+            raise ContractValidationError(f"{field}.fact_path must use canonical dotted syntax")
+        critical_fact_paths.append(critical.fact_path)
+        if not critical.HasField("observation_policy"):
+            raise ContractValidationError(f"{field}.observation_policy must be present")
+        _validate_observation_policy(
+            critical.observation_policy, field=f"{field}.observation_policy"
+        )
+    _validate_unique_ids(critical_fact_paths, "critical fact policy paths")
 
     commit = contract.commit_policy
     if (
@@ -637,12 +843,9 @@ def validate_contract_observation(observation: execution_pb2.ContractObservation
     for field_name in ("observed_at", "oldest_sample_at", "backpressure_started_at"):
         if not observation.HasField(field_name):
             continue
-        try:
-            getattr(observation, field_name).ToDatetime()
-        except (OverflowError, ValueError) as error:
-            raise ContractValidationError(
-                f"contract observation {field_name} is not a valid protobuf timestamp"
-            ) from error
+        _validate_timestamp_field(
+            getattr(observation, field_name), f"contract observation {field_name}"
+        )
     for field_name in ("effective_sample_size", "effective_sample_size_ratio"):
         if observation.HasField(field_name) and not math.isfinite(getattr(observation, field_name)):
             raise ContractValidationError(
@@ -661,6 +864,42 @@ def validate_contract_observation(observation: execution_pb2.ContractObservation
         typed_fact_keys.append(typed_fact.key)
     _validate_unique_ids(typed_fact_keys, "contract observation typed_facts")
     typed_fact_map = {typed_fact.key: typed_fact for typed_fact in observation.typed_facts}
+    observed_fact_map: dict[str, execution_pb2.ObservedFact] = {}
+    for index, observed_fact in enumerate(observation.fact_observations):
+        field = f"contract_observation.fact_observations[{index}]"
+        if not observed_fact.HasField("fact"):
+            raise ContractValidationError(f"{field}.fact is required")
+        _validate_semantic_field(observed_fact.fact, field=f"{field}.fact")
+        if not observed_fact.HasField("observed_at"):
+            raise ContractValidationError(f"{field}.observed_at is required")
+        _validate_timestamp_field(observed_fact.observed_at, f"{field}.observed_at")
+        if not _canonical_nonempty(observed_fact.source):
+            raise ContractValidationError(f"{field}.source must be nonblank and canonical")
+        key = observed_fact.fact.key
+        if key in observed_fact_map:
+            raise ContractValidationError(
+                f"contract observation fact_observations contains duplicate key {key!r}"
+            )
+        legacy = typed_fact_map.get(key)
+        if legacy is not None and legacy.value != observed_fact.fact.value:
+            raise ContractValidationError(
+                f"contract observation fact_observations {key} conflicts with typed_facts"
+            )
+        observed_fact_map[key] = observed_fact
+
+    component_versions: dict[tuple[int, str], execution_pb2.ComponentVersion] = {}
+    for index, version in enumerate(observation.component_versions):
+        field = f"contract_observation.component_versions[{index}]"
+        identity = component_version_identity(version, field=field)
+        existing = component_versions.get(identity)
+        if existing is not None:
+            raise ContractValidationError(
+                f"{field} duplicates component version identity for {version.name!r}"
+            )
+        component_versions[identity] = version
+
+    registered_fact_map = dict(typed_fact_map)
+    registered_fact_map.update((key, observed.fact) for key, observed in observed_fact_map.items())
     scalar_bindings = (
         ("policy_lag", "sample.policy_lag", "uint64_value"),
         ("sample_stale", "sample.stale", "bool_value"),
@@ -677,7 +916,7 @@ def validate_contract_observation(observation: execution_pb2.ContractObservation
     for field_name, fact_key, semantic_kind in scalar_bindings:
         if not observation.HasField(field_name):
             continue
-        typed_fact = typed_fact_map.get(fact_key)
+        typed_fact = registered_fact_map.get(fact_key)
         if typed_fact is None:
             raise ContractValidationError(
                 f"contract observation typed_facts must include {fact_key} when {field_name} is set"
@@ -694,13 +933,13 @@ def validate_contract_observation(observation: execution_pb2.ContractObservation
             )
     accepted_fact_keys = ("batch.accepted_samples", "group.accepted_samples")
     if observation.HasField("accepted_samples"):
-        present = [key for key in accepted_fact_keys if key in typed_fact_map]
+        present = [key for key in accepted_fact_keys if key in registered_fact_map]
         if len(present) != 1:
             raise ContractValidationError(
                 "contract observation accepted_samples requires exactly one typed fact of "
                 "batch.accepted_samples or group.accepted_samples"
             )
-        typed_fact = typed_fact_map[present[0]]
+        typed_fact = registered_fact_map[present[0]]
         if typed_fact.value.WhichOneof("kind") != "uint64_value":
             raise ContractValidationError(
                 f"contract observation typed_facts {present[0]} must use uint64_value"
@@ -710,7 +949,7 @@ def validate_contract_observation(observation: execution_pb2.ContractObservation
                 f"contract observation typed_facts {present[0]} must match accepted_samples"
             )
     if observation.HasField("expected_samples"):
-        typed_fact = typed_fact_map.get("group.expected_samples")
+        typed_fact = registered_fact_map.get("group.expected_samples")
         if typed_fact is None:
             raise ContractValidationError(
                 "contract observation expected_samples requires typed fact group.expected_samples"

@@ -11,10 +11,12 @@ from typing import TYPE_CHECKING, Protocol, cast
 
 from tgsrl.v1 import (
     control_pb2,
+    execution_pb2,
     experiment_pb2,
     resource_pb2,
     runtime_pb2,
     scheduling_pb2,
+    semantic_pb2,
     trace_pb2,
 )
 
@@ -182,6 +184,7 @@ def _trace_event(
     safe_point: bool = False,
     buffer_level: int = 0,
 ) -> trace_pb2.TraceEvent:
+    occurred_at = to_timestamp(datetime.now(tz=UTC))
     attributes = {"runtime_unit_id": runtime_unit.runtime_unit_id}
     for key in (
         "provider_source",
@@ -194,12 +197,12 @@ def _trace_event(
         value = runtime_unit.annotations.get(key, "")
         if value:
             attributes[key] = value
-    return trace_pb2.TraceEvent(
+    event = trace_pb2.TraceEvent(
         event_id=event_id,
         job_id=manifest.job_id,
         execution_id=runtime_unit.execution_id,
         phase_id=runtime_unit.phase_id,
-        occurred_at=to_timestamp(datetime.now(tz=UTC)),
+        occurred_at=occurred_at,
         event_type=event_type,
         algorithm=manifest.annotations.get("algorithm", "grpo"),
         rollout_mode=manifest.rollout_mode or trace_pb2.ROLLOUT_MODE_PARTIALLY_ASYNC,
@@ -217,6 +220,48 @@ def _trace_event(
         run_id=run_id,
         data_kind=manifest.data_kind or trace_pb2.DATA_KIND_SYNTHETIC,
     )
+    event.contract_observation.CopyFrom(
+        execution_pb2.ContractObservation(
+            observed_at=occurred_at,
+            buffer_level=buffer_level,
+            safe_point=safe_point,
+            source="runtime-supervisor",
+            event_id=event_id,
+            phase_id=runtime_unit.phase_id,
+            policy_version=event.policy_version,
+            typed_facts=[
+                semantic_pb2.SemanticField(
+                    key="buffer.level.current",
+                    value=semantic_pb2.SemanticValue(uint64_value=buffer_level),
+                ),
+                semantic_pb2.SemanticField(
+                    key="runtime.safe_point",
+                    value=semantic_pb2.SemanticValue(bool_value=safe_point),
+                ),
+            ],
+            fact_observations=[
+                execution_pb2.ObservedFact(
+                    fact=semantic_pb2.SemanticField(
+                        key="buffer.level.current",
+                        value=semantic_pb2.SemanticValue(uint64_value=buffer_level),
+                    ),
+                    observed_at=occurred_at,
+                    source="runtime-supervisor",
+                    revision=max(runtime_unit.generation, 1),
+                ),
+                execution_pb2.ObservedFact(
+                    fact=semantic_pb2.SemanticField(
+                        key="runtime.safe_point",
+                        value=semantic_pb2.SemanticValue(bool_value=safe_point),
+                    ),
+                    observed_at=occurred_at,
+                    source="runtime-supervisor",
+                    revision=max(runtime_unit.generation, 1),
+                ),
+            ],
+        )
+    )
+    return event
 
 
 @dataclass
@@ -335,7 +380,7 @@ class RuntimeSupervisor:
         manifest: runtime_pb2.RuntimeManifest,
         runtime_unit: runtime_pb2.RuntimeUnit,
     ) -> trace_pb2.TraceEvent:
-        return _trace_event(
+        event = _trace_event(
             run_id=manifest.run_id,
             manifest=manifest,
             runtime_unit=runtime_unit,
@@ -344,6 +389,13 @@ class RuntimeSupervisor:
             ),
             event_type=trace_pb2.TRACE_EVENT_TYPE_PHASE_STARTED,
         )
+        event.contract_observation.component_versions.extend(
+            self.registry.resolved_component_versions(
+                manifest,
+                observed_at=event.occurred_at.ToDatetime(tzinfo=UTC),
+            )
+        )
+        return event
 
     def _cursor_for_intent(self, intent: scheduling_pb2.SchedulingIntent) -> str:
         return _cursor("intent", intent.execution_id, intent.stage_id, intent.version)
@@ -629,6 +681,7 @@ class RuntimeSupervisor:
                 raise RuntimeLifecycleError(
                     "manifest required_capabilities.names conflicts with config projection"
                 )
+            capabilities.component_versions.extend(current_capabilities.component_versions)
             projected.required_capabilities.CopyFrom(capabilities)
         return projected
 

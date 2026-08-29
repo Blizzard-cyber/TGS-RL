@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from datetime import UTC, datetime
 from types import ModuleType
 from typing import cast
 
 import pytest
-from tgsrl.v1 import execution_pb2, runtime_pb2, trace_pb2
+from tgsrl.v1 import execution_pb2, job_pb2, runtime_pb2, trace_pb2
 
 from adapters import (
     AdapterErrorKind,
@@ -16,6 +17,7 @@ from adapters import (
     FakeFrameworkAdapter,
     GRPOAdapter,
     LifecycleAction,
+    ManifestValidationError,
     PartialAsyncRolloutAdapter,
     RecordingCommandRunner,
     RecordingProcessRunner,
@@ -29,6 +31,7 @@ from adapters.control import CommandResult, ControlRequest
 from adapters.execution import RayExecutionBackendAdapter
 from adapters.frameworks import OpenRLHFFrameworkAdapter, VerlFrameworkAdapter
 from adapters.rollout_engines import SGLangRolloutEngineAdapter, VLLMRolloutEngineAdapter
+from adapters.runtime_registry import runtime_manifest_from_job
 from adapters.trainers import PyTorchTrainerAdapter
 
 type AdapterUnderTest = (
@@ -149,6 +152,164 @@ def test_fake_manifest_compiles_to_runtime_units() -> None:
     assert any(
         unit.annotations["component_support"] == AdapterSupport.SUPPORT for unit in runtime_units
     )
+
+
+def test_runtime_manifest_preserves_all_declared_component_version_pins() -> None:
+    job = job_pb2.RLTrainingJob(
+        job_id="job-1",
+        runtime=job_pb2.FrameworkRuntimeSpec(
+            framework="verl",
+            framework_version="0.5.0",
+            execution_backend="ray",
+            execution_backend_version="2.9.0",
+            trainer="pytorch",
+            trainer_version="2.5.1",
+            rollout_engine="vllm",
+            rollout_engine_version="0.8.0",
+        ),
+    )
+
+    manifest = runtime_manifest_from_job(job, observed_at=datetime(2025, 1, 1, tzinfo=UTC))
+
+    pins = {(item.kind, item.name): item for item in manifest.component_versions}
+    assert {key: value.version for key, value in pins.items()} == {
+        (execution_pb2.COMPONENT_KIND_FRAMEWORK_ADAPTER, "verl"): "0.5.0",
+        (execution_pb2.COMPONENT_KIND_EXECUTION_BACKEND, "ray"): "2.9.0",
+        (execution_pb2.COMPONENT_KIND_TRAINER, "pytorch"): "2.5.1",
+        (execution_pb2.COMPONENT_KIND_ROLLOUT_ENGINE, "vllm"): "0.8.0",
+    }
+    assert all(item.source == "job.runtime" for item in pins.values())
+    assert all(item.attributes["provenance"] == "declared" for item in pins.values())
+    assert runtime_manifest_from_job(job, observed_at=datetime(2025, 1, 1, tzinfo=UTC)) == manifest
+
+
+def test_runtime_manifest_requires_authoritative_declaration_time() -> None:
+    job = job_pb2.RLTrainingJob(
+        job_id="job-1",
+        runtime=job_pb2.FrameworkRuntimeSpec(
+            framework="fake",
+            framework_version="0.1.0",
+        ),
+    )
+
+    with pytest.raises(ValueError, match=r"job\.created_at or an explicit observed_at"):
+        runtime_manifest_from_job(job)
+
+
+def test_legacy_runtime_manifest_without_version_pins_is_deterministic_without_time() -> None:
+    job = job_pb2.RLTrainingJob(
+        job_id="job-legacy",
+        runtime=job_pb2.FrameworkRuntimeSpec(framework="fake"),
+    )
+
+    first = runtime_manifest_from_job(job)
+    second = runtime_manifest_from_job(job)
+
+    assert not first.component_versions
+    assert first.SerializeToString(deterministic=True) == second.SerializeToString(
+        deterministic=True
+    )
+
+
+def test_runtime_registry_resolves_only_explicit_distribution_versions() -> None:
+    observed_at = datetime(2025, 1, 1, tzinfo=UTC)
+    registry = RuntimeAdapterRegistry(
+        version_resolver=lambda distribution: {
+            "tgsrl-runtime": "0.1.0",
+            "ray": "2.9.0",
+        }.get(distribution),
+        clock=lambda: observed_at,
+    )
+    manifest = _manifest(execution_backend="ray")
+
+    resolved = registry.resolved_component_versions(manifest)
+
+    assert {(item.kind, item.name, item.version) for item in resolved} == {
+        (execution_pb2.COMPONENT_KIND_RUNTIME, "tgsrl-runtime", "0.1.0"),
+        (execution_pb2.COMPONENT_KIND_FRAMEWORK_ADAPTER, "fake", "0.1.0"),
+        (execution_pb2.COMPONENT_KIND_EXECUTION_BACKEND, "ray", "2.9.0"),
+        (execution_pb2.COMPONENT_KIND_TRAINER, "fake", "0.1.0"),
+        (execution_pb2.COMPONENT_KIND_ROLLOUT_ENGINE, "fake", "0.1.0"),
+    }
+    assert all(item.source == "runtime-adapter-registry" for item in resolved)
+    assert all(item.attributes["provenance"] == "observed/resolved" for item in resolved)
+
+
+def _manifest_component_version(
+    *,
+    kind: int = execution_pb2.COMPONENT_KIND_FRAMEWORK_ADAPTER,
+    name: str = "fake",
+    version: str = "0.1.0",
+    source: str = "job.runtime",
+    provenance: str = "declared",
+) -> execution_pb2.ComponentVersion:
+    component = execution_pb2.ComponentVersion(
+        kind=kind,
+        name=name,
+        version=version,
+        source=source,
+        revision=1,
+        attributes={"provenance": provenance},
+    )
+    component.observed_at.FromDatetime(datetime(2025, 1, 1, tzinfo=UTC))
+    return component
+
+
+def _forge_manifest_component_version(
+    manifest: runtime_pb2.RuntimeManifest,
+) -> None:
+    manifest.component_versions[0].source = "external"
+    manifest.component_versions[0].attributes["provenance"] = "forged"
+
+
+@pytest.mark.parametrize(
+    ("mutate", "error"),
+    [
+        (
+            lambda manifest: manifest.component_versions[0].ClearField("observed_at"),
+            "observed_at",
+        ),
+        (
+            lambda manifest: manifest.component_versions.append(
+                _manifest_component_version(version="0.2.0")
+            ),
+            "kind/name identity",
+        ),
+        (
+            lambda manifest: setattr(manifest.component_versions[0], "name", "verl"),
+            "does not match selected framework",
+        ),
+        (
+            lambda manifest: setattr(
+                manifest.component_versions[0], "source", "runtime-adapter-registry"
+            ),
+            "resolved provenance",
+        ),
+        (
+            lambda manifest: manifest.component_versions[0].attributes.__setitem__(
+                "provenance", "observed/resolved"
+            ),
+            "resolved provenance",
+        ),
+        (
+            _forge_manifest_component_version,
+            "accepts only declared versions",
+        ),
+        (
+            lambda manifest: manifest.component_versions[0].attributes.pop("provenance"),
+            "accepts only declared versions",
+        ),
+    ],
+)
+def test_manifest_component_version_trust_boundary(
+    mutate: Callable[[runtime_pb2.RuntimeManifest], None], error: str
+) -> None:
+    manifest = _manifest()
+    manifest.component_versions.append(_manifest_component_version())
+    mutate(manifest)
+
+    with pytest.raises(ManifestValidationError, match=error):
+        RuntimeAdapterRegistry().validate(manifest)
 
 
 def test_real_boundary_skeletons_report_unavailable_without_dependencies() -> None:
