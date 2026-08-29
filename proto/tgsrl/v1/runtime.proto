@@ -187,6 +187,13 @@ message Sandbox {
   string status_reason = 16;
   string error_code = 17;
   string error_message = 18;
+  // state_changed_at is the scheduler receipt time of the most recent
+  // generation or lifecycle-state transition. Mutable-field confirmations do
+  // not reset it. Legacy producers may leave it unset.
+  google.protobuf.Timestamp state_changed_at = 19;
+  // last_confirmed_at is the scheduler receipt time of the most recently
+  // accepted provider observation. Legacy producers may leave it unset.
+  google.protobuf.Timestamp last_confirmed_at = 20;
 }
 
 // SandboxEvent is an immutable runtime event fenced by sandbox generation.
@@ -211,6 +218,11 @@ message SandboxEvent {
   string action_id = 18;
   uint64 provider_revision = 19;
   string idempotency_key = 20;
+  // Mutable runtime scheduling state is carried explicitly so reconciliation
+  // can observe the result of set_share, set_priority, and offload actions.
+  optional double share = 21;
+  optional int32 priority = 22;
+  optional bool offloaded = 23;
 }
 
 message ValidateRuntimeRequest {

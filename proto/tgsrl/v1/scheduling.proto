@@ -6,6 +6,7 @@ import "google/protobuf/duration.proto";
 import "google/protobuf/timestamp.proto";
 import "tgsrl/v1/execution.proto";
 import "tgsrl/v1/resource.proto";
+import "tgsrl/v1/semantic.proto";
 import "tgsrl/v1/trace.proto";
 
 option go_package = "github.com/Blizzard-cyber/TGS-RL/gen/go/tgsrl/v1;tgsrlv1";
@@ -85,6 +86,26 @@ enum PlanPurpose {
   PLAN_PURPOSE_PREEMPTION = 3;
   PLAN_PURPOSE_RECOVERY = 4;
   PLAN_PURPOSE_RECONCILIATION = 5;
+}
+
+// PlannerKind identifies the deterministic planner tier that proposed an
+// action. The kind is independent of the event-loop tick so admission remains
+// distinguishable from fast mutations.
+enum PlannerKind {
+  PLANNER_KIND_UNKNOWN = 0;
+  PLANNER_KIND_ADMISSION = 1;
+  PLANNER_KIND_FAST_MUTATION = 2;
+  PLANNER_KIND_MEDIUM_LIFECYCLE = 3;
+  PLANNER_KIND_SLOW_RECONFIGURATION = 4;
+}
+
+// PlannerDisposition records whether a proposal won, was ineligible, or was
+// eligible but intentionally postponed to a later planning opportunity.
+enum PlannerDisposition {
+  PLANNER_DISPOSITION_UNKNOWN = 0;
+  PLANNER_DISPOSITION_SELECTED = 1;
+  PLANNER_DISPOSITION_REJECTED = 2;
+  PLANNER_DISPOSITION_DEFERRED = 3;
 }
 
 // ActionPrecondition identifies a typed guard whose parameter remains in the
@@ -286,6 +307,21 @@ message CandidateRejection {
   ContractEvaluation contract_evaluation = 4;
 }
 
+// PlannerEvidence is the bounded, replayable audit surface for one adaptive
+// planner proposal. utility_nanos is fixed-point to avoid floating-point
+// ordering drift; inputs carry the typed trigger and rejection facts.
+message PlannerEvidence {
+  string proposal_id = 1;
+  PlannerKind planner = 2;
+  PlanPurpose purpose = 3;
+  ActionType action_type = 4;
+  string target_id = 5;
+  sint64 utility_nanos = 6;
+  PlannerDisposition disposition = 7;
+  string reason = 8;
+  repeated SemanticField inputs = 9;
+}
+
 // DecisionRecord captures the scheduler decision surface. Candidate and
 // rejection evidence may be bounded; the total counters and truncation marker
 // distinguish complete selection from its retained audit projection.
@@ -321,6 +357,9 @@ message DecisionRecord {
   uint64 total_candidate_count = 29;
   uint64 total_rejected_candidate_count = 30;
   bool evidence_truncated = 31;
+  repeated PlannerEvidence planner_evidence = 32;
+  uint64 total_planner_proposal_count = 33;
+  bool planner_evidence_truncated = 34;
 }
 
 message PublishIntentRequest {
