@@ -83,7 +83,8 @@ Scheduler 还支持以下启动覆盖：
 对应的 `TGSRL_CONFIG_*` 变量覆盖。fast/medium/slow 队列本身是进程内状态；重启时
 Scheduler 会从持久化的最新 Intent 重建待处理工作，并送回同一权威调度路径。三档
 分别是 keyed queue，不是三个独立 Scheduler；同一 execution/stage 的重复触发会在各自
-队列内合并。tick interval 只控制处理节奏，不是完成时限或 SLA；同档处理尚未结束时，
+队列内合并，并在有效 Intent 生命周期内周期重排，从而让 idle 等时间阈值在没有新事件时
+仍能生效。tick interval 只控制处理节奏，不是完成时限或 SLA；同档处理尚未结束时，
 重叠 tick 会被跳过。
 
 Scheduler 的 Prometheus 输出为指标名添加 `tgsrl_` 前缀。三档 loop 可通过
@@ -187,7 +188,7 @@ mkdir -p .cache/tgsrl/scheduler-state .cache/tgsrl/job-controller .cache/tgsrl/o
 
 | 组件 | 重启时会恢复 | 不会自动完成的事项 |
 |---|---|---|
-| Scheduler | Cluster snapshot、最新 Intent、Decision 与 action result、Decision cursor、reservation；启动时调和未完成 reservation 并重新排队恢复出的 Intent | Provider 进程内状态本身；无法由 Provider 确认完成的 plan 会失败收敛，不会盲目重放外部副作用 |
+| Scheduler | Cluster snapshot、最新 Intent、Decision 与 action result、Decision cursor、provider sandbox projection/event cursor、reservation；启动时调和未完成 reservation 并重新排队恢复出的 Intent | Provider 进程内执行对象本身；无法由 Provider 确认完成的 plan 会失败收敛，不会盲目重放外部副作用 |
 | Runtime / Experiment | 分页回填最新 Intent、Trace batch、manifest、runtime unit、sandbox、全局且可稀疏的 runtime event sequence、generation、intent-version、Start 发布进度、checkpoint、Replay、Experiment、Replay START 已完成的 Scheduler step、component status 及必要计数 | 仅补投未确认的 Start Intent；checkpoint 不是外部进程镜像；不是跨服务 HA/灾备 |
 | Job Controller | Job、Run、Operation、幂等记录、事件历史与事件序号 | 不会扫描并重新执行重启前未完成的 Operation |
 | Operator | Decision cursor、未完成 delivery、持久化 observation registration、已发布 transition，以及 lifecycle control 幂等记录；Kubernetes 对象由 API Server 保存 | fake backend 对象不持久化；跨服务没有分布式事务 |

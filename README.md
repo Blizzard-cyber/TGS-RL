@@ -17,7 +17,8 @@ Kubernetes，适合体验完整控制链、集成客户端以及评估调度语�
 - 用统一 `ExecutionContract` 表达 PPO、GRPO，以及同步、部分异步和完全异步 Rollout。
 - 管理 Runtime unit、Sandbox、Trace、增量 DAG、等待分类、Checkpoint、Replay 和 Experiment。
 - 根据版本化 `SchedulingIntent`、资源快照、执行契约和能力约束，在三档 tick 与
-  ActionLevel 授权下生成带有界候选证据的可审计决策。
+  ActionLevel 授权下生成 admission、动态 share/priority/resize、生命周期和重配置动作，
+  并保留有界的候选与 Planner 证据。
 - 通过 Provider 执行资源动作，并由 Operator 将成功决策编译为 workload 对象。
 - 通过 HTTP/OpenAPI、Python SDK、CLI 和 Web Console 查询任务、拓扑、时间线、Sandbox
   与调度决策。
@@ -173,7 +174,7 @@ HTTP 路由、分页、错误、CLI 和 Console 说明见
 
 | 组件 | 持久化方式 | 重启后的行为 |
 |---|---|---|
-| Scheduler | checkpoint + journal | 恢复 Snapshot、Intent、Decision、cursor 和 reservation；调和未完成 reservation，并重新排队 Intent |
+| Scheduler | checkpoint + journal | 恢复 Snapshot、Intent、Decision、provider projection/cursor 和 reservation；调和未完成 reservation，并重新排队 Intent |
 | Job Controller | snapshot + journal | 恢复 Job、Run、Operation、事件与幂等记录；不自动重新执行中间态 Operation |
 | Runtime / Experiment | SQLite | 分页恢复 manifest、unit、Sandbox、Trace、Intent、Checkpoint、Replay、Experiment 与必要水位；仅补投未确认的 Start Intent |
 | Operator | cursor、delivery 与 backend-control 文件 | 恢复决策位置、未完成 delivery、观察注册与 lifecycle 幂等记录；fake backend 对象不持久化 |

@@ -47,10 +47,11 @@ flowchart LR
 动作完成后，每个 binding 分别确认或释放资源；证据缺失时采用 fail-closed 处理。
 
 Scheduler 使用 fast、medium、slow 三条进程内 keyed queue 处理同一个
-`(execution_id, stage_id)`。同一 key 在队列中重复出现时会合并 cause、最新 revision 和
-最新 contract observation，并保留原有 FIFO 位置。三个 loop 的默认周期分别为 `25ms`、
-`100ms` 和 `250ms`；周期控制开始处理的节奏，不是决策完成时限或 SLA。同一档 tick 尚未
-完成时，重叠 tick 会被跳过。
+`(execution_id, stage_id)`。Intent 首次进入队列后会保持周期调度，直至过期、被移除或
+服务停止，因此 idle 阈值等基于时间的条件无需依赖新的外部事件。同一 key 的新事件会合并
+cause、最新 revision 和 contract observation；每个频率最多保留一个待处理项。三个 loop 的
+默认周期分别为 `25ms`、`100ms` 和 `250ms`；周期控制开始处理的节奏，不是决策完成时限或
+SLA。同一档 tick 尚未完成时，重叠 tick 会被跳过。
 
 ## gRPC 接口
 
@@ -94,7 +95,8 @@ uv run --frozen tgsrl get-decision JOB_ID DECISION_ID
 候选放置前，Scheduler 会对 Intent 中的 `ExecutionContract` 执行确定性评估。当前评估：
 
 - 带 typed `predicate` 的 `ValidityRule` 和 `Condition`；
-- `component=protocol` 的 `VersionConstraint`；
+- runtime registry 提供的 protocol、scheduler、runtime、operator、provider、framework
+  adapter、rollout engine、trainer 与 CUDA/driver component version；
 - `BackpressurePolicy`；
 - `CommitPolicy.require_safe_point` 与 `SafePointPolicy`。
 
@@ -106,7 +108,8 @@ point 的结果会阻止本次放置，形成 fallback；对应的 rejected cand
 
 - 只有字符串 `expression`、没有 typed predicate 的旧式 validity rule 不会解释执行该
   字符串，而会记录为 `INDETERMINATE` 并按兼容规则放行；
-- 非 `protocol` 的 version component 当前记录为 `NOT_APPLICABLE`；
+- 未注册的 component version 会按对应 missing-fact policy 产生可解释的
+  `BLOCK`、`HOLD`、`DEGRADE` 或 `NOT_APPLICABLE` 结果；
 - backpressure 的 block、shed 或 scale-out 是决策建议和审计证据；Scheduler 当前不会直接
   操作生产者、删除样本或扩容外部基础设施。
 
@@ -162,10 +165,11 @@ Action type 与 level 的映射由 Scheduler 统一校验：
 | L4 | `rebind`、`recreate` |
 
 Action 声明的 level 必须与 type 匹配，`tick_kind` 必须与 Decision 的 tick 一致，且不得超过
-该 tick 的 ceiling；不符合规则的 plan 会 fail closed，执行前还会再次校验。当前常规放置
-planner 生成 L1 `bind`，L2–L4 表示协议和 Provider 可表达的动作范围，不表示 Scheduler 会
-在默认路径主动生成所有这些动作。仅兼容输入允许缺失 tick 的旧式 L1 action；新调用方
-应始终发送明确的 `tick_kind`。
+该 tick 的 ceiling；不符合规则的 plan 会 fail closed，执行前还会再次校验。Admission
+Planner 生成 `bind`；Fast Planner 处理 share、priority、resize 与逐次 scale-in release；
+Medium Planner 处理 pause、resume、sleep 与 offload；Slow Planner 处理 rebind 与 recreate。
+每个候选都会记录触发事实、固定点 utility、拒绝原因与最终选择。仅兼容输入允许缺失 tick
+的旧式 L1 action；新调用方应始终发送明确的 `tick_kind`。
 
 默认 policy 还启用 mutation protection：按 execution/stage 应用 cooldown、hysteresis、
 时间窗 action budget 和 circuit breaker。保护拒绝会形成带 `PROTECTION_*` 原因的 fallback。
