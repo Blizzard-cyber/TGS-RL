@@ -15,22 +15,29 @@ import (
 	"google.golang.org/protobuf/proto"
 )
 
-// Runtime wires keyed queues to fast/medium/slow scheduler ticks.
+// Runtime wires keyed queues to fast/medium/slow scheduler ticks. Enqueued
+// keys stay active until Forget is called or the runtime stops.
 type Runtime struct {
 	trigger        TriggerFunc
-	fastQueue      *queue.Keyed[*Trigger]
-	mediumQueue    *queue.Keyed[*Trigger]
-	slowQueue      *queue.Keyed[*Trigger]
+	fastQueue      *queue.Keyed[uint64]
+	mediumQueue    *queue.Keyed[uint64]
+	slowQueue      *queue.Keyed[uint64]
 	fastTicker     *loops.Ticker
 	mediumTicker   *loops.Ticker
 	slowTicker     *loops.Ticker
 	startOnce      sync.Once
 	stopOnce       sync.Once
+	mu             sync.Mutex
 	cancel         context.CancelFunc
 	wg             sync.WaitGroup
-	fastInterval   time.Duration
-	mediumInterval time.Duration
-	slowInterval   time.Duration
+	active         map[string]activeTrigger
+	nextGeneration uint64
+	stopped        bool
+}
+
+type activeTrigger struct {
+	trigger    *Trigger
+	generation uint64
 }
 
 // Trigger describes one authoritative runtime reconcile request.
@@ -72,15 +79,13 @@ func NewRuntime(loop *EventLoop, cfg RuntimeConfig) *Runtime {
 		recorder = loop.recorder
 	}
 	return &Runtime{
-		fastQueue:      queue.NewKeyed(MergeTrigger),
-		mediumQueue:    queue.NewKeyed(MergeTrigger),
-		slowQueue:      queue.NewKeyed(MergeTrigger),
-		fastTicker:     loops.NewTicker(loops.NewRunner(loops.TickFast, recorder), cfg.FastInterval),
-		mediumTicker:   loops.NewTicker(loops.NewRunner(loops.TickMedium, recorder), cfg.MediumInterval),
-		slowTicker:     loops.NewTicker(loops.NewRunner(loops.TickSlow, recorder), cfg.SlowInterval),
-		fastInterval:   cfg.FastInterval,
-		mediumInterval: cfg.MediumInterval,
-		slowInterval:   cfg.SlowInterval,
+		fastQueue:    queue.NewKeyed(latestGeneration),
+		mediumQueue:  queue.NewKeyed(latestGeneration),
+		slowQueue:    queue.NewKeyed(latestGeneration),
+		fastTicker:   loops.NewTicker(loops.NewRunner(loops.TickFast, recorder), cfg.FastInterval),
+		mediumTicker: loops.NewTicker(loops.NewRunner(loops.TickMedium, recorder), cfg.MediumInterval),
+		slowTicker:   loops.NewTicker(loops.NewRunner(loops.TickSlow, recorder), cfg.SlowInterval),
+		active:       make(map[string]activeTrigger),
 	}
 }
 
@@ -89,6 +94,8 @@ func (r *Runtime) SetTrigger(trigger TriggerFunc) {
 	if r == nil {
 		return
 	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	r.trigger = trigger
 }
 
@@ -98,9 +105,18 @@ func (r *Runtime) Start(ctx context.Context) {
 		return
 	}
 	r.startOnce.Do(func() {
+		if ctx == nil {
+			ctx = context.Background()
+		}
+		r.mu.Lock()
+		if r.stopped {
+			r.mu.Unlock()
+			return
+		}
 		runCtx, cancel := context.WithCancel(ctx)
 		r.cancel = cancel
-		r.wg.Add(3)
+		r.wg.Add(4)
+		r.mu.Unlock()
 		go func() {
 			defer r.wg.Done()
 			r.fastTicker.Run(runCtx, func(context.Context) { r.drain(runCtx, r.fastQueue, tgsrlv1.TickKind_TICK_KIND_FAST) })
@@ -113,6 +129,11 @@ func (r *Runtime) Start(ctx context.Context) {
 			defer r.wg.Done()
 			r.slowTicker.Run(runCtx, func(context.Context) { r.drain(runCtx, r.slowQueue, tgsrlv1.TickKind_TICK_KIND_SLOW) })
 		}()
+		go func() {
+			defer r.wg.Done()
+			<-runCtx.Done()
+			r.deactivate()
+		}()
 	})
 }
 
@@ -122,14 +143,22 @@ func (r *Runtime) Stop() {
 		return
 	}
 	r.stopOnce.Do(func() {
-		if r.cancel != nil {
-			r.cancel()
+		r.mu.Lock()
+		r.stopped = true
+		clear(r.active)
+		cancel := r.cancel
+		r.mu.Unlock()
+		if cancel != nil {
+			cancel()
 		}
 		r.wg.Wait()
+		r.clearQueues()
 	})
 }
 
-// Enqueue schedules one execution/stage key on all loop frequencies.
+// Enqueue activates one execution/stage key on all loop frequencies until it
+// is forgotten or the runtime stops. Repeated calls coalesce metadata and keep
+// at most one pending item per frequency.
 func (r *Runtime) Enqueue(trigger *Trigger) {
 	if r == nil {
 		return
@@ -139,20 +168,52 @@ func (r *Runtime) Enqueue(trigger *Trigger) {
 		return
 	}
 	key := triggerQueueKey(trigger.ExecutionID, trigger.StageID)
-	fast := CloneTrigger(trigger)
-	fast.TickKind = tgsrlv1.TickKind_TICK_KIND_FAST
-	medium := CloneTrigger(trigger)
-	medium.TickKind = tgsrlv1.TickKind_TICK_KIND_MEDIUM
-	slow := CloneTrigger(trigger)
-	slow.TickKind = tgsrlv1.TickKind_TICK_KIND_SLOW
-	r.fastQueue.Push(key, fast)
-	r.mediumQueue.Push(key, medium)
-	r.slowQueue.Push(key, slow)
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.stopped {
+		return
+	}
+	if current, ok := r.active[key]; ok {
+		trigger = MergeTrigger(current.trigger, trigger)
+	}
+	r.nextGeneration++
+	if r.nextGeneration == 0 {
+		r.nextGeneration++
+	}
+	generation := r.nextGeneration
+	r.active[key] = activeTrigger{trigger: trigger, generation: generation}
+	r.fastQueue.Push(key, generation)
+	r.mediumQueue.Push(key, generation)
+	r.slowQueue.Push(key, generation)
 }
 
-func (r *Runtime) drain(ctx context.Context, q *queue.Keyed[*Trigger], kind tgsrlv1.TickKind) {
+// Forget stops periodic scheduling for one execution/stage key. A trigger that
+// is already in flight may finish, but stale queued generations are ignored.
+func (r *Runtime) Forget(executionID, stageID string) bool {
+	if r == nil || executionID == "" || stageID == "" {
+		return false
+	}
+	key := triggerQueueKey(executionID, stageID)
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if _, ok := r.active[key]; !ok {
+		return false
+	}
+	delete(r.active, key)
+	return true
+}
+
+func (r *Runtime) drain(ctx context.Context, q *queue.Keyed[uint64], kind tgsrlv1.TickKind) {
 	for _, item := range q.Drain() {
-		trigger := CloneTrigger(item.Value)
+		r.mu.Lock()
+		active, ok := r.active[item.Key]
+		if r.stopped || !ok || active.generation != item.Value {
+			r.mu.Unlock()
+			continue
+		}
+		trigger := CloneTrigger(active.trigger)
+		callback := r.trigger
+		r.mu.Unlock()
 		if trigger == nil || trigger.ExecutionID == "" || trigger.StageID == "" {
 			continue
 		}
@@ -161,12 +222,39 @@ func (r *Runtime) drain(ctx context.Context, q *queue.Keyed[*Trigger], kind tgsr
 		case <-ctx.Done():
 			return
 		default:
-			if r.trigger == nil {
-				continue
+			if callback != nil {
+				callback(ctx, trigger)
 			}
-			r.trigger(ctx, trigger)
 		}
+
+		// Requeue only the generation that was just dispatched. A concurrent
+		// Enqueue has already queued its newer generation, while Forget and Stop
+		// deliberately leave no active entry to requeue.
+		r.mu.Lock()
+		active, ok = r.active[item.Key]
+		if !r.stopped && ctx.Err() == nil && ok && active.generation == item.Value {
+			q.Push(item.Key, item.Value)
+		}
+		r.mu.Unlock()
 	}
+}
+
+func (r *Runtime) deactivate() {
+	r.mu.Lock()
+	r.stopped = true
+	clear(r.active)
+	r.mu.Unlock()
+	r.clearQueues()
+}
+
+func (r *Runtime) clearQueues() {
+	r.fastQueue.Drain()
+	r.mediumQueue.Drain()
+	r.slowQueue.Drain()
+}
+
+func latestGeneration(_, incoming uint64) uint64 {
+	return incoming
 }
 
 // MergeTrigger coalesces two triggers without losing the newest revision or

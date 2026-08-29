@@ -29,23 +29,103 @@ func (s *Server) startProviderWatches() error {
 	if !ok {
 		return nil
 	}
-	s.setProviderWatchHealthy("resource")
-	s.setProviderWatchHealthy("sandbox")
+	s.markProjectionLiveNotReady("all")
+	s.setProviderWatchUnhealthy("resource", "provider resource watch has not completed live bootstrap")
+	s.setProviderWatchUnhealthy("sandbox", "provider sandbox watch has not completed live bootstrap")
 	ctx := s.backgroundContext()
+	if err := s.bootstrapLiveProviderProjection(ctx, complete); err != nil {
+		return err
+	}
 	resourceStream, err := complete.WatchResources(ctx, 0)
 	if err != nil {
+		s.markProjectionLiveNotReady("resource")
 		s.setProviderWatchUnhealthy("resource", err.Error())
 		s.recorder.IncCounter("provider_watch_start_failures", 1)
 		return fmt.Errorf("service: start resource watch: %w", err)
 	}
 	sandboxStream, err := complete.WatchSandboxes(ctx, 0)
 	if err != nil {
+		s.markProjectionLiveNotReady("sandbox")
 		s.setProviderWatchUnhealthy("sandbox", err.Error())
 		s.recorder.IncCounter("provider_watch_start_failures", 1)
 		return fmt.Errorf("service: start sandbox watch: %w", err)
 	}
+	s.markProviderWatchEventHealthy("resource")
+	s.markProviderWatchEventHealthy("sandbox")
+	s.markProjectionLiveReady("resource")
+	s.markProjectionLiveReady("sandbox")
 	go s.runResourceWatch(ctx, complete, resourceStream)
 	go s.runSandboxWatch(ctx, complete, sandboxStream)
+	return nil
+}
+
+func (s *Server) bootstrapLiveProviderProjection(ctx context.Context, complete provider.CompleteResourceProvider) error {
+	s.markProjectionLiveAttempt("resource")
+	snapshot, err := complete.Snapshot(ctx)
+	if err != nil {
+		s.markProjectionLiveNotReady("resource")
+		s.setProviderWatchUnhealthy("resource", err.Error())
+		s.recorder.IncCounter("provider_watch_start_failures", 1)
+		return fmt.Errorf("service: bootstrap resource snapshot: %w", err)
+	}
+	providerID := "provider"
+	if id, idErr := complete.ID(ctx); idErr == nil && id != "" {
+		providerID = id
+	}
+	event := &tgsrlv1.ResourceEvent{
+		EventId:          "bootstrap-snapshot",
+		EventType:        tgsrlv1.ResourceEventType_RESOURCE_EVENT_TYPE_SNAPSHOT_PUBLISHED,
+		Provider:         providerID,
+		ProviderRevision: snapshot.GetRevision(),
+		ObservedAt:       snapshot.GetObservedAt(),
+		Snapshot:         snapshot,
+	}
+	if _, _, err := s.applyAuthoritativeResourceEvent(event); err != nil {
+		s.markProjectionLiveNotReady("resource")
+		s.setProviderWatchUnhealthy("resource", err.Error())
+		s.recorder.IncCounter("provider_watch_event_apply_failures", 1)
+		return fmt.Errorf("service: bootstrap resource projection: %w", err)
+	}
+	s.markProjectionLiveAttempt("sandbox")
+	sandboxes, err := complete.ListSandboxes(ctx)
+	if err != nil {
+		s.markProjectionLiveNotReady("sandbox")
+		s.setProviderWatchUnhealthy("sandbox", err.Error())
+		s.recorder.IncCounter("provider_watch_start_failures", 1)
+		return fmt.Errorf("service: bootstrap sandbox projection: %w", err)
+	}
+	bootstrapped := make([]*tgsrlv1.Sandbox, 0, len(sandboxes))
+	for _, sandbox := range sandboxes {
+		bootstrapped = append(bootstrapped, sandboxToProto(sandbox))
+	}
+	s.planMu.Lock()
+	if _, err := s.store.ReplaceProjectedSandboxes(bootstrapped); err != nil {
+		s.planMu.Unlock()
+		s.markProjectionLiveNotReady("sandbox")
+		s.setProviderWatchUnhealthy("sandbox", err.Error())
+		s.recorder.IncCounter("provider_watch_event_apply_failures", 1)
+		return fmt.Errorf("service: bootstrap sandbox projection: %w", err)
+	}
+	for _, sandbox := range bootstrapped {
+		share, priority, offloaded := sandbox.GetShare(), sandbox.GetPriority(), sandbox.GetOffloaded()
+		s.eventLoop.PublishSandboxEvent(&tgsrlv1.SandboxEvent{
+			EventId:    "bootstrap-sandbox-" + sandbox.GetSandboxId(),
+			SandboxId:  sandbox.GetSandboxId(),
+			RunId:      sandbox.GetRunId(),
+			JobId:      sandbox.GetJobId(),
+			TraceId:    sandbox.GetTraceId(),
+			Generation: sandbox.GetGeneration(),
+			State:      sandbox.GetState(),
+			Binding:    cloneBindingToProto(sandbox.GetBinding()),
+			Share:      &share,
+			Priority:   &priority,
+			SafePoint:  sandbox.GetSafePoint(),
+			Offloaded:  &offloaded,
+			OccurredAt: sandbox.GetObservedAt(),
+			DataKind:   sandbox.GetDataKind(),
+		})
+	}
+	s.planMu.Unlock()
 	return nil
 }
 
@@ -58,6 +138,7 @@ func (s *Server) runResourceWatch(ctx context.Context, complete provider.Complet
 			return
 		}
 		reconnects++
+		s.markProjectionLiveNotReady("resource")
 		s.providerWatch.mu.Lock()
 		s.providerWatch.resourceReconnects = reconnects
 		s.providerWatch.mu.Unlock()
@@ -72,13 +153,24 @@ func (s *Server) runResourceWatch(ctx context.Context, complete provider.Complet
 			return
 		case <-timer.C:
 		}
+		if resyncErr := s.bootstrapLiveProviderProjection(ctx, complete); resyncErr != nil {
+			s.setProviderWatchUnhealthy("resource", resyncErr.Error())
+			s.recorder.IncCounter("provider_watch_resource_restart_failures", 1)
+			slog.Warn("resource watch resync failed", "error", resyncErr, "reconnects", reconnects)
+			continue
+		}
 		next, watchErr := complete.WatchResources(ctx, 0)
 		if watchErr != nil {
+			s.markProjectionLiveNotReady("resource")
 			s.recorder.IncCounter("provider_watch_resource_restart_failures", 1)
 			slog.Warn("resource watch restart failed", "error", watchErr, "reconnects", reconnects)
 			continue
 		}
+		// Opening a replacement stream is not evidence that a previously
+		// malformed stream is trustworthy again. A poisoned watch remains
+		// fail-closed until the replacement stream yields one valid event.
 		s.setProviderWatchHealthy("resource")
+		s.markProjectionLiveReady("resource")
 		current = next
 	}
 }
@@ -90,16 +182,19 @@ func (s *Server) consumeResourceWatch(ctx context.Context, stream <-chan provide
 			return nil
 		case event, ok := <-stream:
 			if !ok {
+				s.markProjectionLiveNotReady("resource")
 				return errors.New("resource watch channel closed")
 			}
 			if event.Event != nil {
 				snapshot, changed, err := s.applyAuthoritativeResourceEvent(event.Event)
 				if err != nil {
+					s.markProjectionLiveNotReady("resource")
 					s.poisonProviderWatch("resource", err.Error())
 					s.recorder.IncCounter("provider_watch_event_apply_failures", 1)
 					return fmt.Errorf("resource event apply failed: %w", err)
 				}
 				s.markProviderWatchEventHealthy("resource")
+				s.markProjectionLiveReady("resource")
 				if changed {
 					s.enqueueSnapshotIntents(snapshot)
 				}
@@ -117,6 +212,7 @@ func (s *Server) runSandboxWatch(ctx context.Context, complete provider.Complete
 			return
 		}
 		reconnects++
+		s.markProjectionLiveNotReady("sandbox")
 		s.providerWatch.mu.Lock()
 		s.providerWatch.sandboxReconnects = reconnects
 		s.providerWatch.mu.Unlock()
@@ -131,13 +227,23 @@ func (s *Server) runSandboxWatch(ctx context.Context, complete provider.Complete
 			return
 		case <-timer.C:
 		}
+		if resyncErr := s.bootstrapLiveProviderProjection(ctx, complete); resyncErr != nil {
+			s.setProviderWatchUnhealthy("sandbox", resyncErr.Error())
+			s.recorder.IncCounter("provider_watch_sandbox_restart_failures", 1)
+			slog.Warn("sandbox watch resync failed", "error", resyncErr, "reconnects", reconnects)
+			continue
+		}
 		next, watchErr := complete.WatchSandboxes(ctx, 0)
 		if watchErr != nil {
+			s.markProjectionLiveNotReady("sandbox")
 			s.recorder.IncCounter("provider_watch_sandbox_restart_failures", 1)
 			slog.Warn("sandbox watch restart failed", "error", watchErr, "reconnects", reconnects)
 			continue
 		}
+		// Preserve an apply-error poison across reconnect. Only successfully
+		// applying a subsequent event may clear it.
 		s.setProviderWatchHealthy("sandbox")
+		s.markProjectionLiveReady("sandbox")
 		current = next
 	}
 }
@@ -149,16 +255,19 @@ func (s *Server) consumeSandboxWatch(ctx context.Context, stream <-chan provider
 			return nil
 		case event, ok := <-stream:
 			if !ok {
+				s.markProjectionLiveNotReady("sandbox")
 				return errors.New("sandbox watch channel closed")
 			}
 			if event.Event != nil {
 				snapshot, changed, err := s.applyAuthoritativeSandboxEvent(event.Event)
 				if err != nil {
+					s.markProjectionLiveNotReady("sandbox")
 					s.poisonProviderWatch("sandbox", err.Error())
 					s.recorder.IncCounter("provider_watch_event_apply_failures", 1)
 					return fmt.Errorf("sandbox event apply failed: %w", err)
 				}
 				s.markProviderWatchEventHealthy("sandbox")
+				s.markProjectionLiveReady("sandbox")
 				if changed {
 					s.enqueueSnapshotIntents(snapshot)
 				}
@@ -192,52 +301,40 @@ func (s *Server) seedEventLoop(ctx context.Context) {
 	if s.eventLoop == nil {
 		return
 	}
-	providerID := "provider"
-	if complete, ok := s.provider.(provider.CompleteResourceProvider); ok {
-		if id, err := complete.ID(ctx); err == nil && id != "" {
-			providerID = id
-		}
-	}
-	if snapshot, err := s.provider.Snapshot(ctx); err == nil {
-		event := &tgsrlv1.ResourceEvent{
-			EventId:          "bootstrap-snapshot",
-			EventType:        tgsrlv1.ResourceEventType_RESOURCE_EVENT_TYPE_SNAPSHOT_PUBLISHED,
-			Provider:         providerID,
-			ProviderRevision: snapshot.GetRevision(),
-			ObservedAt:       snapshot.GetObservedAt(),
-			Snapshot:         snapshot,
-		}
-		if _, _, err := s.applyAuthoritativeResourceEvent(event); err != nil {
-			s.setProviderWatchUnhealthy("resource", err.Error())
-			s.recorder.IncCounter("provider_watch_event_apply_failures", 1)
-		}
-	}
-	sandboxes, err := s.provider.ListSandboxes(ctx)
-	if err != nil {
-		return
-	}
-	bootstrapped := make([]*tgsrlv1.Sandbox, 0, len(sandboxes))
-	for _, sandbox := range sandboxes {
-		bootstrapped = append(bootstrapped, sandboxToProto(sandbox))
-	}
-	s.planMu.Lock()
-	defer s.planMu.Unlock()
-	if _, err := s.store.ReplaceProjectedSandboxes(bootstrapped); err == nil {
-		for _, sandbox := range bootstrapped {
-			s.eventLoop.PublishSandboxEvent(&tgsrlv1.SandboxEvent{
-				EventId:    "bootstrap-sandbox-" + sandbox.GetSandboxId(),
-				SandboxId:  sandbox.GetSandboxId(),
-				RunId:      sandbox.GetRunId(),
-				JobId:      sandbox.GetJobId(),
-				TraceId:    sandbox.GetTraceId(),
-				Generation: sandbox.GetGeneration(),
-				State:      sandbox.GetState(),
-				Binding:    cloneBindingToProto(sandbox.GetBinding()),
-				SafePoint:  sandbox.GetSafePoint(),
-				OccurredAt: sandbox.GetObservedAt(),
-				DataKind:   sandbox.GetDataKind(),
+	if snapshot, err := s.store.GetSnapshot(ctx, 0, true); err == nil {
+		if seeded := s.eventLoop.View(); seeded.Snapshot == nil || !proto.Equal(seeded.Snapshot, snapshot) {
+			s.eventLoop.ApplyResourceEvent(&tgsrlv1.ResourceEvent{
+				EventId:          "store-bootstrap",
+				EventType:        tgsrlv1.ResourceEventType_RESOURCE_EVENT_TYPE_SNAPSHOT_PUBLISHED,
+				Provider:         "store-bootstrap",
+				ProviderRevision: snapshot.GetRevision(),
+				ObservedAt:       snapshot.GetObservedAt(),
+				Snapshot:         snapshot,
 			})
 		}
+	}
+	for _, sandbox := range s.store.ListProjectedSandboxes() {
+		if sandbox == nil {
+			continue
+		}
+		share, priority, offloaded := sandbox.GetShare(), sandbox.GetPriority(), sandbox.GetOffloaded()
+		s.eventLoop.PublishSandboxEvent(&tgsrlv1.SandboxEvent{
+			EventId:         "restore-sandbox-" + sandbox.GetSandboxId(),
+			SandboxId:       sandbox.GetSandboxId(),
+			RunId:           sandbox.GetRunId(),
+			JobId:           sandbox.GetJobId(),
+			TraceId:         sandbox.GetTraceId(),
+			Generation:      sandbox.GetGeneration(),
+			State:           sandbox.GetState(),
+			Binding:         cloneBindingToProto(sandbox.GetBinding()),
+			SemanticContext: cloneSemanticEnvelope(sandbox.GetSemanticContext()),
+			Share:           &share,
+			Priority:        &priority,
+			SafePoint:       sandbox.GetSafePoint(),
+			Offloaded:       &offloaded,
+			OccurredAt:      sandbox.GetObservedAt(),
+			DataKind:        sandbox.GetDataKind(),
+		})
 	}
 }
 
@@ -252,8 +349,8 @@ func (s *Server) applyAuthoritativeResourceEvent(event *tgsrlv1.ResourceEvent) (
 	}
 	if event.GetEventType() == tgsrlv1.ResourceEventType_RESOURCE_EVENT_TYPE_SNAPSHOT_PUBLISHED && event.GetSnapshot() != nil {
 		if _, changed, err := s.store.BootstrapProviderSnapshot(event.GetProvider(), event.GetSnapshot()); err == nil && changed {
-			snapshot, applied := s.eventLoop.ApplyResourceEvent(event)
-			return snapshot, applied, nil
+			snapshot, _ := s.eventLoop.ApplyResourceEvent(event)
+			return snapshot, true, nil
 		} else if err == nil {
 			return s.eventLoop.View(), false, nil
 		} else {
@@ -261,8 +358,8 @@ func (s *Server) applyAuthoritativeResourceEvent(event *tgsrlv1.ResourceEvent) (
 		}
 	}
 	if _, changed, err := s.store.ApplyProviderResourceEvent(event); err == nil && changed {
-		snapshot, applied := s.eventLoop.ApplyResourceEvent(event)
-		return snapshot, applied, nil
+		snapshot, _ := s.eventLoop.ApplyResourceEvent(event)
+		return snapshot, true, nil
 	} else if err == nil {
 		return s.eventLoop.View(), false, nil
 	} else {
@@ -280,8 +377,8 @@ func (s *Server) applyAuthoritativeSandboxEvent(event *tgsrlv1.SandboxEvent) (ca
 		return s.eventLoop.View(), false, nil
 	}
 	if _, changed, err := s.store.ApplyProviderSandboxEvent(event); err == nil && changed {
-		snapshot, applied := s.eventLoop.ApplySandboxEvent(event)
-		return snapshot, applied, nil
+		snapshot, _ := s.eventLoop.ApplySandboxEvent(event)
+		return snapshot, true, nil
 	} else if err == nil {
 		return s.eventLoop.View(), false, nil
 	} else {
@@ -332,16 +429,22 @@ func cloneBindingToProto(binding *tgsrlv1.Binding) *tgsrlv1.Binding {
 }
 
 func sandboxToProto(sandbox provider.Sandbox) *tgsrlv1.Sandbox {
-	observedAt := sandbox.UpdatedAt.UTC()
-	if observedAt.IsZero() {
-		observedAt = time.Now().UTC()
+	result := &tgsrlv1.Sandbox{
+		SandboxId:       sandbox.SandboxID,
+		State:           runtimeStateFromProvider(sandbox.State),
+		Generation:      sandbox.Generation,
+		Binding:         cloneBindingToProto(sandbox.Binding),
+		Share:           sandbox.Share,
+		Priority:        sandbox.Priority,
+		SafePoint:       sandbox.SafePoint,
+		Offloaded:       sandbox.Offloaded,
+		SemanticContext: cloneSemanticEnvelope(sandbox.SemanticContext),
 	}
-	return &tgsrlv1.Sandbox{
-		SandboxId:  sandbox.SandboxID,
-		State:      runtimeStateFromProvider(sandbox.State),
-		Generation: sandbox.Generation,
-		Binding:    cloneBindingToProto(sandbox.Binding),
-		SafePoint:  sandbox.SafePoint,
-		ObservedAt: timestamppb.New(observedAt),
+	if !sandbox.UpdatedAt.IsZero() {
+		result.ObservedAt = timestamppb.New(sandbox.UpdatedAt.UTC())
 	}
+	if !sandbox.StateChangedAt.IsZero() {
+		result.StateChangedAt = timestamppb.New(sandbox.StateChangedAt.UTC())
+	}
+	return result
 }

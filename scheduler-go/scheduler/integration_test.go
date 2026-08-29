@@ -13,7 +13,7 @@ import (
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
-func TestConfiguredPolicyAndProtectionApplyInAuthoritativeEvaluate(t *testing.T) {
+func TestConfiguredPolicyAndProtectionChecksDoNotMutatePureEvaluate(t *testing.T) {
 	snapshot, intent := validFixture()
 	guard := protection.NewGuard(protection.Config{Enabled: true, Cooldown: time.Minute, MaxActionsPerWindow: 4, Window: time.Hour, BreakerThreshold: 2, BreakerResetAfter: time.Hour}, protection.ClockFunc(func() time.Time { return fixtureTime }))
 	evaluator, err := New(Config{Fallback: FallbackNoOp, Clock: ClockFunc(func() time.Time { return fixtureTime }), Policy: policy.Bundle{ID: "configured", Version: "1", Strategy: policy.StrategyScoreFirst, PreemptionPolicy: "noop"}, Guard: guard})
@@ -25,7 +25,7 @@ func TestConfiguredPolicyAndProtectionApplyInAuthoritativeEvaluate(t *testing.T)
 		t.Fatalf("first Evaluate() plan=%v decision=%v error=%v", plan, decision, err)
 	}
 	plan, decision, err = evaluator.Evaluate(snapshot, intent)
-	if err != nil || !decision.GetFallback() || decision.GetFallbackReason() != "PROTECTION_COOLDOWN" || len(plan.GetActions()) != 0 {
+	if err != nil || decision.GetFallback() || len(plan.GetActions()) != 2 {
 		t.Fatalf("second Evaluate() plan=%v decision=%v error=%v", plan, decision, err)
 	}
 }

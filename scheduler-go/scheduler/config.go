@@ -71,6 +71,23 @@ type Config struct {
 	Policy              policy.Bundle
 	Guard               *protection.Guard
 	Preemption          preemption.Strategy
+	// PlannerEvidenceBudget independently bounds adaptive-planner evidence.
+	// A zero value uses DefaultPlannerEvidenceBudget.
+	PlannerEvidenceBudget int
+	// PlannerPerTickActionBudget bounds adaptive mutations proposed in one
+	// evaluation. Store currently accepts one mutation action, so zero defaults
+	// to DefaultPlannerActionBudget.
+	PlannerPerTickActionBudget int
+	// PlannerUtility holds fixed-point utility weights. An all-zero value uses
+	// DefaultPlannerUtilityConfig.
+	PlannerUtility PlannerUtilityConfig
+	// PlannerIdleSleepAfter and PlannerIdleOffloadAfter are deterministic
+	// thresholds evaluated against the explicit sandbox observed_at timestamp.
+	PlannerIdleSleepAfter   time.Duration
+	PlannerIdleOffloadAfter time.Duration
+	// PlannerSandboxMaximumAge rejects missing, future, or stale runtime
+	// observations before any adaptive tier can authorize a mutation.
+	PlannerSandboxMaximumAge time.Duration
 }
 
 // ValidationError identifies a stable input field without coupling callers to
@@ -99,6 +116,7 @@ type Scheduler struct {
 	policy         policy.Policy
 	guard          *protection.Guard
 	preemption     preemption.Strategy
+	coordinator    *Coordinator
 	sequenceMu     sync.Mutex
 }
 
@@ -173,7 +191,7 @@ func New(config Config) (*Scheduler, error) {
 	if config.Preemption == nil {
 		config.Preemption = preemption.NoOp{}
 	}
-	return &Scheduler{
+	scheduler := &Scheduler{
 		fallback:       config.Fallback,
 		clock:          config.Clock,
 		sequence:       config.Sequence,
@@ -185,11 +203,21 @@ func New(config Config) (*Scheduler, error) {
 		policy:         configuredPolicy,
 		guard:          config.Guard,
 		preemption:     config.Preemption,
-	}, nil
+	}
+	scheduler.coordinator = NewCoordinator(config)
+	return scheduler, nil
 }
 
 // NewScheduler is an explicit-name alias useful at service composition sites.
 func NewScheduler(config Config) (*Scheduler, error) { return New(config) }
+
+// Guard returns the scheduler's configured protection guard.
+func (s *Scheduler) Guard() *protection.Guard {
+	if s == nil {
+		return nil
+	}
+	return s.guard
+}
 
 func (s *Scheduler) nextSequence() uint64 {
 	s.sequenceMu.Lock()

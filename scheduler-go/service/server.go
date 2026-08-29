@@ -13,6 +13,7 @@ import (
 	"github.com/Blizzard-cyber/TGS-RL/scheduler-go/cache"
 	"github.com/Blizzard-cyber/TGS-RL/scheduler-go/eventloop"
 	"github.com/Blizzard-cyber/TGS-RL/scheduler-go/observability"
+	"github.com/Blizzard-cyber/TGS-RL/scheduler-go/protection"
 	"github.com/Blizzard-cyber/TGS-RL/scheduler-go/provider"
 	"github.com/Blizzard-cyber/TGS-RL/scheduler-go/scheduler"
 	"github.com/Blizzard-cyber/TGS-RL/scheduler-go/state"
@@ -30,6 +31,13 @@ type Evaluator interface {
 // EvaluationContext while preserving compatibility with existing fakes.
 type ContextualEvaluator interface {
 	EvaluateWithContext(*tgsrlv1.ClusterSnapshot, *tgsrlv1.SchedulingIntent, *tgsrlv1.EvaluationContext) (*tgsrlv1.PlacementPlan, *tgsrlv1.DecisionRecord, error)
+}
+
+// AdaptiveEvaluator is an optional service-local seam for adaptive evaluation.
+// Root note: this is a temporary compatibility interface owned by service
+// until scheduler core lands its final EvaluateAdaptive API shape.
+type AdaptiveEvaluator interface {
+	EvaluateAdaptive(*scheduler.AdaptiveEvaluationInput) (*tgsrlv1.PlacementPlan, *tgsrlv1.DecisionRecord, error)
 }
 
 // Clock provides deterministic wall-clock capture for service-side evaluation
@@ -67,6 +75,7 @@ type Server struct {
 
 	store          *state.Store
 	scheduler      Evaluator
+	guard          *protection.Guard
 	provider       provider.ResourceProvider
 	retention      int
 	recorder       observability.Recorder
@@ -78,6 +87,7 @@ type Server struct {
 	lifecycleCtx   context.Context
 	lifecycleStop  context.CancelFunc
 	providerWatch  providerWatchState
+	projectionLive projectionReadyState
 
 	mu sync.Mutex
 	// planMu serializes Store snapshot/evaluate/reserve/finalize transactions.
@@ -136,6 +146,14 @@ type providerWatchState struct {
 	sandboxReconnects  int
 }
 
+type projectionReadyState struct {
+	mu              sync.RWMutex
+	resourceLive    bool
+	sandboxLive     bool
+	resourceAttempt bool
+	sandboxAttempt  bool
+}
+
 // New constructs a scheduling service.
 func New(config Config) (*Server, error) {
 	if config.Store == nil {
@@ -160,6 +178,7 @@ func New(config Config) (*Server, error) {
 	server := &Server{
 		store:         config.Store,
 		scheduler:     config.Scheduler,
+		guard:         schedulerGuard(config.Scheduler),
 		provider:      config.Provider,
 		retention:     config.DecisionRetention,
 		recorder:      config.Recorder,
@@ -225,6 +244,13 @@ func (s *Server) Start() error {
 		s.lifecycleStop()
 	}
 	return s.startErr
+}
+
+func schedulerGuard(evaluator Evaluator) *protection.Guard {
+	if provider, ok := evaluator.(interface{ Guard() *protection.Guard }); ok {
+		return provider.Guard()
+	}
+	return nil
 }
 
 // PublishIntent validates and stores the latest scheduling intent.
@@ -305,7 +331,19 @@ func (s *Server) Schedule(_ context.Context, request *tgsrlv1.ScheduleRequest) (
 		evaluationContext = buildEvaluationContext(s.now(), request.Intent, nil)
 		evaluationContext.CompatibilityDefaultsApplied = true
 	}
-	_, decision, err := s.evaluateIntent(request.Snapshot, request.Intent, evaluationContext)
+	// Schedule is a pure caller-supplied preview. It must not mix that snapshot
+	// with the service's live provider projection or retained decision history.
+	// Adaptive runtime mutation is evaluated only by the authoritative reconcile
+	// path, where all three inputs share one Store revision boundary.
+	var (
+		decision *tgsrlv1.DecisionRecord
+		err      error
+	)
+	if evaluator, ok := s.scheduler.(ContextualEvaluator); ok {
+		_, decision, err = evaluator.EvaluateWithContext(request.Snapshot, request.Intent, evaluationContext)
+	} else {
+		_, decision, err = s.scheduler.Evaluate(request.Snapshot, request.Intent)
+	}
 	if err != nil {
 		return nil, status.Error(codes.InvalidArgument, err.Error())
 	}

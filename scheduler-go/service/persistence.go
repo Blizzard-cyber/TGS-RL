@@ -8,6 +8,7 @@ import (
 
 	tgsrlv1 "github.com/Blizzard-cyber/TGS-RL/gen/go/tgsrl/v1"
 	"github.com/Blizzard-cyber/TGS-RL/scheduler-go/persistence"
+	"github.com/Blizzard-cyber/TGS-RL/scheduler-go/protection"
 	"github.com/Blizzard-cyber/TGS-RL/scheduler-go/provider"
 	"github.com/Blizzard-cyber/TGS-RL/scheduler-go/state"
 	"google.golang.org/protobuf/proto"
@@ -44,7 +45,7 @@ func (s *Server) checkpointStateLocked(entries []decisionEntry, cursor uint64, e
 	if len(exporters) > 0 && exporters[0] != nil {
 		store = exporters[0]
 	}
-	checkpoint, err := persistence.Capture(store, decisions, cursor)
+	checkpoint, err := persistence.Capture(store, decisions, cursor, s.ExportProtectionState())
 	if err != nil {
 		return s.recordPersistenceFailureLocked(fmt.Errorf("service: capture scheduler checkpoint: %w", err))
 	}
@@ -53,6 +54,13 @@ func (s *Server) checkpointStateLocked(entries []decisionEntry, cursor uint64, e
 	}
 	s.recorder.IncCounter("persistence_checkpoints", 1)
 	return nil
+}
+
+func (s *Server) ExportProtectionState() protection.State {
+	if s == nil || s.guard == nil {
+		return protection.State{}
+	}
+	return s.guard.ExportState()
 }
 
 func (s *Server) recordPersistenceFailureLocked(err error) error {
@@ -112,6 +120,9 @@ func (s *Server) RestoreDecisions(decisions []*tgsrlv1.DecisionRecord, cursor ui
 func (s *Server) ResumeRecoveredState(ctx context.Context, recovered *persistence.SchedulerState) error {
 	if recovered == nil {
 		return nil
+	}
+	if s.guard != nil {
+		s.guard.RestoreState(recovered.Protection)
 	}
 	if ctx == nil {
 		ctx = s.backgroundContext()
@@ -184,15 +195,18 @@ func (s *Server) reconcileRecoveredReservations(ctx context.Context, recovered *
 		}
 		succeeded := record.Status == provider.PlanStatusSucceeded
 		beforeFinalize := s.store.ExportDurableState()
+		protectionBeforeFinalize := s.ExportProtectionState()
 		finalSnapshot, err := s.store.FinalizePlanResults(reservation.Plan, succeeded, record.Results)
 		if err != nil {
 			return fmt.Errorf("service: finalize recovered reservation %q: %w", reservation.Plan.GetPlanId(), err)
 		}
+		s.recordProtectionOutcome(protectionKeyFromPlan(reservation.Plan), succeeded)
 		if alreadyCommitted {
 			if err := s.checkpoint(); err != nil {
 				if restoreErr := s.store.Restore(beforeFinalize); restoreErr != nil {
 					return fmt.Errorf("service: rollback recovered reservation %q: %v (checkpoint error: %w)", reservation.Plan.GetPlanId(), restoreErr, err)
 				}
+				s.restoreProtectionSnapshot(protectionBeforeFinalize)
 				return err
 			}
 			continue
@@ -200,16 +214,25 @@ func (s *Server) reconcileRecoveredReservations(ctx context.Context, recovered *
 		decision, err := recoveredReservationDecision(pendingDecision, reservation.Plan, record, finalSnapshot)
 		if err != nil {
 			_ = s.store.Restore(beforeFinalize)
+			s.restoreProtectionSnapshot(protectionBeforeFinalize)
 			return err
 		}
 		if err := s.appendDecision(decision.GetJobId(), decision); err != nil {
 			if restoreErr := s.store.Restore(beforeFinalize); restoreErr != nil {
 				return fmt.Errorf("service: rollback recovered reservation %q: %v (decision checkpoint error: %w)", reservation.Plan.GetPlanId(), restoreErr, err)
 			}
+			s.restoreProtectionSnapshot(protectionBeforeFinalize)
 			return fmt.Errorf("service: persist recovered decision %q: %w", decision.GetDecisionId(), err)
 		}
 	}
 	return nil
+}
+
+func protectionKeyFromPlan(plan *tgsrlv1.PlacementPlan) string {
+	if plan == nil {
+		return ""
+	}
+	return plan.GetExecutionId() + "/" + plan.GetStageId()
 }
 
 func recoveredDecisionForPlan(decisions []*tgsrlv1.DecisionRecord, plan *tgsrlv1.PlacementPlan) *tgsrlv1.DecisionRecord {

@@ -82,6 +82,8 @@ func makePlan(decisionID, planID string, snapshot *tgsrlv1.ClusterSnapshot, inte
 			Level:                    tgsrlv1.ActionLevel_ACTION_LEVEL_L1,
 			TargetId:                 binding.GetPendingUnitId(),
 			Binding:                  proto.Clone(binding).(*tgsrlv1.Binding),
+			Share:                    binding.GetResources().GetAcceleratorUnits(),
+			Priority:                 intent.GetPriority(),
 			Rollback:                 &tgsrlv1.Rollback{ActionType: tgsrlv1.ActionType_ACTION_TYPE_RELEASE, TargetId: binding.GetBindingId(), Reason: "compensate bind if plan application fails"},
 			Order:                    order,
 			PlanId:                   planID,

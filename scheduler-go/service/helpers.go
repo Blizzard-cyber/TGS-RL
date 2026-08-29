@@ -2,8 +2,10 @@ package service
 
 import (
 	"context"
+	"encoding/base64"
 	"errors"
 	"fmt"
+	"sort"
 	"time"
 
 	tgsrlv1 "github.com/Blizzard-cyber/TGS-RL/gen/go/tgsrl/v1"
@@ -65,6 +67,27 @@ func cloneSemanticEnvelope(envelope *tgsrlv1.SemanticEnvelope) *tgsrlv1.Semantic
 	return proto.Clone(envelope).(*tgsrlv1.SemanticEnvelope)
 }
 
+func cloneSnapshot(snapshot *tgsrlv1.ClusterSnapshot) *tgsrlv1.ClusterSnapshot {
+	if snapshot == nil {
+		return nil
+	}
+	return proto.Clone(snapshot).(*tgsrlv1.ClusterSnapshot)
+}
+
+func cloneIntent(intent *tgsrlv1.SchedulingIntent) *tgsrlv1.SchedulingIntent {
+	if intent == nil {
+		return nil
+	}
+	return proto.Clone(intent).(*tgsrlv1.SchedulingIntent)
+}
+
+func cloneEvaluationContext(context *tgsrlv1.EvaluationContext) *tgsrlv1.EvaluationContext {
+	if context == nil {
+		return nil
+	}
+	return proto.Clone(context).(*tgsrlv1.EvaluationContext)
+}
+
 func cloneContractObservation(observation *tgsrlv1.ContractObservation) *tgsrlv1.ContractObservation {
 	if observation == nil {
 		return nil
@@ -74,6 +97,209 @@ func cloneContractObservation(observation *tgsrlv1.ContractObservation) *tgsrlv1
 
 func cloneRuntimeTrigger(trigger *eventloop.Trigger) *eventloop.Trigger {
 	return eventloop.CloneTrigger(trigger)
+}
+
+func shouldSuppressDecision(snapshot *tgsrlv1.ClusterSnapshot, intent *tgsrlv1.SchedulingIntent, plan *tgsrlv1.PlacementPlan, decision *tgsrlv1.DecisionRecord, recent []*tgsrlv1.DecisionRecord) bool {
+	if plan == nil || len(plan.GetActions()) != 0 || !isNoChangeDecision(decision) || !intentSatisfiedBySnapshot(snapshot, intent) {
+		return false
+	}
+	signature := noChangeDecisionSignature(decision)
+	for index := len(recent) - 1; index >= 0; index-- {
+		previous := recent[index]
+		if previous == nil || previous.GetSequence() == 0 || !sameDecisionScope(previous, decision) {
+			continue
+		}
+		if previous.GetFallback() || len(previous.GetRejectedCandidates()) != 0 || previous.GetSelectedPlan() == nil {
+			continue
+		}
+		if len(previous.GetSelectedPlan().GetActions()) != 0 && successfulActionDecision(previous) {
+			if sameContractEvaluationState(previous, decision) {
+				return true
+			}
+			continue
+		}
+		if noChangeDecisionSignature(previous) == signature {
+			return true
+		}
+	}
+	return false
+}
+
+func isNoChangeDecision(decision *tgsrlv1.DecisionRecord) bool {
+	return decision != nil && !decision.GetFallback() && len(decision.GetRejectedCandidates()) == 0 &&
+		decision.GetSelectedPlan() != nil && len(decision.GetSelectedPlan().GetActions()) == 0
+}
+
+func sameDecisionScope(left, right *tgsrlv1.DecisionRecord) bool {
+	return left != nil && right != nil && left.GetExecutionId() == right.GetExecutionId() &&
+		left.GetStageId() == right.GetStageId() && left.GetIntentVersion() == right.GetIntentVersion()
+}
+
+func successfulActionDecision(decision *tgsrlv1.DecisionRecord) bool {
+	if decision == nil || decision.GetFallback() || decision.GetSelectedPlan() == nil || len(decision.GetSelectedPlan().GetActions()) == 0 {
+		return false
+	}
+	results := decision.GetActionResults()
+	if len(results) == 0 {
+		// Older durable audits did not necessarily persist per-action results.
+		// The satisfied snapshot supplies the authoritative convergence proof.
+		return true
+	}
+	if len(results) != len(decision.GetSelectedPlan().GetActions()) {
+		return false
+	}
+	for _, result := range results {
+		if result == nil || result.GetStatus() != tgsrlv1.ActionResultStatus_ACTION_RESULT_STATUS_SUCCEEDED {
+			return false
+		}
+	}
+	return true
+}
+
+func intentSatisfiedBySnapshot(snapshot *tgsrlv1.ClusterSnapshot, intent *tgsrlv1.SchedulingIntent) bool {
+	if snapshot == nil || intent == nil || intent.GetUnitCount() == 0 {
+		return false
+	}
+	active := uint32(0)
+	for _, allocation := range snapshot.GetAllocations() {
+		if allocation != nil && allocation.GetState() == tgsrlv1.AllocationState_ALLOCATION_STATE_ACTIVE &&
+			allocation.GetExecutionId() == intent.GetExecutionId() && allocation.GetStageId() == intent.GetStageId() &&
+			allocation.GetIntentVersion() == intent.GetVersion() {
+			active++
+		}
+	}
+	return active >= intent.GetUnitCount()
+}
+
+func noChangeDecisionSignature(decision *tgsrlv1.DecisionRecord) string {
+	if !isNoChangeDecision(decision) {
+		return ""
+	}
+	signature := &tgsrlv1.SemanticObject{Fields: []*tgsrlv1.SemanticField{
+		{Key: "decision.plan_purpose", Value: semanticIntValue(int64(decision.GetSelectedPlan().GetPurpose()))},
+		{Key: "planner.total_proposals", Value: semanticUintValue(decision.GetTotalPlannerProposalCount())},
+		{Key: "planner.truncated", Value: semanticBoolValue(decision.GetPlannerEvidenceTruncated())},
+	}}
+	plannerSignatures := make([]string, 0, len(decision.GetPlannerEvidence()))
+	for _, evidence := range decision.GetPlannerEvidence() {
+		if evidence == nil {
+			continue
+		}
+		planner := &tgsrlv1.SemanticObject{Fields: []*tgsrlv1.SemanticField{
+			{Key: "reason", Value: semanticStringValue(evidence.GetReason())},
+			{Key: "purpose", Value: semanticIntValue(int64(evidence.GetPurpose()))},
+			{Key: "disposition", Value: semanticIntValue(int64(evidence.GetDisposition()))},
+			{Key: "action_type", Value: semanticIntValue(int64(evidence.GetActionType()))},
+			{Key: "target", Value: semanticStringValue(evidence.GetTargetId())},
+			{Key: "utility_nanos", Value: semanticIntValue(evidence.GetUtilityNanos())},
+		}}
+		for _, field := range evidence.GetInputs() {
+			if field != nil && !volatilePlannerInput(field.GetKey()) {
+				planner.Fields = append(planner.Fields, proto.Clone(field).(*tgsrlv1.SemanticField))
+			}
+		}
+		sortSemanticFields(planner.Fields)
+		plannerSignatures = append(plannerSignatures, marshalSemanticObject(planner))
+	}
+	sort.Strings(plannerSignatures)
+	for _, plannerSignature := range plannerSignatures {
+		signature.Fields = append(signature.Fields, &tgsrlv1.SemanticField{Key: "planner.evidence", Value: semanticStringValue(plannerSignature)})
+	}
+	for _, contractSignature := range contractEvaluationSignatures(decision) {
+		signature.Fields = append(signature.Fields, &tgsrlv1.SemanticField{Key: "contract.evaluation", Value: semanticStringValue(contractSignature)})
+	}
+	return marshalSemanticObject(signature)
+}
+
+func volatilePlannerInput(key string) bool {
+	switch key {
+	case "planner.evaluation_time_unix_nanos", "planner.snapshot_revision", "planner.observed_revision",
+		"planner.decision_sequence", "planner.recent_decision_count", "planner.tick_kind", "planner.trigger_cause",
+		"planner.sandbox_observed_at_unix_nanos":
+		return true
+	default:
+		return false
+	}
+}
+
+func sameContractEvaluationState(previous, current *tgsrlv1.DecisionRecord) bool {
+	if len(previous.GetContractEvaluations()) == 0 {
+		return true
+	}
+	return contractEvaluationStateSignature(previous) == contractEvaluationStateSignature(current)
+}
+
+func contractEvaluationStateSignature(decision *tgsrlv1.DecisionRecord) string {
+	signature := &tgsrlv1.SemanticObject{}
+	for _, evaluationSignature := range contractEvaluationSignatures(decision) {
+		signature.Fields = append(signature.Fields, &tgsrlv1.SemanticField{Key: "evaluation", Value: semanticStringValue(evaluationSignature)})
+	}
+	return marshalSemanticObject(signature)
+}
+
+func contractEvaluationSignatures(decision *tgsrlv1.DecisionRecord) []string {
+	if decision == nil {
+		return nil
+	}
+	signatures := make([]string, 0, len(decision.GetContractEvaluations()))
+	for _, evaluation := range decision.GetContractEvaluations() {
+		if evaluation == nil {
+			continue
+		}
+		contract := &tgsrlv1.SemanticObject{Fields: []*tgsrlv1.SemanticField{
+			{Key: "contract_id", Value: semanticStringValue(evaluation.GetContractId())},
+			{Key: "clause_kind", Value: semanticIntValue(int64(evaluation.GetClauseKind()))},
+			{Key: "clause_id", Value: semanticStringValue(evaluation.GetClauseId())},
+			{Key: "status", Value: semanticIntValue(int64(evaluation.GetStatus()))},
+			{Key: "failure_mode", Value: semanticIntValue(int64(evaluation.GetFailureMode()))},
+			{Key: "recommended_action", Value: semanticIntValue(int64(evaluation.GetRecommendedAction()))},
+			{Key: "observation_disposition", Value: semanticIntValue(int64(evaluation.GetObservationDisposition()))},
+			{Key: "reason", Value: semanticStringValue(evaluation.GetDetail())},
+		}}
+		missing := append([]string(nil), evaluation.GetMissingKeys()...)
+		sort.Strings(missing)
+		for _, key := range missing {
+			contract.Fields = append(contract.Fields, &tgsrlv1.SemanticField{Key: "missing_key", Value: semanticStringValue(key)})
+		}
+		signatures = append(signatures, marshalSemanticObject(contract))
+	}
+	sort.Strings(signatures)
+	return signatures
+}
+
+func sortSemanticFields(fields []*tgsrlv1.SemanticField) {
+	sort.SliceStable(fields, func(i, j int) bool {
+		if fields[i].GetKey() != fields[j].GetKey() {
+			return fields[i].GetKey() < fields[j].GetKey()
+		}
+		left, _ := proto.MarshalOptions{Deterministic: true}.Marshal(fields[i].GetValue())
+		right, _ := proto.MarshalOptions{Deterministic: true}.Marshal(fields[j].GetValue())
+		return string(left) < string(right)
+	})
+}
+
+func marshalSemanticObject(object *tgsrlv1.SemanticObject) string {
+	encoded, err := proto.MarshalOptions{Deterministic: true}.Marshal(object)
+	if err != nil {
+		return ""
+	}
+	return base64.RawStdEncoding.EncodeToString(encoded)
+}
+
+func semanticStringValue(value string) *tgsrlv1.SemanticValue {
+	return &tgsrlv1.SemanticValue{Kind: &tgsrlv1.SemanticValue_StringValue{StringValue: value}}
+}
+
+func semanticIntValue(value int64) *tgsrlv1.SemanticValue {
+	return &tgsrlv1.SemanticValue{Kind: &tgsrlv1.SemanticValue_Int64Value{Int64Value: value}}
+}
+
+func semanticUintValue(value uint64) *tgsrlv1.SemanticValue {
+	return &tgsrlv1.SemanticValue{Kind: &tgsrlv1.SemanticValue_Uint64Value{Uint64Value: value}}
+}
+
+func semanticBoolValue(value bool) *tgsrlv1.SemanticValue {
+	return &tgsrlv1.SemanticValue{Kind: &tgsrlv1.SemanticValue_BoolValue{BoolValue: value}}
 }
 
 func appendOrMergeTrigger(triggers []*eventloop.Trigger, trigger *eventloop.Trigger) []*eventloop.Trigger {
@@ -275,6 +501,94 @@ func (s *Server) markProviderWatchEventHealthy(kind string) {
 		s.providerWatch.sandboxReason = ""
 	}
 	s.providerWatch.mu.Unlock()
+}
+
+func (s *Server) markProjectionLiveAttempt(kind string) {
+	if s == nil {
+		return
+	}
+	s.projectionLive.mu.Lock()
+	switch kind {
+	case "resource":
+		s.projectionLive.resourceAttempt = true
+	case "sandbox":
+		s.projectionLive.sandboxAttempt = true
+	default:
+		s.projectionLive.resourceAttempt = true
+		s.projectionLive.sandboxAttempt = true
+	}
+	s.projectionLive.mu.Unlock()
+}
+
+func (s *Server) markProjectionLiveReady(kind string) {
+	if s == nil {
+		return
+	}
+	s.projectionLive.mu.Lock()
+	switch kind {
+	case "resource":
+		s.projectionLive.resourceAttempt = true
+		s.projectionLive.resourceLive = true
+	case "sandbox":
+		s.projectionLive.sandboxAttempt = true
+		s.projectionLive.sandboxLive = true
+	default:
+		s.projectionLive.resourceAttempt = true
+		s.projectionLive.resourceLive = true
+		s.projectionLive.sandboxAttempt = true
+		s.projectionLive.sandboxLive = true
+	}
+	s.projectionLive.mu.Unlock()
+}
+
+func (s *Server) markProjectionLiveNotReady(kind string) {
+	if s == nil {
+		return
+	}
+	s.projectionLive.mu.Lock()
+	switch kind {
+	case "resource":
+		s.projectionLive.resourceAttempt = true
+		s.projectionLive.resourceLive = false
+	case "sandbox":
+		s.projectionLive.sandboxAttempt = true
+		s.projectionLive.sandboxLive = false
+	default:
+		s.projectionLive.resourceAttempt = true
+		s.projectionLive.resourceLive = false
+		s.projectionLive.sandboxAttempt = true
+		s.projectionLive.sandboxLive = false
+	}
+	s.projectionLive.mu.Unlock()
+}
+
+func (s *Server) projectionReady() bool {
+	if s == nil {
+		return false
+	}
+	s.projectionLive.mu.RLock()
+	defer s.projectionLive.mu.RUnlock()
+	return s.projectionLive.resourceLive && s.projectionLive.sandboxLive
+}
+
+func (s *Server) projectionReadinessFailure() error {
+	if s == nil {
+		return nil
+	}
+	s.projectionLive.mu.RLock()
+	defer s.projectionLive.mu.RUnlock()
+	switch {
+	case !s.projectionLive.resourceAttempt:
+		return errors.New("provider resource projection has not completed live bootstrap")
+	case !s.projectionLive.resourceLive:
+		return errors.New("provider resource projection is not live")
+	case !s.projectionLive.sandboxAttempt:
+		return errors.New("provider sandbox projection has not completed live bootstrap")
+	case !s.projectionLive.sandboxLive:
+		return errors.New("provider sandbox projection is not live")
+	default:
+		return nil
+	}
 }
 
 func (s *Server) providerWatchFailure() error {

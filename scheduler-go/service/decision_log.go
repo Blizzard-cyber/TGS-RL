@@ -282,6 +282,33 @@ func (s *Server) decisionByID(decisionID string) (*tgsrlv1.DecisionRecord, bool)
 	return nil, false
 }
 
+func (s *Server) recentDecisionsForIntent(intent *tgsrlv1.SchedulingIntent, limit int) []*tgsrlv1.DecisionRecord {
+	if intent == nil || limit <= 0 {
+		return nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if limit > s.retention {
+		limit = s.retention
+	}
+	result := make([]*tgsrlv1.DecisionRecord, 0, limit)
+	for index := len(s.decisions) - 1; index >= 0 && len(result) < limit; index-- {
+		entry := s.decisions[index]
+		decision := entry.decision
+		if decision == nil {
+			continue
+		}
+		if decision.GetExecutionId() != intent.GetExecutionId() || decision.GetStageId() != intent.GetStageId() {
+			continue
+		}
+		result = append(result, cloneDecision(decision))
+	}
+	for left, right := 0, len(result)-1; left < right; left, right = left+1, right-1 {
+		result[left], result[right] = result[right], result[left]
+	}
+	return result
+}
+
 func cloneDecision(decision *tgsrlv1.DecisionRecord) *tgsrlv1.DecisionRecord {
 	if decision == nil {
 		return nil

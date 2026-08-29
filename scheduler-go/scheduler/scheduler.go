@@ -155,7 +155,7 @@ func (s *Scheduler) EvaluateWithContext(snapshot *tgsrlv1.ClusterSnapshot, inten
 					return s.fallbackResult(snapshot, intent, now, record, "ACTION_POLICY_"+err.Error())
 				}
 				guardKey := intent.GetExecutionId() + "/" + intent.GetStageId()
-				if guardDecision := s.guard.AllowN(guardKey, 0, len(preemptionPlan.GetActions())); !guardDecision.Allowed {
+				if guardDecision := s.guard.CheckN(guardKey, 0, len(preemptionPlan.GetActions())); !guardDecision.Allowed {
 					return s.fallbackResult(snapshot, intent, now, record, "PROTECTION_"+guardDecision.Reason)
 				}
 				record.SelectedPlan = proto.Clone(preemptionPlan).(*tgsrlv1.PlacementPlan)
@@ -189,7 +189,7 @@ func (s *Scheduler) EvaluateWithContext(snapshot *tgsrlv1.ClusterSnapshot, inten
 		return s.fallbackResult(snapshot, intent, now, record, "ACTION_POLICY_"+err.Error())
 	}
 	guardKey := intent.GetExecutionId() + "/" + intent.GetStageId()
-	if guardDecision := s.guard.AllowN(guardKey, recordCandidateScore(result.Selected), len(plan.GetActions())); !guardDecision.Allowed {
+	if guardDecision := s.guard.CheckN(guardKey, recordCandidateScore(result.Selected), len(plan.GetActions())); !guardDecision.Allowed {
 		return s.fallbackResult(snapshot, intent, now, record, "PROTECTION_"+guardDecision.Reason)
 	}
 	record.SelectedPlan = proto.Clone(plan).(*tgsrlv1.PlacementPlan)

@@ -82,6 +82,9 @@ func TestEvaluateBuildsCompleteDeterministicDecision(t *testing.T) {
 		if action.GetActionType() != tgsrlv1.ActionType_ACTION_TYPE_BIND || action.GetLevel() != tgsrlv1.ActionLevel_ACTION_LEVEL_L1 {
 			t.Errorf("action %d has unexpected type/level: %+v", index, action)
 		}
+		if action.GetShare() != intent.GetResourcesPerUnit().GetAcceleratorUnits() || action.GetPriority() != intent.GetPriority() {
+			t.Errorf("action %d initial share/priority = %v/%d, want %v/%d", index, action.GetShare(), action.GetPriority(), intent.GetResourcesPerUnit().GetAcceleratorUnits(), intent.GetPriority())
+		}
 		if action.GetOrder() != uint32(index+1) || action.GetPlanId() != plan.GetPlanId() || action.GetExpectedSnapshotRevision() != snapshot.GetRevision() {
 			t.Errorf("action %d lacks ordering/fencing: %+v", index, action)
 		}
