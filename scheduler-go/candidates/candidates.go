@@ -3,6 +3,7 @@ package candidates
 
 import (
 	"container/heap"
+	"errors"
 	"fmt"
 	"sort"
 
@@ -21,12 +22,30 @@ const (
 	FallbackInvalidSelection = "INVALID_SELECTION"
 )
 
+// ErrInvalidLedgerAdjustment identifies an invalid projection of the current
+// allocation ledger. Callers may use errors.Is to distinguish these request
+// errors from candidate construction failures.
+var ErrInvalidLedgerAdjustment = errors.New("candidates: invalid ledger adjustment")
+
 // Config controls the policy shortlist and the independently bounded audit
 // surface. TopK is applied after every pair in a unit's feasible surface has
 // been evaluated; it never limits pair evaluation.
 type Config struct {
 	TopK           int
 	EvidenceBudget int
+}
+
+// LedgerAdjustment projects an existing-allocation operation onto candidate
+// evaluation. Reclaimed allocations are removed from aggregate usage and
+// returned to device allocatable resources for this evaluation only. Include
+// and exclude lists restrict the evaluated device surface.
+//
+// All identifiers are normalized as sorted sets. The zero value preserves the
+// ordinary admission-evaluation path.
+type LedgerAdjustment struct {
+	ReclaimAllocationIDs []string
+	IncludeDeviceIDs     []string
+	ExcludeDeviceIDs     []string
 }
 
 // DecisionMetadata contains decision facts needed during candidate
@@ -78,14 +97,15 @@ type SelectFunc func(snapshot *tgsrlv1.ClusterSnapshot, intent *tgsrlv1.Scheduli
 // BuildCandidate have deterministic minimal defaults, but scheduler callers
 // normally inject both so IDs and plans share the outer decision contract.
 type Request struct {
-	Snapshot       *tgsrlv1.ClusterSnapshot
-	Intent         *tgsrlv1.SchedulingIntent
-	Decision       DecisionMetadata
-	Units          []Unit
-	Select         SelectFunc
-	CandidateID    CandidateIDFunc
-	BuildCandidate CandidateFactory
-	Config         Config
+	Snapshot         *tgsrlv1.ClusterSnapshot
+	Intent           *tgsrlv1.SchedulingIntent
+	Decision         DecisionMetadata
+	LedgerAdjustment LedgerAdjustment
+	Units            []Unit
+	Select           SelectFunc
+	CandidateID      CandidateIDFunc
+	BuildCandidate   CandidateFactory
+	Config           Config
 }
 
 // Option identifies a selected candidate without requiring callers to inspect
@@ -150,6 +170,11 @@ func (Engine) Evaluate(request Request) (Result, error) {
 	if err != nil {
 		return Result{}, err
 	}
+	adjustment, err := normalizeLedgerAdjustment(request.LedgerAdjustment, devices, snapshot.GetAllocations())
+	if err != nil {
+		return Result{}, err
+	}
+	devices = filterDevices(devices, adjustment)
 	idFactory := request.CandidateID
 	if idFactory == nil {
 		idFactory = defaultCandidateID(snapshot, intent)
@@ -166,7 +191,7 @@ func (Engine) Evaluate(request Request) (Result, error) {
 		factoryRequest.Intent = proto.Clone(intent).(*tgsrlv1.SchedulingIntent)
 	}
 
-	states := buildDeviceStates(snapshot, devices)
+	states := buildDeviceStates(snapshot, devices, adjustment.reclaimedAllocationIDs)
 	retainFeasibleEvidence := request.Select != nil || pairSurfaceFitsBudget(len(units), len(states), config.EvidenceBudget)
 	evidenceCapacity := config.EvidenceBudget
 	if !retainFeasibleEvidence && len(units) < evidenceCapacity {
@@ -366,6 +391,143 @@ func normalizeDevices(input []*tgsrlv1.Device) ([]*tgsrlv1.Device, error) {
 	}
 	sort.Slice(devices, func(i, j int) bool { return devices[i].GetDeviceId() < devices[j].GetDeviceId() })
 	return devices, nil
+}
+
+type normalizedLedgerAdjustment struct {
+	reclaimedAllocationIDs map[string]struct{}
+	includedDeviceIDs      map[string]struct{}
+	excludedDeviceIDs      map[string]struct{}
+}
+
+func normalizeLedgerAdjustment(input LedgerAdjustment, devices []*tgsrlv1.Device, allocations []*tgsrlv1.Allocation) (normalizedLedgerAdjustment, error) {
+	// This fast path is intentional: ordinary admission evaluation retains the
+	// exact validation and ledger behavior it had before adjustments existed.
+	if len(input.ReclaimAllocationIDs) == 0 && len(input.IncludeDeviceIDs) == 0 && len(input.ExcludeDeviceIDs) == 0 {
+		return normalizedLedgerAdjustment{}, nil
+	}
+
+	reclaimIDs := sortedUniqueIDs(input.ReclaimAllocationIDs)
+	includeIDs := sortedUniqueIDs(input.IncludeDeviceIDs)
+	excludeIDs := sortedUniqueIDs(input.ExcludeDeviceIDs)
+	knownDevices := make(map[string]struct{}, len(devices))
+	for _, device := range devices {
+		knownDevices[device.GetDeviceId()] = struct{}{}
+	}
+
+	for _, deviceID := range firstSortedIntersection(includeIDs, excludeIDs) {
+		return normalizedLedgerAdjustment{}, invalidLedgerAdjustment("device %q appears in both include and exclude filters", deviceID)
+	}
+	for _, deviceID := range includeIDs {
+		if _, exists := knownDevices[deviceID]; !exists {
+			return normalizedLedgerAdjustment{}, invalidLedgerAdjustment("included device %q does not exist in the snapshot", deviceID)
+		}
+	}
+	for _, deviceID := range excludeIDs {
+		if _, exists := knownDevices[deviceID]; !exists {
+			return normalizedLedgerAdjustment{}, invalidLedgerAdjustment("excluded device %q does not exist in the snapshot", deviceID)
+		}
+	}
+
+	requestedReclaims := idSet(reclaimIDs)
+	allocationsByID := make(map[string][]*tgsrlv1.Allocation, len(reclaimIDs))
+	for _, allocation := range allocations {
+		if allocation == nil {
+			continue
+		}
+		if _, requested := requestedReclaims[allocation.GetAllocationId()]; requested {
+			allocationsByID[allocation.GetAllocationId()] = append(allocationsByID[allocation.GetAllocationId()], allocation)
+		}
+	}
+	for _, allocationID := range reclaimIDs {
+		matches := allocationsByID[allocationID]
+		if len(matches) == 0 {
+			return normalizedLedgerAdjustment{}, invalidLedgerAdjustment("reclaimed allocation %q does not exist in the snapshot", allocationID)
+		}
+		if len(matches) != 1 {
+			return normalizedLedgerAdjustment{}, invalidLedgerAdjustment("reclaimed allocation ID %q is not unique in the snapshot", allocationID)
+		}
+		allocation := matches[0]
+		if allocation.GetState() != tgsrlv1.AllocationState_ALLOCATION_STATE_PENDING && allocation.GetState() != tgsrlv1.AllocationState_ALLOCATION_STATE_ACTIVE {
+			return normalizedLedgerAdjustment{}, invalidLedgerAdjustment("reclaimed allocation %q must be PENDING or ACTIVE, got %s", allocationID, allocation.GetState())
+		}
+		if len(allocation.GetDeviceIds()) != 1 {
+			return normalizedLedgerAdjustment{}, invalidLedgerAdjustment("reclaimed allocation %q must reference exactly one device, got %d", allocationID, len(allocation.GetDeviceIds()))
+		}
+		deviceID := allocation.GetDeviceIds()[0]
+		if _, exists := knownDevices[deviceID]; !exists {
+			return normalizedLedgerAdjustment{}, invalidLedgerAdjustment("reclaimed allocation %q references unknown device %q", allocationID, deviceID)
+		}
+	}
+
+	return normalizedLedgerAdjustment{
+		reclaimedAllocationIDs: requestedReclaims,
+		includedDeviceIDs:      idSet(includeIDs),
+		excludedDeviceIDs:      idSet(excludeIDs),
+	}, nil
+}
+
+func sortedUniqueIDs(input []string) []string {
+	if len(input) == 0 {
+		return nil
+	}
+	ids := append([]string(nil), input...)
+	sort.Strings(ids)
+	unique := ids[:0]
+	for _, id := range ids {
+		if len(unique) == 0 || unique[len(unique)-1] != id {
+			unique = append(unique, id)
+		}
+	}
+	return unique
+}
+
+func firstSortedIntersection(left, right []string) []string {
+	for leftIndex, rightIndex := 0, 0; leftIndex < len(left) && rightIndex < len(right); {
+		switch {
+		case left[leftIndex] < right[rightIndex]:
+			leftIndex++
+		case left[leftIndex] > right[rightIndex]:
+			rightIndex++
+		default:
+			return left[leftIndex : leftIndex+1]
+		}
+	}
+	return nil
+}
+
+func idSet(ids []string) map[string]struct{} {
+	if len(ids) == 0 {
+		return nil
+	}
+	set := make(map[string]struct{}, len(ids))
+	for _, id := range ids {
+		set[id] = struct{}{}
+	}
+	return set
+}
+
+func invalidLedgerAdjustment(format string, args ...any) error {
+	return fmt.Errorf("%w: %s", ErrInvalidLedgerAdjustment, fmt.Sprintf(format, args...))
+}
+
+func filterDevices(devices []*tgsrlv1.Device, adjustment normalizedLedgerAdjustment) []*tgsrlv1.Device {
+	if len(adjustment.includedDeviceIDs) == 0 && len(adjustment.excludedDeviceIDs) == 0 {
+		return devices
+	}
+	filtered := make([]*tgsrlv1.Device, 0, len(devices))
+	for _, device := range devices {
+		deviceID := device.GetDeviceId()
+		if len(adjustment.includedDeviceIDs) > 0 {
+			if _, included := adjustment.includedDeviceIDs[deviceID]; !included {
+				continue
+			}
+		}
+		if _, excluded := adjustment.excludedDeviceIDs[deviceID]; excluded {
+			continue
+		}
+		filtered = append(filtered, device)
+	}
+	return filtered
 }
 
 func requirementsFor(unit Unit, intent *tgsrlv1.SchedulingIntent) (*tgsrlv1.ResourceVector, *tgsrlv1.CapabilitySet) {

@@ -26,7 +26,7 @@ type deviceState struct {
 	evaluation pairEvaluation
 }
 
-func buildDeviceStates(snapshot *tgsrlv1.ClusterSnapshot, devices []*tgsrlv1.Device) []*deviceState {
+func buildDeviceStates(snapshot *tgsrlv1.ClusterSnapshot, devices []*tgsrlv1.Device, reclaimedAllocationIDs map[string]struct{}) []*deviceState {
 	states := make([]*deviceState, 0, len(devices))
 	byID := make(map[string]*deviceState, len(devices))
 	for _, device := range devices {
@@ -50,6 +50,15 @@ func buildDeviceStates(snapshot *tgsrlv1.ClusterSnapshot, devices []*tgsrlv1.Dev
 		if allocation == nil || (allocation.GetState() != tgsrlv1.AllocationState_ALLOCATION_STATE_PENDING && allocation.GetState() != tgsrlv1.AllocationState_ALLOCATION_STATE_ACTIVE) {
 			continue
 		}
+		if _, reclaimed := reclaimedAllocationIDs[allocation.GetAllocationId()]; reclaimed {
+			// Reclaimed resources are already absent from used below. Return them
+			// to the snapshot's remaining-resource ledger exactly once.
+			state := byID[allocation.GetDeviceIds()[0]]
+			if state != nil {
+				addResourcesCapped(state.resources.allocatable, allocation.GetResources(), state.resources.capacity)
+			}
+			continue
+		}
 		for _, deviceID := range allocation.GetDeviceIds() {
 			state := byID[deviceID]
 			if state == nil {
@@ -63,6 +72,24 @@ func buildDeviceStates(snapshot *tgsrlv1.ClusterSnapshot, devices []*tgsrlv1.Dev
 		}
 	}
 	return states
+}
+
+func addResourcesCapped(target, value, capacity *tgsrlv1.ResourceVector) {
+	if target == nil || value == nil {
+		return
+	}
+	target.CpuMillis = saturatingAddCapped(target.GetCpuMillis(), value.GetCpuMillis(), capacity.GetCpuMillis())
+	target.MemoryBytes = saturatingAddCapped(target.GetMemoryBytes(), value.GetMemoryBytes(), capacity.GetMemoryBytes())
+	target.AcceleratorUnits = math.Min(capacity.GetAcceleratorUnits(), target.GetAcceleratorUnits()+value.GetAcceleratorUnits())
+	target.EphemeralStorageBytes = saturatingAddCapped(target.GetEphemeralStorageBytes(), value.GetEphemeralStorageBytes(), capacity.GetEphemeralStorageBytes())
+	target.NetworkBandwidthBps = saturatingAddCapped(target.GetNetworkBandwidthBps(), value.GetNetworkBandwidthBps(), capacity.GetNetworkBandwidthBps())
+}
+
+func saturatingAddCapped(left, right, limit uint64) uint64 {
+	if left >= limit || right > limit-left {
+		return limit
+	}
+	return left + right
 }
 
 func cloneResources(resources *tgsrlv1.ResourceVector) *tgsrlv1.ResourceVector {
