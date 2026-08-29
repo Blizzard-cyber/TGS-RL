@@ -283,18 +283,58 @@ func (p *MockResourceProvider) publishSandboxSnapshotLocked(sandbox Sandbox, det
 	if occurredAt.IsZero() {
 		occurredAt = p.now()
 	}
+	nextRevision := p.revision
+	if nextRevision == 0 {
+		nextRevision = p.sandboxSeq + 1
+	}
+	share, priority, offloaded := sandbox.Share, sandbox.Priority, sandbox.Offloaded
 	event := &tgsrlv1.SandboxEvent{
-		EventId:    fmt.Sprintf("%s-sandbox-%d", p.providerID, p.sandboxSeq+1),
-		EventType:  sandboxStateToEventType(sandbox.State),
-		SandboxId:  sandbox.SandboxID,
-		Generation: sandbox.Generation,
-		State:      sandboxStateToRuntimeState(sandbox.State),
-		Binding:    cloneBinding(sandbox.Binding),
-		SafePoint:  sandbox.SafePoint,
-		Detail:     detail,
-		OccurredAt: timestamppb.New(occurredAt),
+		EventId:          fmt.Sprintf("%s-sandbox-%d", p.providerID, p.sandboxSeq+1),
+		EventType:        sandboxStateToEventType(sandbox.State),
+		SandboxId:        sandbox.SandboxID,
+		Generation:       sandbox.Generation,
+		State:            sandboxStateToRuntimeState(sandbox.State),
+		Binding:          cloneBinding(sandbox.Binding),
+		SemanticContext:  cloneSemanticEnvelope(sandbox.SemanticContext),
+		Share:            &share,
+		Priority:         &priority,
+		SafePoint:        sandbox.SafePoint,
+		Offloaded:        &offloaded,
+		Detail:           detail,
+		OccurredAt:       timestamppb.New(occurredAt),
+		ProviderRevision: nextRevision,
+		IdempotencyKey:   fmt.Sprintf("%s-sandbox-%s-%d", p.providerID, sandbox.SandboxID, nextRevision),
+	}
+	if record := latestPlanForSandbox(p.planRecords, sandbox.SandboxID); record != nil {
+		event.DecisionId = record.Plan.GetDecisionId()
+		event.PlanId = record.Plan.GetPlanId()
+		for _, result := range record.Results {
+			if result != nil && result.GetObservedRevision() == nextRevision {
+				event.ActionId = result.GetActionId()
+				event.IdempotencyKey = result.GetIdempotencyKey()
+				break
+			}
+		}
 	}
 	p.publishSandboxEventLocked(event)
+}
+
+func latestPlanForSandbox(records map[string]*PlanRecord, sandboxID string) *PlanRecord {
+	var latest *PlanRecord
+	for _, record := range records {
+		if record == nil || record.Plan == nil {
+			continue
+		}
+		for _, action := range record.Plan.GetActions() {
+			if actionSandboxID(action) != sandboxID {
+				continue
+			}
+			if latest == nil || record.ObservedRevision > latest.ObservedRevision || record.ObservedRevision == latest.ObservedRevision && record.Plan.GetPlanId() > latest.Plan.GetPlanId() {
+				latest = record
+			}
+		}
+	}
+	return latest
 }
 
 func (p *MockResourceProvider) publishResourceEventLocked(event *tgsrlv1.ResourceEvent) {

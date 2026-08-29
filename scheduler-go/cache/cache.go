@@ -31,10 +31,12 @@ func (wallClock) Now() time.Time { return time.Now() }
 
 // Cursor identifies the last accepted position for an event stream.
 type Cursor struct {
-	Stream     string
-	Revision   uint64
-	EventID    string
-	Generation uint64
+	Stream         string
+	Revision       uint64
+	EventID        string
+	IdempotencyKey string
+	Generation     uint64
+	OccurredAt     time.Time
 }
 
 // Snapshot is the immutable scheduler view materialized by the event loop.
@@ -44,6 +46,11 @@ type Snapshot struct {
 	Intents   map[string]*tgsrlv1.SchedulingIntent
 	Sandboxes map[string]*tgsrlv1.Sandbox
 	Cursors   map[string]Cursor
+
+	// acceptedSandboxIDs is transient update metadata. It lets State stamp
+	// scheduler receipt time after a mutation has accepted an event without
+	// replacing the provider-owned observed_at timestamp.
+	acceptedSandboxIDs map[string]struct{}
 }
 
 // State owns immutable snapshots. Writers replace the full Snapshot pointer,
@@ -95,11 +102,18 @@ func (s *State) Update(mutate func(*Snapshot) bool) Snapshot {
 	if !mutate(next) {
 		return cloneSnapshotState(s.current)
 	}
+	now := s.clock.Now().UTC()
+	if len(next.acceptedSandboxIDs) > 0 {
+		for sandboxID := range next.acceptedSandboxIDs {
+			stampSandboxConfirmation(s.current.Sandboxes[sandboxID], next.Sandboxes[sandboxID], now)
+		}
+	}
+	next.acceptedSandboxIDs = nil
 	next.Revision++
 	next.Snapshot = cloneClusterSnapshot(next.Snapshot)
 	next.Snapshot.Revision = next.Revision
 	next.Snapshot.SnapshotId = SnapshotID(next.Revision)
-	next.Snapshot.ObservedAt = timestamppb.New(s.clock.Now().UTC())
+	next.Snapshot.ObservedAt = timestamppb.New(now)
 	s.current = next
 	return cloneSnapshotState(s.current)
 }
@@ -114,6 +128,28 @@ func (s *Snapshot) AcceptCursor(cursor Cursor) bool {
 		case cursor.Revision == current.Revision && cursor.EventID != "" && cursor.EventID == current.EventID:
 			return false
 		case cursor.Generation > 0 && cursor.Generation < current.Generation:
+			return false
+		}
+	}
+	s.Cursors[cursor.Stream] = cursor
+	return true
+}
+
+func (s *Snapshot) acceptSandboxCursor(cursor Cursor) bool {
+	current, ok := s.Cursors[cursor.Stream]
+	if ok {
+		switch {
+		case cursor.Generation < current.Generation:
+			return false
+		case cursor.EventID != "" && cursor.EventID == current.EventID:
+			return false
+		case cursor.IdempotencyKey != "" && cursor.IdempotencyKey == current.IdempotencyKey:
+			return false
+		case cursor.Generation == current.Generation && cursor.Revision > 0 && current.Revision > 0 && cursor.Revision <= current.Revision:
+			return false
+		case cursor.Generation == current.Generation && cursor.Revision == 0 && current.Revision > 0:
+			return false
+		case cursor.Generation == current.Generation && cursor.Revision == 0 && (cursor.OccurredAt.IsZero() || !cursor.OccurredAt.After(current.OccurredAt)):
 			return false
 		}
 	}
@@ -194,23 +230,17 @@ func (s *Snapshot) ApplySandboxEvent(event *tgsrlv1.SandboxEvent) bool {
 		return false
 	}
 	stream := sandboxStream(event.GetSandboxId())
-	if !s.AcceptCursor(Cursor{
-		Stream:     stream,
-		Revision:   0,
-		EventID:    event.GetEventId(),
-		Generation: event.GetGeneration(),
+	if !s.acceptSandboxCursor(Cursor{
+		Stream:         stream,
+		Revision:       event.GetProviderRevision(),
+		EventID:        event.GetEventId(),
+		IdempotencyKey: event.GetIdempotencyKey(),
+		Generation:     event.GetGeneration(),
+		OccurredAt:     timestampAsTime(event.GetOccurredAt()),
 	}) {
 		return false
 	}
 	current := s.Sandboxes[event.GetSandboxId()]
-	if current != nil {
-		if event.GetGeneration() < current.GetGeneration() {
-			return false
-		}
-		if event.GetGeneration() == current.GetGeneration() && event.GetEventId() != "" && event.GetEventId() == s.Cursors[stream].EventID {
-			return false
-		}
-	}
 	sandbox := &tgsrlv1.Sandbox{
 		SandboxId:  event.GetSandboxId(),
 		RunId:      event.GetRunId(),
@@ -234,12 +264,58 @@ func (s *Snapshot) ApplySandboxEvent(event *tgsrlv1.SandboxEvent) bool {
 			merged.Binding = cloneBinding(sandbox.GetBinding())
 		}
 		merged.SafePoint = sandbox.GetSafePoint()
+		if event.Share != nil {
+			merged.Share = event.GetShare()
+		}
+		if event.Priority != nil {
+			merged.Priority = event.GetPriority()
+		}
+		if event.Offloaded != nil {
+			merged.Offloaded = event.GetOffloaded()
+		}
 		merged.ObservedAt = cloneTimestamp(sandbox.GetObservedAt())
 		merged.DataKind = sandbox.GetDataKind()
 		sandbox = merged
 	}
+	if current == nil {
+		if event.Share != nil {
+			sandbox.Share = event.GetShare()
+		}
+		if event.Priority != nil {
+			sandbox.Priority = event.GetPriority()
+		}
+		if event.Offloaded != nil {
+			sandbox.Offloaded = event.GetOffloaded()
+		}
+	}
 	s.Sandboxes[event.GetSandboxId()] = sandbox
+	if s.acceptedSandboxIDs == nil {
+		s.acceptedSandboxIDs = make(map[string]struct{})
+	}
+	s.acceptedSandboxIDs[event.GetSandboxId()] = struct{}{}
 	return true
+}
+
+func stampSandboxConfirmation(current, next *tgsrlv1.Sandbox, confirmedAt time.Time) {
+	if next == nil {
+		return
+	}
+	next.LastConfirmedAt = timestamppb.New(confirmedAt)
+	if current == nil || current.GetGeneration() != next.GetGeneration() || current.GetState() != next.GetState() {
+		next.StateChangedAt = timestamppb.New(confirmedAt)
+		return
+	}
+	next.StateChangedAt = cloneTimestamp(effectiveSandboxStateChangedAt(current))
+}
+
+func effectiveSandboxStateChangedAt(sandbox *tgsrlv1.Sandbox) *timestamppb.Timestamp {
+	if sandbox == nil {
+		return nil
+	}
+	if sandbox.GetStateChangedAt() != nil {
+		return sandbox.GetStateChangedAt()
+	}
+	return sandbox.GetObservedAt()
 }
 
 // RebuildPendingUnits rebuilds pending units from the latest immutable intents.
@@ -414,6 +490,13 @@ func cloneTimestamp(ts *timestamppb.Timestamp) *timestamppb.Timestamp {
 		return nil
 	}
 	return proto.Clone(ts).(*timestamppb.Timestamp)
+}
+
+func timestampAsTime(ts *timestamppb.Timestamp) time.Time {
+	if ts == nil {
+		return time.Time{}
+	}
+	return ts.AsTime()
 }
 
 func cloneDevice(device *tgsrlv1.Device) *tgsrlv1.Device {

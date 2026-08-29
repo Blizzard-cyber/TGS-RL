@@ -111,28 +111,32 @@ const (
 
 // Sandbox is an immutable view of mock runtime state.
 type Sandbox struct {
-	SandboxID  string
-	State      SandboxState
-	Generation uint64
-	Binding    *tgsrlv1.Binding
-	Share      float64
-	Priority   int32
-	SafePoint  bool
-	Offloaded  bool
-	UpdatedAt  time.Time
+	SandboxID       string
+	State           SandboxState
+	Generation      uint64
+	Binding         *tgsrlv1.Binding
+	Share           float64
+	Priority        int32
+	SafePoint       bool
+	Offloaded       bool
+	SemanticContext *tgsrlv1.SemanticEnvelope
+	StateChangedAt  time.Time
+	UpdatedAt       time.Time
 }
 
 // SandboxEvent is an observed runtime update. Generation fences make old
 // events harmless after an L4 replacement.
 type SandboxEvent struct {
-	// EventID is required for exact retry deduplication. If omitted, an equal
-	// same-generation event is still treated as a no-op.
-	EventID    string
-	SandboxID  string
-	Generation uint64
-	State      SandboxState
-	Binding    *tgsrlv1.Binding
-	SafePoint  *bool
+	// EventID enables exact retry deduplication. A new confirmation without an
+	// event ID still refreshes the sandbox's UpdatedAt timestamp.
+	EventID         string
+	SandboxID       string
+	Generation      uint64
+	State           SandboxState
+	Binding         *tgsrlv1.Binding
+	SafePoint       *bool
+	SemanticContext *tgsrlv1.SemanticEnvelope
+	StateChangedAt  time.Time
 }
 
 // ResourceEvent is a cloned provider state notification.

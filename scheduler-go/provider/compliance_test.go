@@ -292,6 +292,12 @@ func testReplayableWatches(t *testing.T, p provider.CompleteResourceProvider) {
 			t.Fatalf("timed out waiting for post-action events")
 		}
 	}
+	if latestSandbox.Event.GetProviderRevision() == 0 || latestSandbox.Event.GetIdempotencyKey() == "" {
+		t.Fatalf("sandbox watch event lacks ordering/idempotency metadata: %+v", latestSandbox.Event)
+	}
+	if latestSandbox.Event.Share == nil || latestSandbox.Event.Priority == nil || latestSandbox.Event.Offloaded == nil {
+		t.Fatalf("sandbox watch event lacks mutable-state presence: %+v", latestSandbox.Event)
+	}
 
 	replayCtx, replayCancel := context.WithCancel(context.Background())
 	defer replayCancel()

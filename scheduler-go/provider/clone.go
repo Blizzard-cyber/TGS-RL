@@ -36,8 +36,16 @@ func cloneBinding(binding *tgsrlv1.Binding) *tgsrlv1.Binding {
 	return proto.Clone(binding).(*tgsrlv1.Binding)
 }
 
+func cloneSemanticEnvelope(envelope *tgsrlv1.SemanticEnvelope) *tgsrlv1.SemanticEnvelope {
+	if envelope == nil {
+		return nil
+	}
+	return proto.Clone(envelope).(*tgsrlv1.SemanticEnvelope)
+}
+
 func cloneSandbox(sandbox Sandbox) Sandbox {
 	sandbox.Binding = cloneBinding(sandbox.Binding)
+	sandbox.SemanticContext = cloneSemanticEnvelope(sandbox.SemanticContext)
 	return sandbox
 }
 

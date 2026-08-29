@@ -636,6 +636,107 @@ func TestProviderStandaloneActionPlanCrossRaceRestoresProjection(t *testing.T) {
 	}
 }
 
+func TestProviderObservationMetadataAndLifecycleTimestamps(t *testing.T) {
+	current := time.Date(2026, time.August, 29, 9, 0, 0, 0, time.UTC)
+	p, err := New(WithNow(func() time.Time { return current }), WithDriver(NewFakeDriver(testDevices(), nil)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	semanticContext := &tgsrlv1.SemanticEnvelope{
+		EnvelopeId: "semantic-1",
+		Attributes: map[string]string{"source": "runtime"},
+		TypedFields: []*tgsrlv1.SemanticField{{
+			Key:   "sample.policy_lag",
+			Value: &tgsrlv1.SemanticValue{Kind: &tgsrlv1.SemanticValue_Uint64Value{Uint64Value: 2}},
+		}},
+	}
+	observedStateChangedAt := current.Add(-time.Minute)
+	if err := p.ApplySandboxEvent(context.Background(), provider.SandboxEvent{
+		EventID: "created", SandboxID: "sandbox-a", Generation: 1, State: provider.SandboxStateRunning, SemanticContext: semanticContext, StateChangedAt: observedStateChangedAt,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	created, err := p.GetSandbox(context.Background(), "sandbox-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !created.UpdatedAt.Equal(current) || !created.StateChangedAt.Equal(observedStateChangedAt) {
+		t.Fatalf("created timestamps = updated %v state changed %v, want %v/%v", created.UpdatedAt, created.StateChangedAt, current, observedStateChangedAt)
+	}
+	semanticContext.Attributes["source"] = "caller-mutated"
+	created.SemanticContext.Attributes["source"] = "return-mutated"
+
+	stateChangedAt := created.StateChangedAt
+	current = current.Add(time.Minute)
+	if err := p.ApplySandboxEvent(context.Background(), provider.SandboxEvent{
+		EventID: "confirmed", SandboxID: "sandbox-a", Generation: 1, State: provider.SandboxStateRunning,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	confirmed, _ := p.GetSandbox(context.Background(), "sandbox-a")
+	if !confirmed.UpdatedAt.Equal(current) || !confirmed.StateChangedAt.Equal(stateChangedAt) {
+		t.Fatalf("same-state confirmation timestamps = updated %v state changed %v", confirmed.UpdatedAt, confirmed.StateChangedAt)
+	}
+	if got := confirmed.SemanticContext.GetAttributes()["source"]; got != "runtime" {
+		t.Fatalf("stored semantic context was aliased: source = %q", got)
+	}
+
+	current = current.Add(time.Minute)
+	share := nvidiaAction(current, "share-time", "share-time-plan", "share-time-key", tgsrlv1.ActionType_ACTION_TYPE_SET_SHARE, 3)
+	share.Share = 0.5
+	if _, err := p.ExecuteAction(context.Background(), share); err != nil {
+		t.Fatal(err)
+	}
+	afterShare, _ := p.GetSandbox(context.Background(), "sandbox-a")
+	if !afterShare.UpdatedAt.Equal(current) || !afterShare.StateChangedAt.Equal(stateChangedAt) {
+		t.Fatalf("set_share timestamps = updated %v state changed %v", afterShare.UpdatedAt, afterShare.StateChangedAt)
+	}
+
+	current = current.Add(time.Minute)
+	pause := nvidiaAction(current, "pause-time", "pause-time-plan", "pause-time-key", tgsrlv1.ActionType_ACTION_TYPE_PAUSE, 4)
+	if _, err := p.ExecuteAction(context.Background(), pause); err != nil {
+		t.Fatal(err)
+	}
+	afterPause, _ := p.GetSandbox(context.Background(), "sandbox-a")
+	if !afterPause.StateChangedAt.Equal(current) {
+		t.Fatalf("pause StateChangedAt = %v, want %v", afterPause.StateChangedAt, current)
+	}
+
+	current = current.Add(time.Minute)
+	rebind := nvidiaAction(current, "rebind-time", "rebind-time-plan", "rebind-time-key", tgsrlv1.ActionType_ACTION_TYPE_REBIND, 5)
+	if _, err := p.ExecuteAction(context.Background(), rebind); err != nil {
+		t.Fatal(err)
+	}
+	afterRebind, _ := p.GetSandbox(context.Background(), "sandbox-a")
+	if afterRebind.Generation != 2 || !afterRebind.StateChangedAt.Equal(current) {
+		t.Fatalf("rebind sandbox = generation %d state changed %v", afterRebind.Generation, afterRebind.StateChangedAt)
+	}
+
+	watchContext, cancelWatch := context.WithCancel(context.Background())
+	defer cancelWatch()
+	watch, err := p.WatchSandboxes(watchContext, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for {
+		select {
+		case watched := <-watch:
+			if watched.Event.GetSemanticContext() == nil {
+				continue
+			}
+			if got := watched.Event.GetSemanticContext().GetAttributes()["source"]; got != "runtime" {
+				t.Fatalf("watch semantic context source = %q, want runtime", got)
+			}
+			if fields := watched.Event.GetSemanticContext().GetTypedFields(); len(fields) != 1 || fields[0].GetKey() != "sample.policy_lag" || fields[0].GetValue().GetUint64Value() != 2 {
+				t.Fatalf("watch semantic facts = %+v", fields)
+			}
+			return
+		case <-time.After(time.Second):
+			t.Fatal("timed out waiting for semantic sandbox event")
+		}
+	}
+}
+
 func testDevices() []*tgsrlv1.Device {
 	return []*tgsrlv1.Device{{DeviceId: "nvidia-0", Kind: tgsrlv1.DeviceKind_DEVICE_KIND_GPU, Health: tgsrlv1.DeviceHealth_DEVICE_HEALTH_READY, Capacity: &tgsrlv1.ResourceVector{AcceleratorUnits: 1}, Allocatable: &tgsrlv1.ResourceVector{AcceleratorUnits: 1}}}
 }

@@ -20,16 +20,19 @@ var fixtureNow = time.Date(2026, time.August, 27, 9, 0, 0, 0, time.UTC)
 
 func TestMockProviderReturnsMockLogicalDeviceClones(t *testing.T) {
 	binding := testBinding("sandbox-a", 1)
+	semanticContext := testSemanticContext()
 	seed := Sandbox{
-		SandboxID:  "sandbox-a",
-		State:      SandboxStateRunning,
-		Generation: 1,
-		Binding:    binding,
-		Share:      0.5,
-		SafePoint:  true,
+		SandboxID:       "sandbox-a",
+		State:           SandboxStateRunning,
+		Generation:      1,
+		Binding:         binding,
+		SemanticContext: semanticContext,
+		Share:           0.5,
+		SafePoint:       true,
 	}
 	provider := newTestProvider(t, WithSandboxes(seed))
 	binding.DeviceIds[0] = "caller-mutated"
+	semanticContext.Attributes["source"] = "caller-mutated"
 
 	capabilities, err := provider.Capabilities(context.Background())
 	if err != nil {
@@ -59,6 +62,7 @@ func TestMockProviderReturnsMockLogicalDeviceClones(t *testing.T) {
 		t.Fatalf("GetSandbox().Binding.DeviceIds[0] = %q, want mock-cpu-0", got)
 	}
 	sandbox.Binding.DeviceIds[0] = "return-mutated"
+	sandbox.SemanticContext.Attributes["source"] = "return-mutated"
 
 	capabilitiesAgain, _ := provider.Capabilities(context.Background())
 	devicesAgain, _ := provider.ListDevices(context.Background())
@@ -72,6 +76,9 @@ func TestMockProviderReturnsMockLogicalDeviceClones(t *testing.T) {
 	if got := sandboxAgain.Binding.GetDeviceIds()[0]; got != "mock-cpu-0" {
 		t.Fatalf("sandbox return aliases provider state: device = %q", got)
 	}
+	if got := sandboxAgain.SemanticContext.GetAttributes()["source"]; got != "runtime" {
+		t.Fatalf("sandbox semantic context aliases caller state: source = %q", got)
+	}
 
 	snapshot, err := provider.Snapshot(context.Background())
 	if err != nil {
@@ -79,6 +86,159 @@ func TestMockProviderReturnsMockLogicalDeviceClones(t *testing.T) {
 	}
 	if snapshot.GetRevision() != 1 || snapshot.GetAnnotations()["provider"] != "mock" {
 		t.Fatalf("Snapshot() = %v, want revision 1 and mock annotation", snapshot)
+	}
+}
+
+func TestSandboxObservationTimestampsAndSemanticContext(t *testing.T) {
+	current := fixtureNow
+	p, err := NewMockResourceProvider(WithNow(func() time.Time { return current }))
+	if err != nil {
+		t.Fatal(err)
+	}
+	semanticContext := testSemanticContext()
+	observedStateChangedAt := current.Add(-time.Minute)
+	if err := p.ApplySandboxEvent(context.Background(), SandboxEvent{
+		EventID: "created", SandboxID: "sandbox-a", Generation: 1, State: SandboxStateRunning, SemanticContext: semanticContext, StateChangedAt: observedStateChangedAt,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	created, err := p.GetSandbox(context.Background(), "sandbox-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !created.UpdatedAt.Equal(current) || !created.StateChangedAt.Equal(observedStateChangedAt) {
+		t.Fatalf("created timestamps = updated %v state changed %v, want %v/%v", created.UpdatedAt, created.StateChangedAt, current, observedStateChangedAt)
+	}
+	semanticContext.Attributes["source"] = "caller-mutated"
+	created.SemanticContext.Attributes["source"] = "return-mutated"
+
+	stateChangedAt := created.StateChangedAt
+	current = current.Add(time.Minute)
+	if err := p.ApplySandboxEvent(context.Background(), SandboxEvent{
+		EventID: "confirmed", SandboxID: "sandbox-a", Generation: 1, State: SandboxStateRunning,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	confirmed, _ := p.GetSandbox(context.Background(), "sandbox-a")
+	if !confirmed.UpdatedAt.Equal(current) || !confirmed.StateChangedAt.Equal(stateChangedAt) {
+		t.Fatalf("same-state confirmation timestamps = updated %v state changed %v", confirmed.UpdatedAt, confirmed.StateChangedAt)
+	}
+	if got := confirmed.SemanticContext.GetAttributes()["source"]; got != "runtime" {
+		t.Fatalf("stored semantic context was aliased: source = %q", got)
+	}
+
+	watchContext, cancelWatch := context.WithCancel(context.Background())
+	defer cancelWatch()
+	watch, err := p.WatchSandboxes(watchContext, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var semanticEvent *tgsrlv1.SandboxEvent
+	for semanticEvent == nil {
+		select {
+		case watched := <-watch:
+			if watched.Event.GetSemanticContext() != nil {
+				semanticEvent = watched.Event
+			}
+		case <-time.After(time.Second):
+			t.Fatal("timed out waiting for semantic sandbox event")
+		}
+	}
+	if got := semanticEvent.GetSemanticContext().GetAttributes()["source"]; got != "runtime" {
+		t.Fatalf("watch semantic context source = %q, want runtime", got)
+	}
+	if fields := semanticEvent.GetSemanticContext().GetTypedFields(); len(fields) != 1 || fields[0].GetKey() != "sample.policy_lag" || fields[0].GetValue().GetUint64Value() != 2 {
+		t.Fatalf("watch semantic facts = %+v", fields)
+	}
+	semanticEvent.SemanticContext.Attributes["source"] = "watch-mutated"
+	replayContext, cancelReplay := context.WithCancel(context.Background())
+	defer cancelReplay()
+	replay, err := p.WatchSandboxes(replayContext, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for {
+		select {
+		case watched := <-replay:
+			if watched.Event.GetSemanticContext() != nil {
+				if got := watched.Event.GetSemanticContext().GetAttributes()["source"]; got != "runtime" {
+					t.Fatalf("watch event aliases retained log: source = %q", got)
+				}
+				return
+			}
+		case <-time.After(time.Second):
+			t.Fatal("timed out waiting for replayed semantic sandbox event")
+		}
+	}
+}
+
+func TestSandboxActionsUpdateStateChangedAtOnlyForLifecycleChanges(t *testing.T) {
+	current := fixtureNow
+	initial := testSandbox(SandboxStateRunning)
+	initial.StateChangedAt = current
+	initial.UpdatedAt = current
+	p, err := NewMockResourceProvider(WithNow(func() time.Time { return current }), WithSandboxes(initial))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	current = current.Add(time.Minute)
+	share := testAction("share-time", "share-time-plan", "share-time-key", tgsrlv1.ActionType_ACTION_TYPE_SET_SHARE, tgsrlv1.ActionLevel_ACTION_LEVEL_L1, 1)
+	share.Share = 0.75
+	share.Deadline = timestamppb.New(current.Add(time.Minute))
+	if _, err := p.ExecuteAction(context.Background(), share); err != nil {
+		t.Fatal(err)
+	}
+	afterShare, _ := p.GetSandbox(context.Background(), "sandbox-a")
+	if !afterShare.UpdatedAt.Equal(current) || !afterShare.StateChangedAt.Equal(initial.StateChangedAt) {
+		t.Fatalf("set_share timestamps = updated %v state changed %v", afterShare.UpdatedAt, afterShare.StateChangedAt)
+	}
+
+	current = current.Add(time.Minute)
+	pause := testAction("pause-time", "pause-time-plan", "pause-time-key", tgsrlv1.ActionType_ACTION_TYPE_PAUSE, tgsrlv1.ActionLevel_ACTION_LEVEL_L2, 2)
+	pause.Deadline = timestamppb.New(current.Add(time.Minute))
+	if _, err := p.ExecuteAction(context.Background(), pause); err != nil {
+		t.Fatal(err)
+	}
+	afterPause, _ := p.GetSandbox(context.Background(), "sandbox-a")
+	if !afterPause.StateChangedAt.Equal(current) {
+		t.Fatalf("pause StateChangedAt = %v, want %v", afterPause.StateChangedAt, current)
+	}
+
+	current = current.Add(time.Minute)
+	rebind := testAction("rebind-time", "rebind-time-plan", "rebind-time-key", tgsrlv1.ActionType_ACTION_TYPE_REBIND, tgsrlv1.ActionLevel_ACTION_LEVEL_L4, 3)
+	rebind.Deadline = timestamppb.New(current.Add(time.Minute))
+	if _, err := p.ExecuteAction(context.Background(), rebind); err != nil {
+		t.Fatal(err)
+	}
+	afterRebind, _ := p.GetSandbox(context.Background(), "sandbox-a")
+	if afterRebind.Generation != 2 || !afterRebind.StateChangedAt.Equal(current) {
+		t.Fatalf("rebind sandbox = generation %d state changed %v", afterRebind.Generation, afterRebind.StateChangedAt)
+	}
+}
+
+func TestExistingBindRollbackRestoresObservationMetadata(t *testing.T) {
+	initial := testSandbox(SandboxStateRequested)
+	initial.Share = 0.25
+	initial.Priority = 3
+	initial.StateChangedAt = fixtureNow.Add(-time.Hour)
+	p := newTestProvider(t, WithSandboxes(initial), WithFaults(FaultOptions{PartialFailureAt: 2}))
+	bind := testAction("bind-rollback", "bind-rollback-plan", "bind-rollback-key", tgsrlv1.ActionType_ACTION_TYPE_BIND, tgsrlv1.ActionLevel_ACTION_LEVEL_L1, 1)
+	bind.Share = 0.75
+	bind.Priority = 9
+	bind.Rollback = &tgsrlv1.Rollback{ActionType: tgsrlv1.ActionType_ACTION_TYPE_RELEASE, TargetId: bind.GetBinding().GetBindingId()}
+	fail := testAction("fail-after-bind", "bind-rollback-plan", "fail-after-bind-key", tgsrlv1.ActionType_ACTION_TYPE_SET_SHARE, tgsrlv1.ActionLevel_ACTION_LEVEL_L1, 1)
+	fail.Rollback = &tgsrlv1.Rollback{ActionType: tgsrlv1.ActionType_ACTION_TYPE_SET_SHARE, TargetId: "sandbox-a"}
+
+	if _, err := p.ExecutePlan(context.Background(), strictReconciliationPlan("bind-rollback-plan", 1, bind, fail)); !errors.Is(err, ErrPartialFailure) {
+		t.Fatalf("ExecutePlan() error = %v, want ErrPartialFailure", err)
+	}
+	after, err := p.GetSandbox(context.Background(), "sandbox-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.State != initial.State || after.Share != initial.Share || after.Priority != initial.Priority || !proto.Equal(after.Binding, initial.Binding) || !after.StateChangedAt.Equal(initial.StateChangedAt) {
+		t.Fatalf("sandbox after existing bind rollback = %+v, want %+v", after, initial)
 	}
 }
 
@@ -96,7 +256,7 @@ func TestExecuteActionVendorNeutralSemantics(t *testing.T) {
 		wantOffloaded  bool
 		withoutSandbox bool
 	}{
-		{name: "bind", actionType: tgsrlv1.ActionType_ACTION_TYPE_BIND, level: tgsrlv1.ActionLevel_ACTION_LEVEL_L1, wantState: SandboxStateBound, wantGeneration: 1, withoutSandbox: true},
+		{name: "bind", actionType: tgsrlv1.ActionType_ACTION_TYPE_BIND, level: tgsrlv1.ActionLevel_ACTION_LEVEL_L1, configure: func(action *tgsrlv1.Action) { action.Share = 0.25; action.Priority = 7 }, wantState: SandboxStateBound, wantGeneration: 1, wantShare: 0.25, wantPriority: 7, withoutSandbox: true},
 		{name: "release", initialState: SandboxStateBound, actionType: tgsrlv1.ActionType_ACTION_TYPE_RELEASE, level: tgsrlv1.ActionLevel_ACTION_LEVEL_L1, wantState: SandboxStateTerminated, wantGeneration: 1},
 		{name: "set share", initialState: SandboxStateRunning, actionType: tgsrlv1.ActionType_ACTION_TYPE_SET_SHARE, level: tgsrlv1.ActionLevel_ACTION_LEVEL_L1, configure: func(action *tgsrlv1.Action) { action.Share = 0.75 }, wantState: SandboxStateRunning, wantGeneration: 1, wantShare: 0.75},
 		{name: "set priority", initialState: SandboxStateRunning, actionType: tgsrlv1.ActionType_ACTION_TYPE_SET_PRIORITY, level: tgsrlv1.ActionLevel_ACTION_LEVEL_L1, configure: func(action *tgsrlv1.Action) { action.Priority = 23 }, wantState: SandboxStateRunning, wantGeneration: 1, wantPriority: 23},
@@ -142,6 +302,42 @@ func TestExecuteActionVendorNeutralSemantics(t *testing.T) {
 				t.Fatalf("resized CPU = %d, want 2000", sandbox.Binding.GetResources().GetCpuMillis())
 			}
 		})
+	}
+}
+
+func TestSandboxWatchPublishesMutableStateAndOrderingMetadata(t *testing.T) {
+	provider := newTestProvider(t)
+	watch, err := provider.WatchSandboxes(context.Background(), 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	action := testAction("bind-observed", "plan-observed", "bind-observed-key", tgsrlv1.ActionType_ACTION_TYPE_BIND, tgsrlv1.ActionLevel_ACTION_LEVEL_L1, 1)
+	action.Share = 0.375
+	action.Priority = 13
+	if _, err := provider.ExecuteAction(context.Background(), action); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.After(time.Second)
+	for {
+		select {
+		case watched := <-watch:
+			event := watched.Event
+			if event.GetSandboxId() != action.GetSandboxId() || event.GetDetail() != "action applied" {
+				continue
+			}
+			if event.Share == nil || event.GetShare() != action.GetShare() || event.Priority == nil || event.GetPriority() != action.GetPriority() || event.Offloaded == nil || event.GetOffloaded() {
+				t.Fatalf("sandbox event mutable state = %+v", event)
+			}
+			if event.GetProviderRevision() == 0 || event.GetIdempotencyKey() == "" {
+				t.Fatalf("sandbox event ordering metadata = %+v", event)
+			}
+			if event.GetPlanId() != action.GetPlanId() || event.GetActionId() != action.GetActionId() || event.GetIdempotencyKey() != action.GetIdempotencyKey() {
+				t.Fatalf("sandbox event action correlation = %+v, want plan/action/key %q/%q/%q", event, action.GetPlanId(), action.GetActionId(), action.GetIdempotencyKey())
+			}
+			return
+		case <-deadline:
+			t.Fatal("timed out waiting for bind sandbox event")
+		}
 	}
 }
 
@@ -1124,6 +1320,17 @@ func testSandbox(state SandboxState) Sandbox {
 		Generation: 1,
 		Binding:    testBinding("sandbox-a", 1),
 		SafePoint:  true,
+	}
+}
+
+func testSemanticContext() *tgsrlv1.SemanticEnvelope {
+	return &tgsrlv1.SemanticEnvelope{
+		EnvelopeId: "semantic-1",
+		Attributes: map[string]string{"source": "runtime"},
+		TypedFields: []*tgsrlv1.SemanticField{{
+			Key:   "sample.policy_lag",
+			Value: &tgsrlv1.SemanticValue{Kind: &tgsrlv1.SemanticValue_Uint64Value{Uint64Value: 2}},
+		}},
 	}
 }
 

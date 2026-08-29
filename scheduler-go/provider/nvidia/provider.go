@@ -393,12 +393,15 @@ func (p *Provider) ApplySandboxEvent(ctx context.Context, event base.SandboxEven
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	current := p.sandboxes[event.SandboxID]
-	if current.SandboxID != "" && event.Generation < current.Generation {
+	exists := current.SandboxID != ""
+	if exists && event.Generation < current.Generation {
 		return &base.Error{Code: base.ErrorCodeLateEventFenced, Message: "event generation is older than current sandbox generation", SandboxID: event.SandboxID, ExpectedGeneration: current.Generation, ObservedGeneration: event.Generation, Cause: base.ErrGenerationFenced}
 	}
-	if current.SandboxID == "" {
+	if !exists {
 		current = base.Sandbox{SandboxID: event.SandboxID}
 	}
+	confirmedAt := p.now()
+	lifecycleChanged := !exists || current.State != event.State || current.Generation != event.Generation
 	current.State = event.State
 	current.Generation = event.Generation
 	if event.Binding != nil {
@@ -407,7 +410,18 @@ func (p *Provider) ApplySandboxEvent(ctx context.Context, event base.SandboxEven
 	if event.SafePoint != nil {
 		current.SafePoint = *event.SafePoint
 	}
-	current.UpdatedAt = p.now()
+	if event.SemanticContext != nil {
+		current.SemanticContext = cloneSemanticEnvelope(event.SemanticContext)
+	}
+	if lifecycleChanged {
+		current.StateChangedAt = confirmedAt
+		if !event.StateChangedAt.IsZero() {
+			current.StateChangedAt = event.StateChangedAt
+		}
+	} else if current.StateChangedAt.IsZero() && !event.StateChangedAt.IsZero() {
+		current.StateChangedAt = event.StateChangedAt
+	}
+	current.UpdatedAt = confirmedAt
 	p.sandboxes[event.SandboxID] = current
 	p.revision++
 	p.publishSandboxSnapshotLocked(current, "runtime event applied")
@@ -418,8 +432,10 @@ func (p *Provider) ApplySandboxEvent(ctx context.Context, event base.SandboxEven
 func (p *Provider) applyActionLocked(action *tgsrlv1.Action) error {
 	sandboxID := actionSandboxID(action)
 	sandbox := p.sandboxes[sandboxID]
+	created := false
 	if sandbox.SandboxID == "" && action.GetActionType() == tgsrlv1.ActionType_ACTION_TYPE_BIND {
 		sandbox = base.Sandbox{SandboxID: sandboxID, State: base.SandboxStateRequested, Generation: maxUint64(1, action.GetExpectedGeneration())}
+		created = true
 	}
 	if sandbox.SandboxID == "" {
 		return &base.Error{Code: base.ErrorCodeNotFound, Message: "sandbox does not exist", PlanID: action.GetPlanId(), ActionID: action.GetActionId(), SandboxID: sandboxID, Cause: base.ErrNotFound}
@@ -430,6 +446,8 @@ func (p *Provider) applyActionLocked(action *tgsrlv1.Action) error {
 	if action.GetRequiresSafePoint() && action.GetActionType() != tgsrlv1.ActionType_ACTION_TYPE_BIND && !sandbox.SafePoint {
 		return &base.Error{Code: base.ErrorCodeFailedPrecondition, Message: "sandbox is not at a safe point", PlanID: action.GetPlanId(), ActionID: action.GetActionId(), SandboxID: sandboxID, Cause: base.ErrFailedPrecondition}
 	}
+	previousState := sandbox.State
+	previousGeneration := sandbox.Generation
 	switch action.GetActionType() {
 	case tgsrlv1.ActionType_ACTION_TYPE_BIND:
 		if action.GetBinding() == nil || len(action.GetBinding().GetDeviceIds()) == 0 {
@@ -437,6 +455,8 @@ func (p *Provider) applyActionLocked(action *tgsrlv1.Action) error {
 		}
 		sandbox.State = base.SandboxStateBound
 		sandbox.Binding = cloneBinding(action.GetBinding())
+		sandbox.Share = action.GetShare()
+		sandbox.Priority = action.GetPriority()
 	case tgsrlv1.ActionType_ACTION_TYPE_RELEASE:
 		if sandbox.State == base.SandboxStateTerminated {
 			return &base.Error{Code: base.ErrorCodeFailedPrecondition, Message: "sandbox is already terminated", PlanID: action.GetPlanId(), ActionID: action.GetActionId(), SandboxID: sandboxID, Cause: base.ErrFailedPrecondition}
@@ -487,7 +507,11 @@ func (p *Provider) applyActionLocked(action *tgsrlv1.Action) error {
 	default:
 		return fmt.Errorf("%w: unsupported action type %s", base.ErrUnsupported, action.GetActionType())
 	}
-	sandbox.UpdatedAt = p.now()
+	confirmedAt := p.now()
+	sandbox.UpdatedAt = confirmedAt
+	if created || sandbox.State != previousState || sandbox.Generation != previousGeneration {
+		sandbox.StateChangedAt = confirmedAt
+	}
 	p.sandboxes[sandboxID] = sandbox
 	return nil
 }
@@ -547,6 +571,9 @@ func (p *Provider) restoreActionBeforeImageLocked(before actionBeforeImage, prot
 		}
 		if mutations&sandboxMutationOffloaded != 0 {
 			current.Offloaded = before.sandbox.Offloaded
+		}
+		if mutations&(sandboxMutationState|sandboxMutationGeneration) != 0 {
+			current.StateChangedAt = before.sandbox.StateChangedAt
 		}
 		current.UpdatedAt = p.now()
 		p.sandboxes[before.sandboxID] = current
@@ -698,7 +725,15 @@ func actionSandboxID(action *tgsrlv1.Action) string {
 
 func cloneSandbox(sandbox base.Sandbox) base.Sandbox {
 	sandbox.Binding = cloneBinding(sandbox.Binding)
+	sandbox.SemanticContext = cloneSemanticEnvelope(sandbox.SemanticContext)
 	return sandbox
+}
+
+func cloneSemanticEnvelope(envelope *tgsrlv1.SemanticEnvelope) *tgsrlv1.SemanticEnvelope {
+	if envelope == nil {
+		return nil
+	}
+	return proto.Clone(envelope).(*tgsrlv1.SemanticEnvelope)
 }
 
 func cloneActionBeforeImage(before actionBeforeImage) actionBeforeImage {
@@ -861,7 +896,7 @@ func mutationsForAction(action *tgsrlv1.Action, sandboxExists bool) sandboxMutat
 		if !sandboxExists {
 			return sandboxMutationExistence
 		}
-		return sandboxMutationState | sandboxMutationBinding
+		return sandboxMutationState | sandboxMutationBinding | sandboxMutationShare | sandboxMutationPriority
 	case tgsrlv1.ActionType_ACTION_TYPE_RELEASE, tgsrlv1.ActionType_ACTION_TYPE_PAUSE, tgsrlv1.ActionType_ACTION_TYPE_SLEEP:
 		return sandboxMutationState
 	case tgsrlv1.ActionType_ACTION_TYPE_SET_SHARE:

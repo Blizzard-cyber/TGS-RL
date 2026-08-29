@@ -6,7 +6,7 @@ import asyncio
 import hashlib
 import sqlite3
 from collections.abc import Awaitable, Callable, Sequence
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, cast
 
@@ -326,6 +326,79 @@ def _make_sandbox_event(
     )
 
 
+def test_sandbox_dual_timestamps_preserve_source_and_state_age() -> None:
+    now = datetime(2026, 8, 29, 12, 0, tzinfo=UTC)
+    supervisor = RuntimeSupervisor(clock=lambda: now)
+    validated = supervisor.validate_runtime(
+        runtime_pb2.ValidateRuntimeRequest(manifest=_manifest(), request_id="req-time-1")
+    )
+    compiled = supervisor.compile_runtime(
+        runtime_pb2.CompileRuntimeRequest(
+            manifest=validated.normalized_manifest, request_id="req-time-2"
+        )
+    )
+    unit = compiled.runtime_units[1]
+    source_time = datetime(2020, 1, 1, tzinfo=UTC)
+    first = _make_sandbox_event(
+        runtime_unit=unit, event_id="time-first",
+        event_type=runtime_pb2.SANDBOX_EVENT_TYPE_RUNNING,
+        state=runtime_pb2.RUNTIME_STATE_RUNNING, sandbox_id="sandbox:time",
+    )
+    first.occurred_at.CopyFrom(to_timestamp(source_time))
+    supervisor.publish_sandbox_event(runtime_pb2.PublishSandboxEventRequest(event=first))
+    initial = supervisor.sandboxes.get("run-1", "sandbox:time")
+    assert initial.observed_at == to_timestamp(source_time)
+    assert initial.state_changed_at == to_timestamp(now)
+    assert initial.last_confirmed_at == to_timestamp(now)
+
+    now += timedelta(seconds=10)
+    confirmation = runtime_pb2.SandboxEvent()
+    confirmation.CopyFrom(first)
+    confirmation.event_id = "time-confirmation"
+    confirmation.occurred_at.CopyFrom(to_timestamp(source_time + timedelta(seconds=1)))
+    supervisor.publish_sandbox_event(
+        runtime_pb2.PublishSandboxEventRequest(event=confirmation)
+    )
+    confirmed = supervisor.sandboxes.get("run-1", "sandbox:time")
+    assert confirmed.state_changed_at == initial.state_changed_at
+    assert confirmed.last_confirmed_at == to_timestamp(now)
+    assert confirmed.observed_at == confirmation.occurred_at
+
+    now += timedelta(seconds=10)
+    transition = runtime_pb2.SandboxEvent()
+    transition.CopyFrom(confirmation)
+    transition.event_id = "time-transition"
+    transition.event_type = runtime_pb2.SANDBOX_EVENT_TYPE_PAUSED
+    transition.state = runtime_pb2.RUNTIME_STATE_PAUSED
+    supervisor.publish_sandbox_event(runtime_pb2.PublishSandboxEventRequest(event=transition))
+    changed = supervisor.sandboxes.get("run-1", "sandbox:time")
+    assert changed.state_changed_at == to_timestamp(now)
+    assert changed.last_confirmed_at == to_timestamp(now)
+
+
+def test_sandbox_dual_timestamp_proto_descriptor_and_legacy_roundtrip() -> None:
+    fields = runtime_pb2.Sandbox.DESCRIPTOR.fields_by_name
+    assert fields["observed_at"].number == 12
+    assert fields["state_changed_at"].number == 19
+    assert fields["last_confirmed_at"].number == 20
+    legacy = runtime_pb2.Sandbox(
+        sandbox_id="legacy",
+        observed_at=to_timestamp(datetime(2020, 1, 1, tzinfo=UTC)),
+    )
+    decoded = runtime_pb2.Sandbox.FromString(legacy.SerializeToString())
+    assert decoded.observed_at == legacy.observed_at
+    assert not decoded.HasField("state_changed_at")
+    assert not decoded.HasField("last_confirmed_at")
+    current = runtime_pb2.Sandbox(
+        sandbox_id="current",
+        observed_at=to_timestamp(datetime(2020, 1, 1, tzinfo=UTC)),
+        state_changed_at=to_timestamp(datetime(2026, 8, 29, 11, 59, tzinfo=UTC)),
+        last_confirmed_at=to_timestamp(datetime(2026, 8, 29, 12, 0, tzinfo=UTC)),
+    )
+    decoded = runtime_pb2.Sandbox.FromString(current.SerializeToString())
+    assert decoded == current
+
+
 @pytest.mark.asyncio
 async def test_supervisor_full_fake_lifecycle_publishes_intents() -> None:
     scheduler = _SchedulerStub()
@@ -553,6 +626,96 @@ def test_publish_sandbox_event_rejects_same_event_id_with_different_payload() ->
     conflicting.detail = "different"
     with pytest.raises(RuntimeLifecycleError, match="already exists with different payload"):
         supervisor.publish_sandbox_event(runtime_pb2.PublishSandboxEventRequest(event=conflicting))
+
+
+def test_publish_sandbox_event_applies_explicit_optional_sandbox_fields() -> None:
+    supervisor = RuntimeSupervisor()
+    validate = supervisor.validate_runtime(
+        runtime_pb2.ValidateRuntimeRequest(manifest=_manifest(), request_id="req-1")
+    )
+    compiled = supervisor.compile_runtime(
+        runtime_pb2.CompileRuntimeRequest(manifest=validate.normalized_manifest, request_id="req-2")
+    )
+    runtime_unit = compiled.runtime_units[1]
+    event = _make_sandbox_event(
+        runtime_unit=runtime_unit,
+        event_id="sandbox-event-explicit-optionals",
+        event_type=runtime_pb2.SANDBOX_EVENT_TYPE_BOUND,
+        state=runtime_pb2.RUNTIME_STATE_BOUND,
+        sandbox_id="sandbox:run-1:decode",
+    )
+    event.share = 0.25
+    event.priority = 19
+    event.offloaded = True
+
+    supervisor.publish_sandbox_event(runtime_pb2.PublishSandboxEventRequest(event=event))
+
+    sandbox = supervisor.sandboxes.get("run-1", "sandbox:run-1:decode")
+    assert sandbox.share == pytest.approx(0.25)
+    assert sandbox.priority == 19
+    assert sandbox.offloaded is True
+
+
+def test_publish_sandbox_event_preserves_existing_optional_sandbox_fields_when_omitted() -> None:
+    supervisor = RuntimeSupervisor()
+    validate = supervisor.validate_runtime(
+        runtime_pb2.ValidateRuntimeRequest(manifest=_manifest(), request_id="req-1")
+    )
+    compiled = supervisor.compile_runtime(
+        runtime_pb2.CompileRuntimeRequest(manifest=validate.normalized_manifest, request_id="req-2")
+    )
+    runtime_unit = compiled.runtime_units[1]
+    first = _make_sandbox_event(
+        runtime_unit=runtime_unit,
+        event_id="sandbox-event-preserve-optionals-1",
+        event_type=runtime_pb2.SANDBOX_EVENT_TYPE_BOUND,
+        state=runtime_pb2.RUNTIME_STATE_BOUND,
+        sandbox_id="sandbox:run-1:decode",
+    )
+    first.share = 0.75
+    first.priority = 23
+    first.offloaded = True
+    supervisor.publish_sandbox_event(runtime_pb2.PublishSandboxEventRequest(event=first))
+
+    second = _make_sandbox_event(
+        runtime_unit=runtime_unit,
+        event_id="sandbox-event-preserve-optionals-2",
+        event_type=runtime_pb2.SANDBOX_EVENT_TYPE_RUNNING,
+        state=runtime_pb2.RUNTIME_STATE_RUNNING,
+        sandbox_id="sandbox:run-1:decode",
+    )
+    supervisor.publish_sandbox_event(runtime_pb2.PublishSandboxEventRequest(event=second))
+
+    sandbox = supervisor.sandboxes.get("run-1", "sandbox:run-1:decode")
+    assert sandbox.share == pytest.approx(0.75)
+    assert sandbox.priority == 23
+    assert sandbox.offloaded is True
+
+
+def test_publish_sandbox_event_defaults_optional_sandbox_fields_for_legacy_new_sandbox() -> None:
+    supervisor = RuntimeSupervisor()
+    validate = supervisor.validate_runtime(
+        runtime_pb2.ValidateRuntimeRequest(manifest=_manifest(), request_id="req-1")
+    )
+    compiled = supervisor.compile_runtime(
+        runtime_pb2.CompileRuntimeRequest(manifest=validate.normalized_manifest, request_id="req-2")
+    )
+    runtime_unit = compiled.runtime_units[1]
+    legacy_event = _make_sandbox_event(
+        runtime_unit=runtime_unit,
+        event_id="sandbox-event-legacy-optionals",
+        event_type=runtime_pb2.SANDBOX_EVENT_TYPE_SLEEPING,
+        state=runtime_pb2.RUNTIME_STATE_SLEEPING,
+        sandbox_id="sandbox:run-1:decode",
+    )
+    legacy_event.binding.resources.accelerator_units = 0.25
+
+    supervisor.publish_sandbox_event(runtime_pb2.PublishSandboxEventRequest(event=legacy_event))
+
+    sandbox = supervisor.sandboxes.get("run-1", "sandbox:run-1:decode")
+    assert sandbox.share == pytest.approx(0.25)
+    assert sandbox.priority == 7
+    assert sandbox.offloaded is True
 
 
 def test_publish_sandbox_event_rejects_same_event_id_reused_by_different_run() -> None:

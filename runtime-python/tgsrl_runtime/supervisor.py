@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Protocol, cast
@@ -174,6 +174,72 @@ def _same_message_payload(
     return left.SerializeToString(deterministic=True) == right.SerializeToString(deterministic=True)
 
 
+def _binding_share(binding: scheduling_pb2.Binding) -> float | None:
+    if binding.HasField("resources"):
+        return binding.resources.accelerator_units
+    return None
+
+
+def _runtime_priority(
+    runtime_unit: runtime_pb2.RuntimeUnit,
+    manifest: runtime_pb2.RuntimeManifest,
+) -> int:
+    value = runtime_unit.annotations.get("priority", "").strip()
+    if value:
+        try:
+            return int(value)
+        except ValueError:
+            pass
+    return manifest.priority
+
+
+def _event_or_default_share(
+    event: runtime_pb2.SandboxEvent,
+    *,
+    binding: scheduling_pb2.Binding,
+    runtime_unit: runtime_pb2.RuntimeUnit,
+    manifest: runtime_pb2.RuntimeManifest,
+    existing: runtime_pb2.Sandbox | None,
+) -> float:
+    if event.HasField("share"):
+        return event.share
+    if existing is not None:
+        return existing.share
+    binding_share = _binding_share(binding)
+    if binding_share is not None:
+        return binding_share
+    requested = runtime_unit.requested_resources.accelerator_units
+    if requested:
+        return requested
+    return manifest.resources_per_unit.accelerator_units
+
+
+def _event_or_default_priority(
+    event: runtime_pb2.SandboxEvent,
+    *,
+    runtime_unit: runtime_pb2.RuntimeUnit,
+    manifest: runtime_pb2.RuntimeManifest,
+    existing: runtime_pb2.Sandbox | None,
+) -> int:
+    if event.HasField("priority"):
+        return event.priority
+    if existing is not None:
+        return existing.priority
+    return _runtime_priority(runtime_unit, manifest)
+
+
+def _event_or_default_offloaded(
+    event: runtime_pb2.SandboxEvent,
+    *,
+    existing: runtime_pb2.Sandbox | None,
+) -> bool:
+    if event.HasField("offloaded"):
+        return event.offloaded
+    if existing is not None:
+        return existing.offloaded
+    return event.state == runtime_pb2.RUNTIME_STATE_SLEEPING
+
+
 def _trace_event(
     *,
     run_id: str,
@@ -289,6 +355,9 @@ class RuntimeSupervisor:
         )
     )
     persistence: PersistenceHook = field(default_factory=NullPersistenceHook)
+    clock: Callable[[], datetime] = field(
+        default=lambda: datetime.now(tz=UTC), repr=False
+    )
     published_intents: list[scheduling_pb2.SchedulingIntent] = field(default_factory=list)
     component_statuses: dict[tuple[str, str], control_pb2.ComponentStatus] = field(
         default_factory=dict
@@ -868,6 +937,7 @@ class RuntimeSupervisor:
                 _is_allowed_same_generation_transition(existing.state, event.state)
             ):
                 raise RuntimeLifecycleError("sandbox event transition is not allowed")
+        confirmed_at = to_timestamp(self.clock().astimezone(UTC))
         sandbox = runtime_pb2.Sandbox(
             sandbox_id=event.sandbox_id,
             run_id=runtime_unit.run_id,
@@ -876,14 +946,41 @@ class RuntimeSupervisor:
             state=event.state,
             generation=event.generation,
             binding=binding,
-            share=1.0,
-            priority=int(runtime_unit.annotations.get("priority", "0")),
+            share=_event_or_default_share(
+                event,
+                binding=binding,
+                runtime_unit=runtime_unit,
+                manifest=manifest,
+                existing=existing,
+            ),
+            priority=_event_or_default_priority(
+                event,
+                runtime_unit=runtime_unit,
+                manifest=manifest,
+                existing=existing,
+            ),
             safe_point=event.safe_point,
-            offloaded=event.state == runtime_pb2.RUNTIME_STATE_SLEEPING,
+            offloaded=_event_or_default_offloaded(
+                event,
+                existing=existing,
+            ),
             observed_at=event.occurred_at,
             data_kind=event.data_kind or manifest.data_kind,
             semantic_context=event.semantic_context or manifest.semantic_context,
         )
+        sandbox.last_confirmed_at.CopyFrom(confirmed_at)
+        if (
+            existing is None
+            or existing.generation != event.generation
+            or existing.state != event.state
+        ):
+            sandbox.state_changed_at.CopyFrom(confirmed_at)
+        elif existing.HasField("state_changed_at"):
+            sandbox.state_changed_at.CopyFrom(existing.state_changed_at)
+        elif existing.HasField("observed_at"):
+            # A legacy payload has only observed_at. Materialize that effective
+            # transition time before replacing observed_at with the new event.
+            sandbox.state_changed_at.CopyFrom(existing.observed_at)
         candidate_unit = runtime_pb2.RuntimeUnit()
         candidate_unit.CopyFrom(runtime_unit)
         candidate_unit.generation = max(candidate_unit.generation, event.generation)

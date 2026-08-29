@@ -1,11 +1,14 @@
 package state
 
 import (
+	"context"
 	"errors"
 	"sort"
+	"time"
 
 	tgsrlv1 "github.com/Blizzard-cyber/TGS-RL/gen/go/tgsrl/v1"
 	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
 type providerResourceCursor struct {
@@ -14,8 +17,13 @@ type providerResourceCursor struct {
 }
 
 type providerSandboxCursor struct {
-	generation uint64
-	eventID    string
+	generation       uint64
+	providerRevision uint64
+	eventID          string
+	idempotencyKey   string
+	occurredAt       time.Time
+	seenEventIDs     map[string]struct{}
+	seenIdempotency  map[string]struct{}
 }
 
 type providerProjectionState struct {
@@ -37,7 +45,7 @@ func (p providerProjectionState) clone() providerProjectionState {
 		cloned.sandboxes[sandboxID] = cloneProjectedSandbox(sandbox)
 	}
 	for sandboxID, cursor := range p.sandboxCursors {
-		cloned.sandboxCursors[sandboxID] = cursor
+		cloned.sandboxCursors[sandboxID] = cloneProviderSandboxCursor(cursor)
 	}
 	return cloned
 }
@@ -136,16 +144,52 @@ func (s *Store) ReplaceProjectedSandboxes(sandboxes []*tgsrlv1.Sandbox) (bool, e
 	defer s.mu.Unlock()
 
 	nextSandboxes := make(map[string]*tgsrlv1.Sandbox, len(sandboxes))
-	nextCursors := make(map[string]providerSandboxCursor, len(sandboxes))
+	// Retain cursors for sandboxes absent from the latest list as tombstones.
+	// Otherwise a delayed event could resurrect a sandbox immediately after an
+	// authoritative bootstrap removed it.
+	nextCursors := make(map[string]providerSandboxCursor, len(s.providerProjection.sandboxCursors)+len(sandboxes))
+	for sandboxID, cursor := range s.providerProjection.sandboxCursors {
+		nextCursors[sandboxID] = cursor
+	}
+	var confirmedAt time.Time
 	for _, sandbox := range sandboxes {
 		if sandbox == nil || sandbox.GetSandboxId() == "" {
 			return false, errors.New("state: sandbox bootstrap requires sandbox_id")
 		}
-		nextSandboxes[sandbox.GetSandboxId()] = cloneProjectedSandbox(sandbox)
-		nextCursors[sandbox.GetSandboxId()] = providerSandboxCursor{
-			generation: sandbox.GetGeneration(),
-			eventID:    "bootstrap-sandbox",
+		if sandbox.GetObservedAt() != nil && sandbox.GetObservedAt().CheckValid() != nil {
+			return false, errors.New("state: sandbox bootstrap has invalid observed_at")
 		}
+		sandboxID := sandbox.GetSandboxId()
+		current := s.providerProjection.sandboxes[sandboxID]
+		cursor, hasCursor := s.providerProjection.sandboxCursors[sandboxID]
+		if !hasCursor && current != nil {
+			cursor = providerSandboxCursor{
+				generation: current.GetGeneration(),
+				occurredAt: timestampTime(current.GetObservedAt()),
+			}
+			hasCursor = true
+		}
+		if hasCursor && !acceptSandboxBootstrap(cursor, current, sandbox) {
+			if current != nil {
+				nextSandboxes[sandboxID] = cloneProjectedSandbox(current)
+			}
+			continue
+		}
+		next := cloneProjectedSandbox(sandbox)
+		if confirmedAt.IsZero() {
+			confirmedAt = s.clock.Now()
+		}
+		stampSandboxConfirmation(current, next, confirmedAt)
+		nextSandboxes[sandboxID] = next
+		if !hasCursor || sandbox.GetGeneration() > cursor.generation {
+			cursor = providerSandboxCursor{
+				generation: sandbox.GetGeneration(),
+				eventID:    "bootstrap-sandbox",
+			}
+		}
+		cursor.occurredAt = timestampTime(sandbox.GetObservedAt())
+		rememberSandboxCursorIdentity(&cursor)
+		nextCursors[sandboxID] = cursor
 	}
 	if equalProjectedSandboxes(s.providerProjection.sandboxes, nextSandboxes) {
 		s.providerProjection.sandboxCursors = nextCursors
@@ -165,11 +209,15 @@ func (s *Store) ApplyProviderSandboxEvent(event *tgsrlv1.SandboxEvent) (*tgsrlv1
 	if event.GetSandboxId() == "" {
 		return nil, false, errors.New("state: sandbox event missing sandbox_id")
 	}
+	if event.GetOccurredAt() != nil && event.GetOccurredAt().CheckValid() != nil {
+		return nil, false, errors.New("state: sandbox event has invalid occurred_at")
+	}
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	if !acceptSandboxCursorLocked(&s.providerProjection, event) {
+	current := s.providerProjection.sandboxes[event.GetSandboxId()]
+	if !acceptSandboxCursorLocked(&s.providerProjection, current, event) {
 		current := s.providerProjection.sandboxes[event.GetSandboxId()]
 		return cloneProjectedSandbox(current), false, nil
 	}
@@ -186,7 +234,7 @@ func (s *Store) ApplyProviderSandboxEvent(event *tgsrlv1.SandboxEvent) (*tgsrlv1
 		ObservedAt: cloneTimestamp(event.GetOccurredAt()),
 		DataKind:   event.GetDataKind(),
 	}
-	if current := s.providerProjection.sandboxes[event.GetSandboxId()]; current != nil {
+	if current != nil {
 		merged := cloneProjectedSandbox(current)
 		if next.GetRunId() != "" {
 			merged.RunId = next.GetRunId()
@@ -203,17 +251,64 @@ func (s *Store) ApplyProviderSandboxEvent(event *tgsrlv1.SandboxEvent) (*tgsrlv1
 			merged.Binding = cloneProjectedBinding(next.GetBinding())
 		}
 		merged.SafePoint = next.GetSafePoint()
+		if event.Share != nil {
+			merged.Share = event.GetShare()
+		}
+		if event.Priority != nil {
+			merged.Priority = event.GetPriority()
+		}
+		if event.Offloaded != nil {
+			merged.Offloaded = event.GetOffloaded()
+		}
 		merged.ObservedAt = cloneTimestamp(next.GetObservedAt())
 		merged.DataKind = next.GetDataKind()
 		next = merged
 	}
+	if current == nil {
+		if event.Share != nil {
+			next.Share = event.GetShare()
+		}
+		if event.Priority != nil {
+			next.Priority = event.GetPriority()
+		}
+		if event.Offloaded != nil {
+			next.Offloaded = event.GetOffloaded()
+		}
+	}
+	stampSandboxConfirmation(current, next, s.clock.Now())
 
-	current := s.providerProjection.sandboxes[event.GetSandboxId()]
 	if proto.Equal(current, next) {
 		return cloneProjectedSandbox(current), false, nil
 	}
 	s.providerProjection.sandboxes[event.GetSandboxId()] = cloneProjectedSandbox(next)
 	return cloneProjectedSandbox(next), true, nil
+}
+
+// stampSandboxConfirmation records scheduler receipt time independently from
+// observed_at, which remains the provider's source-event time. A confirmation
+// of the same generation and state preserves the effective transition time;
+// for legacy snapshots that means materializing their observed_at fallback
+// before the new observation replaces it.
+func stampSandboxConfirmation(current, next *tgsrlv1.Sandbox, confirmedAt time.Time) {
+	if next == nil {
+		return
+	}
+	next.LastConfirmedAt = timestamppb.New(confirmedAt)
+	if current == nil || current.GetGeneration() != next.GetGeneration() || current.GetState() != next.GetState() {
+		next.StateChangedAt = timestamppb.New(confirmedAt)
+		return
+	}
+	next.StateChangedAt = cloneTimestamp(effectiveSandboxStateChangedAt(current))
+}
+
+func effectiveSandboxStateChangedAt(sandbox *tgsrlv1.Sandbox) *timestamppb.Timestamp {
+	if sandbox == nil {
+		return nil
+	}
+	if sandbox.GetStateChangedAt() != nil {
+		return sandbox.GetStateChangedAt()
+	}
+	return sandbox.GetObservedAt()
 }
 
 // ListProjectedSandboxes returns a stable-ID-ordered clone of projected
@@ -234,6 +329,13 @@ func (s *Store) ListProjectedSandboxes() []*tgsrlv1.Sandbox {
 	return out
 }
 
+// ListSandboxes is the context-shaped compatibility read used by service tests
+// and restart reconciliation paths. Store authority is fully local, so ctx is
+// accepted for interface symmetry but does not block.
+func (s *Store) ListSandboxes(_ context.Context) ([]*tgsrlv1.Sandbox, error) {
+	return s.ListProjectedSandboxes(), nil
+}
+
 func acceptResourceCursorLocked(projected *providerProjectionState, provider string, revision uint64, eventID string) bool {
 	current, ok := projected.resourceCursors[provider]
 	if ok {
@@ -248,21 +350,153 @@ func acceptResourceCursorLocked(projected *providerProjectionState, provider str
 	return true
 }
 
-func acceptSandboxCursorLocked(projected *providerProjectionState, event *tgsrlv1.SandboxEvent) bool {
+func acceptSandboxCursorLocked(projected *providerProjectionState, sandbox *tgsrlv1.Sandbox, event *tgsrlv1.SandboxEvent) bool {
 	current, ok := projected.sandboxCursors[event.GetSandboxId()]
 	if ok {
 		switch {
 		case event.GetGeneration() < current.generation:
 			return false
-		case event.GetGeneration() == current.generation && event.GetEventId() != "" && event.GetEventId() == current.eventID:
+		case duplicateSandboxEvent(current, event):
+			return false
+		case event.GetGeneration() == current.generation && !acceptSameGenerationSandboxEvent(current, sandbox, event):
 			return false
 		}
 	}
-	projected.sandboxCursors[event.GetSandboxId()] = providerSandboxCursor{
-		generation: event.GetGeneration(),
-		eventID:    event.GetEventId(),
+	nextRevision := event.GetProviderRevision()
+	if ok && event.GetGeneration() == current.generation && nextRevision == 0 {
+		nextRevision = current.providerRevision
 	}
+	projected.sandboxCursors[event.GetSandboxId()] = providerSandboxCursor{
+		generation:       event.GetGeneration(),
+		providerRevision: nextRevision,
+		eventID:          event.GetEventId(),
+		idempotencyKey:   event.GetIdempotencyKey(),
+		occurredAt:       timestampTime(event.GetOccurredAt()),
+	}
+	next := projected.sandboxCursors[event.GetSandboxId()]
+	if ok && event.GetGeneration() == current.generation {
+		next.seenEventIDs = cloneStringSet(current.seenEventIDs)
+		next.seenIdempotency = cloneStringSet(current.seenIdempotency)
+	}
+	rememberSandboxCursorIdentity(&next)
+	projected.sandboxCursors[event.GetSandboxId()] = next
 	return true
+}
+
+func duplicateSandboxEvent(current providerSandboxCursor, event *tgsrlv1.SandboxEvent) bool {
+	if event.GetEventId() != "" {
+		if event.GetEventId() == current.eventID {
+			return true
+		}
+		_, duplicate := current.seenEventIDs[event.GetEventId()]
+		return duplicate
+	}
+	if event.GetIdempotencyKey() == "" {
+		return false
+	}
+	if event.GetIdempotencyKey() == current.idempotencyKey {
+		return true
+	}
+	_, duplicate := current.seenIdempotency[event.GetIdempotencyKey()]
+	return duplicate
+}
+
+func rememberSandboxCursorIdentity(cursor *providerSandboxCursor) {
+	if cursor.eventID != "" {
+		if cursor.seenEventIDs == nil {
+			cursor.seenEventIDs = make(map[string]struct{})
+		}
+		cursor.seenEventIDs[cursor.eventID] = struct{}{}
+	}
+	if cursor.idempotencyKey != "" {
+		if cursor.seenIdempotency == nil {
+			cursor.seenIdempotency = make(map[string]struct{})
+		}
+		cursor.seenIdempotency[cursor.idempotencyKey] = struct{}{}
+	}
+}
+
+func cloneProviderSandboxCursor(cursor providerSandboxCursor) providerSandboxCursor {
+	cursor.seenEventIDs = cloneStringSet(cursor.seenEventIDs)
+	cursor.seenIdempotency = cloneStringSet(cursor.seenIdempotency)
+	return cursor
+}
+
+func cloneStringSet(in map[string]struct{}) map[string]struct{} {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make(map[string]struct{}, len(in))
+	for value := range in {
+		out[value] = struct{}{}
+	}
+	return out
+}
+
+func acceptSameGenerationSandboxEvent(current providerSandboxCursor, sandbox *tgsrlv1.Sandbox, event *tgsrlv1.SandboxEvent) bool {
+	incomingRevision := event.GetProviderRevision()
+	if incomingRevision > 0 {
+		switch {
+		case current.providerRevision == 0:
+			return true
+		case incomingRevision < current.providerRevision:
+			return false
+		case incomingRevision > current.providerRevision:
+			return true
+		}
+	}
+
+	// Equal-revision events use occurrence time to order distinct transitions.
+	// Revision-zero events use the same fallback because they predate provider
+	// revision fencing. In either case the timestamp must advance and the event
+	// must not regress the projected lifecycle state.
+	incomingOccurredAt := timestampTime(event.GetOccurredAt())
+	if incomingOccurredAt.IsZero() || !incomingOccurredAt.After(current.occurredAt) {
+		return false
+	}
+	return sandbox == nil || !runtimeStateRegresses(sandbox.GetState(), event.GetState())
+}
+
+func acceptSandboxBootstrap(current providerSandboxCursor, sandbox, incoming *tgsrlv1.Sandbox) bool {
+	switch {
+	case incoming.GetGeneration() < current.generation:
+		return false
+	case incoming.GetGeneration() > current.generation:
+		return true
+	}
+	incomingObservedAt := timestampTime(incoming.GetObservedAt())
+	if incomingObservedAt.IsZero() || !incomingObservedAt.After(current.occurredAt) {
+		return false
+	}
+	return sandbox == nil || !runtimeStateRegresses(sandbox.GetState(), incoming.GetState())
+}
+
+func runtimeStateRegresses(current, next tgsrlv1.RuntimeState) bool {
+	if current == next {
+		return false
+	}
+	if (current == tgsrlv1.RuntimeState_RUNTIME_STATE_PAUSED || current == tgsrlv1.RuntimeState_RUNTIME_STATE_SLEEPING) && next == tgsrlv1.RuntimeState_RUNTIME_STATE_RUNNING {
+		return false
+	}
+	rank := map[tgsrlv1.RuntimeState]int{
+		tgsrlv1.RuntimeState_RUNTIME_STATE_REQUESTED:  1,
+		tgsrlv1.RuntimeState_RUNTIME_STATE_BOUND:      2,
+		tgsrlv1.RuntimeState_RUNTIME_STATE_RUNNING:    3,
+		tgsrlv1.RuntimeState_RUNTIME_STATE_PAUSED:     4,
+		tgsrlv1.RuntimeState_RUNTIME_STATE_SLEEPING:   5,
+		tgsrlv1.RuntimeState_RUNTIME_STATE_FAILED:     6,
+		tgsrlv1.RuntimeState_RUNTIME_STATE_TERMINATED: 7,
+	}
+	currentRank, currentKnown := rank[current]
+	nextRank, nextKnown := rank[next]
+	return currentKnown && (!nextKnown || nextRank < currentRank)
+}
+
+func timestampTime(timestamp *timestamppb.Timestamp) time.Time {
+	if timestamp == nil || timestamp.CheckValid() != nil {
+		return time.Time{}
+	}
+	return timestamp.AsTime()
 }
 
 func upsertProjectedDevice(snapshot *tgsrlv1.ClusterSnapshot, device *tgsrlv1.Device) {

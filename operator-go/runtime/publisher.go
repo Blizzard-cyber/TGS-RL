@@ -42,7 +42,13 @@ func (p *RPCPublisher) Publish(ctx context.Context, event *tgsrlv1.SandboxEvent)
 
 func BuildSandboxEvent(decision *tgsrlv1.DecisionRecord, jobRun *tgsrlv1.JobRun, binding *tgsrlv1.Binding, eventType tgsrlv1.SandboxEventType, state tgsrlv1.RuntimeState, detail string) *tgsrlv1.SandboxEvent {
 	bindingClone := proto.Clone(binding).(*tgsrlv1.Binding)
-	actionID, idempotencyKey, providerRevision := causalAction(decision, binding)
+	action, providerRevision := causalAction(decision, binding)
+	actionID := ""
+	idempotencyKey := ""
+	if action != nil {
+		actionID = action.GetActionId()
+		idempotencyKey = action.GetIdempotencyKey()
+	}
 	generation := decision.GetGeneration()
 	if generation == 0 {
 		generation = binding.GetGeneration()
@@ -50,7 +56,7 @@ func BuildSandboxEvent(decision *tgsrlv1.DecisionRecord, jobRun *tgsrlv1.JobRun,
 	if generation == 0 {
 		generation = 1
 	}
-	return &tgsrlv1.SandboxEvent{
+	event := &tgsrlv1.SandboxEvent{
 		EventId:          fmt.Sprintf("%s:%s:%d:%s", decision.GetDecisionId(), eventType.String(), generation, binding.GetBindingId()),
 		EventType:        eventType,
 		SandboxId:        sandboxID(binding),
@@ -70,35 +76,64 @@ func BuildSandboxEvent(decision *tgsrlv1.DecisionRecord, jobRun *tgsrlv1.JobRun,
 		ProviderRevision: providerRevision,
 		IdempotencyKey:   idempotencyKey,
 	}
+	applyObservedActionState(event, action, binding)
+	return event
 }
 
-func causalAction(decision *tgsrlv1.DecisionRecord, binding *tgsrlv1.Binding) (string, string, uint64) {
+func causalAction(decision *tgsrlv1.DecisionRecord, binding *tgsrlv1.Binding) (*tgsrlv1.Action, uint64) {
 	if decision == nil || binding == nil {
-		return "", "", 0
+		return nil, 0
 	}
-	var actionID, key string
+	var selected *tgsrlv1.Action
 	for _, action := range decision.GetSelectedPlan().GetActions() {
 		if action == nil {
 			continue
 		}
 		matches := action.GetBinding().GetBindingId() == binding.GetBindingId() || action.GetSandboxId() == binding.GetSandboxId() || action.GetTargetId() == runtimeUnitID(binding)
 		if matches {
-			actionID, key = action.GetActionId(), action.GetIdempotencyKey()
+			selected = action
 			break
 		}
 	}
 	var revision uint64
+	if selected == nil {
+		return nil, 0
+	}
 	for _, result := range decision.GetActionResults() {
-		if result.GetActionId() != actionID {
+		if result.GetActionId() != selected.GetActionId() {
 			continue
 		}
-		if key == "" {
-			key = result.GetIdempotencyKey()
+		if selected.GetIdempotencyKey() == "" && result.GetIdempotencyKey() != "" {
+			selected = proto.Clone(selected).(*tgsrlv1.Action)
+			selected.IdempotencyKey = result.GetIdempotencyKey()
 		}
 		revision = result.GetObservedRevision()
 		break
 	}
-	return actionID, key, revision
+	return selected, revision
+}
+
+func applyObservedActionState(event *tgsrlv1.SandboxEvent, action *tgsrlv1.Action, binding *tgsrlv1.Binding) {
+	if event == nil {
+		return
+	}
+	switch action.GetActionType() {
+	case tgsrlv1.ActionType_ACTION_TYPE_BIND:
+		share, priority, offloaded := binding.GetResources().GetAcceleratorUnits(), action.GetPriority(), false
+		event.Share, event.Priority, event.Offloaded = &share, &priority, &offloaded
+	case tgsrlv1.ActionType_ACTION_TYPE_SET_SHARE:
+		share := action.GetShare()
+		event.Share = &share
+	case tgsrlv1.ActionType_ACTION_TYPE_SET_PRIORITY:
+		priority := action.GetPriority()
+		event.Priority = &priority
+	case tgsrlv1.ActionType_ACTION_TYPE_RESUME:
+		offloaded := false
+		event.Offloaded = &offloaded
+	case tgsrlv1.ActionType_ACTION_TYPE_OFFLOAD:
+		offloaded := true
+		event.Offloaded = &offloaded
+	}
 }
 
 func runtimeUnitID(binding *tgsrlv1.Binding) string {

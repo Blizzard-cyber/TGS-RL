@@ -320,6 +320,9 @@ func (p *MockResourceProvider) restoreActionBeforeImageLocked(action *tgsrlv1.Ac
 	if mutations&sandboxMutationOffloaded != 0 {
 		current.Offloaded = before.sandbox.Offloaded
 	}
+	if mutations&(sandboxMutationState|sandboxMutationGeneration) != 0 {
+		current.StateChangedAt = before.sandbox.StateChangedAt
+	}
 	current.UpdatedAt = p.now()
 	p.sandboxes[before.sandboxID] = current
 	return nil
@@ -376,7 +379,7 @@ func mutationsForAction(action *tgsrlv1.Action, sandboxExists bool) sandboxMutat
 		if !sandboxExists {
 			return sandboxMutationExistence
 		}
-		return sandboxMutationState | sandboxMutationBinding
+		return sandboxMutationState | sandboxMutationBinding | sandboxMutationShare | sandboxMutationPriority
 	case tgsrlv1.ActionType_ACTION_TYPE_RELEASE, tgsrlv1.ActionType_ACTION_TYPE_PAUSE, tgsrlv1.ActionType_ACTION_TYPE_SLEEP:
 		return sandboxMutationState
 	case tgsrlv1.ActionType_ACTION_TYPE_SET_SHARE:
@@ -438,13 +441,9 @@ func (p *MockResourceProvider) ApplySandboxEvent(ctx context.Context, event Sand
 		if eventWouldRegress(current.State, event.State) {
 			return &Error{Code: ErrorCodeLateEventFenced, Message: "same-generation event would regress sandbox state", SandboxID: event.SandboxID, ExpectedGeneration: current.Generation, ObservedGeneration: event.Generation, Cause: ErrGenerationFenced}
 		}
-		if sandboxEventMatches(current, event) {
-			if event.EventID != "" {
-				p.events[event.EventID] = cloneSandboxEvent(event)
-			}
-			return nil
-		}
 	}
+	confirmedAt := p.now()
+	lifecycleChanged := !exists || current.State != event.State || current.Generation != event.Generation
 	updated := current
 	updated.SandboxID = event.SandboxID
 	updated.Generation = event.Generation
@@ -455,7 +454,18 @@ func (p *MockResourceProvider) ApplySandboxEvent(ctx context.Context, event Sand
 	if event.SafePoint != nil {
 		updated.SafePoint = *event.SafePoint
 	}
-	updated.UpdatedAt = p.now()
+	if event.SemanticContext != nil {
+		updated.SemanticContext = cloneSemanticEnvelope(event.SemanticContext)
+	}
+	if lifecycleChanged {
+		updated.StateChangedAt = confirmedAt
+		if !event.StateChangedAt.IsZero() {
+			updated.StateChangedAt = event.StateChangedAt
+		}
+	} else if updated.StateChangedAt.IsZero() && !event.StateChangedAt.IsZero() {
+		updated.StateChangedAt = event.StateChangedAt
+	}
+	updated.UpdatedAt = confirmedAt
 	p.sandboxes[event.SandboxID] = updated
 	if event.EventID != "" {
 		p.events[event.EventID] = cloneSandboxEvent(event)
@@ -520,12 +530,12 @@ func (p *MockResourceProvider) executeActionLocked(ctx context.Context, action *
 		IdempotencyKey:   action.GetIdempotencyKey(),
 	}
 	p.actions[key] = actionLedgerEntry{action: cloneAction(action), result: cloneActionResult(result)}
+	p.updatePlanRecordForActionResultLocked(action, result, nil)
 	sandboxID := actionSandboxID(action)
 	if sandbox, ok := p.sandboxes[sandboxID]; ok {
 		p.publishSandboxSnapshotLocked(sandbox, "action applied")
 	}
 	p.publishSnapshotLocked(tgsrlv1.ResourceEventType_RESOURCE_EVENT_TYPE_SNAPSHOT_PUBLISHED)
-	p.updatePlanRecordForActionResultLocked(action, result, nil)
 	return cloneActionResult(result), nil
 }
 
@@ -593,12 +603,14 @@ func (p *MockResourceProvider) waitLocked(ctx context.Context, action *tgsrlv1.A
 func (p *MockResourceProvider) applyActionLocked(action *tgsrlv1.Action) error {
 	sandboxID := actionSandboxID(action)
 	sandbox, exists := p.sandboxes[sandboxID]
+	created := false
 	if action.GetActionType() == tgsrlv1.ActionType_ACTION_TYPE_BIND && !exists {
-		sandbox = Sandbox{SandboxID: sandboxID, State: SandboxStateRequested, Generation: action.GetExpectedGeneration(), UpdatedAt: p.now()}
+		sandbox = Sandbox{SandboxID: sandboxID, State: SandboxStateRequested, Generation: action.GetExpectedGeneration()}
 		if sandbox.Generation == 0 {
 			sandbox.Generation = 1
 		}
 		exists = true
+		created = true
 	}
 	if !exists {
 		return &Error{Code: ErrorCodeNotFound, Message: "sandbox does not exist", PlanID: action.GetPlanId(), ActionID: action.GetActionId(), SandboxID: sandboxID, Cause: ErrNotFound}
@@ -613,6 +625,8 @@ func (p *MockResourceProvider) applyActionLocked(action *tgsrlv1.Action) error {
 		return &Error{Code: ErrorCodeFailedPrecondition, Message: "sandbox is not at a safe point", PlanID: action.GetPlanId(), ActionID: action.GetActionId(), SandboxID: sandboxID, Cause: ErrFailedPrecondition}
 	}
 
+	previousState := sandbox.State
+	previousGeneration := sandbox.Generation
 	switch action.GetActionType() {
 	case tgsrlv1.ActionType_ACTION_TYPE_BIND:
 		if sandbox.State != SandboxStateRequested && sandbox.State != SandboxStateTerminated {
@@ -620,6 +634,8 @@ func (p *MockResourceProvider) applyActionLocked(action *tgsrlv1.Action) error {
 		}
 		sandbox.State = SandboxStateBound
 		sandbox.Binding = cloneBinding(action.GetBinding())
+		sandbox.Share = action.GetShare()
+		sandbox.Priority = action.GetPriority()
 	case tgsrlv1.ActionType_ACTION_TYPE_RELEASE:
 		if sandbox.State == SandboxStateTerminated {
 			return transitionError(action, sandbox, "sandbox is already terminated")
@@ -668,7 +684,11 @@ func (p *MockResourceProvider) applyActionLocked(action *tgsrlv1.Action) error {
 		}
 		sandbox.Offloaded = false
 	}
-	sandbox.UpdatedAt = p.now()
+	confirmedAt := p.now()
+	sandbox.UpdatedAt = confirmedAt
+	if created || sandbox.State != previousState || sandbox.Generation != previousGeneration {
+		sandbox.StateChangedAt = confirmedAt
+	}
 	p.sandboxes[sandboxID] = sandbox
 	return nil
 }
@@ -921,6 +941,7 @@ func validSandboxState(state SandboxState) bool {
 
 func cloneSandboxEvent(event SandboxEvent) SandboxEvent {
 	event.Binding = cloneBinding(event.Binding)
+	event.SemanticContext = cloneSemanticEnvelope(event.SemanticContext)
 	if event.SafePoint != nil {
 		value := *event.SafePoint
 		event.SafePoint = &value
@@ -929,23 +950,13 @@ func cloneSandboxEvent(event SandboxEvent) SandboxEvent {
 }
 
 func sandboxEventsEqual(left, right SandboxEvent) bool {
-	if left.EventID != right.EventID || left.SandboxID != right.SandboxID || left.Generation != right.Generation || left.State != right.State || !proto.Equal(left.Binding, right.Binding) {
+	if left.EventID != right.EventID || left.SandboxID != right.SandboxID || left.Generation != right.Generation || left.State != right.State || !proto.Equal(left.Binding, right.Binding) || !proto.Equal(left.SemanticContext, right.SemanticContext) || !left.StateChangedAt.Equal(right.StateChangedAt) {
 		return false
 	}
 	if left.SafePoint == nil || right.SafePoint == nil {
 		return left.SafePoint == nil && right.SafePoint == nil
 	}
 	return *left.SafePoint == *right.SafePoint
-}
-
-func sandboxEventMatches(current Sandbox, event SandboxEvent) bool {
-	if current.State != event.State {
-		return false
-	}
-	if event.Binding != nil && !proto.Equal(current.Binding, event.Binding) {
-		return false
-	}
-	return event.SafePoint == nil || current.SafePoint == *event.SafePoint
 }
 
 func eventWouldRegress(current, next SandboxState) bool {

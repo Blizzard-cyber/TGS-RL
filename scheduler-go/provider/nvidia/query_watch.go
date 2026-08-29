@@ -233,16 +233,27 @@ func (p *Provider) publishSnapshotLocked(eventType tgsrlv1.ResourceEventType) {
 }
 
 func (p *Provider) publishSandboxSnapshotLocked(sandbox base.Sandbox, detail string) {
+	nextRevision := p.revision
+	if nextRevision == 0 {
+		nextRevision = p.sandboxSeq + 1
+	}
+	share, priority, offloaded := sandbox.Share, sandbox.Priority, sandbox.Offloaded
 	event := &tgsrlv1.SandboxEvent{
-		EventId:    fmt.Sprintf("%s-sandbox-%d", ProviderID, p.sandboxSeq+1),
-		EventType:  sandboxStateToEventType(sandbox.State),
-		SandboxId:  sandbox.SandboxID,
-		Generation: sandbox.Generation,
-		State:      sandboxStateToRuntimeState(sandbox.State),
-		Binding:    cloneBinding(sandbox.Binding),
-		SafePoint:  sandbox.SafePoint,
-		Detail:     detail,
-		OccurredAt: timestamppb.New(nonZeroTime(sandbox.UpdatedAt, p.now())),
+		EventId:          fmt.Sprintf("%s-sandbox-%d", ProviderID, p.sandboxSeq+1),
+		EventType:        sandboxStateToEventType(sandbox.State),
+		SandboxId:        sandbox.SandboxID,
+		Generation:       sandbox.Generation,
+		State:            sandboxStateToRuntimeState(sandbox.State),
+		Binding:          cloneBinding(sandbox.Binding),
+		SemanticContext:  cloneSemanticEnvelope(sandbox.SemanticContext),
+		Share:            &share,
+		Priority:         &priority,
+		SafePoint:        sandbox.SafePoint,
+		Offloaded:        &offloaded,
+		Detail:           detail,
+		OccurredAt:       timestamppb.New(nonZeroTime(sandbox.UpdatedAt, p.now())),
+		ProviderRevision: nextRevision,
+		IdempotencyKey:   fmt.Sprintf("%s-sandbox-%s-%d", ProviderID, sandbox.SandboxID, nextRevision),
 	}
 	p.publishSandboxEventLocked(event)
 }
