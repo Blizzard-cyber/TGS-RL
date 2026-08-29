@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	tgsrlv1 "github.com/Blizzard-cyber/TGS-RL/gen/go/tgsrl/v1"
+	"google.golang.org/protobuf/proto"
 )
 
 // ValidationOptions controls compatibility exceptions. Executor capability
@@ -463,13 +464,13 @@ func StableCapabilityRequirements(values ...*tgsrlv1.CapabilityRequirement) []*t
 		if value == nil {
 			continue
 		}
-		cloned := *value
-		key := capabilityKey(&cloned)
+		cloned := proto.Clone(value).(*tgsrlv1.CapabilityRequirement)
+		key := capabilityKey(cloned)
 		if _, ok := seen[key]; ok {
 			continue
 		}
 		seen[key] = struct{}{}
-		result = append(result, &cloned)
+		result = append(result, cloned)
 	}
 	sort.Slice(result, func(i, j int) bool { return capabilityKey(result[i]) < capabilityKey(result[j]) })
 	return result
