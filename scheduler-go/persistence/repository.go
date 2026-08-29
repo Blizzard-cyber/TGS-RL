@@ -10,21 +10,32 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"time"
 
 	tgsrlv1 "github.com/Blizzard-cyber/TGS-RL/gen/go/tgsrl/v1"
+	"github.com/Blizzard-cyber/TGS-RL/scheduler-go/protection"
+	"github.com/Blizzard-cyber/TGS-RL/scheduler-go/state"
 	rootstorage "github.com/Blizzard-cyber/TGS-RL/storage"
 	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
 var ErrCorruptPayload = errors.New("scheduler persistence: corrupt protobuf payload")
 
+// SchedulerState is the complete durable scheduler checkpoint. Provider
+// projection fields are optional so checkpoints written before their addition
+// continue to decode as empty projections and cursors.
 type SchedulerState struct {
-	Snapshot      *tgsrlv1.ClusterSnapshot
-	Intents       map[string]*tgsrlv1.SchedulingIntent
-	Decisions     []*tgsrlv1.DecisionRecord
-	ActionResults []*tgsrlv1.ActionResult
-	Cursor        uint64
-	Reservations  []ReservationRecord
+	Snapshot           *tgsrlv1.ClusterSnapshot
+	Intents            map[string]*tgsrlv1.SchedulingIntent
+	Decisions          []*tgsrlv1.DecisionRecord
+	ActionResults      []*tgsrlv1.ActionResult
+	Cursor             uint64
+	Reservations       []ReservationRecord
+	ProjectedSandboxes []*tgsrlv1.Sandbox
+	ResourceCursors    map[string]state.ProviderResourceCursor
+	SandboxCursors     map[string]state.ProviderSandboxCursor
+	Protection         protection.State
 }
 
 // ReservationRecord is the durable representation of an in-flight or
@@ -32,6 +43,8 @@ type SchedulerState struct {
 // model; the extra booleans are persistence metadata only.
 type ReservationRecord struct {
 	Plan                  *tgsrlv1.PlacementPlan
+	BeforeSnapshot        *tgsrlv1.ClusterSnapshot
+	DeviceAllocatable     map[string]*tgsrlv1.ResourceVector
 	PendingUnits          []*tgsrlv1.PendingUnit
 	AllocationIDs         []string
 	Finalized             bool
@@ -42,22 +55,56 @@ type ReservationRecord struct {
 const checkpointFormatVersion = 2
 
 type checkpointEnvelope struct {
-	FormatVersion int                   `json:"format_version"`
-	Snapshot      string                `json:"snapshot,omitempty"`
-	Intents       map[string]string     `json:"intents,omitempty"`
-	Decisions     []string              `json:"decisions,omitempty"`
-	ActionResults []string              `json:"action_results,omitempty"`
-	Cursor        uint64                `json:"cursor,omitempty"`
-	Reservations  []reservationEnvelope `json:"reservations,omitempty"`
+	FormatVersion      int                               `json:"format_version"`
+	Snapshot           string                            `json:"snapshot,omitempty"`
+	Intents            map[string]string                 `json:"intents,omitempty"`
+	Decisions          []string                          `json:"decisions,omitempty"`
+	ActionResults      []string                          `json:"action_results,omitempty"`
+	Cursor             uint64                            `json:"cursor,omitempty"`
+	Reservations       []reservationEnvelope             `json:"reservations,omitempty"`
+	ProjectedSandboxes []string                          `json:"projected_sandboxes,omitempty"`
+	ResourceCursors    map[string]resourceCursorEnvelope `json:"resource_cursors,omitempty"`
+	SandboxCursors     map[string]sandboxCursorEnvelope  `json:"sandbox_cursors,omitempty"`
+	Protection         protectionEnvelope                `json:"protection,omitempty"`
+}
+
+type resourceCursorEnvelope struct {
+	Revision uint64 `json:"revision,omitempty"`
+	EventID  string `json:"event_id,omitempty"`
+}
+
+type sandboxCursorEnvelope struct {
+	Generation          uint64   `json:"generation,omitempty"`
+	ProviderRevision    uint64   `json:"provider_revision,omitempty"`
+	EventID             string   `json:"event_id,omitempty"`
+	IdempotencyKey      string   `json:"idempotency_key,omitempty"`
+	OccurredAt          string   `json:"occurred_at,omitempty"`
+	SeenEventIDs        []string `json:"seen_event_ids,omitempty"`
+	SeenIdempotencyKeys []string `json:"seen_idempotency_keys,omitempty"`
 }
 
 type reservationEnvelope struct {
-	Plan                  string   `json:"plan"`
-	PendingUnits          []string `json:"pending_units,omitempty"`
-	AllocationIDs         []string `json:"allocation_ids,omitempty"`
-	Finalized             bool     `json:"finalized,omitempty"`
-	Succeeded             bool     `json:"succeeded,omitempty"`
-	RetainedAllocationIDs []string `json:"retained_allocation_ids,omitempty"`
+	Plan                  string            `json:"plan"`
+	BeforeSnapshot        string            `json:"before_snapshot,omitempty"`
+	PendingUnits          []string          `json:"pending_units,omitempty"`
+	AllocationIDs         []string          `json:"allocation_ids,omitempty"`
+	DeviceAllocatable     map[string]string `json:"device_allocatable,omitempty"`
+	Finalized             bool              `json:"finalized,omitempty"`
+	Succeeded             bool              `json:"succeeded,omitempty"`
+	RetainedAllocationIDs []string          `json:"retained_allocation_ids,omitempty"`
+}
+
+type protectionEnvelope struct {
+	Entries map[string]protectionStateEnvelope `json:"entries,omitempty"`
+}
+
+type protectionStateEnvelope struct {
+	LastAction    string  `json:"last_action,omitempty"`
+	LastScore     float64 `json:"last_score,omitempty"`
+	WindowStart   string  `json:"window_start,omitempty"`
+	WindowCount   int     `json:"window_count,omitempty"`
+	BreakerCount  int     `json:"breaker_count,omitempty"`
+	BreakerOpened string  `json:"breaker_opened,omitempty"`
 }
 
 // SchedulerRepository is the integration surface for scheduler-facing durable
@@ -232,7 +279,13 @@ func checkpointJournalRecords(state SchedulerState) ([]rootstorage.JournalRecord
 }
 
 func encodeCheckpoint(state SchedulerState) (checkpointEnvelope, error) {
-	envelope := checkpointEnvelope{FormatVersion: checkpointFormatVersion, Intents: make(map[string]string), Cursor: state.Cursor}
+	envelope := checkpointEnvelope{
+		FormatVersion:   checkpointFormatVersion,
+		Intents:         make(map[string]string),
+		Cursor:          state.Cursor,
+		ResourceCursors: make(map[string]resourceCursorEnvelope, len(state.ResourceCursors)),
+		SandboxCursors:  make(map[string]sandboxCursorEnvelope, len(state.SandboxCursors)),
+	}
 	var err error
 	if state.Snapshot != nil {
 		envelope.Snapshot, err = encodeProto(state.Snapshot)
@@ -260,12 +313,82 @@ func encodeCheckpoint(state SchedulerState) (checkpointEnvelope, error) {
 		}
 		envelope.ActionResults = append(envelope.ActionResults, encoded)
 	}
+	for _, sandbox := range state.ProjectedSandboxes {
+		encoded, encodeErr := encodeProto(sandbox)
+		if encodeErr != nil {
+			return checkpointEnvelope{}, encodeErr
+		}
+		envelope.ProjectedSandboxes = append(envelope.ProjectedSandboxes, encoded)
+	}
+	for providerID, cursor := range state.ResourceCursors {
+		envelope.ResourceCursors[providerID] = resourceCursorEnvelope{
+			Revision: cursor.Revision,
+			EventID:  cursor.EventID,
+		}
+	}
+	for sandboxID, cursor := range state.SandboxCursors {
+		encodedCursor := sandboxCursorEnvelope{
+			Generation:          cursor.Generation,
+			ProviderRevision:    cursor.ProviderRevision,
+			EventID:             cursor.EventID,
+			IdempotencyKey:      cursor.IdempotencyKey,
+			SeenEventIDs:        append([]string(nil), cursor.SeenEventIDs...),
+			SeenIdempotencyKeys: append([]string(nil), cursor.SeenIdempotencyKeys...),
+		}
+		if cursor.OccurredAt != nil {
+			encodedCursor.OccurredAt, err = encodeProto(cursor.OccurredAt)
+			if err != nil {
+				return checkpointEnvelope{}, err
+			}
+		}
+		envelope.SandboxCursors[sandboxID] = encodedCursor
+	}
+	if len(state.Protection.Entries) > 0 {
+		envelope.Protection.Entries = make(map[string]protectionStateEnvelope, len(state.Protection.Entries))
+		for key, entry := range state.Protection.Entries {
+			encoded := protectionStateEnvelope{
+				LastScore:    entry.LastScore,
+				WindowCount:  entry.WindowCount,
+				BreakerCount: entry.BreakerCount,
+			}
+			if !entry.LastAction.IsZero() {
+				encoded.LastAction = entry.LastAction.UTC().Format(time.RFC3339Nano)
+			}
+			if !entry.WindowStart.IsZero() {
+				encoded.WindowStart = entry.WindowStart.UTC().Format(time.RFC3339Nano)
+			}
+			if !entry.BreakerOpened.IsZero() {
+				encoded.BreakerOpened = entry.BreakerOpened.UTC().Format(time.RFC3339Nano)
+			}
+			envelope.Protection.Entries[key] = encoded
+		}
+	}
 	for _, reservation := range state.Reservations {
 		encodedPlan, encodeErr := encodeProto(reservation.Plan)
 		if encodeErr != nil {
 			return checkpointEnvelope{}, encodeErr
 		}
-		encoded := reservationEnvelope{Plan: encodedPlan, AllocationIDs: append([]string(nil), reservation.AllocationIDs...), Finalized: reservation.Finalized, Succeeded: reservation.Succeeded, RetainedAllocationIDs: append([]string(nil), reservation.RetainedAllocationIDs...)}
+		encoded := reservationEnvelope{
+			Plan:                  encodedPlan,
+			AllocationIDs:         append([]string(nil), reservation.AllocationIDs...),
+			DeviceAllocatable:     make(map[string]string, len(reservation.DeviceAllocatable)),
+			Finalized:             reservation.Finalized,
+			Succeeded:             reservation.Succeeded,
+			RetainedAllocationIDs: append([]string(nil), reservation.RetainedAllocationIDs...),
+		}
+		if reservation.BeforeSnapshot != nil {
+			encoded.BeforeSnapshot, encodeErr = encodeProto(reservation.BeforeSnapshot)
+			if encodeErr != nil {
+				return checkpointEnvelope{}, encodeErr
+			}
+		}
+		for deviceID, vector := range reservation.DeviceAllocatable {
+			encodedVector, vectorErr := encodeProto(vector)
+			if vectorErr != nil {
+				return checkpointEnvelope{}, vectorErr
+			}
+			encoded.DeviceAllocatable[deviceID] = encodedVector
+		}
 		for _, unit := range reservation.PendingUnits {
 			encodedUnit, unitErr := encodeProto(unit)
 			if unitErr != nil {
@@ -278,7 +401,7 @@ func encodeCheckpoint(state SchedulerState) (checkpointEnvelope, error) {
 	return envelope, nil
 }
 
-func decodeCheckpoint(payload []byte, state *SchedulerState) error {
+func decodeCheckpoint(payload []byte, recovered *SchedulerState) error {
 	envelope := checkpointEnvelope{}
 	if err := json.Unmarshal(payload, &envelope); err != nil {
 		return err
@@ -287,39 +410,122 @@ func decodeCheckpoint(payload []byte, state *SchedulerState) error {
 		return fmt.Errorf("unsupported format version %d", envelope.FormatVersion)
 	}
 	if envelope.Snapshot != "" {
-		state.Snapshot = &tgsrlv1.ClusterSnapshot{}
-		if err := decodeProto(envelope.Snapshot, state.Snapshot); err != nil {
+		recovered.Snapshot = &tgsrlv1.ClusterSnapshot{}
+		if err := decodeProto(envelope.Snapshot, recovered.Snapshot); err != nil {
 			return err
 		}
 	}
-	state.Intents = make(map[string]*tgsrlv1.SchedulingIntent, len(envelope.Intents))
+	recovered.Intents = make(map[string]*tgsrlv1.SchedulingIntent, len(envelope.Intents))
 	for key, encoded := range envelope.Intents {
 		intent := &tgsrlv1.SchedulingIntent{}
 		if err := decodeProto(encoded, intent); err != nil {
 			return err
 		}
-		state.Intents[key] = intent
+		recovered.Intents[key] = intent
 	}
 	for _, encoded := range envelope.Decisions {
 		decision := &tgsrlv1.DecisionRecord{}
 		if err := decodeProto(encoded, decision); err != nil {
 			return err
 		}
-		state.Decisions = append(state.Decisions, decision)
+		recovered.Decisions = append(recovered.Decisions, decision)
 	}
 	for _, encoded := range envelope.ActionResults {
 		result := &tgsrlv1.ActionResult{}
 		if err := decodeProto(encoded, result); err != nil {
 			return err
 		}
-		state.ActionResults = append(state.ActionResults, result)
+		recovered.ActionResults = append(recovered.ActionResults, result)
 	}
-	state.Cursor = envelope.Cursor
+	for _, encoded := range envelope.ProjectedSandboxes {
+		sandbox := &tgsrlv1.Sandbox{}
+		if err := decodeProto(encoded, sandbox); err != nil {
+			return err
+		}
+		recovered.ProjectedSandboxes = append(recovered.ProjectedSandboxes, sandbox)
+	}
+	recovered.ResourceCursors = make(map[string]state.ProviderResourceCursor, len(envelope.ResourceCursors))
+	for providerID, cursor := range envelope.ResourceCursors {
+		recovered.ResourceCursors[providerID] = state.ProviderResourceCursor{
+			Revision: cursor.Revision,
+			EventID:  cursor.EventID,
+		}
+	}
+	recovered.SandboxCursors = make(map[string]state.ProviderSandboxCursor, len(envelope.SandboxCursors))
+	for sandboxID, cursor := range envelope.SandboxCursors {
+		decodedCursor := state.ProviderSandboxCursor{
+			Generation:          cursor.Generation,
+			ProviderRevision:    cursor.ProviderRevision,
+			EventID:             cursor.EventID,
+			IdempotencyKey:      cursor.IdempotencyKey,
+			SeenEventIDs:        append([]string(nil), cursor.SeenEventIDs...),
+			SeenIdempotencyKeys: append([]string(nil), cursor.SeenIdempotencyKeys...),
+		}
+		if cursor.OccurredAt != "" {
+			decodedCursor.OccurredAt = &timestamppb.Timestamp{}
+			if err := decodeProto(cursor.OccurredAt, decodedCursor.OccurredAt); err != nil {
+				return err
+			}
+		}
+		recovered.SandboxCursors[sandboxID] = decodedCursor
+	}
+	if len(envelope.Protection.Entries) > 0 {
+		recovered.Protection.Entries = make(map[string]protection.StateEntry, len(envelope.Protection.Entries))
+		for key, encoded := range envelope.Protection.Entries {
+			entry := protection.StateEntry{
+				LastScore:    encoded.LastScore,
+				WindowCount:  encoded.WindowCount,
+				BreakerCount: encoded.BreakerCount,
+			}
+			if encoded.LastAction != "" {
+				parsed, err := time.Parse(time.RFC3339Nano, encoded.LastAction)
+				if err != nil {
+					return fmt.Errorf("%w: protection last_action: %v", ErrCorruptPayload, err)
+				}
+				entry.LastAction = parsed
+			}
+			if encoded.WindowStart != "" {
+				parsed, err := time.Parse(time.RFC3339Nano, encoded.WindowStart)
+				if err != nil {
+					return fmt.Errorf("%w: protection window_start: %v", ErrCorruptPayload, err)
+				}
+				entry.WindowStart = parsed
+			}
+			if encoded.BreakerOpened != "" {
+				parsed, err := time.Parse(time.RFC3339Nano, encoded.BreakerOpened)
+				if err != nil {
+					return fmt.Errorf("%w: protection breaker_opened: %v", ErrCorruptPayload, err)
+				}
+				entry.BreakerOpened = parsed
+			}
+			recovered.Protection.Entries[key] = entry
+		}
+	}
+	recovered.Cursor = envelope.Cursor
 	for _, encoded := range envelope.Reservations {
-		record := ReservationRecord{AllocationIDs: append([]string(nil), encoded.AllocationIDs...), Finalized: encoded.Finalized, Succeeded: encoded.Succeeded, RetainedAllocationIDs: append([]string(nil), encoded.RetainedAllocationIDs...)}
+		record := ReservationRecord{
+			AllocationIDs:         append([]string(nil), encoded.AllocationIDs...),
+			DeviceAllocatable:     make(map[string]*tgsrlv1.ResourceVector, len(encoded.DeviceAllocatable)),
+			Finalized:             encoded.Finalized,
+			Succeeded:             encoded.Succeeded,
+			RetainedAllocationIDs: append([]string(nil), encoded.RetainedAllocationIDs...),
+		}
 		record.Plan = &tgsrlv1.PlacementPlan{}
 		if err := decodeProto(encoded.Plan, record.Plan); err != nil {
 			return err
+		}
+		if encoded.BeforeSnapshot != "" {
+			record.BeforeSnapshot = &tgsrlv1.ClusterSnapshot{}
+			if err := decodeProto(encoded.BeforeSnapshot, record.BeforeSnapshot); err != nil {
+				return err
+			}
+		}
+		for deviceID, encodedVector := range encoded.DeviceAllocatable {
+			vector := &tgsrlv1.ResourceVector{}
+			if err := decodeProto(encodedVector, vector); err != nil {
+				return err
+			}
+			record.DeviceAllocatable[deviceID] = vector
 		}
 		for _, encodedUnit := range encoded.PendingUnits {
 			unit := &tgsrlv1.PendingUnit{}
@@ -328,7 +534,7 @@ func decodeCheckpoint(payload []byte, state *SchedulerState) error {
 			}
 			record.PendingUnits = append(record.PendingUnits, unit)
 		}
-		state.Reservations = append(state.Reservations, record)
+		recovered.Reservations = append(recovered.Reservations, record)
 	}
 	return nil
 }
@@ -399,6 +605,24 @@ func cloneIntent(intent *tgsrlv1.SchedulingIntent) *tgsrlv1.SchedulingIntent {
 		return nil
 	}
 	return proto.Clone(intent).(*tgsrlv1.SchedulingIntent)
+}
+
+func cloneResourceVector(vector *tgsrlv1.ResourceVector) *tgsrlv1.ResourceVector {
+	if vector == nil {
+		return nil
+	}
+	return proto.Clone(vector).(*tgsrlv1.ResourceVector)
+}
+
+func cloneResourceVectorMap(in map[string]*tgsrlv1.ResourceVector) map[string]*tgsrlv1.ResourceVector {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make(map[string]*tgsrlv1.ResourceVector, len(in))
+	for key, value := range in {
+		out[key] = cloneResourceVector(value)
+	}
+	return out
 }
 
 func IsCorruption(err error) bool {

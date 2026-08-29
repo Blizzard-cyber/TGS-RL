@@ -73,3 +73,14 @@ func cloneCapabilitySet(capabilities *tgsrlv1.CapabilitySet) *tgsrlv1.Capability
 	}
 	return proto.Clone(capabilities).(*tgsrlv1.CapabilitySet)
 }
+
+func cloneResourceVectorMap(in map[string]*tgsrlv1.ResourceVector) map[string]*tgsrlv1.ResourceVector {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make(map[string]*tgsrlv1.ResourceVector, len(in))
+	for key, value := range in {
+		out[key] = cloneResourceVector(value)
+	}
+	return out
+}

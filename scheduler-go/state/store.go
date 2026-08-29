@@ -72,6 +72,8 @@ type intentIdentity struct {
 
 type planReservation struct {
 	plan                  *tgsrlv1.PlacementPlan
+	beforeSnapshot        *tgsrlv1.ClusterSnapshot
+	deviceAllocatable     map[string]*tgsrlv1.ResourceVector
 	pendingUnits          []*tgsrlv1.PendingUnit
 	allocationIDs         []string
 	finalized             bool
@@ -82,6 +84,8 @@ type planReservation struct {
 // ReservationRecord is a clone-safe persistence view of one plan reservation.
 type ReservationRecord struct {
 	Plan                  *tgsrlv1.PlacementPlan
+	BeforeSnapshot        *tgsrlv1.ClusterSnapshot
+	DeviceAllocatable     map[string]*tgsrlv1.ResourceVector
 	PendingUnits          []*tgsrlv1.PendingUnit
 	AllocationIDs         []string
 	Finalized             bool
@@ -89,11 +93,36 @@ type ReservationRecord struct {
 	RetainedAllocationIDs []string
 }
 
+// ProviderResourceCursor is the durable fence for one provider resource
+// stream. Revision is authoritative when non-zero; EventID deduplicates an
+// exact replay at the accepted revision.
+type ProviderResourceCursor struct {
+	Revision uint64
+	EventID  string
+}
+
+// ProviderSandboxCursor is the durable fence for one sandbox event stream.
+// ProviderRevision orders current events, while OccurredAt is the compatibility
+// fence for legacy events whose provider_revision is zero. EventID and
+// IdempotencyKey independently identify retries.
+type ProviderSandboxCursor struct {
+	Generation          uint64
+	ProviderRevision    uint64
+	EventID             string
+	IdempotencyKey      string
+	OccurredAt          *timestamppb.Timestamp
+	SeenEventIDs        []string
+	SeenIdempotencyKeys []string
+}
+
 // DurableState is a complete persistence view of Store-owned authority.
 type DurableState struct {
-	Snapshot     *tgsrlv1.ClusterSnapshot
-	Intents      []*tgsrlv1.SchedulingIntent
-	Reservations []ReservationRecord
+	Snapshot           *tgsrlv1.ClusterSnapshot
+	Intents            []*tgsrlv1.SchedulingIntent
+	Reservations       []ReservationRecord
+	ProjectedSandboxes []*tgsrlv1.Sandbox
+	ResourceCursors    map[string]ProviderResourceCursor
+	SandboxCursors     map[string]ProviderSandboxCursor
 }
 
 // Store is an in-memory, single-writer-equivalent state machine. Mutations are

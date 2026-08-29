@@ -46,8 +46,8 @@ func (s *Store) validatePlanLocked(plan *tgsrlv1.PlacementPlan) error {
 // allocatable resources, and creates pending allocations. Provider execution
 // happens only after this authoritative reservation succeeds.
 func (s *Store) ReservePlan(plan *tgsrlv1.PlacementPlan) (*tgsrlv1.ClusterSnapshot, error) {
-	if plan == nil || plan.GetPlanId() == "" || len(plan.GetBindings()) == 0 {
-		return nil, fmt.Errorf("%w: plan_id and bindings are required", ErrInvalidIntent)
+	if plan == nil || plan.GetPlanId() == "" {
+		return nil, fmt.Errorf("%w: plan_id is required", ErrInvalidIntent)
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -59,6 +59,13 @@ func (s *Store) ReservePlan(plan *tgsrlv1.PlacementPlan) (*tgsrlv1.ClusterSnapsh
 	}
 	if err := s.validatePlanLocked(plan); err != nil {
 		return nil, err
+	}
+	purpose, _ := effectivePlanPurpose(plan)
+	if isMutationPurpose(purpose) {
+		return s.reserveMutationPlanLocked(plan)
+	}
+	if len(plan.GetBindings()) == 0 {
+		return nil, fmt.Errorf("%w: admission plans require bindings", ErrInvalidIntent)
 	}
 	if s.snapshot.GetRevision() == math.MaxUint64 {
 		return nil, ErrRevisionExhausted
@@ -73,7 +80,10 @@ func (s *Store) ReservePlan(plan *tgsrlv1.PlacementPlan) (*tgsrlv1.ClusterSnapsh
 	for _, unit := range working.GetPendingUnits() {
 		pending[unit.GetPendingUnitId()] = unit
 	}
-	reservation := &planReservation{plan: clonePlan(plan)}
+	reservation := &planReservation{
+		plan:           clonePlan(plan),
+		beforeSnapshot: cloneSnapshot(s.snapshot),
+	}
 	seenUnits := make(map[string]struct{}, len(plan.GetBindings()))
 	seenAllocations := make(map[string]struct{}, len(plan.GetBindings()))
 	for _, binding := range plan.GetBindings() {
@@ -106,6 +116,7 @@ func (s *Store) ReservePlan(plan *tgsrlv1.PlacementPlan) (*tgsrlv1.ClusterSnapsh
 		seenAllocations[allocationID] = struct{}{}
 		reservation.pendingUnits = append(reservation.pendingUnits, clonePendingUnit(unit))
 		reservation.allocationIDs = append(reservation.allocationIDs, allocationID)
+		actionID := actionIDForBinding(plan, binding.GetBindingId())
 		working.Allocations = append(working.Allocations, &tgsrlv1.Allocation{
 			AllocationId:  allocationID,
 			ExecutionId:   plan.GetExecutionId(),
@@ -118,6 +129,14 @@ func (s *Store) ReservePlan(plan *tgsrlv1.PlacementPlan) (*tgsrlv1.ClusterSnapsh
 			State:         tgsrlv1.AllocationState_ALLOCATION_STATE_PENDING,
 			CreatedAt:     timestamppb.New(s.clock.Now()),
 			ExpiresAt:     cloneTimestamp(plan.GetExpiresAt()),
+			RunId:         firstNonEmpty(plan.GetRunId(), unit.GetRunId()),
+			TraceId:       firstNonEmpty(plan.GetTraceId(), unit.GetTraceId()),
+			DataKind:      firstKnownDataKind(plan.GetDataKind(), unit.GetDataKind()),
+			Generation:    binding.GetGeneration(),
+			RuntimeUnitId: firstNonEmpty(binding.GetRuntimeUnitId(), unit.GetRuntimeUnitId()),
+			DecisionId:    plan.GetDecisionId(),
+			PlanId:        plan.GetPlanId(),
+			ActionId:      actionID,
 		})
 		delete(pending, binding.GetPendingUnitId())
 	}
@@ -129,6 +148,36 @@ func (s *Store) ReservePlan(plan *tgsrlv1.PlacementPlan) (*tgsrlv1.ClusterSnapsh
 	s.commitSnapshotLocked(working)
 	s.reservations[plan.GetPlanId()] = reservation
 	return cloneSnapshot(s.snapshot), nil
+}
+
+func actionIDForBinding(plan *tgsrlv1.PlacementPlan, bindingID string) string {
+	if plan == nil || bindingID == "" {
+		return ""
+	}
+	for _, action := range plan.GetActions() {
+		if action != nil && action.GetBinding().GetBindingId() == bindingID {
+			return action.GetActionId()
+		}
+	}
+	return ""
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if value != "" {
+			return value
+		}
+	}
+	return ""
+}
+
+func firstKnownDataKind(values ...tgsrlv1.DataKind) tgsrlv1.DataKind {
+	for _, value := range values {
+		if value != tgsrlv1.DataKind_DATA_KIND_UNKNOWN {
+			return value
+		}
+	}
+	return tgsrlv1.DataKind_DATA_KIND_UNKNOWN
 }
 
 // FinalizePlan is the no-result convenience path. Success confirms every
@@ -148,14 +197,32 @@ func (s *Store) FinalizePlanResults(plan *tgsrlv1.PlacementPlan, succeeded bool,
 	if plan == nil {
 		return nil, fmt.Errorf("%w: nil plan", ErrPlanNotReserved)
 	}
-	retained, degraded := retainedAllocations(plan, succeeded, results)
-	retainedIDs := sortedSetValues(retained)
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	reservation, ok := s.reservations[plan.GetPlanId()]
 	if !ok || !proto.Equal(reservation.plan, plan) {
 		return nil, fmt.Errorf("%w: %q", ErrPlanNotReserved, plan.GetPlanId())
 	}
+	purpose, _ := effectivePlanPurpose(plan)
+	if isMutationPurpose(purpose) {
+		outcome := mutationOutcome(plan, reservation, succeeded, results)
+		if reservation.finalized {
+			if reservation.succeeded != succeeded || !equalStrings(reservation.retainedAllocationIDs, outcome.retainedIDs) {
+				return nil, fmt.Errorf("%w: plan %q finalized with different outcome", ErrPlanAlreadyReserved, plan.GetPlanId())
+			}
+			return cloneSnapshot(s.snapshot), nil
+		}
+		snapshot, retainedIDs, err := finalizeMutationPlanResultsLocked(s, plan, reservation, succeeded, results)
+		if err != nil {
+			return nil, err
+		}
+		reservation.finalized = true
+		reservation.succeeded = succeeded
+		reservation.retainedAllocationIDs = retainedIDs
+		return snapshot, nil
+	}
+	retained, degraded := retainedAllocations(plan, succeeded, results)
+	retainedIDs := sortedSetValues(retained)
 	if reservation.finalized {
 		if reservation.succeeded != succeeded || !equalStrings(reservation.retainedAllocationIDs, retainedIDs) {
 			return nil, fmt.Errorf("%w: plan %q finalized with different outcome", ErrPlanAlreadyReserved, plan.GetPlanId())
@@ -282,6 +349,18 @@ func retainedAllocations(plan *tgsrlv1.PlacementPlan, succeeded bool, results []
 		retainAllBindings(retained, plan)
 	}
 	return retained, degraded
+}
+
+func isMutationPurpose(purpose tgsrlv1.PlanPurpose) bool {
+	switch purpose {
+	case tgsrlv1.PlanPurpose_PLAN_PURPOSE_REBALANCE,
+		tgsrlv1.PlanPurpose_PLAN_PURPOSE_PREEMPTION,
+		tgsrlv1.PlanPurpose_PLAN_PURPOSE_RECOVERY,
+		tgsrlv1.PlanPurpose_PLAN_PURPOSE_RECONCILIATION:
+		return true
+	default:
+		return false
+	}
 }
 
 func retainAllBindings(retained map[string]struct{}, plan *tgsrlv1.PlacementPlan) {

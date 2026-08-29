@@ -54,6 +54,7 @@ func (p *PreparedIntentPublication) ExportDurableState() DurableState {
 	for _, key := range keys {
 		result.Intents = append(result.Intents, cloneIntent(p.staged.intents[key]))
 	}
+	exportProviderProjection(&result, p.staged.providerProjection)
 	planIDs := make([]string, 0, len(p.staged.reservations))
 	for planID := range p.staged.reservations {
 		planIDs = append(planIDs, planID)
@@ -63,6 +64,8 @@ func (p *PreparedIntentPublication) ExportDurableState() DurableState {
 		reservation := p.staged.reservations[planID]
 		record := ReservationRecord{
 			Plan:                  clonePlan(reservation.plan),
+			BeforeSnapshot:        cloneSnapshot(reservation.beforeSnapshot),
+			DeviceAllocatable:     cloneResourceVectorMap(reservation.deviceAllocatable),
 			AllocationIDs:         append([]string(nil), reservation.allocationIDs...),
 			Finalized:             reservation.finalized,
 			Succeeded:             reservation.succeeded,
@@ -149,40 +152,27 @@ func (s *Store) PreparePublishIntent(intent *tgsrlv1.SchedulingIntent) (*Prepare
 	}
 
 	working := cloneSnapshot(s.snapshot)
-	if current, exists := s.intents[key]; exists && current.GetVersion() != incoming.GetVersion() {
-		semanticsUnchanged := proto.Equal(current.GetResourcesPerUnit(), incoming.GetResourcesPerUnit()) &&
-			proto.Equal(current.GetRequiredCapabilities(), incoming.GetRequiredCapabilities())
-		for _, allocation := range working.GetAllocations() {
-			if allocation.GetExecutionId() != incoming.GetExecutionId() ||
-				allocation.GetStageId() != incoming.GetStageId() ||
-				allocation.GetState() != tgsrlv1.AllocationState_ALLOCATION_STATE_ACTIVE {
-				continue
-			}
-			if !semanticsUnchanged || !proto.Equal(allocation.GetResources(), incoming.GetResourcesPerUnit()) {
-				err := fmt.Errorf(
-					"%w: active allocations require explicit release/resize before version %d",
-					ErrInvalidIntent, incoming.GetVersion(),
-				)
-				response := rejectedIntentResponse(incoming, err)
-				return nil, response, err
-			}
-			// Version-only intent updates retain compatible live allocations.
-			// Updating their version keeps replay state convergent without a
-			// synthetic release/rebind cycle.
-			allocation.IntentVersion = incoming.GetVersion()
+	for _, allocation := range working.GetAllocations() {
+		if allocation.GetExecutionId() != incoming.GetExecutionId() ||
+			allocation.GetStageId() != incoming.GetStageId() {
+			continue
 		}
+		if allocation.GetState() != tgsrlv1.AllocationState_ALLOCATION_STATE_PENDING &&
+			allocation.GetState() != tgsrlv1.AllocationState_ALLOCATION_STATE_ACTIVE {
+			continue
+		}
+		// Desired-state intent publication carries forward existing live
+		// allocations even when resources, capabilities, or priority drift.
+		// We only advance the observed intent version here; explicit mutation
+		// plans remain responsible for materializing semantic changes.
+		allocation.IntentVersion = incoming.GetVersion()
 	}
 
-	compatible := compatibleAllocationCount(working.GetAllocations(), incoming)
-	if compatible > incoming.GetUnitCount() {
-		err := fmt.Errorf(
-			"%w: scale-in requires an explicit release plan (%d active, %d requested)",
-			ErrInvalidIntent, compatible, incoming.GetUnitCount(),
-		)
-		response := rejectedIntentResponse(incoming, err)
-		return nil, response, err
+	liveCount := liveAllocationCount(working.GetAllocations(), incoming)
+	pendingCount := uint32(0)
+	if liveCount < incoming.GetUnitCount() {
+		pendingCount = incoming.GetUnitCount() - liveCount
 	}
-	pendingCount := incoming.GetUnitCount() - compatible
 	working.PendingUnits = replacePendingUnits(working.GetPendingUnits(), incoming, pendingCount, now)
 	working.Revision++
 	working.SnapshotId = snapshotID(working.Revision)
@@ -351,13 +341,11 @@ func sortPendingUnits(pending []*tgsrlv1.PendingUnit) {
 	})
 }
 
-func compatibleAllocationCount(allocations []*tgsrlv1.Allocation, intent *tgsrlv1.SchedulingIntent) uint32 {
+func liveAllocationCount(allocations []*tgsrlv1.Allocation, intent *tgsrlv1.SchedulingIntent) uint32 {
 	var count uint32
 	for _, allocation := range allocations {
 		if allocation.GetExecutionId() == intent.GetExecutionId() &&
 			allocation.GetStageId() == intent.GetStageId() &&
-			allocation.GetIntentVersion() == intent.GetVersion() &&
-			proto.Equal(allocation.GetResources(), intent.GetResourcesPerUnit()) &&
 			(allocation.GetState() == tgsrlv1.AllocationState_ALLOCATION_STATE_PENDING ||
 				allocation.GetState() == tgsrlv1.AllocationState_ALLOCATION_STATE_ACTIVE) {
 			count++

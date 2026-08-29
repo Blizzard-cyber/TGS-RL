@@ -326,24 +326,31 @@ func TestRetryOfSupersededVersionIsStale(t *testing.T) {
 	}
 }
 
-func TestHigherVersionRejectsActiveAllocationSemanticDrift(t *testing.T) {
+func TestHigherVersionRetainsLiveAllocationsAcrossDesiredStateDriftAndScaleIn(t *testing.T) {
 	store, clock := newTestStore(t)
 	version1 := testIntent(clock, 1, "idempotency-1")
-	version1.UnitCount = 1
+	version1.UnitCount = 2
 	if _, err := store.PublishIntent(version1); err != nil {
 		t.Fatalf("PublishIntent(version 1) error = %v", err)
 	}
 	snapshot, _ := store.GetSnapshot(context.Background(), 0, true)
-	pending := snapshot.GetPendingUnits()[0]
+	pendingA := snapshot.GetPendingUnits()[0]
+	pendingB := snapshot.GetPendingUnits()[1]
 	plan := &tgsrlv1.PlacementPlan{
 		PlanId: "plan-v1", ExecutionId: version1.GetExecutionId(), StageId: version1.GetStageId(),
 		IntentVersion: 1, SnapshotRevision: snapshot.GetRevision(),
-		Bindings: []*tgsrlv1.Binding{{BindingId: "binding-v1", PendingUnitId: pending.GetPendingUnitId(), DeviceIds: []string{"device-1"}, Resources: cloneResourceVector(version1.GetResourcesPerUnit())}},
+		Bindings: []*tgsrlv1.Binding{
+			{BindingId: "binding-v1-a", PendingUnitId: pendingA.GetPendingUnitId(), DeviceIds: []string{"device-1"}, Resources: cloneResourceVector(version1.GetResourcesPerUnit())},
+			{BindingId: "binding-v1-b", PendingUnitId: pendingB.GetPendingUnitId(), DeviceIds: []string{"device-2"}, Resources: cloneResourceVector(version1.GetResourcesPerUnit())},
+		},
 	}
 	// Add enough logical capacity for the reservation without coupling this
 	// contract test to scheduler fixtures.
 	if _, err := store.MutateResources(snapshot.GetRevision(), func(working *tgsrlv1.ClusterSnapshot) error {
-		working.Devices = []*tgsrlv1.Device{{DeviceId: "device-1", Health: tgsrlv1.DeviceHealth_DEVICE_HEALTH_READY, Capacity: &tgsrlv1.ResourceVector{CpuMillis: 1000, MemoryBytes: 4096}, Allocatable: &tgsrlv1.ResourceVector{CpuMillis: 1000, MemoryBytes: 4096}}}
+		working.Devices = []*tgsrlv1.Device{
+			{DeviceId: "device-1", Health: tgsrlv1.DeviceHealth_DEVICE_HEALTH_READY, Capacity: &tgsrlv1.ResourceVector{CpuMillis: 1000, MemoryBytes: 4096}, Allocatable: &tgsrlv1.ResourceVector{CpuMillis: 1000, MemoryBytes: 4096}},
+			{DeviceId: "device-2", Health: tgsrlv1.DeviceHealth_DEVICE_HEALTH_READY, Capacity: &tgsrlv1.ResourceVector{CpuMillis: 1000, MemoryBytes: 4096}, Allocatable: &tgsrlv1.ResourceVector{CpuMillis: 1000, MemoryBytes: 4096}},
+		}
 		return nil
 	}); err != nil {
 		t.Fatalf("MutateResources() error = %v", err)
@@ -360,22 +367,52 @@ func TestHigherVersionRejectsActiveAllocationSemanticDrift(t *testing.T) {
 	changed := testIntent(clock, 2, "idempotency-2")
 	changed.UnitCount = 1
 	changed.ResourcesPerUnit.CpuMillis++
-	if _, err := store.PublishIntent(changed); !errors.Is(err, ErrInvalidIntent) {
-		t.Fatalf("semantic drift error = %v, want ErrInvalidIntent", err)
+	changed.Priority++
+	changed.RequiredCapabilities = &tgsrlv1.CapabilitySet{Names: []string{"sandbox", "gpu"}}
+	response, err := store.PublishIntent(changed)
+	if err != nil {
+		t.Fatalf("PublishIntent(changed) error = %v", err)
 	}
-	scaleIn := testIntent(clock, 2, "idempotency-scale-in")
-	scaleIn.UnitCount = 1
-	// Add a second active allocation to make the requested count a scale-in.
-	if _, err := store.MutateResources(store.Revision(), func(working *tgsrlv1.ClusterSnapshot) error {
-		duplicate := proto.Clone(working.Allocations[0]).(*tgsrlv1.Allocation)
-		duplicate.AllocationId = "allocation-v1-duplicate"
-		working.Allocations = append(working.Allocations, duplicate)
-		return nil
-	}); err != nil {
-		t.Fatalf("MutateResources(second allocation) error = %v", err)
+	if response.GetStatus() != tgsrlv1.IntentPublishStatus_INTENT_PUBLISH_STATUS_ACCEPTED {
+		t.Fatalf("PublishIntent(changed) status = %s, want accepted", response.GetStatus())
 	}
-	if _, err := store.PublishIntent(scaleIn); !errors.Is(err, ErrInvalidIntent) {
-		t.Fatalf("scale-in error = %v, want ErrInvalidIntent", err)
+
+	final, err := store.GetSnapshot(context.Background(), 0, true)
+	if err != nil {
+		t.Fatalf("GetSnapshot(final) error = %v", err)
+	}
+	if len(final.GetAllocations()) != 2 {
+		t.Fatalf("allocations = %d, want 2 retained live allocations", len(final.GetAllocations()))
+	}
+	for _, allocation := range final.GetAllocations() {
+		if allocation.GetIntentVersion() != 2 {
+			t.Fatalf("allocation intent version = %d, want 2 for %+v", allocation.GetIntentVersion(), allocation)
+		}
+		if allocation.GetState() != tgsrlv1.AllocationState_ALLOCATION_STATE_ACTIVE {
+			t.Fatalf("allocation state = %s, want ACTIVE", allocation.GetState())
+		}
+		if allocation.GetResources().GetCpuMillis() != version1.GetResourcesPerUnit().GetCpuMillis() {
+			t.Fatalf("allocation resources mutated during publish: %+v", allocation.GetResources())
+		}
+	}
+	if len(final.GetPendingUnits()) != 0 {
+		t.Fatalf("pending units = %+v, want 0 after scale-in publish with 2 live allocations and desired count 1", final.GetPendingUnits())
+	}
+	accepted, ok := store.LatestIntent(changed.GetExecutionId(), changed.GetStageId())
+	if !ok {
+		t.Fatal("LatestIntent() missing changed intent")
+	}
+	if accepted.GetVersion() != 2 {
+		t.Fatalf("latest intent version = %d, want 2", accepted.GetVersion())
+	}
+	if accepted.GetResourcesPerUnit().GetCpuMillis() != changed.GetResourcesPerUnit().GetCpuMillis() {
+		t.Fatalf("latest intent resources = %+v, want changed resources %+v", accepted.GetResourcesPerUnit(), changed.GetResourcesPerUnit())
+	}
+	if accepted.GetPriority() != changed.GetPriority() {
+		t.Fatalf("latest intent priority = %d, want %d", accepted.GetPriority(), changed.GetPriority())
+	}
+	if !proto.Equal(accepted.GetRequiredCapabilities(), changed.GetRequiredCapabilities()) {
+		t.Fatalf("latest intent capabilities = %+v, want %+v", accepted.GetRequiredCapabilities(), changed.GetRequiredCapabilities())
 	}
 }
 
@@ -697,6 +734,53 @@ func TestDurableStateRoundTripPreservesIntentAndReservation(t *testing.T) {
 	}
 }
 
+func TestAdmissionReservationProjectsRuntimeIdentityIntoAllocation(t *testing.T) {
+	store, clock := newTestStore(t)
+	intent := testIntent(clock, 1, "identity-projection")
+	intent.UnitCount = 1
+	intent.RunId = "run-identity"
+	intent.TraceId = "trace-identity"
+	intent.DataKind = tgsrlv1.DataKind_DATA_KIND_SYNTHETIC
+	if _, err := store.PublishIntent(intent); err != nil {
+		t.Fatal(err)
+	}
+	snapshot, _ := store.GetSnapshot(context.Background(), 0, true)
+	if _, err := store.MutateResources(snapshot.GetRevision(), func(working *tgsrlv1.ClusterSnapshot) error {
+		working.Devices = []*tgsrlv1.Device{{
+			DeviceId:    "device-identity",
+			Health:      tgsrlv1.DeviceHealth_DEVICE_HEALTH_READY,
+			Capacity:    &tgsrlv1.ResourceVector{CpuMillis: 1000, MemoryBytes: 4096},
+			Allocatable: &tgsrlv1.ResourceVector{CpuMillis: 1000, MemoryBytes: 4096},
+		}}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	snapshot, _ = store.GetSnapshot(context.Background(), 0, true)
+	binding := &tgsrlv1.Binding{
+		BindingId: "binding-identity", PendingUnitId: snapshot.GetPendingUnits()[0].GetPendingUnitId(),
+		DeviceIds: []string{"device-identity"}, Resources: cloneResourceVector(intent.GetResourcesPerUnit()),
+		SandboxId: "sandbox-identity", Generation: 7, RuntimeUnitId: "runtime-identity",
+	}
+	plan := &tgsrlv1.PlacementPlan{
+		PlanId: "plan-identity", DecisionId: "decision-identity", ExecutionId: intent.GetExecutionId(),
+		StageId: intent.GetStageId(), IntentVersion: intent.GetVersion(), SnapshotRevision: snapshot.GetRevision(),
+		RunId: intent.GetRunId(), TraceId: intent.GetTraceId(), DataKind: intent.GetDataKind(), Bindings: []*tgsrlv1.Binding{binding},
+		Actions: []*tgsrlv1.Action{{ActionId: "action-identity", ActionType: tgsrlv1.ActionType_ACTION_TYPE_BIND, Binding: proto.Clone(binding).(*tgsrlv1.Binding)}},
+	}
+	reserved, err := store.ReservePlan(plan)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(reserved.GetAllocations()) != 1 {
+		t.Fatalf("allocations = %+v, want one", reserved.GetAllocations())
+	}
+	allocation := reserved.GetAllocations()[0]
+	if allocation.GetGeneration() != 7 || allocation.GetRuntimeUnitId() != "runtime-identity" || allocation.GetRunId() != intent.GetRunId() || allocation.GetTraceId() != intent.GetTraceId() || allocation.GetDataKind() != intent.GetDataKind() || allocation.GetDecisionId() != plan.GetDecisionId() || allocation.GetPlanId() != plan.GetPlanId() || allocation.GetActionId() != "action-identity" {
+		t.Fatalf("projected allocation identity = %+v", allocation)
+	}
+}
+
 func TestPropertyAcceptedIntentsAdvanceExactlyOnce(t *testing.T) {
 	const cases = 200
 	random := rand.New(rand.NewSource(20260827))
@@ -811,8 +895,32 @@ func TestBootstrapProviderSnapshotPreservesStoreOwnedAllocationsAndPendingUnits(
 	}
 }
 
-func TestRestoreResetsProviderProjectionState(t *testing.T) {
+func TestProviderProjectionMutableFieldsRespectPresence(t *testing.T) {
+	store, _ := newTestStore(t)
+	now := time.Date(2026, time.August, 29, 10, 0, 0, 0, time.UTC)
+	share, priority, offloaded := 0.6, int32(9), true
+	if _, changed, err := store.ApplyProviderSandboxEvent(&tgsrlv1.SandboxEvent{
+		EventId: "sandbox-initial", SandboxId: "sandbox-1", Generation: 1,
+		State: tgsrlv1.RuntimeState_RUNTIME_STATE_SLEEPING, Share: &share, Priority: &priority, Offloaded: &offloaded,
+		OccurredAt: timestamppb.New(now),
+	}); err != nil || !changed {
+		t.Fatalf("ApplyProviderSandboxEvent(initial) = changed:%v err:%v", changed, err)
+	}
+	if _, changed, err := store.ApplyProviderSandboxEvent(&tgsrlv1.SandboxEvent{
+		EventId: "sandbox-state-only", SandboxId: "sandbox-1", Generation: 1,
+		State: tgsrlv1.RuntimeState_RUNTIME_STATE_RUNNING, OccurredAt: timestamppb.New(now.Add(time.Second)),
+	}); err != nil || !changed {
+		t.Fatalf("ApplyProviderSandboxEvent(state-only) = changed:%v err:%v", changed, err)
+	}
+	sandbox := store.ListProjectedSandboxes()[0]
+	if sandbox.GetShare() != share || sandbox.GetPriority() != priority || !sandbox.GetOffloaded() {
+		t.Fatalf("state-only legacy event erased mutable fields: %+v", sandbox)
+	}
+}
+
+func TestRestorePreservesProviderProjectionState(t *testing.T) {
 	store, clock := newTestStore(t)
+	observedAt := time.Date(2026, time.August, 29, 11, 0, 0, 0, time.UTC)
 	if _, changed, err := store.BootstrapProviderSnapshot("mock", &tgsrlv1.ClusterSnapshot{
 		Revision:   10,
 		SnapshotId: "provider-10",
@@ -827,6 +935,7 @@ func TestRestoreResetsProviderProjectionState(t *testing.T) {
 		SandboxId:  "sandbox-1",
 		Generation: 3,
 		State:      tgsrlv1.RuntimeState_RUNTIME_STATE_RUNNING,
+		ObservedAt: timestamppb.New(observedAt),
 	}}); err != nil || !changed {
 		t.Fatalf("ReplaceProjectedSandboxes() = changed:%v err:%v, want changed true nil err", changed, err)
 	}
@@ -839,8 +948,8 @@ func TestRestoreResetsProviderProjectionState(t *testing.T) {
 	if err := restored.Restore(durable); err != nil {
 		t.Fatalf("Restore() error = %v", err)
 	}
-	if sandboxes := restored.ListProjectedSandboxes(); len(sandboxes) != 0 {
-		t.Fatalf("ListProjectedSandboxes() after Restore = %+v, want cleared projection state", sandboxes)
+	if sandboxes := restored.ListProjectedSandboxes(); len(sandboxes) != 1 || sandboxes[0].GetSandboxId() != "sandbox-1" || sandboxes[0].GetGeneration() != 3 {
+		t.Fatalf("ListProjectedSandboxes() after Restore = %+v, want restored sandbox projection", sandboxes)
 	}
 	if _, changed, err := restored.BootstrapProviderSnapshot("mock", &tgsrlv1.ClusterSnapshot{
 		Revision:   10,
@@ -849,7 +958,23 @@ func TestRestoreResetsProviderProjectionState(t *testing.T) {
 			DeviceId: "device-1",
 			Health:   tgsrlv1.DeviceHealth_DEVICE_HEALTH_READY,
 		}},
-	}); err != nil || !changed {
-		t.Fatalf("BootstrapProviderSnapshot(after Restore) = changed:%v err:%v, want changed true nil err", changed, err)
+	}); err != nil || changed {
+		t.Fatalf("BootstrapProviderSnapshot(after Restore) = changed:%v err:%v, want changed false nil err", changed, err)
+	}
+	if changed, err := restored.ReplaceProjectedSandboxes([]*tgsrlv1.Sandbox{{
+		SandboxId:  "sandbox-1",
+		Generation: 3,
+		State:      tgsrlv1.RuntimeState_RUNTIME_STATE_TERMINATED,
+		ObservedAt: timestamppb.New(observedAt),
+	}}); err != nil || changed {
+		t.Fatalf("ReplaceProjectedSandboxes(same revision boundary) = changed:%v err:%v, want changed false nil err", changed, err)
+	}
+	if changed, err := restored.ReplaceProjectedSandboxes([]*tgsrlv1.Sandbox{{
+		SandboxId:  "sandbox-1",
+		Generation: 3,
+		State:      tgsrlv1.RuntimeState_RUNTIME_STATE_PAUSED,
+		ObservedAt: timestamppb.New(observedAt.Add(time.Second)),
+	}}); err != nil || !changed {
+		t.Fatalf("ReplaceProjectedSandboxes(newer authoritative list) = changed:%v err:%v, want changed true nil err", changed, err)
 	}
 }

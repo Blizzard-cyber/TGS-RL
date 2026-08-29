@@ -108,6 +108,8 @@ func (s *Store) exportDurableStateLocked() storeDurableState {
 	for planID, reservation := range s.reservations {
 		cloned := &planReservation{
 			plan:                  clonePlan(reservation.plan),
+			beforeSnapshot:        cloneSnapshot(reservation.beforeSnapshot),
+			deviceAllocatable:     cloneResourceVectorMap(reservation.deviceAllocatable),
 			allocationIDs:         append([]string(nil), reservation.allocationIDs...),
 			finalized:             reservation.finalized,
 			succeeded:             reservation.succeeded,
@@ -140,6 +142,8 @@ func (s *Store) restoreDurableStateLocked(durable storeDurableState) {
 	for planID, reservation := range durable.reservations {
 		cloned := &planReservation{
 			plan:                  clonePlan(reservation.plan),
+			beforeSnapshot:        cloneSnapshot(reservation.beforeSnapshot),
+			deviceAllocatable:     cloneResourceVectorMap(reservation.deviceAllocatable),
 			allocationIDs:         append([]string(nil), reservation.allocationIDs...),
 			finalized:             reservation.finalized,
 			succeeded:             reservation.succeeded,
@@ -171,6 +175,7 @@ func (s *Store) ExportDurableState() DurableState {
 	for _, key := range keys {
 		result.Intents = append(result.Intents, cloneIntent(s.intents[key]))
 	}
+	exportProviderProjection(&result, s.providerProjection)
 
 	planIDs := make([]string, 0, len(s.reservations))
 	for planID := range s.reservations {
@@ -181,6 +186,8 @@ func (s *Store) ExportDurableState() DurableState {
 		reservation := s.reservations[planID]
 		record := ReservationRecord{
 			Plan:                  clonePlan(reservation.plan),
+			BeforeSnapshot:        cloneSnapshot(reservation.beforeSnapshot),
+			DeviceAllocatable:     cloneResourceVectorMap(reservation.deviceAllocatable),
 			AllocationIDs:         append([]string(nil), reservation.allocationIDs...),
 			Finalized:             reservation.finalized,
 			Succeeded:             reservation.succeeded,
@@ -199,13 +206,17 @@ func (s *Store) Restore(durable DurableState) error {
 	if durable.Snapshot == nil {
 		return errors.New("state: restored snapshot is required")
 	}
+	providerProjection, err := validateAndRestoreProviderProjection(durable)
+	if err != nil {
+		return err
+	}
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	s.snapshot = cloneSnapshot(durable.Snapshot)
 	s.intents = make(map[intentKey]*tgsrlv1.SchedulingIntent, len(durable.Intents))
-	s.providerProjection = newProviderProjectionState()
+	s.providerProjection = providerProjection
 	s.idempotencyKeys = make(map[string]intentIdentity, len(durable.Intents))
 	for _, intent := range durable.Intents {
 		if err := validateIntentStructure(intent); err != nil {
@@ -228,6 +239,8 @@ func (s *Store) Restore(durable DurableState) error {
 		}
 		reservation := &planReservation{
 			plan:                  clonePlan(record.Plan),
+			beforeSnapshot:        cloneSnapshot(record.BeforeSnapshot),
+			deviceAllocatable:     cloneResourceVectorMap(record.DeviceAllocatable),
 			allocationIDs:         append([]string(nil), record.AllocationIDs...),
 			finalized:             record.Finalized,
 			succeeded:             record.Succeeded,
@@ -240,6 +253,113 @@ func (s *Store) Restore(durable DurableState) error {
 	}
 	s.signalRevisionLocked()
 	return nil
+}
+
+func exportProviderProjection(result *DurableState, projected providerProjectionState) {
+	result.ResourceCursors = make(map[string]ProviderResourceCursor, len(projected.resourceCursors))
+	for providerID, cursor := range projected.resourceCursors {
+		result.ResourceCursors[providerID] = ProviderResourceCursor{
+			Revision: cursor.revision,
+			EventID:  cursor.eventID,
+		}
+	}
+	result.SandboxCursors = make(map[string]ProviderSandboxCursor, len(projected.sandboxCursors))
+	for sandboxID, cursor := range projected.sandboxCursors {
+		var occurredAt *timestamppb.Timestamp
+		if !cursor.occurredAt.IsZero() {
+			occurredAt = timestamppb.New(cursor.occurredAt)
+		}
+		result.SandboxCursors[sandboxID] = ProviderSandboxCursor{
+			Generation:          cursor.generation,
+			ProviderRevision:    cursor.providerRevision,
+			EventID:             cursor.eventID,
+			IdempotencyKey:      cursor.idempotencyKey,
+			OccurredAt:          occurredAt,
+			SeenEventIDs:        sortedStringSet(cursor.seenEventIDs),
+			SeenIdempotencyKeys: sortedStringSet(cursor.seenIdempotency),
+		}
+	}
+	sandboxIDs := make([]string, 0, len(projected.sandboxes))
+	for sandboxID := range projected.sandboxes {
+		sandboxIDs = append(sandboxIDs, sandboxID)
+	}
+	sort.Strings(sandboxIDs)
+	for _, sandboxID := range sandboxIDs {
+		result.ProjectedSandboxes = append(result.ProjectedSandboxes, cloneProjectedSandbox(projected.sandboxes[sandboxID]))
+	}
+}
+
+func validateAndRestoreProviderProjection(durable DurableState) (providerProjectionState, error) {
+	projected := newProviderProjectionState()
+	for providerID, cursor := range durable.ResourceCursors {
+		projected.resourceCursors[providerID] = providerResourceCursor{
+			revision: cursor.Revision,
+			eventID:  cursor.EventID,
+		}
+	}
+	for _, sandbox := range durable.ProjectedSandboxes {
+		if sandbox == nil || sandbox.GetSandboxId() == "" {
+			return providerProjectionState{}, errors.New("state: restored sandbox projection requires sandbox_id")
+		}
+		if _, duplicate := projected.sandboxes[sandbox.GetSandboxId()]; duplicate {
+			return providerProjectionState{}, fmt.Errorf("state: duplicate restored sandbox projection %q", sandbox.GetSandboxId())
+		}
+		projected.sandboxes[sandbox.GetSandboxId()] = cloneProjectedSandbox(sandbox)
+	}
+	for sandboxID, cursor := range durable.SandboxCursors {
+		if sandboxID == "" {
+			return providerProjectionState{}, errors.New("state: restored sandbox cursor requires sandbox_id")
+		}
+		if cursor.OccurredAt != nil && cursor.OccurredAt.CheckValid() != nil {
+			return providerProjectionState{}, fmt.Errorf("state: restored sandbox cursor %q has invalid occurred_at", sandboxID)
+		}
+		restoredCursor := providerSandboxCursor{
+			generation:       cursor.Generation,
+			providerRevision: cursor.ProviderRevision,
+			eventID:          cursor.EventID,
+			idempotencyKey:   cursor.IdempotencyKey,
+			occurredAt:       timestampTime(cursor.OccurredAt),
+			seenEventIDs:     stringSet(cursor.SeenEventIDs),
+			seenIdempotency:  stringSet(cursor.SeenIdempotencyKeys),
+		}
+		rememberSandboxCursorIdentity(&restoredCursor)
+		projected.sandboxCursors[sandboxID] = restoredCursor
+	}
+	for sandboxID, sandbox := range projected.sandboxes {
+		if cursor, ok := projected.sandboxCursors[sandboxID]; ok {
+			if cursor.generation < sandbox.GetGeneration() {
+				return providerProjectionState{}, fmt.Errorf("state: restored sandbox cursor %q generation %d precedes projection generation %d", sandboxID, cursor.generation, sandbox.GetGeneration())
+			}
+			continue
+		}
+		projected.sandboxCursors[sandboxID] = providerSandboxCursor{
+			generation: sandbox.GetGeneration(),
+			occurredAt: timestampTime(sandbox.GetObservedAt()),
+		}
+	}
+	return projected, nil
+}
+
+func sortedStringSet(values map[string]struct{}) []string {
+	out := make([]string, 0, len(values))
+	for value := range values {
+		out = append(out, value)
+	}
+	sort.Strings(out)
+	return out
+}
+
+func stringSet(values []string) map[string]struct{} {
+	if len(values) == 0 {
+		return nil
+	}
+	out := make(map[string]struct{}, len(values))
+	for _, value := range values {
+		if value != "" {
+			out[value] = struct{}{}
+		}
+	}
+	return out
 }
 
 func (s *Store) signalRevisionLocked() {

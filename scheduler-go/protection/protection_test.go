@@ -63,3 +63,40 @@ func TestDisabledGuardDoesNotChangeSchedulerDefaults(t *testing.T) {
 		}
 	}
 }
+
+func TestCheckDoesNotConsumeStateAndRestoreStateRoundTrips(t *testing.T) {
+	clock := &fakeClock{now: time.Date(2026, 8, 29, 9, 0, 0, 0, time.UTC)}
+	guard := NewGuard(Config{
+		Enabled:             true,
+		Cooldown:            time.Minute,
+		Hysteresis:          0.2,
+		MaxActionsPerWindow: 2,
+		Window:              10 * time.Minute,
+		BreakerThreshold:    2,
+		BreakerResetAfter:   5 * time.Minute,
+	}, clock)
+
+	if decision := guard.CheckN("job/stage", 1.0, 1); !decision.Allowed {
+		t.Fatalf("CheckN() = %+v, want allowed", decision)
+	}
+	if decision := guard.CheckN("job/stage", 1.0, 1); !decision.Allowed {
+		t.Fatalf("second CheckN() = %+v, want still allowed because checks are pure", decision)
+	}
+	if decision := guard.CommitN("job/stage", 1.0, 1); !decision.Allowed {
+		t.Fatalf("CommitN() = %+v, want allowed", decision)
+	}
+	snapshot := guard.ExportState()
+	restored := NewGuard(Config{
+		Enabled:             true,
+		Cooldown:            time.Minute,
+		Hysteresis:          0.2,
+		MaxActionsPerWindow: 2,
+		Window:              10 * time.Minute,
+		BreakerThreshold:    2,
+		BreakerResetAfter:   5 * time.Minute,
+	}, clock)
+	restored.RestoreState(snapshot)
+	if decision := restored.CheckN("job/stage", 1.1, 1); decision.Allowed || decision.Reason != "COOLDOWN" {
+		t.Fatalf("restored CheckN() = %+v, want restored cooldown", decision)
+	}
+}

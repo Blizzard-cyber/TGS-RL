@@ -15,6 +15,7 @@ import (
 	configpkg "github.com/Blizzard-cyber/TGS-RL/scheduler-go/config"
 	"github.com/Blizzard-cyber/TGS-RL/scheduler-go/observability"
 	"github.com/Blizzard-cyber/TGS-RL/scheduler-go/persistence"
+	"github.com/Blizzard-cyber/TGS-RL/scheduler-go/protection"
 	"github.com/Blizzard-cyber/TGS-RL/scheduler-go/scheduler"
 	"github.com/Blizzard-cyber/TGS-RL/scheduler-go/state"
 	"google.golang.org/protobuf/proto"
@@ -241,7 +242,7 @@ func TestPersistenceRestoreAcrossStartupBoundary(t *testing.T) {
 		t.Fatal(err)
 	}
 	decision := &tgsrlv1.DecisionRecord{DecisionId: "decision-1", Sequence: 5}
-	checkpoint, err := persistence.Capture(store, []*tgsrlv1.DecisionRecord{decision}, 5)
+	checkpoint, err := persistence.Capture(store, []*tgsrlv1.DecisionRecord{decision}, 5, protection.State{})
 	if err != nil {
 		t.Fatal(err)
 	}
