@@ -4,10 +4,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
 	tgsrlv1 "github.com/Blizzard-cyber/TGS-RL/gen/go/tgsrl/v1"
+	"google.golang.org/protobuf/proto"
 )
 
 // Stable provider errors. Callers should use errors.Is rather than comparing
@@ -149,6 +151,257 @@ type ResourceProvider interface {
 	GetSandbox(context.Context, string) (Sandbox, error)
 	ExecuteAction(context.Context, *tgsrlv1.Action) (*tgsrlv1.ActionResult, error)
 	ExecutePlan(context.Context, *tgsrlv1.PlacementPlan) ([]*tgsrlv1.ActionResult, error)
+}
+
+// PlanCapabilityProvider advertises typed executor semantics. Callers must
+// treat providers that do not implement this optional interface as supporting
+// no plan capabilities; this prevents rolling upgrades from silently ignoring
+// safety-critical PlacementPlan fields.
+type PlanCapabilityProvider interface {
+	PlanCapabilities() []*tgsrlv1.CapabilityRequirement
+}
+
+// PlanCapabilityValidator lets an executor perform its capability handshake
+// against the exact plan shape. This is required when a guarantee, such as
+// compensation, depends on whether the plan contains one or several actions.
+type PlanCapabilityValidator interface {
+	ValidatePlanCapabilities(*tgsrlv1.PlacementPlan) error
+}
+
+// PlanCapabilities returns a detached capability list, or nil when the
+// provider has not opted in to the typed plan-capability handshake.
+func PlanCapabilities(resourceProvider ResourceProvider) []*tgsrlv1.CapabilityRequirement {
+	capable, ok := resourceProvider.(PlanCapabilityProvider)
+	if !ok {
+		return nil
+	}
+	result := make([]*tgsrlv1.CapabilityRequirement, 0, len(capable.PlanCapabilities()))
+	for _, capability := range capable.PlanCapabilities() {
+		if capability != nil {
+			result = append(result, proto.Clone(capability).(*tgsrlv1.CapabilityRequirement))
+		}
+	}
+	return result
+}
+
+// ValidatePlanCapabilities performs the strongest typed handshake exposed by
+// a provider and falls back to its static capability list.
+func ValidatePlanCapabilities(resourceProvider ResourceProvider, plan *tgsrlv1.PlacementPlan) error {
+	if validator, ok := resourceProvider.(PlanCapabilityValidator); ok {
+		return validator.ValidatePlanCapabilities(plan)
+	}
+	providerCapabilities, err := resourceProvider.Capabilities(context.Background())
+	if err != nil {
+		return err
+	}
+	if err := ValidateProviderCapabilityRequirements(providerCapabilities, plan); err != nil {
+		return err
+	}
+	return ValidatePlanCapabilitiesForRequirements(PlanCapabilities(resourceProvider), plan)
+}
+
+// CapabilityVersionAttributeKey returns the transitional CapabilitySet
+// attribute used to advertise one named provider capability's semantic
+// version. Capability names are matched after trim/lower/hyphen normalization.
+func CapabilityVersionAttributeKey(name string) string {
+	return "capability.version." + normalizeCapabilityName(name)
+}
+
+// ValidateProviderCapabilityRequirements validates required provider feature
+// names and their capability-specific versions. CapabilitySet.revision is an
+// evidence revision and must never be interpreted as a semantic version.
+func ValidateProviderCapabilityRequirements(available *tgsrlv1.CapabilitySet, plan *tgsrlv1.PlacementPlan) error {
+	for _, required := range plan.GetCapabilityRequirements() {
+		if required == nil {
+			return fmt.Errorf("%w: nil plan capability requirement", ErrInvalidArgument)
+		}
+		if !required.GetRequired() || required.GetKind() != tgsrlv1.CapabilityRequirementKind_CAPABILITY_REQUIREMENT_KIND_PROVIDER_CAPABILITY {
+			continue
+		}
+		if available == nil || !containsCapabilityName(available.GetNames(), required.GetName()) {
+			return &Error{Code: ErrorCodeUnsupported, Message: fmt.Sprintf("provider capability %q is unavailable", required.GetName()), PlanID: plan.GetPlanId(), Cause: ErrUnsupported}
+		}
+		if required.GetMinVersion() == "" {
+			continue
+		}
+		advertised := available.GetAttributes()[CapabilityVersionAttributeKey(required.GetName())]
+		versionOK, versionErr := versionAtLeast(advertised, required.GetMinVersion())
+		if versionErr != nil || !versionOK {
+			return &Error{Code: ErrorCodeUnsupported, Message: fmt.Sprintf("provider capability %q version requirement is not satisfied", required.GetName()), PlanID: plan.GetPlanId(), Cause: ErrUnsupported}
+		}
+	}
+	return nil
+}
+
+type semanticVersion struct {
+	core       [3]string
+	prerelease []string
+}
+
+func versionAtLeast(available, required string) (bool, error) {
+	if required == "" {
+		return true, nil
+	}
+	availableVersion, err := parseSemanticVersion(available)
+	if err != nil {
+		return false, err
+	}
+	requiredVersion, err := parseSemanticVersion(required)
+	if err != nil {
+		return false, err
+	}
+	return compareSemanticVersions(availableVersion, requiredVersion) >= 0, nil
+}
+
+func parseSemanticVersion(value string) (semanticVersion, error) {
+	malformed := func() (semanticVersion, error) {
+		return semanticVersion{}, fmt.Errorf("malformed capability version %q", value)
+	}
+	if value == "" || strings.TrimSpace(value) != value || strings.Count(value, "+") > 1 {
+		return malformed()
+	}
+	withoutBuild, build, hasBuild := strings.Cut(value, "+")
+	if hasBuild && !validSemanticIdentifiers(build, false) {
+		return malformed()
+	}
+	core, prerelease, hasPrerelease := strings.Cut(withoutBuild, "-")
+	parts := strings.Split(core, ".")
+	if len(parts) != 3 {
+		return malformed()
+	}
+	var parsed semanticVersion
+	for index, part := range parts {
+		if !validSemanticNumber(part) {
+			return malformed()
+		}
+		parsed.core[index] = part
+	}
+	if hasPrerelease {
+		if !validSemanticIdentifiers(prerelease, true) {
+			return malformed()
+		}
+		parsed.prerelease = strings.Split(prerelease, ".")
+	}
+	return parsed, nil
+}
+
+func validSemanticNumber(value string) bool {
+	if value == "" || (len(value) > 1 && value[0] == '0') {
+		return false
+	}
+	for _, character := range value {
+		if character < '0' || character > '9' {
+			return false
+		}
+	}
+	return true
+}
+
+func validSemanticIdentifiers(value string, rejectNumericLeadingZeros bool) bool {
+	if value == "" {
+		return false
+	}
+	for _, identifier := range strings.Split(value, ".") {
+		if identifier == "" {
+			return false
+		}
+		numeric := true
+		for _, character := range identifier {
+			if (character < '0' || character > '9') && (character < 'A' || character > 'Z') && (character < 'a' || character > 'z') && character != '-' {
+				return false
+			}
+			if character < '0' || character > '9' {
+				numeric = false
+			}
+		}
+		if rejectNumericLeadingZeros && numeric && len(identifier) > 1 && identifier[0] == '0' {
+			return false
+		}
+	}
+	return true
+}
+
+func compareSemanticVersions(left, right semanticVersion) int {
+	for index := range left.core {
+		if comparison := compareSemanticNumbers(left.core[index], right.core[index]); comparison != 0 {
+			return comparison
+		}
+	}
+	if len(left.prerelease) == 0 && len(right.prerelease) == 0 {
+		return 0
+	}
+	if len(left.prerelease) == 0 {
+		return 1
+	}
+	if len(right.prerelease) == 0 {
+		return -1
+	}
+	for index := 0; index < len(left.prerelease) && index < len(right.prerelease); index++ {
+		leftIdentifier := left.prerelease[index]
+		rightIdentifier := right.prerelease[index]
+		leftNumeric := isSemanticNumber(leftIdentifier)
+		rightNumeric := isSemanticNumber(rightIdentifier)
+		switch {
+		case leftNumeric && rightNumeric:
+			if comparison := compareSemanticNumbers(leftIdentifier, rightIdentifier); comparison != 0 {
+				return comparison
+			}
+		case leftNumeric:
+			return -1
+		case rightNumeric:
+			return 1
+		case leftIdentifier < rightIdentifier:
+			return -1
+		case leftIdentifier > rightIdentifier:
+			return 1
+		}
+	}
+	switch {
+	case len(left.prerelease) < len(right.prerelease):
+		return -1
+	case len(left.prerelease) > len(right.prerelease):
+		return 1
+	default:
+		return 0
+	}
+}
+
+func compareSemanticNumbers(left, right string) int {
+	switch {
+	case len(left) < len(right):
+		return -1
+	case len(left) > len(right):
+		return 1
+	case left < right:
+		return -1
+	case left > right:
+		return 1
+	default:
+		return 0
+	}
+}
+
+func isSemanticNumber(value string) bool {
+	for _, character := range value {
+		if character < '0' || character > '9' {
+			return false
+		}
+	}
+	return value != ""
+}
+
+func normalizeCapabilityName(value string) string {
+	return strings.ToLower(strings.ReplaceAll(strings.TrimSpace(value), "-", "_"))
+}
+
+func containsCapabilityName(values []string, expected string) bool {
+	expected = normalizeCapabilityName(expected)
+	for _, value := range values {
+		if normalizeCapabilityName(value) == expected {
+			return true
+		}
+	}
+	return false
 }
 
 // SandboxEventInjector is an optional test/helper seam for providers that can

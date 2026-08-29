@@ -173,6 +173,33 @@ def test_generated_proto_surfaces_are_importable() -> None:
         ),
         contract_evaluations=[evaluation],
     )
+    action = scheduling_pb2.Action(
+        action_id="action-1",
+        action_type=scheduling_pb2.ACTION_TYPE_BIND,
+        level=scheduling_pb2.ACTION_LEVEL_L1,
+        plan_id="plan-1",
+        expected_snapshot_revision=17,
+        preconditions=[scheduling_pb2.ACTION_PRECONDITION_SNAPSHOT_REVISION_MATCH],
+        expected_impacts=[
+            scheduling_pb2.EXPECTED_IMPACT_ALLOCATION_CREATED,
+            scheduling_pb2.EXPECTED_IMPACT_CAPACITY_RESERVED,
+        ],
+    )
+    plan = scheduling_pb2.PlacementPlan(
+        plan_id="plan-1",
+        purpose=scheduling_pb2.PLAN_PURPOSE_ADMISSION,
+        rollback_policy=scheduling_pb2.ROLLBACK_POLICY_REQUIRED_COMPENSATION,
+        capability_requirements=[
+            scheduling_pb2.CapabilityRequirement(
+                kind=scheduling_pb2.CAPABILITY_REQUIREMENT_KIND_PROVIDER_CAPABILITY,
+                name="checkpoint",
+                min_version="1.0.0",
+                required=False,
+            )
+        ],
+        affected_allocation_ids=["allocation-1"],
+        actions=[action],
+    )
     trace_event = trace_pb2.TraceEvent(
         event_id="event-1",
         execution_id="execution-1",
@@ -218,6 +245,20 @@ def test_generated_proto_surfaces_are_importable() -> None:
     assert runtime_watch.sequence == 9
     assert evaluation.predicate.fact_path == "sample.policy_lag"
     assert evaluation.predicate.operands[0].uint64_value == 5
+    assert scheduling_pb2.PlacementPlan.DESCRIPTOR.full_name == "tgsrl.v1.PlacementPlan"
+    assert plan.purpose == scheduling_pb2.PLAN_PURPOSE_ADMISSION
+    assert plan.rollback_policy == scheduling_pb2.ROLLBACK_POLICY_REQUIRED_COMPENSATION
+    assert not plan.capability_requirements[0].required
+    assert plan.capability_requirements[0].name == "checkpoint"
+    assert plan.capability_requirements[0].min_version == "1.0.0"
+    assert plan.affected_allocation_ids == ["allocation-1"]
+    assert plan.actions[0].preconditions == [
+        scheduling_pb2.ACTION_PRECONDITION_SNAPSHOT_REVISION_MATCH
+    ]
+    assert plan.actions[0].expected_impacts == [
+        scheduling_pb2.EXPECTED_IMPACT_ALLOCATION_CREATED,
+        scheduling_pb2.EXPECTED_IMPACT_CAPACITY_RESERVED,
+    ]
     assert record.contract_evaluations[0].recommended_action == (
         execution_pb2.CONTRACT_DECISION_ACTION_ALLOW
     )

@@ -77,6 +77,68 @@ enum TickKind {
   TICK_KIND_SLOW = 3;
 }
 
+// PlanPurpose distinguishes initial placement from mutations of running work.
+enum PlanPurpose {
+  PLAN_PURPOSE_UNKNOWN = 0;
+  PLAN_PURPOSE_ADMISSION = 1;
+  PLAN_PURPOSE_REBALANCE = 2;
+  PLAN_PURPOSE_PREEMPTION = 3;
+  PLAN_PURPOSE_RECOVERY = 4;
+  PLAN_PURPOSE_RECONCILIATION = 5;
+}
+
+// ActionPrecondition identifies a typed guard whose parameter remains in the
+// existing Action or PlacementPlan field named by the value's comment.
+enum ActionPrecondition {
+  ACTION_PRECONDITION_UNKNOWN = 0;
+  // Uses Action.expected_snapshot_revision.
+  ACTION_PRECONDITION_SNAPSHOT_REVISION_MATCH = 1;
+  // Uses Action.expected_generation.
+  ACTION_PRECONDITION_TARGET_GENERATION_MATCH = 2;
+  // Uses Action.requires_safe_point.
+  ACTION_PRECONDITION_SAFE_POINT_REACHED = 3;
+  // Uses PlacementPlan.affected_allocation_ids.
+  ACTION_PRECONDITION_AFFECTED_ALLOCATIONS_ACTIVE = 4;
+}
+
+// ExpectedImpact records the typed state change expected from an action.
+enum ExpectedImpact {
+  EXPECTED_IMPACT_UNKNOWN = 0;
+  EXPECTED_IMPACT_ALLOCATION_CREATED = 1;
+  EXPECTED_IMPACT_ALLOCATION_RELEASED = 2;
+  EXPECTED_IMPACT_CAPACITY_RESERVED = 3;
+  EXPECTED_IMPACT_CAPACITY_RELEASED = 4;
+  EXPECTED_IMPACT_RUNTIME_STATE_CHANGED = 5;
+}
+
+// RollbackPolicy defines the plan-wide compensation guarantee.
+enum RollbackPolicy {
+  ROLLBACK_POLICY_UNKNOWN = 0;
+  ROLLBACK_POLICY_NOT_REQUIRED = 1;
+  ROLLBACK_POLICY_REQUIRED_COMPENSATION = 2;
+}
+
+// CapabilityRequirementKind identifies an executor contract without encoding
+// it in a free-form name.
+enum CapabilityRequirementKind {
+  CAPABILITY_REQUIREMENT_KIND_UNKNOWN = 0;
+  CAPABILITY_REQUIREMENT_KIND_ORDERED_ACTION_EXECUTION = 1;
+  CAPABILITY_REQUIREMENT_KIND_COMPENSATING_ROLLBACK = 2;
+  CAPABILITY_REQUIREMENT_KIND_TRANSACTIONAL_PLAN_EXECUTION = 3;
+  CAPABILITY_REQUIREMENT_KIND_ATOMIC_REPLACEMENT = 4;
+  CAPABILITY_REQUIREMENT_KIND_PROVIDER_CAPABILITY = 5;
+}
+
+// CapabilityRequirement is a typed, versioned plan-level requirement. name is
+// used only with PROVIDER_CAPABILITY and refers to CapabilitySet.names; built-
+// in executor semantics are represented by kind alone.
+message CapabilityRequirement {
+  CapabilityRequirementKind kind = 1;
+  string name = 2;
+  string min_version = 3;
+  bool required = 4;
+}
+
 // EvaluationContext captures deterministic scheduler inputs that explain why a
 // decision was taken on a particular tick.
 message EvaluationContext {
@@ -162,6 +224,8 @@ message Action {
   google.protobuf.Timestamp deadline = 16;
   string idempotency_key = 17;
   TickKind tick_kind = 18;
+  repeated ActionPrecondition preconditions = 19;
+  repeated ExpectedImpact expected_impacts = 20;
 }
 
 // PlacementPlan is an immutable plan produced against one snapshot revision.
@@ -183,6 +247,10 @@ message PlacementPlan {
   uint64 generation = 15;
   string cursor = 16;
   string job_id = 17;
+  PlanPurpose purpose = 18;
+  RollbackPolicy rollback_policy = 19;
+  repeated CapabilityRequirement capability_requirements = 20;
+  repeated string affected_allocation_ids = 21;
 }
 
 // ActionResult records the outcome of an action and any compensation attempt.

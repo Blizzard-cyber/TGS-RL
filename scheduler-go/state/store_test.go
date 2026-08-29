@@ -380,45 +380,65 @@ func TestHigherVersionRejectsActiveAllocationSemanticDrift(t *testing.T) {
 }
 
 func TestFinalizePlanResultsRetainsCapacityWhenRollbackIsIncomplete(t *testing.T) {
-	store, clock := newTestStore(t)
-	intent := testIntent(clock, 1, "idempotency-rollback")
-	intent.UnitCount = 1
-	if _, err := store.PublishIntent(intent); err != nil {
-		t.Fatalf("PublishIntent() error = %v", err)
+	tests := []struct {
+		name           string
+		status         tgsrlv1.ActionResultStatus
+		rollbackStatus tgsrlv1.ActionResultStatus
+	}{
+		{name: "successful forward with failed rollback", status: tgsrlv1.ActionResultStatus_ACTION_RESULT_STATUS_SUCCEEDED, rollbackStatus: tgsrlv1.ActionResultStatus_ACTION_RESULT_STATUS_FAILED},
+		{name: "failed result with unknown rollback", status: tgsrlv1.ActionResultStatus_ACTION_RESULT_STATUS_FAILED, rollbackStatus: tgsrlv1.ActionResultStatus_ACTION_RESULT_STATUS_UNKNOWN},
+		{name: "failed result with succeeded rollback status", status: tgsrlv1.ActionResultStatus_ACTION_RESULT_STATUS_FAILED, rollbackStatus: tgsrlv1.ActionResultStatus_ACTION_RESULT_STATUS_SUCCEEDED},
+		{name: "failed result with failed rollback", status: tgsrlv1.ActionResultStatus_ACTION_RESULT_STATUS_FAILED, rollbackStatus: tgsrlv1.ActionResultStatus_ACTION_RESULT_STATUS_FAILED},
+		{name: "failed result with skipped rollback", status: tgsrlv1.ActionResultStatus_ACTION_RESULT_STATUS_FAILED, rollbackStatus: tgsrlv1.ActionResultStatus_ACTION_RESULT_STATUS_SKIPPED},
 	}
-	snapshot, _ := store.GetSnapshot(context.Background(), 0, true)
-	if _, err := store.MutateResources(snapshot.GetRevision(), func(working *tgsrlv1.ClusterSnapshot) error {
-		working.Devices = []*tgsrlv1.Device{{DeviceId: "device-1", Health: tgsrlv1.DeviceHealth_DEVICE_HEALTH_READY, Capacity: &tgsrlv1.ResourceVector{CpuMillis: 1000, MemoryBytes: 4096}, Allocatable: &tgsrlv1.ResourceVector{CpuMillis: 1000, MemoryBytes: 4096}}}
-		return nil
-	}); err != nil {
-		t.Fatalf("MutateResources() error = %v", err)
-	}
-	snapshot, _ = store.GetSnapshot(context.Background(), 0, true)
-	pending := snapshot.GetPendingUnits()[0]
-	binding := &tgsrlv1.Binding{BindingId: "rollback-binding", PendingUnitId: pending.GetPendingUnitId(), DeviceIds: []string{"device-1"}, Resources: cloneResourceVector(intent.GetResourcesPerUnit())}
-	plan := &tgsrlv1.PlacementPlan{
-		PlanId: "rollback-plan", ExecutionId: intent.GetExecutionId(), StageId: intent.GetStageId(),
-		IntentVersion: 1, SnapshotRevision: snapshot.GetRevision(),
-		Bindings: []*tgsrlv1.Binding{binding},
-		Actions:  []*tgsrlv1.Action{{ActionId: "bind-action", Binding: proto.Clone(binding).(*tgsrlv1.Binding)}},
-	}
-	if _, err := store.ReservePlan(plan); err != nil {
-		t.Fatalf("ReservePlan() error = %v", err)
-	}
-	final, err := store.FinalizePlanResults(plan, false, []*tgsrlv1.ActionResult{{
-		ActionId:          "bind-action",
-		Status:            tgsrlv1.ActionResultStatus_ACTION_RESULT_STATUS_SUCCEEDED,
-		RollbackAttempted: true,
-		RollbackStatus:    tgsrlv1.ActionResultStatus_ACTION_RESULT_STATUS_FAILED,
-	}})
-	if err != nil {
-		t.Fatalf("FinalizePlanResults() error = %v", err)
-	}
-	if len(final.GetAllocations()) != 1 || final.GetAllocations()[0].GetState() != tgsrlv1.AllocationState_ALLOCATION_STATE_ACTIVE {
-		t.Fatalf("allocations = %+v, want conservative active allocation", final.GetAllocations())
-	}
-	if final.GetDevices()[0].GetAllocatable().GetCpuMillis() != 500 || len(final.GetPendingUnits()) != 0 {
-		t.Fatalf("capacity/pending was incorrectly restored: %+v", final)
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			store, clock := newTestStore(t)
+			intent := testIntent(clock, 1, "idempotency-rollback")
+			intent.UnitCount = 1
+			if _, err := store.PublishIntent(intent); err != nil {
+				t.Fatalf("PublishIntent() error = %v", err)
+			}
+			snapshot, _ := store.GetSnapshot(context.Background(), 0, true)
+			if _, err := store.MutateResources(snapshot.GetRevision(), func(working *tgsrlv1.ClusterSnapshot) error {
+				working.Devices = []*tgsrlv1.Device{{DeviceId: "device-1", Health: tgsrlv1.DeviceHealth_DEVICE_HEALTH_READY, Capacity: &tgsrlv1.ResourceVector{CpuMillis: 1000, MemoryBytes: 4096}, Allocatable: &tgsrlv1.ResourceVector{CpuMillis: 1000, MemoryBytes: 4096}}}
+				return nil
+			}); err != nil {
+				t.Fatalf("MutateResources() error = %v", err)
+			}
+			snapshot, _ = store.GetSnapshot(context.Background(), 0, true)
+			pending := snapshot.GetPendingUnits()[0]
+			binding := &tgsrlv1.Binding{BindingId: "rollback-binding", PendingUnitId: pending.GetPendingUnitId(), DeviceIds: []string{"device-1"}, Resources: cloneResourceVector(intent.GetResourcesPerUnit())}
+			plan := &tgsrlv1.PlacementPlan{
+				PlanId: "rollback-plan", ExecutionId: intent.GetExecutionId(), StageId: intent.GetStageId(),
+				IntentVersion: 1, SnapshotRevision: snapshot.GetRevision(),
+				Bindings: []*tgsrlv1.Binding{binding},
+				Actions:  []*tgsrlv1.Action{{ActionId: "bind-action", Binding: proto.Clone(binding).(*tgsrlv1.Binding)}},
+			}
+			if _, err := store.ReservePlan(plan); err != nil {
+				t.Fatalf("ReservePlan() error = %v", err)
+			}
+			final, err := store.FinalizePlanResults(plan, false, []*tgsrlv1.ActionResult{{
+				ActionId:          "bind-action",
+				Status:            test.status,
+				RollbackAttempted: true,
+				RollbackStatus:    test.rollbackStatus,
+			}})
+			if err != nil {
+				t.Fatalf("FinalizePlanResults() error = %v", err)
+			}
+			if len(final.GetAllocations()) != 1 || final.GetAllocations()[0].GetState() != tgsrlv1.AllocationState_ALLOCATION_STATE_FAILED {
+				t.Fatalf("allocations = %+v, want retained degraded allocation", final.GetAllocations())
+			}
+			if final.GetDevices()[0].GetAllocatable().GetCpuMillis() != 500 || len(final.GetPendingUnits()) != 0 {
+				t.Fatalf("capacity/pending was incorrectly restored: %+v", final)
+			}
+			durable := store.ExportDurableState()
+			if len(durable.Reservations) != 1 || !durable.Reservations[0].Finalized || durable.Reservations[0].Succeeded ||
+				len(durable.Reservations[0].RetainedAllocationIDs) != 1 || durable.Reservations[0].RetainedAllocationIDs[0] != allocationID(binding.GetBindingId()) {
+				t.Fatalf("reservation = %+v, want finalized degraded retention", durable.Reservations)
+			}
+		})
 	}
 }
 
@@ -455,13 +475,13 @@ func TestFinalizePlanResultsReconcilesEachBinding(t *testing.T) {
 		t.Fatalf("ReservePlan() error = %v", err)
 	}
 	final, err := store.FinalizePlanResults(plan, false, []*tgsrlv1.ActionResult{
-		{ActionId: "first-action", Status: tgsrlv1.ActionResultStatus_ACTION_RESULT_STATUS_SUCCEEDED, RollbackAttempted: true, RollbackStatus: tgsrlv1.ActionResultStatus_ACTION_RESULT_STATUS_ROLLED_BACK},
-		{ActionId: "second-action", Status: tgsrlv1.ActionResultStatus_ACTION_RESULT_STATUS_SUCCEEDED, RollbackAttempted: true, RollbackStatus: tgsrlv1.ActionResultStatus_ACTION_RESULT_STATUS_FAILED},
+		{ActionId: "first-action", Status: tgsrlv1.ActionResultStatus_ACTION_RESULT_STATUS_FAILED, RollbackAttempted: true, RollbackStatus: tgsrlv1.ActionResultStatus_ACTION_RESULT_STATUS_ROLLED_BACK},
+		{ActionId: "second-action", Status: tgsrlv1.ActionResultStatus_ACTION_RESULT_STATUS_FAILED, RollbackAttempted: true, RollbackStatus: tgsrlv1.ActionResultStatus_ACTION_RESULT_STATUS_FAILED},
 	})
 	if err != nil {
 		t.Fatalf("FinalizePlanResults() error = %v", err)
 	}
-	if len(final.GetAllocations()) != 1 || final.GetAllocations()[0].GetPendingUnitId() != second.GetPendingUnitId() {
+	if len(final.GetAllocations()) != 1 || final.GetAllocations()[0].GetPendingUnitId() != second.GetPendingUnitId() || final.GetAllocations()[0].GetState() != tgsrlv1.AllocationState_ALLOCATION_STATE_FAILED {
 		t.Fatalf("allocations = %+v, want only the incompletely rolled-back binding", final.GetAllocations())
 	}
 	if len(final.GetPendingUnits()) != 1 || final.GetPendingUnits()[0].GetPendingUnitId() != first.GetPendingUnitId() {

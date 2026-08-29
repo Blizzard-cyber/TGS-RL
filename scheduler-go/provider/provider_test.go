@@ -9,6 +9,7 @@ import (
 	"time"
 
 	tgsrlv1 "github.com/Blizzard-cyber/TGS-RL/gen/go/tgsrl/v1"
+	"github.com/Blizzard-cyber/TGS-RL/scheduler-go/actionpolicy"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
@@ -442,7 +443,7 @@ func TestExecutePlanPartialFailureRollsBackInReverseAndIsIdempotent(t *testing.T
 	third := testAction("pause", "plan", "pause-key", tgsrlv1.ActionType_ACTION_TYPE_PAUSE, tgsrlv1.ActionLevel_ACTION_LEVEL_L2, 1)
 	third.Order = 3
 	third.Rollback = &tgsrlv1.Rollback{ActionType: tgsrlv1.ActionType_ACTION_TYPE_RESUME, TargetId: "sandbox-a"}
-	plan := &tgsrlv1.PlacementPlan{PlanId: "plan", SnapshotRevision: 1, Actions: []*tgsrlv1.Action{third, first, second}}
+	plan := strictReconciliationPlan("plan", 1, first, second, third)
 
 	results, err := provider.ExecutePlan(context.Background(), plan)
 	if !errors.Is(err, ErrPartialFailure) {
@@ -497,7 +498,7 @@ func TestExecutePlanRejectsPlanIDReuseWithDifferentPayload(t *testing.T) {
 	action := testAction("share", "plan", "share-key", tgsrlv1.ActionType_ACTION_TYPE_SET_SHARE, tgsrlv1.ActionLevel_ACTION_LEVEL_L1, 1)
 	action.Share = 0.5
 	action.Rollback = &tgsrlv1.Rollback{ActionType: tgsrlv1.ActionType_ACTION_TYPE_SET_SHARE, TargetId: "sandbox-a"}
-	plan := &tgsrlv1.PlacementPlan{PlanId: "plan", SnapshotRevision: 1, Actions: []*tgsrlv1.Action{action}}
+	plan := strictReconciliationPlan("plan", 1, action)
 	if _, err := provider.ExecutePlan(context.Background(), plan); err != nil {
 		t.Fatalf("first ExecutePlan() error = %v", err)
 	}
@@ -514,7 +515,7 @@ func TestExecutePlanRequiresExplicitRollback(t *testing.T) {
 	provider := newTestProvider(t, WithSandboxes(testSandbox(SandboxStateRunning)))
 	action := testAction("share", "plan", "share-key", tgsrlv1.ActionType_ACTION_TYPE_SET_SHARE, tgsrlv1.ActionLevel_ACTION_LEVEL_L1, 1)
 	action.Share = 0.5
-	plan := &tgsrlv1.PlacementPlan{PlanId: "plan", SnapshotRevision: 1, Actions: []*tgsrlv1.Action{action}}
+	plan := strictReconciliationPlan("plan", 1, action)
 
 	if _, err := provider.ExecutePlan(context.Background(), plan); !errors.Is(err, ErrInvalidArgument) {
 		t.Fatalf("ExecutePlan() error = %v, want ErrInvalidArgument for missing rollback", err)
@@ -544,6 +545,156 @@ func TestExecutePlanRejectsTickPolicyMismatch(t *testing.T) {
 	}
 }
 
+func TestExecutePlanRejectsPreemptionBeforeAnyMutation(t *testing.T) {
+	initial := testSandbox(SandboxStateRunning)
+	provider := newTestProvider(t, WithSandboxes(initial))
+	release := testAction("release", "preempt", "release-key", tgsrlv1.ActionType_ACTION_TYPE_RELEASE, tgsrlv1.ActionLevel_ACTION_LEVEL_L1, 1)
+	release.TargetId = "allocation-1"
+	release.Rollback = &tgsrlv1.Rollback{ActionType: tgsrlv1.ActionType_ACTION_TYPE_BIND, TargetId: "sandbox-a", RestoreBinding: testBinding("sandbox-a", 1)}
+	bind := testAction("replacement", "preempt", "bind-key", tgsrlv1.ActionType_ACTION_TYPE_BIND, tgsrlv1.ActionLevel_ACTION_LEVEL_L1, 1)
+	bind.Rollback = &tgsrlv1.Rollback{ActionType: tgsrlv1.ActionType_ACTION_TYPE_RELEASE, TargetId: bind.GetBinding().GetBindingId()}
+	plan := strictReconciliationPlan("preempt", 1, release, bind)
+	plan.Purpose = tgsrlv1.PlanPurpose_PLAN_PURPOSE_PREEMPTION
+	plan.AffectedAllocationIds = []string{"allocation-1"}
+	plan.CapabilityRequirements = actionpolicy.StableCapabilityRequirements(
+		append(plan.CapabilityRequirements,
+			actionpolicy.NewCapabilityRequirement(tgsrlv1.CapabilityRequirementKind_CAPABILITY_REQUIREMENT_KIND_TRANSACTIONAL_PLAN_EXECUTION),
+			actionpolicy.NewCapabilityRequirement(tgsrlv1.CapabilityRequirementKind_CAPABILITY_REQUIREMENT_KIND_ATOMIC_REPLACEMENT),
+		)...,
+	)
+	release.Preconditions = append(release.Preconditions, tgsrlv1.ActionPrecondition_ACTION_PRECONDITION_AFFECTED_ALLOCATIONS_ACTIVE)
+
+	if _, err := provider.ExecutePlan(context.Background(), plan); !errors.Is(err, ErrUnsupported) {
+		t.Fatalf("ExecutePlan(preemption) error = %v, want ErrUnsupported", err)
+	}
+	after, err := provider.GetSandbox(context.Background(), "sandbox-a")
+	if err != nil {
+		t.Fatalf("GetSandbox() error = %v", err)
+	}
+	if after.State != initial.State || after.Generation != initial.Generation || !proto.Equal(after.Binding, initial.Binding) {
+		t.Fatalf("preemption rejection mutated sandbox: got %+v want %+v", after, initial)
+	}
+	snapshot, _ := provider.Snapshot(context.Background())
+	if snapshot.GetRevision() != 1 {
+		t.Fatalf("preemption rejection advanced revision to %d", snapshot.GetRevision())
+	}
+}
+
+func TestPlanCapabilitiesAreTypedAndDetached(t *testing.T) {
+	provider := newTestProvider(t)
+	first := PlanCapabilities(provider)
+	want := []*tgsrlv1.CapabilityRequirement{
+		actionpolicy.NewCapabilityRequirement(tgsrlv1.CapabilityRequirementKind_CAPABILITY_REQUIREMENT_KIND_ORDERED_ACTION_EXECUTION),
+		actionpolicy.NewCapabilityRequirement(tgsrlv1.CapabilityRequirementKind_CAPABILITY_REQUIREMENT_KIND_COMPENSATING_ROLLBACK),
+	}
+	for _, capability := range want {
+		capability.MinVersion = "1.0.0"
+	}
+	if len(first) != len(want) || !proto.Equal(first[0], want[0]) || !proto.Equal(first[1], want[1]) {
+		t.Fatalf("PlanCapabilities() = %v, want %v", first, want)
+	}
+	first[0].Kind = tgsrlv1.CapabilityRequirementKind_CAPABILITY_REQUIREMENT_KIND_ATOMIC_REPLACEMENT
+	if next := PlanCapabilities(provider); len(next) != len(want) || !proto.Equal(next[0], want[0]) || !proto.Equal(next[1], want[1]) {
+		t.Fatalf("PlanCapabilities() aliases provider state: %v", next)
+	}
+}
+
+func TestValidatePlanCapabilitiesHonorsRequiredProviderCapability(t *testing.T) {
+	provider := newTestProvider(t)
+	plan := &tgsrlv1.PlacementPlan{PlanId: "capability-plan"}
+	optional := &tgsrlv1.CapabilityRequirement{
+		Kind:       tgsrlv1.CapabilityRequirementKind_CAPABILITY_REQUIREMENT_KIND_PROVIDER_CAPABILITY,
+		Name:       "missing",
+		MinVersion: "not-semver",
+		Required:   false,
+	}
+	plan.CapabilityRequirements = []*tgsrlv1.CapabilityRequirement{optional}
+	if err := ValidatePlanCapabilities(provider, plan); err != nil {
+		t.Fatalf("optional capability blocked handshake: %v", err)
+	}
+
+	plan.CapabilityRequirements = []*tgsrlv1.CapabilityRequirement{{
+		Kind:       tgsrlv1.CapabilityRequirementKind_CAPABILITY_REQUIREMENT_KIND_PROVIDER_CAPABILITY,
+		Name:       " Logical-CPU ",
+		MinVersion: "1.0.0",
+		Required:   true,
+	}}
+	if err := ValidatePlanCapabilities(provider, plan); err != nil {
+		t.Fatalf("normalized provider capability handshake failed: %v", err)
+	}
+
+	plan.CapabilityRequirements[0].MinVersion = "1.0.1"
+	if err := ValidatePlanCapabilities(provider, plan); !errors.Is(err, ErrUnsupported) {
+		t.Fatalf("newer provider capability version error = %v, want ErrUnsupported", err)
+	}
+	plan.CapabilityRequirements[0].Name = "logical-gpu"
+	plan.CapabilityRequirements[0].MinVersion = ""
+	if err := ValidatePlanCapabilities(provider, plan); !errors.Is(err, ErrUnsupported) {
+		t.Fatalf("missing provider capability error = %v, want ErrUnsupported", err)
+	}
+}
+
+func TestVersionAtLeastUsesStrictSemanticVersioning(t *testing.T) {
+	tests := []struct {
+		name      string
+		available string
+		required  string
+		want      bool
+		wantErr   bool
+	}{
+		{name: "greater", available: "1.2.0", required: "1.1.9", want: true},
+		{name: "equal", available: "1.2.0", required: "1.2.0", want: true},
+		{name: "lower", available: "1.1.9", required: "1.2.0"},
+		{name: "prerelease lower than release", available: "1.2.0-rc.1", required: "1.2.0"},
+		{name: "prerelease ordering", available: "1.2.0-rc.2", required: "1.2.0-rc.1", want: true},
+		{name: "malformed available", available: "1.2", required: "1.1.9", wantErr: true},
+		{name: "malformed required", available: "1.2.0", required: "v1.1.9", wantErr: true},
+		{name: "leading zero", available: "01.2.0", required: "1.1.9", wantErr: true},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			got, err := versionAtLeast(test.available, test.required)
+			if (err != nil) != test.wantErr {
+				t.Fatalf("versionAtLeast(%q, %q) error = %v, wantErr %v", test.available, test.required, err, test.wantErr)
+			}
+			if got != test.want {
+				t.Fatalf("versionAtLeast(%q, %q) = %v, want %v", test.available, test.required, got, test.want)
+			}
+		})
+	}
+}
+
+func TestExecutePlanRejectsCapabilityBeforeMutationOrRecord(t *testing.T) {
+	initial := testSandbox(SandboxStateRunning)
+	provider := newTestProvider(t, WithSandboxes(initial))
+	action := testAction("share", "unsupported-plan", "share-key", tgsrlv1.ActionType_ACTION_TYPE_SET_SHARE, tgsrlv1.ActionLevel_ACTION_LEVEL_L1, 1)
+	action.Share = 0.5
+	action.Rollback = &tgsrlv1.Rollback{ActionType: tgsrlv1.ActionType_ACTION_TYPE_SET_SHARE, TargetId: "sandbox-a"}
+	plan := strictReconciliationPlan("unsupported-plan", 1, action)
+	plan.CapabilityRequirements = actionpolicy.StableCapabilityRequirements(&tgsrlv1.CapabilityRequirement{
+		Kind:     tgsrlv1.CapabilityRequirementKind_CAPABILITY_REQUIREMENT_KIND_ATOMIC_REPLACEMENT,
+		Required: true,
+	})
+
+	if _, err := provider.ExecutePlan(context.Background(), plan); !errors.Is(err, ErrUnsupported) {
+		t.Fatalf("ExecutePlan() error = %v, want ErrUnsupported", err)
+	}
+	sandbox, err := provider.GetSandbox(context.Background(), "sandbox-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sandbox.Share != initial.Share || sandbox.State != initial.State {
+		t.Fatalf("rejected plan mutated sandbox: %+v", sandbox)
+	}
+	snapshot, _ := provider.Snapshot(context.Background())
+	if snapshot.GetRevision() != 1 {
+		t.Fatalf("rejected plan advanced revision to %d", snapshot.GetRevision())
+	}
+	if _, err := provider.ReconcilePlan(context.Background(), plan); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("rejected plan record error = %v, want ErrNotFound", err)
+	}
+}
+
 func TestExecutePlanUsesActionOrder(t *testing.T) {
 	provider := newTestProvider(t, WithSandboxes(testSandbox(SandboxStateRunning)))
 	pause := testAction("pause", "plan", "pause-key", tgsrlv1.ActionType_ACTION_TYPE_PAUSE, tgsrlv1.ActionLevel_ACTION_LEVEL_L2, 1)
@@ -552,7 +703,7 @@ func TestExecutePlanUsesActionOrder(t *testing.T) {
 	resume := testAction("resume", "plan", "resume-key", tgsrlv1.ActionType_ACTION_TYPE_RESUME, tgsrlv1.ActionLevel_ACTION_LEVEL_L2, 1)
 	resume.Order = 2
 	resume.Rollback = &tgsrlv1.Rollback{ActionType: tgsrlv1.ActionType_ACTION_TYPE_PAUSE, TargetId: "sandbox-a"}
-	plan := &tgsrlv1.PlacementPlan{PlanId: "plan", SnapshotRevision: 1, Actions: []*tgsrlv1.Action{resume, pause}}
+	plan := strictReconciliationPlan("plan", 1, pause, resume)
 
 	results, err := provider.ExecutePlan(context.Background(), plan)
 	if err != nil {
@@ -583,7 +734,7 @@ func TestExecutePlanMarksRemainingActionsSkipped(t *testing.T) {
 	priority.Priority = 42
 	priority.Order = 3
 	priority.Rollback = &tgsrlv1.Rollback{ActionType: tgsrlv1.ActionType_ACTION_TYPE_SET_PRIORITY, TargetId: "sandbox-a"}
-	plan := &tgsrlv1.PlacementPlan{PlanId: "plan", SnapshotRevision: 1, Actions: []*tgsrlv1.Action{share, pause, priority}}
+	plan := strictReconciliationPlan("plan", 1, share, pause, priority)
 
 	results, err := provider.ExecutePlan(context.Background(), plan)
 	if !errors.Is(err, ErrPartialFailure) {
@@ -633,7 +784,7 @@ func TestConfiguredRollbackFailureIsExplicit(t *testing.T) {
 	pause := testAction("pause", "plan", "pause-key", tgsrlv1.ActionType_ACTION_TYPE_PAUSE, tgsrlv1.ActionLevel_ACTION_LEVEL_L2, 1)
 	pause.Order = 2
 	pause.Rollback = &tgsrlv1.Rollback{ActionType: tgsrlv1.ActionType_ACTION_TYPE_RESUME, TargetId: "sandbox-a"}
-	plan := &tgsrlv1.PlacementPlan{PlanId: "plan", SnapshotRevision: 1, Actions: []*tgsrlv1.Action{share, pause}}
+	plan := strictReconciliationPlan("plan", 1, share, pause)
 
 	results, err := provider.ExecutePlan(context.Background(), plan)
 	if !errors.Is(err, ErrPartialFailure) {
@@ -671,7 +822,7 @@ func TestRollbackFailureIsNotUndoneByEarlierRollbackOnSameSandbox(t *testing.T) 
 	pause.Order = 3
 	pause.Rollback = &tgsrlv1.Rollback{ActionType: tgsrlv1.ActionType_ACTION_TYPE_RESUME, TargetId: "sandbox-a"}
 
-	results, err := provider.ExecutePlan(context.Background(), &tgsrlv1.PlacementPlan{PlanId: "plan", SnapshotRevision: 1, Actions: []*tgsrlv1.Action{share, priority, pause}})
+	results, err := provider.ExecutePlan(context.Background(), strictReconciliationPlan("plan", 1, share, priority, pause))
 	if !errors.Is(err, ErrPartialFailure) {
 		t.Fatalf("ExecutePlan() error = %v, want ErrPartialFailure", err)
 	}
@@ -709,7 +860,7 @@ func TestOverlappingRollbackFailurePreservesLatestSideEffect(t *testing.T) {
 	pause.Order = 3
 	pause.Rollback = &tgsrlv1.Rollback{ActionType: tgsrlv1.ActionType_ACTION_TYPE_RESUME, TargetId: "sandbox-a"}
 
-	results, err := provider.ExecutePlan(context.Background(), &tgsrlv1.PlacementPlan{PlanId: "plan", SnapshotRevision: 1, Actions: []*tgsrlv1.Action{first, latest, pause}})
+	results, err := provider.ExecutePlan(context.Background(), strictReconciliationPlan("plan", 1, first, latest, pause))
 	if !errors.Is(err, ErrPartialFailure) {
 		t.Fatalf("ExecutePlan() error = %v, want ErrPartialFailure", err)
 	}
@@ -755,7 +906,7 @@ func TestRollbackDoesNotOverwriteAnotherSandbox(t *testing.T) {
 	pause.Order = 3
 	pause.Rollback = &tgsrlv1.Rollback{ActionType: tgsrlv1.ActionType_ACTION_TYPE_RESUME, TargetId: "sandbox-a"}
 
-	results, err := provider.ExecutePlan(context.Background(), &tgsrlv1.PlacementPlan{PlanId: "plan", SnapshotRevision: 1, Actions: []*tgsrlv1.Action{share, priority, pause}})
+	results, err := provider.ExecutePlan(context.Background(), strictReconciliationPlan("plan", 1, share, priority, pause))
 	if !errors.Is(err, ErrPartialFailure) {
 		t.Fatalf("ExecutePlan() error = %v, want ErrPartialFailure", err)
 	}
@@ -794,7 +945,7 @@ func TestExecutePlanRejectsFalseRollbackDeclarations(t *testing.T) {
 			action.Share = 0.8
 			action.Rollback = test.rollback
 
-			if _, err := provider.ExecutePlan(context.Background(), &tgsrlv1.PlacementPlan{PlanId: "plan", SnapshotRevision: 1, Actions: []*tgsrlv1.Action{action}}); !errors.Is(err, ErrInvalidArgument) {
+			if _, err := provider.ExecutePlan(context.Background(), strictReconciliationPlan("plan", 1, action)); !errors.Is(err, ErrInvalidArgument) {
 				t.Fatalf("ExecutePlan() error = %v, want ErrInvalidArgument", err)
 			}
 			sandbox, lookupErr := provider.GetSandbox(context.Background(), "sandbox-a")
@@ -823,7 +974,7 @@ func TestExecutePlanRejectsMismatchedRestoreBindingAndRollsBackPriorMutation(t *
 	mismatched.Resources.CpuMillis = 500
 	resize.Rollback = &tgsrlv1.Rollback{ActionType: tgsrlv1.ActionType_ACTION_TYPE_RESIZE, TargetId: "sandbox-a", RestoreBinding: mismatched}
 
-	results, err := provider.ExecutePlan(context.Background(), &tgsrlv1.PlacementPlan{PlanId: "plan", SnapshotRevision: 1, Actions: []*tgsrlv1.Action{share, resize}})
+	results, err := provider.ExecutePlan(context.Background(), strictReconciliationPlan("plan", 1, share, resize))
 	if !errors.Is(err, ErrPartialFailure) {
 		t.Fatalf("ExecutePlan() error = %v, want ErrPartialFailure", err)
 	}
@@ -848,7 +999,7 @@ func TestExecutePlanBindRollbackUsesBindingTarget(t *testing.T) {
 	share.Order = 2
 	share.Rollback = &tgsrlv1.Rollback{ActionType: tgsrlv1.ActionType_ACTION_TYPE_SET_SHARE, TargetId: "sandbox-a"}
 
-	results, err := provider.ExecutePlan(context.Background(), &tgsrlv1.PlacementPlan{PlanId: "plan", SnapshotRevision: 1, Actions: []*tgsrlv1.Action{bind, share}})
+	results, err := provider.ExecutePlan(context.Background(), strictReconciliationPlan("plan", 1, bind, share))
 	if !errors.Is(err, ErrPartialFailure) {
 		t.Fatalf("ExecutePlan() error = %v, want ErrPartialFailure", err)
 	}
@@ -1001,6 +1152,48 @@ func testAction(actionID, planID, idempotencyKey string, actionType tgsrlv1.Acti
 		Deadline:                 timestamppb.New(fixtureNow.Add(time.Minute)),
 		IdempotencyKey:           idempotencyKey,
 		TickKind:                 tgsrlv1.TickKind_TICK_KIND_SLOW,
+	}
+}
+
+func strictReconciliationPlan(planID string, revision uint64, actions ...*tgsrlv1.Action) *tgsrlv1.PlacementPlan {
+	for index, action := range actions {
+		if action == nil {
+			continue
+		}
+		definition, ok := actionpolicy.DefinitionForAction(action.GetActionType())
+		if !ok {
+			continue
+		}
+		action.Order = uint32(index + 1)
+		action.Preconditions = actionpolicy.RequiredPreconditions(action.GetActionType(), action.GetRequiresSafePoint(), false)
+		action.ExpectedImpacts = append([]tgsrlv1.ExpectedImpact(nil), definition.ExpectedImpacts...)
+		if action.RequiredCapabilities == nil {
+			action.RequiredCapabilities = &tgsrlv1.CapabilitySet{}
+		}
+		if !containsString(action.RequiredCapabilities.GetSupportedActions(), definition.CapabilityName) {
+			action.RequiredCapabilities.SupportedActions = append(action.RequiredCapabilities.SupportedActions, definition.CapabilityName)
+		}
+	}
+	rollbackPolicy := tgsrlv1.RollbackPolicy_ROLLBACK_POLICY_NOT_REQUIRED
+	if len(actions) > 1 {
+		rollbackPolicy = tgsrlv1.RollbackPolicy_ROLLBACK_POLICY_REQUIRED_COMPENSATION
+	}
+	return &tgsrlv1.PlacementPlan{
+		PlanId:           planID,
+		SnapshotRevision: revision,
+		Purpose:          tgsrlv1.PlanPurpose_PLAN_PURPOSE_RECONCILIATION,
+		RollbackPolicy:   rollbackPolicy,
+		CapabilityRequirements: func() []*tgsrlv1.CapabilityRequirement {
+			values := []*tgsrlv1.CapabilityRequirement{}
+			if len(actions) > 1 {
+				values = append(values,
+					actionpolicy.NewCapabilityRequirement(tgsrlv1.CapabilityRequirementKind_CAPABILITY_REQUIREMENT_KIND_ORDERED_ACTION_EXECUTION),
+					actionpolicy.NewCapabilityRequirement(tgsrlv1.CapabilityRequirementKind_CAPABILITY_REQUIREMENT_KIND_COMPENSATING_ROLLBACK),
+				)
+			}
+			return actionpolicy.StableCapabilityRequirements(values...)
+		}(),
+		Actions: actions,
 	}
 }
 

@@ -1,9 +1,10 @@
-"""Verify Python -> Go -> Python binary compatibility for the core intent."""
+"""Verify Python -> Go -> Python binary compatibility for scheduling DTOs."""
 
 from __future__ import annotations
 
 import subprocess
 from datetime import UTC, datetime, timedelta
+from io import BytesIO
 from pathlib import Path
 
 from tgsrl.v1 import (
@@ -20,6 +21,36 @@ from tgsrl.v1 import (
 from tgsrl_runtime.intent import IntentBuilder
 
 from adapters import GRPOAdapter, PartialAsyncRolloutAdapter, build_execution_contract
+
+
+def _encode_varint(value: int) -> bytes:
+    encoded = bytearray()
+    while value > 0x7F:
+        encoded.append((value & 0x7F) | 0x80)
+        value >>= 7
+    encoded.append(value)
+    return bytes(encoded)
+
+
+def _frame(payload: bytes) -> bytes:
+    return _encode_varint(len(payload)) + payload
+
+
+def _read_frame(stream: BytesIO) -> bytes:
+    length = 0
+    shift = 0
+    while True:
+        byte = stream.read(1)
+        if not byte:
+            raise SystemExit("truncated round-trip frame")
+        length |= (byte[0] & 0x7F) << shift
+        if byte[0] < 0x80:
+            break
+        shift += 7
+    payload = stream.read(length)
+    if len(payload) != length:
+        raise SystemExit("truncated round-trip payload")
+    return payload
 
 
 def main() -> None:
@@ -91,19 +122,66 @@ def main() -> None:
             digest="sha256:roundtrip",
         )
     )
-    original = intent.SerializeToString(deterministic=True)
+    plan = scheduling_pb2.PlacementPlan(
+        plan_id="roundtrip-plan",
+        execution_id=intent.execution_id,
+        stage_id=intent.stage_id,
+        intent_version=intent.version,
+        snapshot_revision=21,
+        purpose=scheduling_pb2.PLAN_PURPOSE_RECONCILIATION,
+        rollback_policy=scheduling_pb2.ROLLBACK_POLICY_NOT_REQUIRED,
+        capability_requirements=[
+            scheduling_pb2.CapabilityRequirement(
+                kind=scheduling_pb2.CAPABILITY_REQUIREMENT_KIND_PROVIDER_CAPABILITY,
+                name="checkpoint",
+                min_version="1.0.0",
+                required=False,
+            ),
+        ],
+        affected_allocation_ids=["allocation-a"],
+        actions=[
+            scheduling_pb2.Action(
+                action_id="roundtrip-action",
+                action_type=scheduling_pb2.ACTION_TYPE_BIND,
+                level=scheduling_pb2.ACTION_LEVEL_L1,
+                plan_id="roundtrip-plan",
+                expected_snapshot_revision=21,
+                tick_kind=scheduling_pb2.TICK_KIND_FAST,
+                target_id="roundtrip-unit",
+                preconditions=[scheduling_pb2.ACTION_PRECONDITION_SNAPSHOT_REVISION_MATCH],
+                expected_impacts=[
+                    scheduling_pb2.EXPECTED_IMPACT_ALLOCATION_CREATED,
+                    scheduling_pb2.EXPECTED_IMPACT_CAPACITY_RESERVED,
+                ],
+                rollback=scheduling_pb2.Rollback(
+                    action_type=scheduling_pb2.ACTION_TYPE_RELEASE,
+                    target_id="roundtrip-binding",
+                ),
+            )
+        ],
+    )
+    original_intent = intent.SerializeToString(deterministic=True)
+    original_plan = plan.SerializeToString(deterministic=True)
     completed = subprocess.run(
         ["go", "run", "./scripts/proto-roundtrip-go.go"],
         cwd=root,
-        input=original,
+        input=_frame(original_intent) + _frame(original_plan),
         stdout=subprocess.PIPE,
         check=True,
     )
-    decoded = scheduling_pb2.SchedulingIntent.FromString(completed.stdout)
+    output = BytesIO(completed.stdout)
+    intent_output = _read_frame(output)
+    plan_output = _read_frame(output)
+    if output.read():
+        raise SystemExit("unexpected trailing round-trip bytes")
+    decoded = scheduling_pb2.SchedulingIntent.FromString(intent_output)
+    decoded_plan = scheduling_pb2.PlacementPlan.FromString(plan_output)
     if decoded != intent:
         raise SystemExit("Go round-trip changed SchedulingIntent semantics")
-    if completed.stdout != original:
+    if intent_output != original_intent:
         raise SystemExit("Go round-trip changed deterministic wire bytes")
+    if decoded_plan != plan or plan_output != original_plan:
+        raise SystemExit("Go round-trip changed PlacementPlan semantics or wire bytes")
     # Touch the new generated surfaces so import regressions fail fast even when
     # the core wire fixture only round-trips SchedulingIntent.
     evaluation = execution_pb2.ContractEvaluation(
@@ -182,7 +260,7 @@ def main() -> None:
     )
     assert trace_event.contract_observation.policy_version == "roundtrip-policy"
     assert replay_step.evaluation_context.tick_kind == scheduling_pb2.TICK_KIND_MEDIUM
-    print("Go <-> Python SchedulingIntent round-trip passed")
+    print("Go <-> Python scheduling DTO round-trip passed")
 
 
 if __name__ == "__main__":

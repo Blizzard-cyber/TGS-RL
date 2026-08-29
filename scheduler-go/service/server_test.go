@@ -387,6 +387,13 @@ type failingEvaluator struct {
 
 type unhealthyProvider struct{ provider.ResourceProvider }
 
+func (p unhealthyProvider) PlanCapabilities() []*tgsrlv1.CapabilityRequirement {
+	return provider.PlanCapabilities(p.ResourceProvider)
+}
+func (p unhealthyProvider) ValidatePlanCapabilities(plan *tgsrlv1.PlacementPlan) error {
+	return provider.ValidatePlanCapabilities(p.ResourceProvider, plan)
+}
+
 func (p unhealthyProvider) ID(context.Context) (string, error) { return "unhealthy", nil }
 func (p unhealthyProvider) Health(context.Context) (*provider.HealthStatus, error) {
 	return &provider.HealthStatus{ProviderID: "unhealthy", Healthy: false, Reason: "maintenance"}, nil
@@ -410,6 +417,13 @@ type cursorExpiringWatchProvider struct {
 	sandboxCursor   uint64
 	resourceWatched bool
 	sandboxWatched  bool
+}
+
+func (p *cursorExpiringWatchProvider) PlanCapabilities() []*tgsrlv1.CapabilityRequirement {
+	return provider.PlanCapabilities(p.base)
+}
+func (p *cursorExpiringWatchProvider) ValidatePlanCapabilities(plan *tgsrlv1.PlacementPlan) error {
+	return provider.ValidatePlanCapabilities(p.base, plan)
 }
 
 func (p *cursorExpiringWatchProvider) Capabilities(ctx context.Context) (*tgsrlv1.CapabilitySet, error) {
@@ -478,6 +492,13 @@ type watchFailingProvider struct {
 	err  error
 }
 
+func (p watchFailingProvider) PlanCapabilities() []*tgsrlv1.CapabilityRequirement {
+	return provider.PlanCapabilities(p.base)
+}
+func (p watchFailingProvider) ValidatePlanCapabilities(plan *tgsrlv1.PlacementPlan) error {
+	return provider.ValidatePlanCapabilities(p.base, plan)
+}
+
 func (p watchFailingProvider) Capabilities(ctx context.Context) (*tgsrlv1.CapabilitySet, error) {
 	return p.base.Capabilities(ctx)
 }
@@ -538,6 +559,13 @@ type reconnectingWatchProvider struct {
 	sandboxWatchCalls   int
 	resourceReconnectCh chan struct{}
 	allowResourceWatch  chan struct{}
+}
+
+func (p *reconnectingWatchProvider) PlanCapabilities() []*tgsrlv1.CapabilityRequirement {
+	return provider.PlanCapabilities(p.base)
+}
+func (p *reconnectingWatchProvider) ValidatePlanCapabilities(plan *tgsrlv1.PlacementPlan) error {
+	return provider.ValidatePlanCapabilities(p.base, plan)
 }
 
 func newReconnectingWatchProvider(base provider.CompleteResourceProvider) *reconnectingWatchProvider {
@@ -633,6 +661,45 @@ func (p panicEvaluator) Evaluate(snapshot *tgsrlv1.ClusterSnapshot, intent *tgsr
 
 func (f failingEvaluator) Evaluate(*tgsrlv1.ClusterSnapshot, *tgsrlv1.SchedulingIntent) (*tgsrlv1.PlacementPlan, *tgsrlv1.DecisionRecord, error) {
 	return nil, nil, f.err
+}
+
+func TestServiceExecutesLegacyBindOnlyPlan(t *testing.T) {
+	now := time.Date(2026, 8, 28, 6, 45, 0, 0, time.UTC)
+	store, err := state.NewStore(serviceSnapshot(now), state.WithClock(state.ClockFunc(func() time.Time { return now })))
+	if err != nil {
+		t.Fatal(err)
+	}
+	mockProvider, err := provider.NewMockResourceProvider(provider.WithNow(func() time.Time { return now }))
+	if err != nil {
+		t.Fatal(err)
+	}
+	implementation, err := New(Config{Store: store, Scheduler: legacyBindEvaluator{}, Provider: mockProvider, Clock: ClockFunc(func() time.Time { return now })})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer implementation.Close()
+	intent := serviceIntent(now)
+	response, err := implementation.PublishIntent(context.Background(), &tgsrlv1.PublishIntentRequest{Intent: intent})
+	if err != nil || response.GetStatus() != tgsrlv1.IntentPublishStatus_INTENT_PUBLISH_STATUS_ACCEPTED {
+		t.Fatalf("PublishIntent() = (%v, %v)", response, err)
+	}
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		entries, _, _ := implementation.decisionsAfter(0)
+		if len(entries) == 0 {
+			time.Sleep(10 * time.Millisecond)
+			continue
+		}
+		decision := entries[len(entries)-1].decision
+		if decision.GetFallback() {
+			t.Fatalf("legacy bind decision fell back: %s", decision.GetFallbackReason())
+		}
+		if len(decision.GetActionResults()) != 1 || decision.GetActionResults()[0].GetStatus() != tgsrlv1.ActionResultStatus_ACTION_RESULT_STATUS_SUCCEEDED {
+			t.Fatalf("legacy bind results = %v", decision.GetActionResults())
+		}
+		return
+	}
+	t.Fatal("legacy bind plan did not produce a decision")
 }
 
 func TestNewStartsProviderWatchesFromZeroCursor(t *testing.T) {
@@ -894,6 +961,51 @@ type contextualEvaluatorSpy struct {
 	contexts []*tgsrlv1.EvaluationContext
 }
 
+type legacyBindEvaluator struct{}
+
+func (legacyBindEvaluator) Evaluate(snapshot *tgsrlv1.ClusterSnapshot, intent *tgsrlv1.SchedulingIntent) (*tgsrlv1.PlacementPlan, *tgsrlv1.DecisionRecord, error) {
+	binding := &tgsrlv1.Binding{
+		BindingId:     "legacy-binding",
+		PendingUnitId: snapshot.GetPendingUnits()[0].GetPendingUnitId(),
+		DeviceIds:     []string{snapshot.GetDevices()[0].GetDeviceId()},
+		Resources:     proto.Clone(intent.GetResourcesPerUnit()).(*tgsrlv1.ResourceVector),
+		SandboxId:     "legacy-sandbox",
+		Generation:    1,
+	}
+	plan := &tgsrlv1.PlacementPlan{
+		PlanId:           "legacy-plan",
+		ExecutionId:      intent.GetExecutionId(),
+		StageId:          intent.GetStageId(),
+		IntentVersion:    intent.GetVersion(),
+		SnapshotRevision: snapshot.GetRevision(),
+		Bindings:         []*tgsrlv1.Binding{binding},
+		Actions: []*tgsrlv1.Action{{
+			ActionId:                 "legacy-action",
+			ActionType:               tgsrlv1.ActionType_ACTION_TYPE_BIND,
+			Level:                    tgsrlv1.ActionLevel_ACTION_LEVEL_L1,
+			TargetId:                 binding.GetPendingUnitId(),
+			Binding:                  proto.Clone(binding).(*tgsrlv1.Binding),
+			Rollback:                 &tgsrlv1.Rollback{ActionType: tgsrlv1.ActionType_ACTION_TYPE_RELEASE, TargetId: binding.GetBindingId()},
+			Order:                    1,
+			PlanId:                   "legacy-plan",
+			SandboxId:                binding.GetSandboxId(),
+			ExpectedGeneration:       1,
+			ExpectedSnapshotRevision: snapshot.GetRevision(),
+			Deadline:                 proto.Clone(intent.GetValidUntil()).(*timestamppb.Timestamp),
+			IdempotencyKey:           "legacy-action-key",
+		}},
+	}
+	decision := &tgsrlv1.DecisionRecord{
+		DecisionId:       "legacy-decision",
+		ExecutionId:      intent.GetExecutionId(),
+		StageId:          intent.GetStageId(),
+		IntentVersion:    intent.GetVersion(),
+		SnapshotRevision: snapshot.GetRevision(),
+		SelectedPlan:     proto.Clone(plan).(*tgsrlv1.PlacementPlan),
+	}
+	return plan, decision, nil
+}
+
 func (s *contextualEvaluatorSpy) Evaluate(snapshot *tgsrlv1.ClusterSnapshot, intent *tgsrlv1.SchedulingIntent) (*tgsrlv1.PlacementPlan, *tgsrlv1.DecisionRecord, error) {
 	return s.EvaluateWithContext(snapshot, intent, nil)
 }
@@ -985,6 +1097,13 @@ type countingWatchProvider struct {
 	mu             sync.Mutex
 	executePlans   int
 	latestSnapshot *tgsrlv1.ClusterSnapshot
+}
+
+func (p *countingWatchProvider) PlanCapabilities() []*tgsrlv1.CapabilityRequirement {
+	return provider.PlanCapabilities(p.base)
+}
+func (p *countingWatchProvider) ValidatePlanCapabilities(plan *tgsrlv1.PlacementPlan) error {
+	return provider.ValidatePlanCapabilities(p.base, plan)
 }
 
 func newCountingWatchProvider(base provider.CompleteResourceProvider) *countingWatchProvider {

@@ -139,14 +139,16 @@ func (s *Store) FinalizePlan(plan *tgsrlv1.PlacementPlan, succeeded bool) (*tgsr
 }
 
 // FinalizePlanResults converges an executed reservation from per-action
-// results. After a failed plan, only bindings whose successful actions were
-// not demonstrably rolled back remain allocated. Missing or contradictory
-// result evidence is handled conservatively by retaining the affected binding.
+// results. After a failed plan, only bindings whose actions may have left a
+// forward side effect remain allocated. An incomplete rollback marks the
+// retained allocation failed so callers can distinguish it from confirmed
+// active capacity. Missing or contradictory result evidence is handled
+// conservatively by retaining the affected binding.
 func (s *Store) FinalizePlanResults(plan *tgsrlv1.PlacementPlan, succeeded bool, results []*tgsrlv1.ActionResult) (*tgsrlv1.ClusterSnapshot, error) {
 	if plan == nil {
 		return nil, fmt.Errorf("%w: nil plan", ErrPlanNotReserved)
 	}
-	retained := retainedAllocations(plan, succeeded, results)
+	retained, degraded := retainedAllocations(plan, succeeded, results)
 	retainedIDs := sortedSetValues(retained)
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -175,7 +177,11 @@ func (s *Store) FinalizePlanResults(plan *tgsrlv1.PlacementPlan, succeeded bool,
 			continue
 		}
 		if _, retain := retained[allocation.GetAllocationId()]; retain {
-			allocation.State = tgsrlv1.AllocationState_ALLOCATION_STATE_ACTIVE
+			if _, uncertain := degraded[allocation.GetAllocationId()]; uncertain {
+				allocation.State = tgsrlv1.AllocationState_ALLOCATION_STATE_FAILED
+			} else {
+				allocation.State = tgsrlv1.AllocationState_ALLOCATION_STATE_ACTIVE
+			}
 			kept = append(kept, allocation)
 			continue
 		}
@@ -208,15 +214,16 @@ func (s *Store) FinalizePlanResults(plan *tgsrlv1.PlacementPlan, succeeded bool,
 	return cloneSnapshot(s.snapshot), nil
 }
 
-func retainedAllocations(plan *tgsrlv1.PlacementPlan, succeeded bool, results []*tgsrlv1.ActionResult) map[string]struct{} {
+func retainedAllocations(plan *tgsrlv1.PlacementPlan, succeeded bool, results []*tgsrlv1.ActionResult) (map[string]struct{}, map[string]struct{}) {
 	retained := make(map[string]struct{}, len(plan.GetBindings()))
+	degraded := make(map[string]struct{}, len(plan.GetBindings()))
 	if succeeded {
 		retainAllBindings(retained, plan)
-		return retained
+		return retained, degraded
 	}
 	if len(results) == 0 {
 		retainAllBindings(retained, plan)
-		return retained
+		return retained, degraded
 	}
 
 	resultByAction := make(map[string]*tgsrlv1.ActionResult, len(results))
@@ -252,10 +259,16 @@ func retainedAllocations(plan *tgsrlv1.PlacementPlan, succeeded bool, results []
 			malformedEvidence = true
 			continue
 		}
-		mutationMayRemain := result.GetStatus() == tgsrlv1.ActionResultStatus_ACTION_RESULT_STATUS_SUCCEEDED &&
-			(!result.GetRollbackAttempted() || result.GetRollbackStatus() != tgsrlv1.ActionResultStatus_ACTION_RESULT_STATUS_ROLLED_BACK)
+		rollbackIncomplete := result.GetRollbackAttempted() &&
+			result.GetRollbackStatus() != tgsrlv1.ActionResultStatus_ACTION_RESULT_STATUS_ROLLED_BACK
+		mutationMayRemain := rollbackIncomplete ||
+			(result.GetStatus() == tgsrlv1.ActionResultStatus_ACTION_RESULT_STATUS_SUCCEEDED && !result.GetRollbackAttempted())
 		if mutationMayRemain {
-			retained[allocationID(bindingID)] = struct{}{}
+			id := allocationID(bindingID)
+			retained[id] = struct{}{}
+			if rollbackIncomplete {
+				degraded[id] = struct{}{}
+			}
 		}
 	}
 	for _, binding := range plan.GetBindings() {
@@ -268,7 +281,7 @@ func retainedAllocations(plan *tgsrlv1.PlacementPlan, succeeded bool, results []
 		// be occupied. Retaining the whole reservation is intentionally safe.
 		retainAllBindings(retained, plan)
 	}
-	return retained
+	return retained, degraded
 }
 
 func retainAllBindings(retained map[string]struct{}, plan *tgsrlv1.PlacementPlan) {

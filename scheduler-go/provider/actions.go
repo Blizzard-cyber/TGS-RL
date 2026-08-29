@@ -99,6 +99,9 @@ func (p *MockResourceProvider) ExecutePlan(ctx context.Context, plan *tgsrlv1.Pl
 	if err := validatePlanPolicy(plan); err != nil {
 		return nil, err
 	}
+	if err := p.ValidatePlanCapabilities(plan); err != nil {
+		return nil, err
+	}
 
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -540,7 +543,7 @@ func (p *MockResourceProvider) validateActionLocked(action *tgsrlv1.Action) erro
 	if !containsString(p.capabilities.GetSupportedActions(), name) {
 		return &Error{Code: ErrorCodeUnsupported, Message: "action is not advertised by provider capabilities", PlanID: action.GetPlanId(), ActionID: action.GetActionId(), Cause: ErrUnsupported}
 	}
-	if detail := missingCapabilities(p.capabilities, action.GetRequiredCapabilities()); detail != "" {
+	if detail := MissingCapabilities(p.capabilities, action.GetRequiredCapabilities()); detail != "" {
 		return &Error{Code: ErrorCodeUnsupported, Message: detail, PlanID: action.GetPlanId(), ActionID: action.GetActionId(), Cause: ErrUnsupported}
 	}
 	if action.GetDeadline() == nil {
@@ -713,8 +716,70 @@ func validatePlanPolicy(plan *tgsrlv1.PlacementPlan) error {
 	if err == nil {
 		return nil
 	}
-	action := firstPlanAction(plan)
+	action := planActionForPolicyError(plan, err)
 	return translatePolicyError(action, err)
+}
+
+func supportedPlanCapabilities() []*tgsrlv1.CapabilityRequirement {
+	capabilities := []*tgsrlv1.CapabilityRequirement{
+		actionpolicy.NewCapabilityRequirement(tgsrlv1.CapabilityRequirementKind_CAPABILITY_REQUIREMENT_KIND_ORDERED_ACTION_EXECUTION),
+		actionpolicy.NewCapabilityRequirement(tgsrlv1.CapabilityRequirementKind_CAPABILITY_REQUIREMENT_KIND_COMPENSATING_ROLLBACK),
+	}
+	for _, capability := range capabilities {
+		capability.MinVersion = "1.0.0"
+	}
+	return capabilities
+}
+
+func clonePlanCapabilities(values []*tgsrlv1.CapabilityRequirement) []*tgsrlv1.CapabilityRequirement {
+	result := make([]*tgsrlv1.CapabilityRequirement, 0, len(values))
+	for _, value := range values {
+		result = append(result, proto.Clone(value).(*tgsrlv1.CapabilityRequirement))
+	}
+	return result
+}
+
+func ValidatePlanCapabilitiesForRequirements(available []*tgsrlv1.CapabilityRequirement, plan *tgsrlv1.PlacementPlan) error {
+	for _, required := range plan.GetCapabilityRequirements() {
+		if required == nil {
+			return fmt.Errorf("%w: nil plan capability requirement", ErrInvalidArgument)
+		}
+		if !required.GetRequired() {
+			continue
+		}
+		if required.GetKind() == tgsrlv1.CapabilityRequirementKind_CAPABILITY_REQUIREMENT_KIND_PROVIDER_CAPABILITY {
+			continue
+		}
+		found := false
+		for _, capability := range available {
+			if capability == nil || capability.GetKind() != required.GetKind() || capability.GetName() != required.GetName() {
+				continue
+			}
+			versionOK, versionErr := versionAtLeast(capability.GetMinVersion(), required.GetMinVersion())
+			if versionErr != nil {
+				return &Error{Code: ErrorCodeUnsupported, Message: versionErr.Error(), PlanID: plan.GetPlanId(), Cause: ErrUnsupported}
+			}
+			if versionOK {
+				found = true
+				break
+			}
+		}
+		if !found {
+			return &Error{Code: ErrorCodeUnsupported, Message: fmt.Sprintf("executor does not support plan capability %s", required.GetKind()), PlanID: plan.GetPlanId(), Cause: ErrUnsupported}
+		}
+	}
+	return nil
+}
+
+func withoutProviderCapabilityRequirements(plan *tgsrlv1.PlacementPlan) *tgsrlv1.PlacementPlan {
+	cloned := proto.Clone(plan).(*tgsrlv1.PlacementPlan)
+	cloned.CapabilityRequirements = cloned.CapabilityRequirements[:0]
+	for _, required := range plan.GetCapabilityRequirements() {
+		if required != nil && required.GetKind() != tgsrlv1.CapabilityRequirementKind_CAPABILITY_REQUIREMENT_KIND_PROVIDER_CAPABILITY {
+			cloned.CapabilityRequirements = append(cloned.CapabilityRequirements, proto.Clone(required).(*tgsrlv1.CapabilityRequirement))
+		}
+	}
+	return cloned
 }
 
 func translatePolicyError(action *tgsrlv1.Action, err error) error {
@@ -729,7 +794,8 @@ func translatePolicyError(action *tgsrlv1.Action, err error) error {
 		actionID = action.GetActionId()
 	}
 	switch policyErr.Kind {
-	case actionpolicy.ViolationInvalidArgument:
+	case actionpolicy.ViolationInvalidArgument, actionpolicy.ViolationPrecondition,
+		actionpolicy.ViolationExpectedImpact, actionpolicy.ViolationRollbackPolicy:
 		return fmt.Errorf("%w: %s", ErrInvalidArgument, policyErr.Message)
 	default:
 		return &Error{Code: ErrorCodeUnsupported, Message: policyErr.Message, PlanID: planID, ActionID: actionID, Cause: ErrUnsupported}
@@ -753,6 +819,18 @@ func firstPlanAction(plan *tgsrlv1.PlacementPlan) *tgsrlv1.Action {
 	return plan.GetActions()[0]
 }
 
+func planActionForPolicyError(plan *tgsrlv1.PlacementPlan, err error) *tgsrlv1.Action {
+	var policyErr *actionpolicy.ValidationError
+	if errors.As(err, &policyErr) && policyErr.ActionID != "" && plan != nil {
+		for _, action := range plan.GetActions() {
+			if action != nil && action.GetActionId() == policyErr.ActionID {
+				return action
+			}
+		}
+	}
+	return firstPlanAction(plan)
+}
+
 func transitionError(action *tgsrlv1.Action, sandbox Sandbox, message string) error {
 	return &Error{Code: ErrorCodeFailedPrecondition, Message: message, PlanID: action.GetPlanId(), ActionID: action.GetActionId(), SandboxID: sandbox.SandboxID, ExpectedGeneration: action.GetExpectedGeneration(), ObservedGeneration: sandbox.Generation, Cause: ErrFailedPrecondition}
 }
@@ -766,7 +844,9 @@ func containsString(values []string, expected string) bool {
 	return false
 }
 
-func missingCapabilities(available, required *tgsrlv1.CapabilitySet) string {
+// MissingCapabilities returns a stable reason when available capabilities do
+// not contain the complete required capability surface.
+func MissingCapabilities(available, required *tgsrlv1.CapabilitySet) string {
 	if required == nil {
 		return ""
 	}

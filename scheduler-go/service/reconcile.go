@@ -278,7 +278,9 @@ func (s *Server) processAcceptedTrigger(ctx context.Context, work *workState, in
 					return true
 				}
 			}
-			if err := actionpolicy.ValidatePlan(plan, evaluationContext.GetTickKind(), actionpolicy.ValidationOptions{AllowLegacyUnknownTickL1: true}); err != nil {
+			if err := actionpolicy.ValidatePlan(plan, evaluationContext.GetTickKind(), actionpolicy.ValidationOptions{
+				AllowLegacyUnknownTickL1: true,
+			}); err != nil {
 				decision.Fallback = true
 				decision.FallbackReason = "PLAN_POLICY_REJECTED"
 				decision.SelectedPlan.Actions = nil
@@ -286,6 +288,17 @@ func (s *Server) processAcceptedTrigger(ctx context.Context, work *workState, in
 					return true
 				}
 				return true
+			}
+			if plan.GetPurpose() != tgsrlv1.PlanPurpose_PLAN_PURPOSE_UNKNOWN {
+				if err := provider.ValidatePlanCapabilities(s.provider, plan); err != nil {
+					decision.Fallback = true
+					decision.FallbackReason = "PLAN_POLICY_REJECTED"
+					decision.SelectedPlan.Actions = nil
+					if appendErr := s.appendDecision(intent.GetJobId(), decision); appendErr != nil {
+						return true
+					}
+					return true
+				}
 			}
 			beforeReservation := s.store.ExportDurableState()
 			if _, err := s.store.ReservePlan(plan); err != nil {

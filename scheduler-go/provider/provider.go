@@ -100,8 +100,9 @@ func DefaultMockCapabilities() *tgsrlv1.CapabilitySet {
 		actions = append(actions, name)
 	}
 	sort.Strings(actions)
-	return &tgsrlv1.CapabilitySet{
+	capabilities := &tgsrlv1.CapabilitySet{
 		Names:            []string{"logical-cpu"},
+		Attributes:       map[string]string{},
 		Algorithms:       []string{"grpo", "ppo"},
 		RolloutModes:     []string{"fully_async", "partially_async", "sync"},
 		Source:           "mock",
@@ -110,6 +111,21 @@ func DefaultMockCapabilities() *tgsrlv1.CapabilitySet {
 		SupportedActions: actions,
 		Limits:           map[string]float64{"max_share": 1},
 	}
+	capabilities.Attributes[CapabilityVersionAttributeKey("logical-cpu")] = "1.0.0"
+	return capabilities
+}
+
+// PlanCapabilities reports the mock executor semantics that are implemented
+// today. Atomic allocation replacement is intentionally absent.
+func (p *MockResourceProvider) PlanCapabilities() []*tgsrlv1.CapabilityRequirement {
+	return clonePlanCapabilities(supportedPlanCapabilities())
+}
+
+func (p *MockResourceProvider) ValidatePlanCapabilities(plan *tgsrlv1.PlacementPlan) error {
+	if err := ValidateProviderCapabilityRequirements(p.capabilities, plan); err != nil {
+		return err
+	}
+	return ValidatePlanCapabilitiesForRequirements(supportedPlanCapabilities(), plan)
 }
 
 // DefaultMockDevices returns one ready logical CPU device.

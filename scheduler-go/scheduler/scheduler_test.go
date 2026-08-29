@@ -91,6 +91,18 @@ func TestEvaluateBuildsCompleteDeterministicDecision(t *testing.T) {
 		if action.GetTickKind() != tgsrlv1.TickKind_TICK_KIND_FAST {
 			t.Errorf("action %d tick_kind = %s, want FAST", index, action.GetTickKind())
 		}
+		if got := action.GetPreconditions(); len(got) != 1 || got[0] != tgsrlv1.ActionPrecondition_ACTION_PRECONDITION_SNAPSHOT_REVISION_MATCH {
+			t.Errorf("action %d preconditions = %v, want snapshot revision fence", index, got)
+		}
+		if got := action.GetExpectedImpacts(); len(got) != 2 || got[0] != tgsrlv1.ExpectedImpact_EXPECTED_IMPACT_ALLOCATION_CREATED || got[1] != tgsrlv1.ExpectedImpact_EXPECTED_IMPACT_CAPACITY_RESERVED {
+			t.Errorf("action %d expected_impacts = %v, want allocation creation and capacity reservation", index, got)
+		}
+	}
+	if plan.GetPurpose() != tgsrlv1.PlanPurpose_PLAN_PURPOSE_ADMISSION || plan.GetRollbackPolicy() != tgsrlv1.RollbackPolicy_ROLLBACK_POLICY_REQUIRED_COMPENSATION {
+		t.Errorf("plan purpose/rollback = %s/%s, want admission/required compensation for multi-action plan", plan.GetPurpose(), plan.GetRollbackPolicy())
+	}
+	if got := plan.GetCapabilityRequirements(); len(got) != 2 || got[0].GetKind() != tgsrlv1.CapabilityRequirementKind_CAPABILITY_REQUIREMENT_KIND_ORDERED_ACTION_EXECUTION || got[1].GetKind() != tgsrlv1.CapabilityRequirementKind_CAPABILITY_REQUIREMENT_KIND_COMPENSATING_ROLLBACK || !got[0].GetRequired() || !got[1].GetRequired() {
+		t.Errorf("plan capability_requirements = %v, want stable ordered execution and compensation", got)
 	}
 	if record.GetTickKind() != tgsrlv1.TickKind_TICK_KIND_FAST {
 		t.Errorf("record tick_kind = %s, want FAST", record.GetTickKind())
@@ -125,6 +137,23 @@ func TestEvaluateIsStableAcrossInputOrder(t *testing.T) {
 	}
 	if !proto.Equal(basePlan, permutedPlan) || !proto.Equal(baseRecord, permutedRecord) {
 		t.Fatalf("input permutation changed decision\nbase plan: %v\npermuted plan: %v\nbase record: %v\npermuted record: %v", basePlan, permutedPlan, baseRecord, permutedRecord)
+	}
+}
+
+func TestPlannerStablyOrdersBindingsBeforeActionIdentity(t *testing.T) {
+	snapshot, intent := validFixture()
+	bindings := []*tgsrlv1.Binding{
+		makeBinding("decision", "unit-z", "runtime-z", "device-b", intent.GetResourcesPerUnit()),
+		makeBinding("decision", "unit-a", "runtime-a", "device-a", intent.GetResourcesPerUnit()),
+	}
+	permuted := []*tgsrlv1.Binding{proto.Clone(bindings[1]).(*tgsrlv1.Binding), proto.Clone(bindings[0]).(*tgsrlv1.Binding)}
+	first := makePlan("decision", "plan", snapshot, intent, fixtureTime, bindings, false, tgsrlv1.TickKind_TICK_KIND_FAST)
+	second := makePlan("decision", "plan", snapshot, intent, fixtureTime, permuted, false, tgsrlv1.TickKind_TICK_KIND_FAST)
+	if !proto.Equal(first, second) {
+		t.Fatalf("binding input order changed plan identity\nfirst: %v\nsecond: %v", first, second)
+	}
+	if got := []string{first.GetBindings()[0].GetPendingUnitId(), first.GetBindings()[1].GetPendingUnitId()}; got[0] != "unit-a" || got[1] != "unit-z" {
+		t.Fatalf("binding order = %v, want unit-a then unit-z", got)
 	}
 }
 

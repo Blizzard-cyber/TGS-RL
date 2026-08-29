@@ -8,6 +8,7 @@ import (
 	"time"
 
 	tgsrlv1 "github.com/Blizzard-cyber/TGS-RL/gen/go/tgsrl/v1"
+	"github.com/Blizzard-cyber/TGS-RL/scheduler-go/actionpolicy"
 	"github.com/Blizzard-cyber/TGS-RL/scheduler-go/provider"
 	"github.com/Blizzard-cyber/TGS-RL/scheduler-go/provider/nvidia"
 	"google.golang.org/protobuf/types/known/timestamppb"
@@ -106,6 +107,122 @@ func TestCompleteProvidersCompliance(t *testing.T) {
 	}
 }
 
+func TestStrictAdmissionPlanCapabilityParity(t *testing.T) {
+	factories := []completeFactory{
+		{
+			name: "mock",
+			newProvider: func(t *testing.T) provider.CompleteResourceProvider {
+				p, err := provider.NewMockResourceProvider(provider.WithNow(func() time.Time { return complianceNow }))
+				if err != nil {
+					t.Fatal(err)
+				}
+				return p
+			},
+		},
+		{
+			name: "nvidia fake",
+			newProvider: func(t *testing.T) provider.CompleteResourceProvider {
+				p, err := nvidia.New(nvidia.WithNow(func() time.Time { return complianceNow }), nvidia.WithDriver(nvidia.NewFakeDriver([]*tgsrlv1.Device{{
+					DeviceId:    "mock-cpu-0",
+					Kind:        tgsrlv1.DeviceKind_DEVICE_KIND_GPU,
+					Health:      tgsrlv1.DeviceHealth_DEVICE_HEALTH_READY,
+					Capacity:    &tgsrlv1.ResourceVector{CpuMillis: 1000, MemoryBytes: 1024},
+					Allocatable: &tgsrlv1.ResourceVector{CpuMillis: 1000, MemoryBytes: 1024},
+				}}, nil)))
+				if err != nil {
+					t.Fatal(err)
+				}
+				return p
+			},
+		},
+	}
+	for _, factory := range factories {
+		t.Run(factory.name, func(t *testing.T) {
+			p := factory.newProvider(t)
+			snapshot, err := p.Snapshot(context.Background())
+			if err != nil {
+				t.Fatal(err)
+			}
+			binding := complianceBinding("admission-sandbox", 1)
+			action := &tgsrlv1.Action{
+				ActionId:                 "admission-action",
+				ActionType:               tgsrlv1.ActionType_ACTION_TYPE_BIND,
+				Level:                    tgsrlv1.ActionLevel_ACTION_LEVEL_L1,
+				TargetId:                 binding.GetPendingUnitId(),
+				Binding:                  binding,
+				Rollback:                 &tgsrlv1.Rollback{ActionType: tgsrlv1.ActionType_ACTION_TYPE_RELEASE, TargetId: binding.GetBindingId()},
+				Order:                    1,
+				PlanId:                   "admission-plan",
+				SandboxId:                binding.GetSandboxId(),
+				ExpectedSnapshotRevision: snapshot.GetRevision(),
+				RequiredCapabilities:     &tgsrlv1.CapabilitySet{SupportedActions: []string{"bind"}},
+				Deadline:                 timestamppb.New(complianceNow.Add(time.Minute)),
+				IdempotencyKey:           "admission-key",
+				TickKind:                 tgsrlv1.TickKind_TICK_KIND_FAST,
+				Preconditions:            []tgsrlv1.ActionPrecondition{tgsrlv1.ActionPrecondition_ACTION_PRECONDITION_SNAPSHOT_REVISION_MATCH},
+				ExpectedImpacts: []tgsrlv1.ExpectedImpact{
+					tgsrlv1.ExpectedImpact_EXPECTED_IMPACT_ALLOCATION_CREATED,
+					tgsrlv1.ExpectedImpact_EXPECTED_IMPACT_CAPACITY_RESERVED,
+				},
+			}
+			plan := &tgsrlv1.PlacementPlan{
+				PlanId:                 "admission-plan",
+				SnapshotRevision:       snapshot.GetRevision(),
+				Purpose:                tgsrlv1.PlanPurpose_PLAN_PURPOSE_ADMISSION,
+				RollbackPolicy:         tgsrlv1.RollbackPolicy_ROLLBACK_POLICY_NOT_REQUIRED,
+				CapabilityRequirements: nil,
+				Actions:                []*tgsrlv1.Action{action},
+			}
+			if err := provider.ValidatePlanCapabilities(p, plan); err != nil {
+				t.Fatalf("ValidatePlanCapabilities() error = %v", err)
+			}
+			if _, err := p.ExecutePlan(context.Background(), plan); err != nil {
+				t.Fatalf("ExecutePlan() error = %v", err)
+			}
+		})
+	}
+}
+
+func TestCompleteProvidersCapabilityHandshakeParity(t *testing.T) {
+	factories := []struct {
+		name           string
+		capabilityName string
+		newProvider    func(t *testing.T) provider.CompleteResourceProvider
+	}{
+		{name: "mock", capabilityName: "logical-cpu", newProvider: func(t *testing.T) provider.CompleteResourceProvider {
+			p, err := provider.NewMockResourceProvider(provider.WithNow(func() time.Time { return complianceNow }))
+			if err != nil {
+				t.Fatal(err)
+			}
+			return p
+		}},
+		{name: "nvidia fake", capabilityName: nvidia.CapabilityName, newProvider: func(t *testing.T) provider.CompleteResourceProvider {
+			p, err := nvidia.New(nvidia.WithNow(func() time.Time { return complianceNow }), nvidia.WithDriver(nvidia.NewFakeDriver([]*tgsrlv1.Device{{
+				DeviceId: "nvidia-0", Kind: tgsrlv1.DeviceKind_DEVICE_KIND_GPU, Health: tgsrlv1.DeviceHealth_DEVICE_HEALTH_READY, Capacity: &tgsrlv1.ResourceVector{AcceleratorUnits: 1}, Allocatable: &tgsrlv1.ResourceVector{AcceleratorUnits: 1},
+			}}, nil)))
+			if err != nil {
+				t.Fatal(err)
+			}
+			return p
+		}},
+	}
+	for _, factory := range factories {
+		t.Run(factory.name, func(t *testing.T) {
+			p := factory.newProvider(t)
+			plan := &tgsrlv1.PlacementPlan{PlanId: "capability-parity", CapabilityRequirements: []*tgsrlv1.CapabilityRequirement{{
+				Kind: tgsrlv1.CapabilityRequirementKind_CAPABILITY_REQUIREMENT_KIND_PROVIDER_CAPABILITY, Name: factory.capabilityName, MinVersion: "1.0.0", Required: true,
+			}}}
+			if err := provider.ValidatePlanCapabilities(p, plan); err != nil {
+				t.Fatalf("provider capability handshake failed: %v", err)
+			}
+			plan.CapabilityRequirements = []*tgsrlv1.CapabilityRequirement{{Kind: tgsrlv1.CapabilityRequirementKind_CAPABILITY_REQUIREMENT_KIND_ATOMIC_REPLACEMENT, Required: false}}
+			if err := provider.ValidatePlanCapabilities(p, plan); err != nil {
+				t.Fatalf("optional capability blocked handshake: %v", err)
+			}
+		})
+	}
+}
+
 func testHealthAndIdentity(t *testing.T, p provider.CompleteResourceProvider, wantHealthy bool, wantSource string) {
 	t.Helper()
 	id, err := p.ID(context.Background())
@@ -198,9 +315,15 @@ func testReplayableWatches(t *testing.T, p provider.CompleteResourceProvider) {
 
 func testRecoveryReconcile(t *testing.T, p provider.CompleteResourceProvider) {
 	t.Helper()
+	snapshot, err := p.Snapshot(context.Background())
+	if err != nil {
+		t.Fatalf("Snapshot() error = %v", err)
+	}
 	plan := &tgsrlv1.PlacementPlan{
 		PlanId:           "recovery-plan",
-		SnapshotRevision: 1,
+		SnapshotRevision: snapshot.GetRevision(),
+		Purpose:          tgsrlv1.PlanPurpose_PLAN_PURPOSE_RECONCILIATION,
+		RollbackPolicy:   tgsrlv1.RollbackPolicy_ROLLBACK_POLICY_NOT_REQUIRED,
 		Actions: []*tgsrlv1.Action{
 			complianceAction("share-recovery", "recovery-plan", "share-recovery-key", "sandbox-a"),
 		},
@@ -208,8 +331,13 @@ func testRecoveryReconcile(t *testing.T, p provider.CompleteResourceProvider) {
 	plan.Actions[0].ActionType = tgsrlv1.ActionType_ACTION_TYPE_SET_SHARE
 	plan.Actions[0].Level = tgsrlv1.ActionLevel_ACTION_LEVEL_L1
 	plan.Actions[0].Share = 0.6
+	plan.Actions[0].ExpectedSnapshotRevision = snapshot.GetRevision()
 	plan.Actions[0].Rollback = &tgsrlv1.Rollback{ActionType: tgsrlv1.ActionType_ACTION_TYPE_SET_SHARE, TargetId: "sandbox-a"}
-
+	definition, _ := actionpolicy.DefinitionForAction(plan.Actions[0].GetActionType())
+	plan.Actions[0].Order = 1
+	plan.Actions[0].Preconditions = actionpolicy.RequiredPreconditions(plan.Actions[0].GetActionType(), false, false)
+	plan.Actions[0].ExpectedImpacts = append([]tgsrlv1.ExpectedImpact(nil), definition.ExpectedImpacts...)
+	plan.Actions[0].RequiredCapabilities = &tgsrlv1.CapabilitySet{SupportedActions: []string{definition.CapabilityName}}
 	if _, err := p.ExecutePlan(context.Background(), plan); err != nil {
 		if errors.Is(err, provider.ErrNotFound) || strings.Contains(err.Error(), "UNAVAILABLE") {
 			recovered, recoverErr := p.RecoverInFlightPlans(context.Background())
