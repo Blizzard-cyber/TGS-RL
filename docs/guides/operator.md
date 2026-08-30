@@ -76,17 +76,20 @@ Sandbox 已经收敛。
 当前 kubeconfig 读取器只解析 API server、静态 bearer token、内嵌 CA data 和 namespace；
 不执行 exec/auth-provider 插件，也不合并多文件 `KUBECONFIG`。需要这类认证时，应使用
 集群内 ServiceAccount，或预先提供当前读取器支持的最小 kubeconfig。
-Kubernetes wire payload 明确约束为：
+Kubernetes wire payload 根据 API discovery 选择当前集群实际提供的版本：
 
-- Kueue `kueue.x-k8s.io/v1beta1` Workload，并从 `status.conditions[type=Admitted]` 与
-  `status.admission` 读取准入结果；
+- Kueue Workload 优先 `kueue.x-k8s.io/v1beta2`，兼容 `v1beta1`，并从
+  `status.conditions[type=Admitted]` 与 `status.admission` 读取准入结果；
 - Kubernetes `batch/v1` Job，pod template 包含合法的 `restartPolicy`；
-- 需要设备 claim 时使用 Kubernetes 1.32 风格的 DRA
-  `resource.k8s.io/v1beta1` ResourceClaim `devices.requests`；
+- 需要设备 claim 时优先使用稳定的 DRA `resource.k8s.io/v1` ResourceClaim，并兼容
+  `v1beta2`/`v1beta1`；`v1`/`v1beta2` 使用 `devices.requests[].exactly`，`v1beta1`
+  使用旧的扁平 request；仅发现 DRA API 不代表发现了 GPU，仍必须存在 GPU DeviceClass；
 - 主资源写入前剥离 `uid`、`generation`、`resourceVersion`、`managedFields`、
   `creationTimestamp`、未解析 owner reference 和 `status` 等 server-owned 字段。
 
-Kubernetes observer 通过轮询读取 Workload、Job 和可选 ResourceClaim，在准入、claim
+Operator ServiceAccount 通过只读 ClusterRole 列举 Node、RuntimeClass 和 DeviceClass，
+用于上述能力发现；JobRunBundle、Workload、Job 与 ResourceClaim 的写权限仍限制在目标
+namespace。Kubernetes observer 通过轮询读取 Workload、Job 和可选 ResourceClaim，在准入、claim
 分配及 Job active 条件满足后发布 Bound/Running；失败和完成也由观察状态投影。仓库的
 本地 HTTP 合同测试覆盖这些 JSON 约定，但仍没有真实 Kubernetes/Kueue/DRA 集群 E2E。
 Scheduler binding 中的 `device_ids` 会保留在 bundle 的 RuntimeTarget 审计信息中，但当前
@@ -95,6 +98,33 @@ DRA 的 driver/pool/device 或精确物理 GPU。需要固定物理设备的部�
 集群策略提供可验证的选择机制。
 
 ## Kubernetes 部署工件
+
+本地 CPU 集成推荐使用 minikube `1.38.1`、Kubernetes `1.35.1` 和 Kueue
+`0.19.2`；kubectl 应与 API server 保持在同一 minor 或相邻 minor。这个组合用于验证
+Operator 的真实 API/RBAC/恢复链路，不提供 GPU 或 CUDA 证据。
+
+```bash
+minikube start --profile tgsrl --driver=docker --kubernetes-version=v1.35.1
+kubectl apply --server-side \
+  -f https://github.com/kubernetes-sigs/kueue/releases/download/v0.19.2/manifests.yaml
+kubectl wait --for=condition=Available deployment/kueue-controller-manager \
+  --namespace kueue-system --timeout=120s
+
+docker build -f Dockerfile.operator -t tgsrl-operator:local .
+minikube image load --profile tgsrl tgsrl-operator:local
+kubectl apply --server-side -f deploy/crds/tgsrl_jobrunbundles.yaml
+helm upgrade --install tgsrl-operator deploy/helm/operator \
+  --namespace tgsrl-system --create-namespace \
+  --set image.repository=tgsrl-operator \
+  --set image.tag=local \
+  --set image.pullPolicy=Never
+kubectl rollout status deployment/tgsrl-operator \
+  --namespace tgsrl-system --timeout=90s
+```
+
+默认 `gpuProfile=none`，所以该流程不会声称 GPU 可用。Operator 启动日志会记录 discovery
+选择的 Kueue 和 DRA API 版本。若显式选择的 GPU profile、Kueue API 或 RBAC 不可用，
+启动前置检查会失败。
 
 仓库不假定已有公开镜像。先从当前源码构建默认镜像，并按集群运行时要求将其加载到
 目标集群或推送到你自己的镜像仓库：
@@ -144,7 +174,8 @@ kubectl wait --for=condition=Established \
 - Scheduler、Job Controller 与 Runtime 的 service address 参数；
 - 默认将 JobRunBundle、Workload、Job 与 ResourceClaim 权限限制在目标 namespace 的
   `Role` / `RoleBinding`，其中 `jobrunbundles` 包含 `create`；
-- 默认不授予 `RuntimeClass` 写权限；仅 Helm 显式启用 `runtimeClassCreate=true` 时，
+- 默认只授予 Node、RuntimeClass 和 DeviceClass 的集群级 `list` 权限；不授予
+  `RuntimeClass` 写权限。仅 Helm 显式启用 `runtimeClassCreate=true` 时，
   才追加只含 `get/create` 的 `ClusterRole` / `ClusterRoleBinding`。已有 RuntimeClass
   只读取并校验 handler，不覆盖管理员维护的字段。集群级 RBAC 名称
   由 Helm release 与 release namespace 共同派生，避免不同 namespace 的 release 争用；

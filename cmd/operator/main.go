@@ -99,6 +99,11 @@ func run() error {
 	if err != nil {
 		return err
 	}
+	if backendName == "kubernetes" {
+		if err := preflightBackend(context.Background(), selectedBackend, *gpuProfile); err != nil {
+			return fmt.Errorf("backend preflight: %w", err)
+		}
+	}
 	if configurable, ok := selectedBackend.(interface{ SetControlStatePath(string) error }); ok {
 		if err := configurable.SetControlStatePath(filepath.Join(*cursorDir, "backend-controls.json")); err != nil {
 			return fmt.Errorf("load backend control state: %w", err)
@@ -187,6 +192,32 @@ func run() error {
 		return runErr
 	}
 	slog.Info("operator stopped", "mode", backendName, "controller", *controllerEnabled)
+	return nil
+}
+
+func preflightBackend(ctx context.Context, selectedBackend backend.Backend, gpuProfile string) error {
+	discoverer, ok := selectedBackend.(interface {
+		DiscoverCapabilities(context.Context) (compiler.CapabilitySet, error)
+	})
+	if !ok {
+		return nil
+	}
+	capabilities, err := discoverer.DiscoverCapabilities(ctx)
+	if err != nil {
+		return fmt.Errorf("discover capabilities: %w", err)
+	}
+	profile := strings.TrimSpace(gpuProfile)
+	if !capabilities.GPUProfiles[profile] {
+		return fmt.Errorf("GPU profile %q is not available", profile)
+	}
+	if capabilities.KubernetesAPIs.KueueWorkload == "" {
+		return fmt.Errorf("Kueue Workload API is not available")
+	}
+	slog.Info("backend capability preflight passed",
+		"gpu_profile", profile,
+		"kueue_api", capabilities.KubernetesAPIs.KueueWorkload,
+		"dra_api", capabilities.KubernetesAPIs.DRAResourceClaim,
+	)
 	return nil
 }
 

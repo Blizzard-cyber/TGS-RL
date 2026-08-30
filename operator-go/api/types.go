@@ -132,7 +132,14 @@ type RuntimeClass struct {
 }
 
 type DeviceRequest struct {
-	Name            string `json:"name"`
+	Name            string              `json:"name"`
+	Exactly         *ExactDeviceRequest `json:"exactly,omitempty"`
+	DeviceClassName string              `json:"deviceClassName,omitempty"`
+	AllocationMode  string              `json:"allocationMode,omitempty"`
+	Count           int64               `json:"count,omitempty"`
+}
+
+type ExactDeviceRequest struct {
 	DeviceClassName string `json:"deviceClassName"`
 	AllocationMode  string `json:"allocationMode,omitempty"`
 	Count           int64  `json:"count,omitempty"`

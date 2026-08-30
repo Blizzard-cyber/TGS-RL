@@ -24,13 +24,6 @@ type Client struct {
 	adapter     bundleadapter.Adapter
 }
 
-type capabilityResponse struct {
-	GPUProfiles         []string                     `json:"gpuProfiles"`
-	RuntimeClasses      map[string]string            `json:"runtimeClasses"`
-	NodeSelectors       map[string]map[string]string `json:"nodeSelectors"`
-	DefaultNodeSelector map[string]string            `json:"defaultNodeSelector"`
-}
-
 func NewClient(config *Config) (*Client, error) {
 	if config == nil {
 		return nil, fmt.Errorf("kubernetes config is required")
@@ -262,34 +255,19 @@ func (c *Client) Delete(ctx context.Context, object bundleadapter.Object) (bool,
 }
 
 func (c *Client) DiscoverCapabilities(ctx context.Context) (compiler.CapabilitySet, error) {
-	body, statusCode, err := c.getURL(ctx, c.host+"/apis/tgsrl.io/v1alpha1/capabilities")
-	if err != nil {
-		return compiler.CapabilitySet{}, err
-	}
-	if statusCode == http.StatusNotFound {
-		return c.discoverCapabilitiesByProbe(ctx)
-	}
-	var response capabilityResponse
-	if err := json.Unmarshal(body, &response); err != nil {
-		return compiler.CapabilitySet{}, fmt.Errorf("decode capabilities: %w", err)
-	}
-	profiles := make(map[string]bool, len(response.GPUProfiles))
-	for _, profile := range response.GPUProfiles {
-		profiles[strings.TrimSpace(profile)] = true
-	}
-	if len(profiles) == 0 {
-		profiles[compiler.GPUProfileNone] = true
-	}
-	return compiler.CapabilitySet{
-		GPUProfiles:         profiles,
-		RuntimeClasses:      response.RuntimeClasses,
-		NodeSelectors:       response.NodeSelectors,
-		DefaultNodeSelector: response.DefaultNodeSelector,
-	}, nil
+	return c.discoverCapabilitiesByProbe(ctx)
 }
 
 func (c *Client) discoverCapabilitiesByProbe(ctx context.Context) (compiler.CapabilitySet, error) {
-	capabilities := compiler.DefaultCapabilitySet()
+	capabilities := compiler.CapabilitySet{
+		GPUProfiles: map[string]bool{compiler.GPUProfileNone: true},
+	}
+
+	apiVersions, err := c.discoverKubernetesAPIVersions(ctx)
+	if err != nil {
+		return compiler.CapabilitySet{}, err
+	}
+	capabilities.KubernetesAPIs = apiVersions
 
 	runtimeClasses, err := c.discoverRuntimeClassesByProbe(ctx)
 	if err != nil {
@@ -297,7 +275,7 @@ func (c *Client) discoverCapabilitiesByProbe(ctx context.Context) (compiler.Capa
 	}
 	capabilities.RuntimeClasses = runtimeClasses
 
-	gpuProfiles, err := c.discoverGPUProfilesByProbe(ctx)
+	gpuProfiles, err := c.discoverGPUProfilesByProbe(ctx, apiVersions)
 	if err != nil {
 		return compiler.CapabilitySet{}, err
 	}
@@ -306,6 +284,61 @@ func (c *Client) discoverCapabilitiesByProbe(ctx context.Context) (compiler.Capa
 	}
 
 	return capabilities, nil
+}
+
+func (c *Client) discoverKubernetesAPIVersions(ctx context.Context) (compiler.KubernetesAPIVersions, error) {
+	kueueVersion, err := c.discoverPreferredAPI(ctx, "kueue.x-k8s.io", []string{"v1beta2", "v1beta1"})
+	if err != nil {
+		return compiler.KubernetesAPIVersions{}, err
+	}
+	draVersion, err := c.discoverPreferredAPI(ctx, "resource.k8s.io", []string{"v1", "v1beta2", "v1beta1"})
+	if err != nil {
+		return compiler.KubernetesAPIVersions{}, err
+	}
+	versions := compiler.KubernetesAPIVersions{}
+	if kueueVersion != "" {
+		versions.KueueWorkload = "kueue.x-k8s.io/" + kueueVersion
+	}
+	if draVersion != "" {
+		versions.DRAResourceClaim = "resource.k8s.io/" + draVersion
+	}
+	return versions, nil
+}
+
+func (c *Client) discoverPreferredAPI(ctx context.Context, group string, supported []string) (string, error) {
+	body, statusCode, err := c.getURL(ctx, c.host+"/apis/"+group)
+	if err != nil {
+		return "", err
+	}
+	if statusCode == http.StatusNotFound {
+		return "", nil
+	}
+	var discovery struct {
+		PreferredVersion struct {
+			Version string `json:"version"`
+		} `json:"preferredVersion"`
+		Versions []struct {
+			Version string `json:"version"`
+		} `json:"versions"`
+	}
+	if err := json.Unmarshal(body, &discovery); err != nil {
+		return "", fmt.Errorf("decode %s API discovery: %w", group, err)
+	}
+	served := make(map[string]bool, len(discovery.Versions))
+	for _, version := range discovery.Versions {
+		served[version.Version] = true
+	}
+	for _, allowed := range supported {
+		if discovery.PreferredVersion.Version == allowed && served[allowed] {
+			return allowed, nil
+		}
+	}
+	for _, allowed := range supported {
+		if served[allowed] {
+			return allowed, nil
+		}
+	}
+	return "", nil
 }
 
 func (c *Client) discoverRuntimeClassesByProbe(ctx context.Context) (map[string]string, error) {
@@ -341,7 +374,7 @@ func (c *Client) discoverRuntimeClassesByProbe(ctx context.Context) (map[string]
 	return values, nil
 }
 
-func (c *Client) discoverGPUProfilesByProbe(ctx context.Context) (map[string]bool, error) {
+func (c *Client) discoverGPUProfilesByProbe(ctx context.Context, apiVersions compiler.KubernetesAPIVersions) (map[string]bool, error) {
 	profiles := make(map[string]bool)
 
 	body, statusCode, err := c.getURL(ctx, c.host+"/api/v1/nodes")
@@ -370,7 +403,7 @@ func (c *Client) discoverGPUProfilesByProbe(ctx context.Context) (map[string]boo
 		}
 	}
 
-	draSupported, err := c.discoverDRAGPUByProbe(ctx)
+	draSupported, err := c.discoverDRAGPUByProbe(ctx, apiVersions.DRAResourceClaim)
 	if err != nil {
 		return nil, err
 	}
@@ -383,22 +416,16 @@ func (c *Client) discoverGPUProfilesByProbe(ctx context.Context) (map[string]boo
 	return profiles, nil
 }
 
-func (c *Client) discoverDRAGPUByProbe(ctx context.Context) (bool, error) {
-	body, statusCode, err := c.getURL(ctx, c.host+"/apis/resource.k8s.io/v1beta1/deviceclasses")
+func (c *Client) discoverDRAGPUByProbe(ctx context.Context, apiVersion string) (bool, error) {
+	if apiVersion == "" {
+		return false, nil
+	}
+	body, statusCode, err := c.getURL(ctx, c.host+"/apis/"+apiVersion+"/deviceclasses")
 	if err != nil {
 		return false, err
 	}
 	if statusCode == http.StatusNotFound {
-		draCollection := c.host + c.adapter.CollectionPath(bundleadapter.Object{
-			APIVersion: "resource.k8s.io/v1beta1",
-			Kind:       "ResourceClaim",
-			Namespace:  c.namespace,
-		}, c.namespace)
-		_, statusCode, err = c.getURL(ctx, draCollection)
-		if err != nil {
-			return false, err
-		}
-		return statusCode != http.StatusNotFound, nil
+		return false, nil
 	}
 	var list struct {
 		Items []struct {
@@ -416,7 +443,7 @@ func (c *Client) discoverDRAGPUByProbe(ctx context.Context) (bool, error) {
 			return true, nil
 		}
 	}
-	return len(list.Items) > 0, nil
+	return false, nil
 }
 
 func positiveResourceQuantity(value string) bool {

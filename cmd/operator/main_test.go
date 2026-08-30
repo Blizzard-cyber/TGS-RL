@@ -198,6 +198,15 @@ type recordingRuntimePublisher struct {
 	event *tgsrlv1.SandboxEvent
 }
 
+type capabilityBackend struct {
+	backend.Backend
+	capabilities compiler.CapabilitySet
+}
+
+func (b capabilityBackend) DiscoverCapabilities(context.Context) (compiler.CapabilitySet, error) {
+	return b.capabilities, nil
+}
+
 func (p *recordingRuntimePublisher) Publish(_ context.Context, event *tgsrlv1.SandboxEvent) error {
 	p.event = event
 	return nil
@@ -216,6 +225,32 @@ func TestValidateGPUProfile(t *testing.T) {
 	}
 	if err := validateGPUProfile("bad-profile"); err == nil || !strings.Contains(err.Error(), "unsupported gpu profile") {
 		t.Fatalf("validateGPUProfile(bad-profile) error = %v, want unsupported gpu profile", err)
+	}
+}
+
+func TestPreflightBackendValidatesSelectedProfileAndKueue(t *testing.T) {
+	fakeBackend := backend.NewFake()
+	fakeBackend.SetCapabilities(compiler.CapabilitySet{
+		GPUProfiles: map[string]bool{compiler.GPUProfileNone: true},
+		KubernetesAPIs: compiler.KubernetesAPIVersions{
+			KueueWorkload: compiler.KueueWorkloadV1Beta2,
+		},
+	})
+	if err := preflightBackend(context.Background(), fakeBackend, compiler.GPUProfileNone); err != nil {
+		t.Fatalf("preflightBackend() error = %v", err)
+	}
+	if err := preflightBackend(context.Background(), fakeBackend, compiler.GPUProfileKubernetesDRA); err == nil || !strings.Contains(err.Error(), "not available") {
+		t.Fatalf("preflightBackend() error = %v, want unavailable GPU profile", err)
+	}
+
+	missingKueue := capabilityBackend{
+		Backend: backend.NewFake(),
+		capabilities: compiler.CapabilitySet{
+			GPUProfiles: map[string]bool{compiler.GPUProfileNone: true},
+		},
+	}
+	if err := preflightBackend(context.Background(), missingKueue, compiler.GPUProfileNone); err == nil || !strings.Contains(err.Error(), "Kueue Workload API") {
+		t.Fatalf("preflightBackend() error = %v, want missing Kueue API", err)
 	}
 }
 

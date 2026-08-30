@@ -34,6 +34,36 @@ def maybe_one(docs, kind)
   matches.first
 end
 
+def cluster_rbac_for(docs, resource, verb = nil)
+  role = docs.select { |doc| doc["kind"] == "ClusterRole" }.find do |candidate|
+    candidate.fetch("rules", []).any? do |rule|
+      rule.fetch("resources", []).include?(resource) && (verb.nil? || rule.fetch("verbs", []).include?(verb))
+    end
+  end
+  assert(!role.nil?, "missing ClusterRole for #{resource}")
+  binding = docs.select { |doc| doc["kind"] == "ClusterRoleBinding" }.find do |candidate|
+    candidate.dig("roleRef", "name") == role.dig("metadata", "name")
+  end
+  assert(!binding.nil?, "missing ClusterRoleBinding for #{resource}")
+  [role, binding]
+end
+
+def assert_discovery_rbac(role, binding, service_account_name, expected_namespace)
+  expected = {
+    ["", "nodes"] => ["list"],
+    ["node.k8s.io", "runtimeclasses"] => ["list"],
+    ["resource.k8s.io", "deviceclasses"] => ["list"]
+  }
+  actual = role.fetch("rules").to_h do |rule|
+    [[rule.fetch("apiGroups").first, rule.fetch("resources").first], rule.fetch("verbs")]
+  end
+  assert(actual == expected, "discovery ClusterRole exceeds or misses the read contract")
+  assert(binding.dig("roleRef", "name") == role.dig("metadata", "name"), "discovery binding targets the wrong role")
+  subject = binding.fetch("subjects").first
+  assert(subject["name"] == service_account_name, "discovery binding targets the wrong service account")
+  assert(subject["namespace"] == expected_namespace, "discovery binding targets the wrong namespace")
+end
+
 def assert_namespaced_rbac(role, binding, expected_namespace)
   assert(role.fetch("metadata", {}).fetch("namespace", nil) == expected_namespace, "Role must be scoped to the target namespace")
   assert(binding.fetch("metadata", {}).fetch("namespace", nil) == expected_namespace, "RoleBinding must be scoped to the target namespace")
@@ -168,8 +198,8 @@ raw_docs = documents(File.read(RAW_MANIFEST))
 assert(raw_docs.none? { |doc| doc["kind"] == "CustomResourceDefinition" }, "raw operator manifest must not own the external CRD")
 assert(one(raw_docs, "Namespace").dig("metadata", "name") == "tgsrl-system", "raw install manifest must create the target namespace")
 assert_namespaced_rbac(one(raw_docs, "Role"), one(raw_docs, "RoleBinding"), "tgsrl-system")
-assert(maybe_one(raw_docs, "ClusterRole").nil?, "raw install manifest must not grant default cluster-scoped RBAC")
-assert(maybe_one(raw_docs, "ClusterRoleBinding").nil?, "raw install manifest must not bind default cluster-scoped RBAC")
+raw_discovery_role, raw_discovery_binding = cluster_rbac_for(raw_docs, "nodes")
+assert_discovery_rbac(raw_discovery_role, raw_discovery_binding, "tgsrl-operator", "tgsrl-system")
 assert_workload_contract(raw_docs, "tgsrl-operator-state")
 raw_pvc = one(raw_docs, "PersistentVolumeClaim")
 assert(raw_pvc.dig("spec", "accessModes") == ["ReadWriteOnce"], "raw PVC must default to ReadWriteOnce")
@@ -259,8 +289,9 @@ assert(lint_status.success?, "helm lint failed:\n#{lint_output}")
 rendered_docs = render_chart
 assert(rendered_docs.none? { |doc| doc["kind"] == "CustomResourceDefinition" }, "default Helm render must not pretend to install the external CRD")
 assert_namespaced_rbac(one(rendered_docs, "Role"), one(rendered_docs, "RoleBinding"), HELM_NAMESPACE)
-assert(maybe_one(rendered_docs, "ClusterRole").nil?, "default Helm render must not include cluster-scoped RuntimeClass write RBAC")
-assert(maybe_one(rendered_docs, "ClusterRoleBinding").nil?, "default Helm render must not include cluster-scoped RuntimeClass write binding")
+discovery_role, discovery_binding = cluster_rbac_for(rendered_docs, "nodes")
+assert_discovery_rbac(discovery_role, discovery_binding, "tgsrl-operator", HELM_NAMESPACE)
+assert(rendered_docs.count { |doc| doc["kind"] == "ClusterRole" } == 1, "default Helm render must only include discovery ClusterRole")
 assert_workload_contract(rendered_docs, "tgsrl-operator-state")
 assert_image_reference(rendered_docs, "tgsrl-operator:0.1.0")
 rendered_pvc = one(rendered_docs, "PersistentVolumeClaim")
@@ -283,9 +314,12 @@ override_docs = render_chart(
   "controller.runtimeClassCreate=true"
 )
 assert_namespaced_rbac(one(override_docs, "Role"), one(override_docs, "RoleBinding"), HELM_NAMESPACE)
+override_discovery_role, override_discovery_binding = cluster_rbac_for(override_docs, "nodes")
+assert_discovery_rbac(override_discovery_role, override_discovery_binding, "tgsrl-operator", HELM_NAMESPACE)
+runtimeclass_role, runtimeclass_binding = cluster_rbac_for(override_docs, "runtimeclasses", "create")
 assert_runtimeclass_rbac(
-  one(override_docs, "ClusterRole"),
-  one(override_docs, "ClusterRoleBinding"),
+  runtimeclass_role,
+  runtimeclass_binding,
   "tgsrl-operator",
   HELM_NAMESPACE
 )
@@ -297,19 +331,20 @@ runtimeclass_args = [
   "--set", "controller.runtimeClassHandler=kata-qemu",
   "--set", "controller.runtimeClassCreate=true"
 ]
-base_rbac_name = one(override_docs, "ClusterRole").dig("metadata", "name")
+base_rbac_name = runtimeclass_role.dig("metadata", "name")
 other_release_docs = render_chart_for("contract-test-alt", HELM_NAMESPACE, *runtimeclass_args)
 other_namespace_docs = render_chart_for(HELM_RELEASE, "tgsrl-system-alt", *runtimeclass_args)
 long_identity_docs = render_chart_for("a" * 53, "b" * 63, *runtimeclass_args)
 [other_release_docs, other_namespace_docs, long_identity_docs].each do |docs|
-  assert_runtimeclass_rbac(one(docs, "ClusterRole"), one(docs, "ClusterRoleBinding"), "tgsrl-operator", one(docs, "ServiceAccount").dig("metadata", "namespace"))
+  role, binding = cluster_rbac_for(docs, "runtimeclasses", "create")
+  assert_runtimeclass_rbac(role, binding, "tgsrl-operator", one(docs, "ServiceAccount").dig("metadata", "namespace"))
 end
-assert(one(other_release_docs, "ClusterRole").dig("metadata", "name") != base_rbac_name, "RuntimeClass RBAC name must include release identity")
-assert(one(other_namespace_docs, "ClusterRole").dig("metadata", "name") != base_rbac_name, "RuntimeClass RBAC name must include release namespace identity")
+assert(cluster_rbac_for(other_release_docs, "runtimeclasses", "create").first.dig("metadata", "name") != base_rbac_name, "RuntimeClass RBAC name must include release identity")
+assert(cluster_rbac_for(other_namespace_docs, "runtimeclasses", "create").first.dig("metadata", "name") != base_rbac_name, "RuntimeClass RBAC name must include release namespace identity")
 ambiguous_left_docs = render_chart_for("a-b", "c", *runtimeclass_args)
 ambiguous_right_docs = render_chart_for("a", "b-c", *runtimeclass_args)
 assert(
-  one(ambiguous_left_docs, "ClusterRole").dig("metadata", "name") != one(ambiguous_right_docs, "ClusterRole").dig("metadata", "name"),
+  cluster_rbac_for(ambiguous_left_docs, "runtimeclasses", "create").first.dig("metadata", "name") != cluster_rbac_for(ambiguous_right_docs, "runtimeclasses", "create").first.dig("metadata", "name"),
   "RuntimeClass RBAC identity encoding must not collide across release and namespace boundaries"
 )
 

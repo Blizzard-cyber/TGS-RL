@@ -9,7 +9,7 @@ import (
 )
 
 func discoveredGPUCapabilities(profiles ...string) CapabilitySet {
-	set := CapabilitySet{GPUProfiles: map[string]bool{GPUProfileNone: true}}
+	set := DefaultCapabilitySet()
 	for _, profile := range profiles {
 		set.GPUProfiles[profile] = true
 	}
@@ -106,10 +106,13 @@ func TestCompileDRAGeneratesResourceClaim(t *testing.T) {
 		t.Fatalf("expected exactly one DRA device request")
 	}
 	request := bundle.ResourceClaim.Spec.Devices.Requests[0]
-	if got := request.DeviceClassName; got != "gpu.resource.k8s.io" {
+	if request.Exactly == nil {
+		t.Fatal("stable DRA API must use requests[].exactly")
+	}
+	if got := request.Exactly.DeviceClassName; got != "gpu.resource.k8s.io" {
 		t.Fatalf("unexpected device class: %q", got)
 	}
-	if request.Name != "accelerator" || request.AllocationMode != "ExactCount" || request.Count != 1 {
+	if request.Name != "accelerator" || request.Exactly.AllocationMode != "ExactCount" || request.Exactly.Count != 1 {
 		t.Fatalf("unexpected DRA request: %+v", request)
 	}
 	if len(bundle.Job.Spec.Template.Spec.ResourceClaims) != 1 {
@@ -124,6 +127,30 @@ func TestCompileDRAGeneratesResourceClaim(t *testing.T) {
 	claims := bundle.Job.Spec.Template.Spec.Containers[0].Resources.Claims
 	if len(claims) != 1 || claims[0].Name != "accelerator" || claims[0].Request != "accelerator" {
 		t.Fatalf("unexpected container DRA claims: %+v", claims)
+	}
+}
+
+func TestCompileDRAV1Beta1UsesLegacyFlatRequest(t *testing.T) {
+	c := New()
+	capabilities := discoveredGPUCapabilities(GPUProfileKubernetesDRA)
+	capabilities.KubernetesAPIs = KubernetesAPIVersions{
+		KueueWorkload:    KueueWorkloadV1Beta1,
+		DRAResourceClaim: DRAResourceClaimV1Beta1,
+	}
+	c.SetCapabilities(capabilities)
+	input := testCompileInput()
+	input.GPUProfiles = []string{GPUProfileKubernetesDRA}
+
+	bundle, err := c.compileBinding(singleBindingInput(input, 0))
+	if err != nil {
+		t.Fatalf("compile failed: %v", err)
+	}
+	request := bundle.ResourceClaim.Spec.Devices.Requests[0]
+	if bundle.ResourceClaim.APIVersion != DRAResourceClaimV1Beta1 || bundle.Workload.APIVersion != KueueWorkloadV1Beta1 {
+		t.Fatalf("selected APIs were not projected: claim=%s workload=%s", bundle.ResourceClaim.APIVersion, bundle.Workload.APIVersion)
+	}
+	if request.Exactly != nil || request.DeviceClassName != "gpu.resource.k8s.io" || request.Count != 1 {
+		t.Fatalf("unexpected legacy DRA request: %+v", request)
 	}
 }
 
@@ -231,6 +258,7 @@ func TestCompileReferencesPreconfiguredRuntimeClassAndNodeSelector(t *testing.T)
 	c.SetCapabilities(CapabilitySet{
 		GPUProfiles:    map[string]bool{GPUProfileNone: true, GPUProfileNVIDIADevicePlugin: true},
 		RuntimeClasses: map[string]string{"kata-gpu": "kata-qemu"},
+		KubernetesAPIs: DefaultCapabilitySet().KubernetesAPIs,
 	})
 	bundle, err := c.compileBinding(singleBindingInput(testCompileInput(), 0))
 	if err != nil {
@@ -277,6 +305,7 @@ func TestCompileSelectsOnlyDiscoveredGPUCapability(t *testing.T) {
 			GPUProfileNone:          true,
 			GPUProfileKubernetesDRA: true,
 		},
+		KubernetesAPIs: DefaultCapabilitySet().KubernetesAPIs,
 	})
 	input := testCompileInput()
 	input.GPUProfiles = []string{GPUProfileNVIDIADevicePlugin, GPUProfileKubernetesDRA}

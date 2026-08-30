@@ -135,17 +135,25 @@ func (c *MemoryClient) DiscoverCapabilities(_ context.Context) (compiler.Capabil
 		RuntimeClasses:      cloneStringMap(c.capabilities.RuntimeClasses),
 		NodeSelectors:       cloneNestedStringMap(c.capabilities.NodeSelectors),
 		DefaultNodeSelector: cloneStringMap(c.capabilities.DefaultNodeSelector),
+		KubernetesAPIs:      c.capabilities.KubernetesAPIs,
 	}, nil
 }
 
 func (c *MemoryClient) SetCapabilities(values compiler.CapabilitySet) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	if values.KubernetesAPIs.KueueWorkload == "" {
+		values.KubernetesAPIs.KueueWorkload = compiler.KueueWorkloadV1Beta2
+	}
+	if values.KubernetesAPIs.DRAResourceClaim == "" {
+		values.KubernetesAPIs.DRAResourceClaim = compiler.DRAResourceClaimV1
+	}
 	c.capabilities = compiler.CapabilitySet{
 		GPUProfiles:         cloneBoolMap(values.GPUProfiles),
 		RuntimeClasses:      cloneStringMap(values.RuntimeClasses),
 		NodeSelectors:       cloneNestedStringMap(values.NodeSelectors),
 		DefaultNodeSelector: cloneStringMap(values.DefaultNodeSelector),
+		KubernetesAPIs:      values.KubernetesAPIs,
 	}
 }
 

@@ -38,7 +38,7 @@ func buildBundle(input *normalizedInput) (*api.Bundle, error) {
 	}
 
 	workload := api.Workload{
-		TypeMeta: api.TypeMeta{APIVersion: "kueue.x-k8s.io/v1beta1", Kind: "Workload"},
+		TypeMeta: api.TypeMeta{APIVersion: input.KubernetesAPIs.KueueWorkload, Kind: "Workload"},
 		ObjectMeta: api.ObjectMeta{
 			Name:        workloadName,
 			Namespace:   input.Namespace,
@@ -88,8 +88,20 @@ func buildBundle(input *normalizedInput) (*api.Bundle, error) {
 
 	var resourceClaim *api.ResourceClaim
 	if requiresResourceClaim(input.GPUProfile, input.resourcesPerUnit.GetAcceleratorUnits()) {
+		request := api.DeviceRequest{Name: "accelerator"}
+		if input.KubernetesAPIs.DRAResourceClaim != DRAResourceClaimV1Beta1 {
+			request.Exactly = &api.ExactDeviceRequest{
+				DeviceClassName: deviceClass(input.GPUProfile),
+				AllocationMode:  "ExactCount",
+				Count:           int64(math.Ceil(input.resourcesPerUnit.GetAcceleratorUnits())),
+			}
+		} else {
+			request.DeviceClassName = deviceClass(input.GPUProfile)
+			request.AllocationMode = "ExactCount"
+			request.Count = int64(math.Ceil(input.resourcesPerUnit.GetAcceleratorUnits()))
+		}
 		resourceClaim = &api.ResourceClaim{
-			TypeMeta: api.TypeMeta{APIVersion: "resource.k8s.io/v1beta1", Kind: "ResourceClaim"},
+			TypeMeta: api.TypeMeta{APIVersion: input.KubernetesAPIs.DRAResourceClaim, Kind: "ResourceClaim"},
 			ObjectMeta: api.ObjectMeta{
 				Name:        buildObjectName("resourceclaim", input),
 				Namespace:   input.Namespace,
@@ -97,13 +109,8 @@ func buildBundle(input *normalizedInput) (*api.Bundle, error) {
 				Annotations: api.CloneMap(annotations),
 			},
 			Spec: api.ResourceClaimSpec{
-				Devices: api.DeviceClaim{Requests: []api.DeviceRequest{{
-					Name:            "accelerator",
-					DeviceClassName: deviceClass(input.GPUProfile),
-					AllocationMode:  "ExactCount",
-					Count:           int64(math.Ceil(input.resourcesPerUnit.GetAcceleratorUnits())),
-				}}},
-				Count: uint32(math.Ceil(input.resourcesPerUnit.GetAcceleratorUnits())),
+				Devices: api.DeviceClaim{Requests: []api.DeviceRequest{request}},
+				Count:   uint32(math.Ceil(input.resourcesPerUnit.GetAcceleratorUnits())),
 			},
 		}
 		job.Spec.Template.Spec.ResourceClaims = []api.PodResourceClaim{{

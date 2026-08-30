@@ -13,6 +13,7 @@ import (
 
 	tgsrlv1 "github.com/Blizzard-cyber/TGS-RL/gen/go/tgsrl/v1"
 	"github.com/Blizzard-cyber/TGS-RL/operator-go/bundleadapter"
+	"github.com/Blizzard-cyber/TGS-RL/operator-go/compiler"
 )
 
 func TestClientGetAndUpsertAgainstHTTPServer(t *testing.T) {
@@ -558,38 +559,6 @@ func TestClientDeleteUsesForegroundDeletion(t *testing.T) {
 	}
 }
 
-func TestClientDiscoverCapabilitiesFromAPI(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodGet || r.URL.Path != "/apis/tgsrl.io/v1alpha1/capabilities" {
-			t.Fatalf("unexpected request %s %s", r.Method, r.URL.Path)
-		}
-		_ = json.NewEncoder(w).Encode(map[string]any{
-			"gpuProfiles":         []string{"kubernetes-dra"},
-			"runtimeClasses":      map[string]string{"kata-gpu": "kata-qemu"},
-			"nodeSelectors":       map[string]any{"kubernetes-dra": map[string]any{"feature.node.kubernetes.io/dra": "true"}},
-			"defaultNodeSelector": map[string]any{"kubernetes.io/os": "linux"},
-		})
-	}))
-	defer server.Close()
-	client, err := NewClient(&Config{Host: server.URL, Namespace: "test", HTTPClient: server.Client()})
-	if err != nil {
-		t.Fatal(err)
-	}
-	capabilities, err := client.DiscoverCapabilities(context.Background())
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !capabilities.GPUProfiles["kubernetes-dra"] {
-		t.Fatalf("capabilities = %+v", capabilities)
-	}
-	if capabilities.RuntimeClasses["kata-gpu"] != "kata-qemu" {
-		t.Fatalf("runtime classes = %+v", capabilities.RuntimeClasses)
-	}
-	if capabilities.NodeSelectors["kubernetes-dra"]["feature.node.kubernetes.io/dra"] != "true" {
-		t.Fatalf("node selectors = %+v", capabilities.NodeSelectors)
-	}
-}
-
 func TestClientDiscoverCapabilitiesFallsClosedWhenEndpointAndProbeMissing(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
@@ -613,16 +582,16 @@ func TestClientDiscoverCapabilitiesProbesDRAWhenEndpointMissing(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		paths = append(paths, r.URL.Path)
 		switch r.URL.Path {
-		case "/apis/tgsrl.io/v1alpha1/capabilities":
-			http.NotFound(w, r)
+		case "/apis/kueue.x-k8s.io":
+			_ = json.NewEncoder(w).Encode(apiGroupDiscovery("v1beta2", "v1beta2", "v1beta1"))
+		case "/apis/resource.k8s.io":
+			_ = json.NewEncoder(w).Encode(apiGroupDiscovery("v1beta1", "v1beta1"))
 		case "/apis/node.k8s.io/v1/runtimeclasses":
 			_ = json.NewEncoder(w).Encode(map[string]any{"items": []any{}})
 		case "/api/v1/nodes":
 			_ = json.NewEncoder(w).Encode(map[string]any{"items": []any{}})
 		case "/apis/resource.k8s.io/v1beta1/deviceclasses":
-			http.NotFound(w, r)
-		case "/apis/resource.k8s.io/v1beta1/namespaces/test/resourceclaims":
-			_ = json.NewEncoder(w).Encode(map[string]any{"items": []any{}})
+			_ = json.NewEncoder(w).Encode(map[string]any{"items": []any{map[string]any{"metadata": map[string]any{"name": "gpu.example.io"}}}})
 		default:
 			t.Fatalf("unexpected request %s", r.URL.Path)
 		}
@@ -640,11 +609,11 @@ func TestClientDiscoverCapabilitiesProbesDRAWhenEndpointMissing(t *testing.T) {
 		t.Fatalf("capabilities = %+v", capabilities)
 	}
 	if strings.Join(paths, "|") != strings.Join([]string{
-		"/apis/tgsrl.io/v1alpha1/capabilities",
+		"/apis/kueue.x-k8s.io",
+		"/apis/resource.k8s.io",
 		"/apis/node.k8s.io/v1/runtimeclasses",
 		"/api/v1/nodes",
 		"/apis/resource.k8s.io/v1beta1/deviceclasses",
-		"/apis/resource.k8s.io/v1beta1/namespaces/test/resourceclaims",
 	}, "|") {
 		t.Fatalf("paths = %v", paths)
 	}
@@ -653,8 +622,10 @@ func TestClientDiscoverCapabilitiesProbesDRAWhenEndpointMissing(t *testing.T) {
 func TestClientDiscoverCapabilitiesProbesNodeAndRuntimeClassSurfaces(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
-		case "/apis/tgsrl.io/v1alpha1/capabilities":
-			http.NotFound(w, r)
+		case "/apis/kueue.x-k8s.io":
+			_ = json.NewEncoder(w).Encode(apiGroupDiscovery("v1beta2", "v1beta2", "v1beta1"))
+		case "/apis/resource.k8s.io":
+			_ = json.NewEncoder(w).Encode(apiGroupDiscovery("v1", "v1"))
 		case "/apis/node.k8s.io/v1/runtimeclasses":
 			_ = json.NewEncoder(w).Encode(map[string]any{
 				"items": []any{
@@ -669,7 +640,7 @@ func TestClientDiscoverCapabilitiesProbesNodeAndRuntimeClassSurfaces(t *testing.
 					}},
 				},
 			})
-		case "/apis/resource.k8s.io/v1beta1/deviceclasses":
+		case "/apis/resource.k8s.io/v1/deviceclasses":
 			_ = json.NewEncoder(w).Encode(map[string]any{
 				"items": []any{
 					map[string]any{"metadata": map[string]any{"name": "gpu.resource.k8s.io"}},
@@ -693,6 +664,20 @@ func TestClientDiscoverCapabilitiesProbesNodeAndRuntimeClassSurfaces(t *testing.
 	}
 	if capabilities.RuntimeClasses["kata-gpu"] != "kata-qemu" {
 		t.Fatalf("runtime classes = %+v", capabilities.RuntimeClasses)
+	}
+	if capabilities.KubernetesAPIs.KueueWorkload != compiler.KueueWorkloadV1Beta2 || capabilities.KubernetesAPIs.DRAResourceClaim != compiler.DRAResourceClaimV1 {
+		t.Fatalf("API versions = %+v", capabilities.KubernetesAPIs)
+	}
+}
+
+func apiGroupDiscovery(preferred string, served ...string) map[string]any {
+	versions := make([]any, 0, len(served))
+	for _, version := range served {
+		versions = append(versions, map[string]any{"version": version})
+	}
+	return map[string]any{
+		"preferredVersion": map[string]any{"version": preferred},
+		"versions":         versions,
 	}
 }
 

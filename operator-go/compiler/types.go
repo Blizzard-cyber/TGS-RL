@@ -40,9 +40,10 @@ type RuntimeConfig struct {
 }
 
 type CapabilityProfile struct {
-	GPUProfile   string
-	RuntimeClass RuntimeClassConfig
-	NodeSelector map[string]string
+	GPUProfile     string
+	RuntimeClass   RuntimeClassConfig
+	NodeSelector   map[string]string
+	KubernetesAPIs KubernetesAPIVersions
 }
 
 type normalizedInput struct {
@@ -53,6 +54,7 @@ type normalizedInput struct {
 	Manifest         *tgsrlv1.RuntimeManifest
 	Plan             *tgsrlv1.PlacementPlan
 	Runtime          RuntimeConfig
+	KubernetesAPIs   KubernetesAPIVersions
 	priority         int32
 	resourcesPerUnit *tgsrlv1.ResourceVector
 	workloadUnitID   string

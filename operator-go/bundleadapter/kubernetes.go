@@ -103,7 +103,7 @@ func (a *KubernetesAdapter) Materialize(bundle *api.Bundle) ([]Object, error) {
 }
 
 func validateSupportedKubernetesContract(bundle *api.Bundle) error {
-	if bundle.Workload.TypeMeta.APIVersion != "kueue.x-k8s.io/v1beta1" || bundle.Workload.TypeMeta.Kind != "Workload" {
+	if !supportedAPIVersion(bundle.Workload.TypeMeta.APIVersion, "kueue.x-k8s.io/v1beta2", "kueue.x-k8s.io/v1beta1") || bundle.Workload.TypeMeta.Kind != "Workload" {
 		return fmt.Errorf("unsupported Kueue Workload contract %s %s", bundle.Workload.TypeMeta.APIVersion, bundle.Workload.TypeMeta.Kind)
 	}
 	if bundle.Job.TypeMeta.APIVersion != "batch/v1" || bundle.Job.TypeMeta.Kind != "Job" {
@@ -112,10 +112,19 @@ func validateSupportedKubernetesContract(bundle *api.Bundle) error {
 	if bundle.RuntimeClass != nil && (bundle.RuntimeClass.TypeMeta.APIVersion != "node.k8s.io/v1" || bundle.RuntimeClass.TypeMeta.Kind != "RuntimeClass") {
 		return fmt.Errorf("unsupported Kubernetes RuntimeClass contract %s %s", bundle.RuntimeClass.TypeMeta.APIVersion, bundle.RuntimeClass.TypeMeta.Kind)
 	}
-	if bundle.ResourceClaim != nil && (bundle.ResourceClaim.TypeMeta.APIVersion != "resource.k8s.io/v1beta1" || bundle.ResourceClaim.TypeMeta.Kind != "ResourceClaim") {
+	if bundle.ResourceClaim != nil && (!supportedAPIVersion(bundle.ResourceClaim.TypeMeta.APIVersion, "resource.k8s.io/v1", "resource.k8s.io/v1beta2", "resource.k8s.io/v1beta1") || bundle.ResourceClaim.TypeMeta.Kind != "ResourceClaim") {
 		return fmt.Errorf("unsupported Kubernetes ResourceClaim contract %s %s", bundle.ResourceClaim.TypeMeta.APIVersion, bundle.ResourceClaim.TypeMeta.Kind)
 	}
 	return nil
+}
+
+func supportedAPIVersion(value string, supported ...string) bool {
+	for _, candidate := range supported {
+		if value == candidate {
+			return true
+		}
+	}
+	return false
 }
 
 // marshalDesiredObject protects the Kubernetes main-resource endpoint from

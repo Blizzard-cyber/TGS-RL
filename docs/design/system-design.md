@@ -150,8 +150,8 @@ Operator backend 决定 workload 对象的落点：
   `JobRunBundle`、Kueue `Workload`、Kubernetes `Job` 和可选 `ResourceClaim`；仅在显式
   启用 `runtimeClassCreate` 时创建 `RuntimeClass`。
 
-Kubernetes wire contract 使用 Kueue `v1beta1`、Kubernetes 1.32 风格的
-`resource.k8s.io/v1beta1` DRA 和带 `restartPolicy` 的 Job pod spec。部署者必须提供
+Kubernetes wire contract 通过 discovery 选择 Kueue `v1beta2`/`v1beta1` 和 DRA
+`resource.k8s.io/v1`/`v1beta2`/`v1beta1`，并生成带 `restartPolicy` 的 Job pod spec。部署者必须提供
 Scheduler、Job Controller、Runtime、Kueue 以及所选 GPU/DRA 控制器，并确认目标集群
 支持这些 API。当前通用对象编译不保证把 Scheduler device ID 映射为 DRA
 driver/pool/device 或精确物理 GPU 落点。随附部署工件不会安装这些依赖。

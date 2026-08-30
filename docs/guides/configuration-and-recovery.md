@@ -154,12 +154,13 @@ exec/auth-provider 插件，也不合并多文件 `KUBECONFIG`。
 Job Controller 和 Runtime 的 service address，并默认把 `/var/lib/tgsrl-operator` 挂载到
 `ReadWriteOnce` PVC。默认 RBAC 将 `JobRunBundle`、`Workload`、`Job` 和
 `ResourceClaim` 权限限制在目标 namespace 的 `Role` / `RoleBinding`，CRD 的 `spec`
-使用单一 `bundle` envelope。Helm 可覆盖依赖地址、现有 PVC、storage class、容量和
+使用单一 `bundle` envelope；Node、RuntimeClass 和 DeviceClass discovery 使用只读
+`list` ClusterRole。Helm 可覆盖依赖地址、现有 PVC、storage class、容量和
 保留策略；仅当显式启用 `runtimeClassCreate=true` 时，才追加最小 cluster-scoped
 RuntimeClass 写权限。这些工件不部署 Scheduler、Job Controller、Runtime、Kueue 或
 GPU/DRA 控制器。使用 Kubernetes backend 前，部署者必须提供这些依赖，并确认目标集群
-支持生成对象使用的 Kueue `v1beta1` 与 Kubernetes 1.32 风格 DRA
-`resource.k8s.io/v1beta1` API。当前编译不会把 Scheduler `device_ids` 转换为通用 DRA
+支持通过 API discovery 选择 Kueue `v1beta2`/`v1beta1` 与 DRA
+`resource.k8s.io/v1`/`v1beta2`/`v1beta1`。当前编译不会把 Scheduler `device_ids` 转换为通用 DRA
 driver/pool/device 选择表达式，因此 GPU profile 只约束资源类别和数量，不保证精确物理
 GPU 落点。
 

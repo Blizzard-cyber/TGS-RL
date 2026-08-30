@@ -52,6 +52,7 @@ func (c *Compiler) compileBinding(input CompileInput) (*api.Bundle, error) {
 	if err != nil {
 		return nil, err
 	}
+	normalized.KubernetesAPIs = selected.KubernetesAPIs
 	bundle, err := buildBundle(normalized)
 	if err != nil {
 		return nil, err

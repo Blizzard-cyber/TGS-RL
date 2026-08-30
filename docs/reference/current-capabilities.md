@@ -24,7 +24,7 @@
 | NVIDIA Provider（默认） | **有条件（Conditional）** | `LocalDriver` 可通过 `nvidia-smi` 形成设备快照 | 需要 NVIDIA 驱动和 `nvidia-smi`；默认不声明资源动作 |
 | NVIDIA Driver v2 | **有条件（Conditional）** | 已实现 inventory、MPS `set_share` 写入与读回、MIG、binding、runtime command、事务、幂等、超时、回滚、重启发现、dry-run 与审计的 Go 编排及 fake conformance 测试 | 实际动作依赖仓库外 `tgsrl-nvidia-binding`、`tgsrl-nvidia-runtime`、`tgsrl-nvidia-mig` helper；MPS 不公开通用 `resize`，MIG L4 需 helper 声明完整 lifecycle transaction；仓库尚未提供这些 helper，也没有真实 NVIDIA/CUDA 证据，因此不能标记为“已实现，待硬件验证”或“支持” |
 | 外部 Runtime Adapter | **有条件支持** | veRL、OpenRLHF、Ray、PyTorch、vLLM、SGLang 的依赖检查、manifest 校验和 typed lifecycle bridge | 必须安装对应 Python 包，并提供可用的 provider hook、执行后端、分布式环境和资源控制 |
-| Kubernetes Operator | **有条件支持** | 编译和调和 `JobRunBundle`、Kueue `Workload`、Kubernetes `Job`、可选 `ResourceClaim`/`RuntimeClass`，并观察状态 | 用户必须提供其余 TGS-RL 服务、兼容的 Kubernetes API、Kueue 和所选 GPU/DRA 组件；随附工件只部署 Operator |
+| Kubernetes Operator | **有条件支持** | 编译和调和 `JobRunBundle`、Kueue `Workload`、Kubernetes `Job`、可选 `ResourceClaim`/`RuntimeClass`，并观察状态；Kubernetes 1.35.1 + Kueue 0.19.2 的本地 CPU API/RBAC/重启验证通过 | 用户必须提供其余 TGS-RL 服务和所选 GPU/DRA 组件；本地 CPU 证据不代表生产集群或 GPU 验证，随附工件只部署 Operator |
 
 ## 单机方案
 
@@ -62,13 +62,16 @@ unavailable，不会回退为成功。
 
 - 可通过显式 kubeconfig、`KUBECONFIG`、用户默认 kubeconfig 或集群内 ServiceAccount
   访问的 Kubernetes API Server；
-- 与生成对象兼容的 Kueue `v1beta1`；
-- 若使用 DRA，则需要 Kubernetes 1.32 风格的 `resource.k8s.io/v1beta1` API 和对应驱动；
+- 提供 `v1beta2` 或 `v1beta1` Workload API 的 Kueue；Operator 优先选择 discovery
+  返回的受支持版本；
+- 若使用 DRA，则优先使用稳定的 `resource.k8s.io/v1` API，也兼容
+  `v1beta2`/`v1beta1`，并始终需要对应的 GPU DeviceClass 与驱动；
 - 所选 GPU profile 所需的 Device Plugin、DRA 或 HAMi 组件；
 - 独立部署且可从 Operator 访问的 Scheduler、Job Controller 和 Runtime；
 - Operator cursor 目录的持久卷。
 
-Helm 默认使用 namespace 范围的 RBAC。只有在设置 `runtimeClassCreate=true` 时才授予
+Helm 默认将业务对象写权限限制在 namespace，并为 Node、RuntimeClass、DeviceClass
+discovery 提供只读 `list` 集群权限。只有在设置 `runtimeClassCreate=true` 时才授予
 最小的 cluster-scoped RuntimeClass 写权限；否则应预先创建并引用 RuntimeClass。部署者
 需要先在目标集群确认 API 版本、RBAC、StorageClass、准入策略和 GPU 控制器兼容性。
 
