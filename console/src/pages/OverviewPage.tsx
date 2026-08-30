@@ -69,7 +69,7 @@ export function OverviewPage() {
                         <Pill>{titleCase(job.rolloutMode)}</Pill>
                       </div>
                       <p className="body-copy">
-                        Queue {job.queue}, policy {job.policyVersion}, units {job.activeUnits}/{job.desiredUnits}.
+                        Queue {job.queue}, policy {job.policyVersion}, desired units {job.desiredUnits}.
                       </p>
                     </article>
                   ))}

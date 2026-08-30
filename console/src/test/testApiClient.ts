@@ -43,7 +43,6 @@ export function createTestApiClient(overrides: Partial<ApiClient> = {}): ApiClie
           queue: 'default',
           priority: 1,
           desiredUnits: 1,
-          activeUnits: 1,
           gpuRequired: false,
           createdAt: '2026-08-27T00:00:00Z',
           updatedAt: '2026-08-27T00:00:00Z',

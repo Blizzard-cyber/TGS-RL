@@ -27,7 +27,6 @@ const job: JobSummary = {
   queue: 'priority-train',
   priority: 95,
   desiredUnits: 16,
-  activeUnits: 16,
   gpuRequired: true,
   createdAt: '2026-08-27T08:15:00Z',
   updatedAt: '2026-08-27T08:18:00Z',

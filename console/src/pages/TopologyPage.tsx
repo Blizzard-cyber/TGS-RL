@@ -86,10 +86,14 @@ export function TopologyPage() {
                       <Pill>{titleCase(node.kind)}</Pill>
                       <Pill tone={node.gpu ? 'warn' : 'neutral'}>{node.gpu ? 'GPU' : 'CPU'}</Pill>
                     </div>
-                    <p className="body-copy">
-                      Utilization {Math.round((node.utilization ?? 0) * 100)}%
-                      {node.share !== undefined ? ` · share ${Math.round(node.share * 100)}%` : ''}
-                    </p>
+                    {node.utilization !== undefined || node.share !== undefined ? (
+                      <p className="body-copy">
+                        {node.utilization !== undefined
+                          ? `Utilization ${Math.round(node.utilization * 100)}%`
+                          : 'Utilization unavailable'}
+                        {node.share !== undefined ? ` · share ${Math.round(node.share * 100)}%` : ''}
+                      </p>
+                    ) : null}
                   </article>
                 ))}
               </div>

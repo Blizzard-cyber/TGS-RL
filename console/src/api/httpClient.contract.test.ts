@@ -22,9 +22,14 @@ const decisionProtoFixture = {
       },
       {
         action_id: 'act-2',
-        action_type: 'ACTION_TYPE_RESIZE',
+        action_type: 'ACTION_TYPE_RECREATE',
         sandbox_id: 'sbx-2',
         target: { target_id: 'gpu-node-2' },
+      },
+      {
+        action_id: 'act-3',
+        action_type: 'ACTION_TYPE_SET_PRIORITY',
+        sandbox_id: 'sbx-3',
       },
     ],
   },
@@ -447,11 +452,11 @@ describe('HttpApiClient contract', () => {
         return jsonResponse({
           run: { runId: 'run-live-017-a', displayName: 'PPO Actor-Critic Burst', createdAt: '2026-08-27T08:16:00Z' },
           manifest: { manifestId: 'manifest-1' },
-          runtimeUnits: [{ runtimeUnitId: 'unit-1', phaseId: 'actor-rollout', state: 'RUNTIME_STATE_RUNNING', requiredCapabilities: { elasticParallelism: true } }],
+          runtimeUnits: [{ runtimeUnitId: 'unit-1', phaseId: 'actor-rollout', state: 'RUNTIME_STATE_RUNNING', requestedResources: { acceleratorUnits: 1 } }],
           sandboxes: [
-            { sandboxId: 'sbx-1', runId: 'run-live-017-a', state: 'RUNTIME_STATE_RUNNING', generation: 1, binding: { deviceIds: ['gpu-0'], resources: { cpuMillis: 2000 } }, share: 0.5, priority: 10, safePoint: true, observedAt: '2026-08-27T08:20:00Z' },
-            { sandboxId: 'sbx-2', runId: 'run-live-017-a', state: 'RUNTIME_STATE_FAILED', generation: 2, binding: { deviceIds: ['gpu-1'], resources: { cpuMillis: 1800 } }, share: 0.5, priority: 11, safePoint: false, observedAt: '2026-08-27T08:21:00Z' },
-            { sandboxId: 'sbx-3', runId: 'run-live-017-a', state: 'RUNTIME_STATE_MYSTERY', generation: 3, binding: { deviceIds: ['gpu-2'], resources: { cpuMillis: 1600 } }, share: 0.5, priority: 12, safePoint: false, observedAt: '2026-08-27T08:22:00Z' },
+            { sandboxId: 'sbx-1', runId: 'run-live-017-a', state: 'RUNTIME_STATE_RUNNING', generation: 1, binding: { runtimeUnitId: 'unit-1', deviceIds: ['gpu-0'], resources: { cpuMillis: 2000, acceleratorUnits: 1 } }, share: 0.5, priority: 10, safePoint: true, observedAt: '2026-08-27T08:20:00Z' },
+            { sandboxId: 'sbx-2', runId: 'run-live-017-a', state: 'RUNTIME_STATE_FAILED', generation: 2, binding: { runtimeUnitId: 'unit-1', deviceIds: ['gpu-1'], resources: { cpuMillis: 1800, acceleratorUnits: 1 } }, share: 0.5, priority: 11, safePoint: false, observedAt: '2026-08-27T08:21:00Z' },
+            { sandboxId: 'sbx-3', runId: 'run-live-017-a', state: 'RUNTIME_STATE_MYSTERY', generation: 3, binding: { runtimeUnitId: 'unit-1', deviceIds: ['gpu-2'], resources: { cpuMillis: 1600, acceleratorUnits: 1 } }, share: 0.5, priority: 12, safePoint: false, observedAt: '2026-08-27T08:22:00Z' },
           ],
         });
       }
@@ -483,6 +488,9 @@ describe('HttpApiClient contract', () => {
     expect(topology.state).toBe('ready');
     expect(topology.data?.runId).toBe('run-live-017-a');
     expect(topology.data?.nodes.find((node) => node.id === 'sbx-2')?.status).toBe('down');
+    expect(topology.data?.nodes.find((node) => node.id === 'gpu-0')?.kind).toBe('device');
+    expect(topology.data?.edges).toContainEqual({ from: 'unit-1', to: 'sbx-1', relation: 'runs-in' });
+    expect(topology.data?.edges).toContainEqual({ from: 'sbx-1', to: 'gpu-0', relation: 'scheduled-on' });
     expect(topology.data?.nodes.find((node) => node.id === 'sbx-3')?.status).toBe('degraded');
     expect(sandboxes.state).toBe('ready');
     expect(sandboxes.data?.sandboxes[0]?.id).toBe('sbx-1');
@@ -513,10 +521,16 @@ describe('HttpApiClient contract', () => {
     });
     expect(result.data?.[0]?.actions[1]).toMatchObject({
       actionId: 'act-2',
-      type: 'resize',
+      type: 'recreate',
       sandboxId: 'sbx-2',
       targetId: 'gpu-node-2',
       detail: 'GPU_REALLOCATE_PENDING',
+    });
+    expect(result.data?.[0]?.actions[2]).toMatchObject({
+      actionId: 'act-3',
+      type: 'set_priority',
+      sandboxId: 'sbx-3',
+      status: 'unknown',
     });
     expect(result.data?.[0]?.selectedPlanId).toBe('plan-1');
     expect(result.data?.[0]?.selectedCandidate).toBe('cand-2');

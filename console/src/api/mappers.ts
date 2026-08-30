@@ -25,6 +25,7 @@ import {
 export function mapJob(job: unknown, run?: RunSummary): JobSummary {
   const input = ensureObject(job);
   const labels = ensureObject(input.labels);
+  const resources = ensureObject(input.resourcesPerUnit);
   const desiredUnits = typeof input.desiredUnits === 'number' ? input.desiredUnits : 0;
   return {
     id: String(input.jobId ?? ''),
@@ -36,8 +37,8 @@ export function mapJob(job: unknown, run?: RunSummary): JobSummary {
     queue: String(input.queue ?? 'default'),
     priority: typeof input.priority === 'number' ? input.priority : 0,
     desiredUnits,
-    activeUnits: run ? desiredUnits : 0,
-    gpuRequired: Object.keys(ensureObject(input.requiredCapabilities)).length > 0,
+    gpuRequired:
+      typeof resources.acceleratorUnits === 'number' && resources.acceleratorUnits > 0,
     createdAt: toTimestamp(input.createdAt),
     updatedAt: run?.startedAt ?? toTimestamp(input.createdAt),
     owner: String(labels.owner ?? 'gateway'),
@@ -52,23 +53,23 @@ export function mapJob(job: unknown, run?: RunSummary): JobSummary {
 }
 
 function toDecisionActionType(value: unknown, fallbackActionId: string): DecisionRecord['actions'][number]['type'] {
-  const normalized = String(value ?? fallbackActionId).toLowerCase();
-  if (normalized.includes('resize')) {
-    return 'resize';
-  }
-  if (normalized.includes('pause')) {
-    return 'pause';
-  }
-  if (normalized.includes('resume')) {
-    return 'resume';
-  }
-  if (normalized.includes('checkpoint')) {
-    return 'checkpoint';
-  }
-  if (normalized.includes('offload')) {
-    return 'offload';
-  }
-  return 'bind';
+  const normalized = String(value ?? fallbackActionId)
+    .toLowerCase()
+    .replace(/^action_type_/, '');
+  const actions: DecisionRecord['actions'][number]['type'][] = [
+    'set_priority',
+    'set_share',
+    'recreate',
+    'release',
+    'offload',
+    'rebind',
+    'resize',
+    'resume',
+    'pause',
+    'sleep',
+    'bind',
+  ];
+  return actions.find((action) => normalized === action || normalized.includes(action)) ?? 'unknown';
 }
 
 function toDecisionActionStatus(value: unknown): DecisionRecord['actions'][number]['status'] {
@@ -297,6 +298,7 @@ export function mapTopology(input: unknown, jobId: string): TopologySnapshot {
   const runtimeUnits = ensureArray<Record<string, unknown>>(payload.runtimeUnits);
   const sandboxRecords = ensureArray<Record<string, unknown>>(payload.sandboxes);
   const run = ensureObject(payload.run);
+  const deviceIds = [...new Set(sandboxRecords.flatMap(collectBindingDeviceIds))].sort();
   const nodes = [
     {
       id: jobId,
@@ -304,7 +306,6 @@ export function mapTopology(input: unknown, jobId: string): TopologySnapshot {
       kind: 'job' as const,
       status: 'ready' as const,
       gpu: false,
-      utilization: runtimeUnits.length ? 0.7 : 0.1,
     },
     ...runtimeUnits.map((unit) => ({
       id: String(unit.runtimeUnitId ?? ''),
@@ -318,8 +319,8 @@ export function mapTopology(input: unknown, jobId: string): TopologySnapshot {
             : String(unit.state ?? '').includes('RUNNING')
               ? 'busy' as const
               : 'ready' as const,
-      gpu: Object.keys(ensureObject(unit.requiredCapabilities)).length > 0,
-      utilization: String(unit.state ?? '').includes('RUNNING') ? 0.8 : 0.3,
+      gpu:
+        Number(ensureObject(unit.requestedResources).acceleratorUnits ?? 0) > 0,
     })),
     ...sandboxRecords.map((sandbox) => {
       const mapped = mapSandbox(sandbox, jobId);
@@ -337,9 +338,15 @@ export function mapTopology(input: unknown, jobId: string): TopologySnapshot {
                 : 'ready' as const,
         gpu: mapped.gpuAttached,
         share: mapped.share,
-        utilization: mapped.state === 'running' ? 0.75 : 0.2,
       };
     }),
+    ...deviceIds.map((deviceId) => ({
+      id: deviceId,
+      label: deviceId,
+      kind: 'device' as const,
+      status: 'ready' as const,
+      gpu: true,
+    })),
   ];
   const edges = [
     ...runtimeUnits.map((unit) => ({
@@ -347,11 +354,20 @@ export function mapTopology(input: unknown, jobId: string): TopologySnapshot {
       to: String(unit.runtimeUnitId ?? ''),
       relation: 'feeds' as const,
     })),
-    ...sandboxRecords.map((sandbox) => ({
-      from: String(sandbox.runId ?? jobId),
-      to: String(sandbox.sandboxId ?? ''),
-      relation: 'runs-in' as const,
-    })),
+    ...sandboxRecords.flatMap((sandbox) => {
+      const binding = ensureObject(sandbox.binding);
+      const runtimeUnitId = String(binding.runtimeUnitId ?? binding.pendingUnitId ?? '');
+      const sandboxId = String(sandbox.sandboxId ?? '');
+      const runtimeEdge = runtimeUnitId
+        ? [{ from: runtimeUnitId, to: sandboxId, relation: 'runs-in' as const }]
+        : [];
+      const deviceEdges = collectBindingDeviceIds(binding).map((deviceId) => ({
+        from: sandboxId,
+        to: deviceId,
+        relation: 'scheduled-on' as const,
+      }));
+      return [...runtimeEdge, ...deviceEdges];
+    }),
   ];
   return {
     runId: typeof run.runId === 'string' ? run.runId : undefined,

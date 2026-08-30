@@ -39,7 +39,6 @@ export interface JobSummary {
   queue: string;
   priority: number;
   desiredUnits: number;
-  activeUnits: number;
   gpuRequired: boolean;
   createdAt: string;
   updatedAt: string;
@@ -73,7 +72,19 @@ export interface RunSummary {
 
 export interface DecisionAction {
   actionId: string;
-  type: 'bind' | 'pause' | 'resume' | 'resize' | 'offload' | 'checkpoint';
+  type:
+    | 'bind'
+    | 'release'
+    | 'set_share'
+    | 'set_priority'
+    | 'resize'
+    | 'pause'
+    | 'resume'
+    | 'sleep'
+    | 'offload'
+    | 'rebind'
+    | 'recreate'
+    | 'unknown';
   sandboxId: string;
   targetId: string;
   status: 'succeeded' | 'failed' | 'skipped' | 'rolled_back' | 'unknown';
