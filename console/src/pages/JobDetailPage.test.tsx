@@ -323,8 +323,12 @@ describe('JobDetailPage controls', () => {
     await waitFor(() =>
       expect(router.state.location.search).toBe('?runId=run-live-017-01'),
     );
+    await screen.findByRole('button', { name: 'run-live-017-01 (selected)' });
     const lastRun = await screen.findByRole('button', { name: 'run-live-017-21' });
     await user.click(lastRun);
+    await waitFor(() =>
+      expect(router.state.location.search).toBe('?runId=run-live-017-21'),
+    );
     await waitFor(() =>
       expect(screen.getByRole('button', { name: 'run-live-017-21 (selected)' })).toHaveAttribute('aria-pressed', 'true'),
     );
