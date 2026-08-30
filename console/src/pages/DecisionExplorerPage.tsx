@@ -8,8 +8,10 @@ import { DataTable, Panel, Pill, SelectCardButton, ShellFrame } from '../compone
 export function DecisionExplorerPage() {
   const client = useApiClient();
   const [mode, setMode] = useState('ready');
-  const [pageTokens, setPageTokens] = useState<string[]>(['']);
   const { jobId, runId, decisionId, setRunId, setDecisionId } = useRunScopedSearchParams();
+  const paginationScope = `${jobId}\u0000${runId}`;
+  const [pagination, setPagination] = useState({ scope: paginationScope, tokens: [''] });
+  const pageTokens = pagination.scope === paginationScope ? pagination.tokens : [''];
   const pageToken = pageTokens[pageTokens.length - 1] || undefined;
 
   const decisionsQuery = useQuery(
@@ -39,10 +41,6 @@ export function DecisionExplorerPage() {
       setDecisionId(selectedDecisionId || undefined);
     }
   }, [decisionId, hasCurrentPage, selectedDecisionId, setDecisionId]);
-
-  useEffect(() => {
-    setPageTokens(['']);
-  }, [jobId, runId]);
 
   const explorerQuery = useQuery(
     (signal) =>
@@ -87,7 +85,12 @@ export function DecisionExplorerPage() {
               <button
                 className="button"
                 type="button"
-                onClick={() => setPageTokens((value) => (value.length > 1 ? value.slice(0, -1) : value))}
+                onClick={() =>
+                  setPagination({
+                    scope: paginationScope,
+                    tokens: pageTokens.length > 1 ? pageTokens.slice(0, -1) : pageTokens,
+                  })
+                }
                 disabled={pageTokens.length <= 1}
               >
                 Prev
@@ -95,7 +98,10 @@ export function DecisionExplorerPage() {
               <button
                 className="button"
                 type="button"
-                onClick={() => nextPageToken && setPageTokens((value) => [...value, nextPageToken])}
+                onClick={() =>
+                  nextPageToken &&
+                  setPagination({ scope: paginationScope, tokens: [...pageTokens, nextPageToken] })
+                }
                 disabled={!nextPageToken}
               >
                 Next

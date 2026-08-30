@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useState } from 'react';
 import { useApiClient } from '../app/apiContext';
 import { useQuery } from '../app/hooks';
 import { dataKindOptions, formatTimestamp, simulationOptions, toQueryFilters, titleCase } from '../app/utils';
@@ -21,15 +21,6 @@ export function ExperimentComparePage() {
       }),
     [client, dataKind, mode],
   );
-
-  useEffect(() => {
-    if ((result.state === 'ready' || result.state === 'degraded') && result.data) {
-      const selectedExists = result.data.some((entry) => entry.id === selectedExperimentId);
-      if (!selectedExists) {
-        setSelectedExperimentId(result.data[0]?.id ?? '');
-      }
-    }
-  }, [result, selectedExperimentId]);
 
   const selectedExperiment =
     result.data?.find((entry) => entry.id === selectedExperimentId) ?? result.data?.[0];

@@ -11,27 +11,38 @@ function isAbortError(error: unknown) {
 }
 
 export function useQuery<T>(factory: (signal: AbortSignal) => Promise<QueryResult<T>>, deps: readonly unknown[]) {
-  const [result, setResult] = useState<QueryResult<T>>({ state: 'loading' });
+  const [settled, setSettled] = useState<{ deps: readonly unknown[]; result: QueryResult<T> }>({
+    deps,
+    result: { state: 'loading' },
+  });
   const [nonce, setNonce] = useState(0);
+  const requestDeps = [...deps, nonce];
+  const result =
+    settled.deps.length === requestDeps.length &&
+    settled.deps.every((value, index) => Object.is(value, requestDeps[index]))
+      ? settled.result
+      : ({ state: 'loading' } as QueryResult<T>);
 
   useEffect(() => {
     let active = true;
     const controller = new AbortController();
-    setResult({ state: 'loading' });
     void factory(controller.signal)
       .then((value) => {
         if (active && !controller.signal.aborted) {
-          setResult(value);
+          setSettled({ deps: requestDeps, result: value });
         }
       })
       .catch((error: unknown) => {
         if (!active || controller.signal.aborted || isAbortError(error)) {
           return;
         }
-        setResult({
-          state: 'error',
-          message: error instanceof Error ? error.message : 'Request failed.',
-          retryable: true,
+        setSettled({
+          deps: requestDeps,
+          result: {
+            state: 'error',
+            message: error instanceof Error ? error.message : 'Request failed.',
+            retryable: true,
+          },
         });
       });
     return () => {

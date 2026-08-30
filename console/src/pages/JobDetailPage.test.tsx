@@ -80,7 +80,7 @@ function renderPage(client: ApiClient, initialEntry = '/jobs/job-live-017?runId=
     ],
     { initialEntries: [initialEntry] },
   );
-  return render(<RouterProvider router={router} />);
+  return { ...render(<RouterProvider router={router} />), router };
 }
 
 function deferred<T>() {
@@ -317,12 +317,59 @@ describe('JobDetailPage controls', () => {
       },
     });
 
-    renderPage(client, '/jobs/job-live-017');
+    const { router } = renderPage(client, '/jobs/job-live-017');
 
+    await screen.findByRole('button', { name: 'run-live-017-21' });
+    await waitFor(() =>
+      expect(router.state.location.search).toBe('?runId=run-live-017-01'),
+    );
     const lastRun = await screen.findByRole('button', { name: 'run-live-017-21' });
     await user.click(lastRun);
     await waitFor(() =>
       expect(screen.getByRole('button', { name: 'run-live-017-21 (selected)' })).toHaveAttribute('aria-pressed', 'true'),
+    );
+  });
+
+  it('clears a pending run selection when navigating to another job', async () => {
+    const user = userEvent.setup();
+    const secondJob: JobSummary = {
+      ...job,
+      id: 'job-live-018',
+      name: 'Second Training Job',
+      currentRunId: 'run-live-018-a',
+    };
+    const secondRun: RunSummary = {
+      ...runs[0]!,
+      id: 'run-live-018-a',
+      jobId: secondJob.id,
+    };
+    const historicalRun: RunSummary = {
+      ...runs[0]!,
+      id: 'run-live-017-b',
+      attempt: 2,
+    };
+    const client = createTestApiClient({
+      listJobs: async () => ready([job, secondJob]),
+      getJobDetail: async (jobId, options) => {
+        if (jobId === secondJob.id) {
+          return ready({ ...detail, job: secondJob, runs: [secondRun], selectedRunId: secondRun.id });
+        }
+        const selectedRunId = options?.filters?.run_id === historicalRun.id
+          ? historicalRun.id
+          : runs[0]!.id;
+        return ready({ ...detail, runs: [historicalRun, runs[0]!], selectedRunId });
+      },
+    });
+
+    const { router } = renderPage(client);
+
+    await user.click(await screen.findByRole('button', { name: historicalRun.id }));
+    await user.click(screen.getByRole('button', { name: /second training job/i }));
+
+    await waitFor(() =>
+      expect(router.state.location.pathname + router.state.location.search).toBe(
+        `/jobs/${secondJob.id}?runId=${secondRun.id}`,
+      ),
     );
   });
 

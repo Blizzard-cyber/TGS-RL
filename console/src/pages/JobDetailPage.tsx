@@ -31,7 +31,6 @@ export function JobDetailPage() {
   const { runId: selectedRunId, setRunId } = useRunScopedSearchParams();
   const [dataKind, setDataKind] = useState('all');
   const [mode, setMode] = useState('ready');
-  const [selectedJobId, setSelectedJobId] = useState(routeJobId ?? '');
   const [jobDraft, setJobDraft] = useState(
     JSON.stringify(
       {
@@ -44,14 +43,16 @@ export function JobDetailPage() {
       2,
     ),
   );
-  const [replayDraft, setReplayDraft] = useState(
-    buildReplayDraft(routeJobId),
-  );
+  const [replayDraftState, setReplayDraftState] = useState({
+    jobId: routeJobId ?? '',
+    value: buildReplayDraft(routeJobId),
+  });
   const [replayId, setReplayId] = useState('replay-console-new');
   const [controlMessage, setControlMessage] = useState<string>('');
   const [controlError, setControlError] = useState<string>('');
   const [pendingAction, setPendingAction] = useState<string>('');
   const activeControlRequest = useRef<symbol | null>(null);
+  const pendingRunSelection = useRef<{ jobId: string; runId: string } | null>(null);
 
   const jobsQuery = useQuery(
     (signal) =>
@@ -66,25 +67,18 @@ export function JobDetailPage() {
     [client, dataKind, mode],
   );
 
-  useEffect(() => {
-    if ((jobsQuery.result.state === 'ready' || jobsQuery.result.state === 'degraded') && jobsQuery.result.data?.length) {
-      const fallbackJobId = routeJobId ?? jobsQuery.result.data?.[0]?.id ?? '';
-      setSelectedJobId(fallbackJobId);
-      if (!routeJobId && fallbackJobId) {
-        void navigate(`/jobs/${fallbackJobId}`, { replace: true });
-      }
-    }
-  }, [jobsQuery.result, navigate, routeJobId]);
+  const selectedJobId = routeJobId ?? jobsQuery.result.data?.[0]?.id ?? '';
+  const requestedRunId = selectedRunId;
+  const replayDraft =
+    replayDraftState.jobId === selectedJobId
+      ? replayDraftState.value
+      : buildReplayDraft(selectedJobId || undefined);
 
   useEffect(() => {
-    if (routeJobId) {
-      setSelectedJobId(routeJobId);
+    if (!routeJobId && selectedJobId) {
+      void navigate(`/jobs/${selectedJobId}`, { replace: true });
     }
-  }, [routeJobId]);
-
-  useEffect(() => {
-    setReplayDraft(buildReplayDraft(selectedJobId || routeJobId || undefined));
-  }, [selectedJobId, routeJobId]);
+  }, [navigate, routeJobId, selectedJobId]);
 
   const deferredJobId = useDeferredValue(selectedJobId);
   const detailQuery = useQuery<LoadedJobDetail>(
@@ -92,28 +86,28 @@ export function JobDetailPage() {
       if (!deferredJobId) {
         return { state: 'empty' as const, message: 'Select a job to inspect retained detail.' };
       }
-      const requestedRunId = selectedRunId;
+      const requestedRunIdForQuery = requestedRunId;
       const result = await client.getJobDetail(
         deferredJobId,
         {
           filters: toQueryFilters({
             mode,
             require_gpu: 'true',
-            run_id: requestedRunId || undefined,
+            run_id: requestedRunIdForQuery || undefined,
           }),
           signal,
         },
       );
       return result.data
-        ? { ...result, data: { ...result.data, requestedRunId } }
+        ? { ...result, data: { ...result.data, requestedRunId: requestedRunIdForQuery } }
         : result as QueryResult<LoadedJobDetail>;
     },
-    [client, deferredJobId, mode, selectedRunId],
+    [client, deferredJobId, mode, requestedRunId],
   );
   const currentDetail =
     (detailQuery.result.state === 'ready' || detailQuery.result.state === 'degraded') &&
     detailQuery.result.data?.job.id === selectedJobId &&
-    detailQuery.result.data.requestedRunId === selectedRunId
+    detailQuery.result.data.requestedRunId === requestedRunId
       ? detailQuery.result.data
       : undefined;
   const selectedRunBelongsToJob = Boolean(
@@ -127,10 +121,17 @@ export function JobDetailPage() {
       return;
     }
     const resolvedRunId = currentDetail.selectedRunId ?? '';
+    const pendingSelection = pendingRunSelection.current;
+    if (pendingSelection?.jobId === selectedJobId && pendingSelection.runId !== selectedRunId) {
+      return;
+    }
+    if (pendingSelection) {
+      pendingRunSelection.current = null;
+    }
     if (resolvedRunId !== selectedRunId) {
       setRunId(resolvedRunId || undefined);
     }
-  }, [currentDetail, selectedRunId, setRunId]);
+  }, [currentDetail, selectedJobId, selectedRunId, setRunId]);
 
   async function runControlAction(actionKey: string, task: () => Promise<{ state: string; data?: { message?: string; id?: string }; message?: string }>) {
     if (activeControlRequest.current) {
@@ -193,7 +194,6 @@ export function JobDetailPage() {
                     key={job.id}
                     selected={job.id === selectedJobId}
                     onClick={() => {
-                      setSelectedJobId(job.id);
                       void navigate(`/jobs/${job.id}`);
                     }}
                   >
@@ -273,6 +273,7 @@ export function JobDetailPage() {
                           className="button"
                           aria-pressed={run.id === detail.selectedRunId}
                           onClick={() => {
+                            pendingRunSelection.current = { jobId: detail.job.id, runId: run.id };
                             setRunId(run.id);
                           }}
                         >
@@ -406,7 +407,9 @@ export function JobDetailPage() {
               <textarea
                 className="code-editor"
                 value={replayDraft}
-                onChange={(event) => setReplayDraft(event.target.value)}
+                onChange={(event) =>
+                  setReplayDraftState({ jobId: selectedJobId, value: event.target.value })
+                }
                 rows={10}
               />
               <div className="control-row compact">
