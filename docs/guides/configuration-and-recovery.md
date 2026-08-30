@@ -159,7 +159,9 @@ Job Controller 和 Runtime 的 service address，并默认把 `/var/lib/tgsrl-op
 RuntimeClass 写权限。这些工件不部署 Scheduler、Job Controller、Runtime、Kueue 或
 GPU/DRA 控制器。使用 Kubernetes backend 前，部署者必须提供这些依赖，并确认目标集群
 支持生成对象使用的 Kueue `v1beta1` 与 Kubernetes 1.32 风格 DRA
-`resource.k8s.io/v1beta1` API。
+`resource.k8s.io/v1beta1` API。当前编译不会把 Scheduler `device_ids` 转换为通用 DRA
+driver/pool/device 选择表达式，因此 GPU profile 只约束资源类别和数量，不保证精确物理
+GPU 落点。
 
 ## 本地数据目录
 
@@ -197,10 +199,12 @@ mkdir -p .cache/tgsrl/scheduler-state .cache/tgsrl/job-controller .cache/tgsrl/o
 需要特别注意以下边界：
 
 1. **Scheduler 恢复会重建工作，但不会盲目重放副作用。** 启动先恢复 Decision/cursor，
-   再通过完整 Provider 的 `RecoverInFlightPlans` / `ReconcilePlan` 调和未完成 reservation，
-   保存收敛后的 checkpoint，最后按稳定顺序重新排队恢复出的 Intent。已有足够 active
-   allocation 的 Intent 会直接跳过；无法确认完成的 plan 会按失败收敛。该机制没有
-   跨进程事务保证，运维时仍应核对 Decision、reservation 和 Provider 实际状态。
+   再由统一 Plan Executor 对新式 transaction 调用 `ResumeAll`，通过 Provider 的事务 receipt
+   与 `ReconcilePlanTransaction` 收敛 prepare/apply/commit/abort；没有 transaction record 的旧式
+   reservation 才走 `RecoverInFlightPlans` / `ReconcilePlan` 兼容路径。保存 checkpoint 后，
+   Scheduler 按稳定顺序重新排队 Intent。已有足够 active allocation 的 Intent 会直接跳过；
+   无法确认完成的 plan 会按失败或 degraded 收敛。该机制没有跨进程事务保证，运维时仍应
+   核对 Decision、transaction、reservation 和 Provider 实际状态。
 2. **Runtime 的恢复会遍历持久化分页。** Runtime 会保留全局 event sequence（包括空洞）、
    generation、Intent version 与 durable Start 发布水位，并仅补投持久 outbox 中未确认的
    Intent。Runtime checkpoint 记录完成元数据，不是可直接恢复外部训练
@@ -210,9 +214,10 @@ mkdir -p .cache/tgsrl/scheduler-state .cache/tgsrl/job-controller .cache/tgsrl/o
 3. **Operator 先持久化观察交接，再推进 Decision cursor。** `delivery.json` 保存进行中的
    delivery 与可独立恢复的 observation registrations；`backend-controls.json` 保存 lifecycle
    幂等与 revision。进程重启后会恢复注册并继续观察，Kubernetes 模式还会读取现有
-   `JobRunBundle` 补建缺失注册。fake backend 对象随进程退出而消失，所以保留这些文件
-   仍不能恢复其内存对象；跨服务也没有原子事务。容器部署必须为整个 cursor 目录配置
-   持久卷。
+   `JobRunBundle` 补建缺失注册。更新时新 generation 对象全部写入后才清理旧对象并提交
+   marker；terminal observation 持久化后才按 generation 清理对象。fake backend 对象随进程
+   退出而消失，所以保留这些文件仍不能恢复其内存对象；跨服务也没有原子事务。容器部署
+   必须为整个 cursor 目录配置持久卷。
 
 状态损坏或读写失败时，不要删除文件后直接继续。先停止相关服务并保留副本；Scheduler
 会在恢复失败时拒绝启动，持久化写失败后也会阻止后续资源变更。

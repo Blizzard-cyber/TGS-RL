@@ -136,8 +136,12 @@ ResourceProvider 是硬件或基础设施能力边界。通用 Intent、Plan 和
 - **CPU Mock Provider**：支持资源绑定、L1–L4 模拟动作、故障注入、幂等和补偿；
   只提供逻辑资源，不代表真实硬件行为。
 - **NVIDIA Provider + 默认 LocalDriver**：可以通过 `nvidia-smi` 发现本机设备；
-  不声明或执行 bind/release、MIG/MPS、resize 或 Runtime 控制。真实资源管理需要用户
-  提供具备相应能力和回滚语义的基础设施 Driver。
+  不声明或执行 bind/release、MIG/MPS、resize 或 Runtime 控制。
+- **NVIDIA Driver v2（可选）**：Go 侧实现 inventory、MPS/MIG、binding、runtime command、
+  transaction、reconciliation 和审计编排；只有仓库外 `tgsrl-nvidia-*` helper 完成能力
+  握手后才公开相应 action。MPS share 需硬件读回后才形成 observation；MIG L4 helper
+  必须声明完整 safe-point/checkpoint/stop/restore/readiness 事务。helper 和真实 GPU 验证
+  证据未随仓库提供，因此该路径是 Conditional，不是 Supported。
 
 Operator backend 决定 workload 对象的落点：
 
@@ -149,7 +153,8 @@ Operator backend 决定 workload 对象的落点：
 Kubernetes wire contract 使用 Kueue `v1beta1`、Kubernetes 1.32 风格的
 `resource.k8s.io/v1beta1` DRA 和带 `restartPolicy` 的 Job pod spec。部署者必须提供
 Scheduler、Job Controller、Runtime、Kueue 以及所选 GPU/DRA 控制器，并确认目标集群
-支持这些 API。随附部署工件不会安装这些依赖。
+支持这些 API。当前通用对象编译不保证把 Scheduler device ID 映射为 DRA
+driver/pool/device 或精确物理 GPU 落点。随附部署工件不会安装这些依赖。
 
 ## 状态权威与恢复
 

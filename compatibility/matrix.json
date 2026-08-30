@@ -16,7 +16,7 @@
       "id": "local-product-contract",
       "missing_dependencies": [],
       "required_dependencies": [],
-      "status": "verified",
+      "status": "supported",
       "verification_scope": "contract, lifecycle, persistence, and local process integration"
     },
     {
@@ -37,7 +37,7 @@
       "id": "verl-ray-pytorch-vllm-nvidia",
       "missing_dependencies": ["nvidia", "pytorch", "ray", "verl", "vllm"],
       "required_dependencies": ["verl", "ray", "pytorch", "vllm", "nvidia"],
-      "status": "unavailable",
+      "status": "conditional",
       "verification_scope": "adapter and provider boundaries declared; dependencies and hardware are not present in lockfiles"
     },
     {
@@ -58,13 +58,15 @@
       "id": "openrlhf-ray-pytorch-sglang-nvidia",
       "missing_dependencies": ["nvidia", "openrlhf", "pytorch", "ray", "sglang"],
       "required_dependencies": ["openrlhf", "ray", "pytorch", "sglang", "nvidia"],
-      "status": "unavailable",
+      "status": "conditional",
       "verification_scope": "adapter and provider boundaries declared; dependencies and hardware are not present in lockfiles"
     }
   ],
   "policy": {
-    "unavailable": "A declared product boundary whose external dependency is absent from committed lockfiles or whose hardware evidence is unavailable.",
-    "verified": "Executed by repository tests named in evidence; scope is limited to those tests."
+    "supported": "Implementation and evidence are available for the declared target environment.",
+    "implemented-hardware-verification-pending": "The implementation and simulated conformance evidence exist, but no target hardware result is recorded.",
+    "conditional": "The integration requires external components listed in required_dependencies.",
+    "unsupported": "The capability is not implemented or is outside the current product scope."
   },
   "schema_version": "tgsrl.io/compatibility-matrix/v1alpha1"
 }

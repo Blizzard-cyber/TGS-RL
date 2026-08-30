@@ -190,9 +190,9 @@ generation 和 cursor，并在恢复后核对 Decision、Provider 与 backend �
 |---|---|---|
 | 单机完整控制链 | **支持** | 使用 CPU Mock Provider 与 fake Operator backend；不创建真实 GPU 或 Kubernetes 资源 |
 | HTTP、CLI、SDK、Console | **支持** | Gateway 必须能访问对应 gRPC 服务；内存模式和浏览器 Mock 仅用于无持久化预览 |
-| NVIDIA | **仅设备发现** | 默认 LocalDriver 可通过 `nvidia-smi` 读取设备，但不执行 bind/release、MIG/MPS 或 Runtime 控制；仓库未提供真实 GPU 分配、训练执行、性能或恢复验证证据，真实资源动作需要另行提供基础设施 Driver |
+| NVIDIA | **有条件** | 默认 `LocalDriver` 只做 `nvidia-smi` 发现；可选 Driver v2 的 MPS `set_share` 要求读回确认，MIG 重配置要求完整 lifecycle handshake；所有写路径仍依赖仓库外 `tgsrl-nvidia-*` helper，且尚无真实 GPU/CUDA 验证证据 |
 | 外部训练框架 | **有条件支持** | veRL、OpenRLHF、Ray、PyTorch、vLLM、SGLang adapter 需要对应 Python 包、provider hook、执行后端和资源控制；本项目不提供开箱即用的训练组合 |
-| Kubernetes Operator | **有条件支持** | 部署工件只安装 Operator；还需部署 Scheduler、Job Controller、Runtime、Kueue 及所选 GPU/DRA 组件，并确认目标集群 API 兼容性 |
+| Kubernetes Operator | **有条件支持** | 每个 binding 物化独立 generation-scoped workload；部署工件只安装 Operator，还需部署 Scheduler、Job Controller、Runtime、Kueue 及所选 GPU/DRA 组件。通用 profile 不承诺 Scheduler device ID 的精确物理落点 |
 | 公网或多租户服务 | **不支持直接部署** | HTTP/gRPC/metrics 无 TLS、认证、授权、租户隔离和限流；必须通过受控网络与外部安全层访问 |
 | 性能与训练效果承诺 | **不提供** | Mock、Synthetic 和 Replay 结果不能用于推断真实 GPU 吞吐、利用率、收敛质量、成本或 wall-clock 收益 |
 

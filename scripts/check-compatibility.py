@@ -14,7 +14,11 @@ MATRIX = ROOT / "compatibility" / "matrix.json"
 COMPOSE = ROOT / "compose.yaml"
 OPERATOR_DOCKERFILE = ROOT / "Dockerfile.operator"
 BOM = ROOT / "compatibility" / "bom" / "runtime.yaml"
-ALLOWED_STATUS = {"verified", "unavailable"}
+SUPPORTED = "supported"
+HARDWARE_PENDING = "implemented-hardware-verification-pending"
+CONDITIONAL = "conditional"
+UNSUPPORTED = "unsupported"
+ALLOWED_STATUS = {SUPPORTED, HARDWARE_PENDING, CONDITIONAL, UNSUPPORTED}
 REAL_COMPONENTS = {"verl", "openrlhf", "ray", "pytorch", "vllm", "sglang", "nvidia"}
 
 
@@ -78,20 +82,22 @@ def validate_matrix(data: dict[str, Any], errors: list[str]) -> None:
             errors.append(f"{combination_id}: required_dependencies must be string list")
             continue
         expected_missing = sorted(name for name in required if name.lower() not in locks)
-        if status == "unavailable" and sorted(missing) != expected_missing:
+        if status in {HARDWARE_PENDING, CONDITIONAL} and sorted(missing) != expected_missing:
             errors.append(
                 f"{combination_id}: missing_dependencies must equal "
                 f"lockfile gaps {expected_missing}"
             )
-        if status == "verified" and expected_missing:
+        if status == SUPPORTED and expected_missing:
             errors.append(
-                f"{combination_id}: verified claim has missing dependencies {expected_missing}"
+                f"{combination_id}: supported claim has missing dependencies {expected_missing}"
             )
-        if status == "verified" and values & REAL_COMPONENTS:
+        if status == SUPPORTED and values & REAL_COMPONENTS:
             errors.append(
                 f"{combination_id}: real dependency combination cannot be "
-                "verified by this offline gate"
+                "marked supported by this offline gate"
             )
+        if status == HARDWARE_PENDING and not values & REAL_COMPONENTS:
+            errors.append(f"{combination_id}: hardware-pending status requires a real component")
     missing_components = sorted(REAL_COMPONENTS - covered)
     if missing_components:
         errors.append(f"matrix: declared real components are not covered: {missing_components}")

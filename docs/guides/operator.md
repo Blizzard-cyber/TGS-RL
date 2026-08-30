@@ -28,7 +28,6 @@ Operator 同时运行两个长期服务：它订阅 Scheduler Decision，并在 
 |---|---|---|
 | `-mode` | `kubernetes` | `fake` 或 `kubernetes` backend |
 | `-controller` | `true` | 是否运行 decision reconcile loop；关闭时仍提供 backend lifecycle control gRPC |
-| `-admission` | `true` | 启用默认队列的 admission/preemption 许可；当前内置队列未注入运行中 victim 列表 |
 | `-scheduler` | `127.0.0.1:50051` | Scheduler gRPC target |
 | `-control` | `127.0.0.1:50061` | Job Controller gRPC target |
 | `-runtime` | `127.0.0.1:50071` | Runtime gRPC target |
@@ -58,8 +57,10 @@ flowchart LR
 ```
 
 只有包含 selected plan、至少一个 action result、所有 action 均成功且非 fallback 的
-Decision 会进入调和路径。编译输入使用 `run_id`、`job_id`、generation、镜像 digest、
-资源 binding 和互斥 GPU profile；重复 generation 和相同 fingerprint 是幂等操作。观察
+Decision 会进入调和路径。每个 concrete binding 会编译为一个独立 bundle 和单副本
+Workload/Job，避免不同设备、资源或 generation 的副本被错误聚合。bundle key 由
+`pending_unit_id` 稳定派生，Workload、Job 与 ResourceClaim 名称包含 generation；重复
+generation 和相同 fingerprint 是幂等操作。观察
 注册在 cursor 推进前落盘，之后由独立 watcher 读取 backend；因此 cursor 已推进不代表
 Sandbox 已经收敛。
 
@@ -88,6 +89,10 @@ Kubernetes wire payload 明确约束为：
 Kubernetes observer 通过轮询读取 Workload、Job 和可选 ResourceClaim，在准入、claim
 分配及 Job active 条件满足后发布 Bound/Running；失败和完成也由观察状态投影。仓库的
 本地 HTTP 合同测试覆盖这些 JSON 约定，但仍没有真实 Kubernetes/Kueue/DRA 集群 E2E。
+Scheduler binding 中的 `device_ids` 会保留在 bundle 的 RuntimeTarget 审计信息中，但当前
+Device Plugin、DRA 与 HAMi 编译只表达资源类别、profile 和数量，不保证将该 ID 映射到
+DRA 的 driver/pool/device 或精确物理 GPU。需要固定物理设备的部署必须由对应驱动和
+集群策略提供可验证的选择机制。
 
 ## Kubernetes 部署工件
 
@@ -175,7 +180,12 @@ sequence 和 cursor 原子写入 `decision-cursor.json`。状态目录还包括�
 
 - fake backend 的对象随进程退出而消失，ledger 不能重建这些内存对象；
 - Kubernetes backend 会列出现有 `JobRunBundle`，并可为其中带 runtime target 的 bundle
-  补建 observation registration，但不会在启动时主动重新编译所有对象；
+  补建 observation registration，但不会在启动时主动重新编译所有对象；高 generation
+  注册会替换同一 bundle 的旧 watcher，旧 watcher 不能清理新 generation；
+- 更新同一 bundle 时先创建新 generation 的全部对象，再清理旧对象，最后更新 marker；
+  如果新对象创建失败，旧 workload 与旧 marker 保持不变；
+- Runtime 持久化 terminal observation 后，Operator 才执行 generation-fenced cleanup，删除
+  该 bundle 的 Job、Workload、ResourceClaim 和 marker；共享 RuntimeClass 不随单 bundle 删除；
 - backend、Operator ledger、Runtime SQLite 与 Job Controller 文件之间没有分布式事务；
 - 若 Decision 在 observation registration 落盘前失败，它不会推进 cursor；若注册已落盘，
   watcher 可在重启后继续发布观察事件。

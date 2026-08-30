@@ -105,6 +105,8 @@ unit 推进到 requested/starting、持久化 generation/幂等信息并发布�
 资源分配前从 Runtime 进程直接启动 manifest command。pause/resume/stop/terminate 由 Runtime
 转发到 Operator 的 generation-fenced backend control，最终 unit/sandbox 状态只由观察到的
 `SandboxEvent` 推进。`checkpoint` 记录完成元数据和 digest，不是外部训练进程镜像。
+`ValidateRuntime` 会把任一所选 adapter 的 `UNAVAILABLE` 或 `UNSUPPORTED` 结果判为无效，
+且不会持久化该 manifest；`CompileRuntime` 会重复执行同一结构化能力检查，不能绕过准入。
 
 仅安装对应 Python 模块不足以启动训练。使用这些 Adapter 时必须同时提供可用的 provider
 hook、分布式执行环境、镜像/命令和 GPU 资源控制；缺少依赖或 hook 时 Adapter 返回

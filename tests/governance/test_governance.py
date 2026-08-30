@@ -43,9 +43,9 @@ def test_compatibility_claims_are_evidence_backed() -> None:
 
     matrix = json.loads((ROOT / "compatibility" / "matrix.json").read_text(encoding="utf-8"))
     statuses = {item["id"]: item["status"] for item in matrix["combinations"]}
-    assert statuses["local-product-contract"] == "verified"
-    assert statuses["verl-ray-pytorch-vllm-nvidia"] == "unavailable"
-    assert statuses["openrlhf-ray-pytorch-sglang-nvidia"] == "unavailable"
+    assert statuses["local-product-contract"] == "supported"
+    assert statuses["verl-ray-pytorch-vllm-nvidia"] == "conditional"
+    assert statuses["openrlhf-ray-pytorch-sglang-nvidia"] == "conditional"
 
 
 def test_dockerfile_platform_flag_does_not_hide_unpinned_images() -> None:

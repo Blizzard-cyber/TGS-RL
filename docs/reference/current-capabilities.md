@@ -2,9 +2,11 @@
 
 本页用于选择适合的 TGS-RL 使用方案。状态含义如下：
 
-- **支持**：项目提供可直接使用的实现和所需运行工件。
-- **有条件支持**：接口或后端可用，但用户必须提供表中列出的外部依赖与集成。
-- **不支持**：不要依赖该能力，也不要把本项目输出解释为对应保证。
+- **支持（Supported）**：实现完成，并在目标环境获得了对应验证证据。
+- **已实现，待硬件验证（Implemented, hardware verification pending）**：代码与模拟/CPU
+  验证完成，但尚无目标硬件证据。
+- **有条件（Conditional）**：实现依赖仓库外组件、特定版本或部署方集成。
+- **不支持（Unsupported）**：尚未实现，或明确不在当前范围内。
 
 ## 功能支持矩阵
 
@@ -19,7 +21,8 @@
 | HTTP Gateway | **支持** | Job、Run、Timeline、DAG、Topology、Sandbox、Decision、Replay、Experiment、OpenAPI、CLI 与 Python SDK | gRPC 模式要求四个逻辑后端可达；内存模式不持久化 |
 | Web Console | **支持** | 概览、任务详情、时间线、拓扑、Sandbox、Decision、实验比较，以及 Job/Run 准入和生命周期操作 | 静态 `mock` adapter 不访问 Gateway；静态部署需自行提供同源 API 代理 |
 | CPU Mock Provider | **支持** | 能力匹配、逻辑资源绑定、L1–L4 逻辑模拟动作、故障注入、generation fence 和逐动作 rollback | Adaptive Planner 会在满足观测、能力与安全条件时生成 L1–L4 动作；这些结果只验证控制逻辑，不代表真实硬件行为或性能 |
-| NVIDIA Provider | **有条件支持：设备发现** | 默认 LocalDriver 可通过 `nvidia-smi` 形成设备快照 | LocalDriver 不声明或执行 bind/release、MIG/MPS share、resize 或 Runtime 控制；仓库未提供真实 GPU 分配、训练执行、性能或恢复验证证据，资源操作需要自定义基础设施 Driver |
+| NVIDIA Provider（默认） | **有条件（Conditional）** | `LocalDriver` 可通过 `nvidia-smi` 形成设备快照 | 需要 NVIDIA 驱动和 `nvidia-smi`；默认不声明资源动作 |
+| NVIDIA Driver v2 | **有条件（Conditional）** | 已实现 inventory、MPS `set_share` 写入与读回、MIG、binding、runtime command、事务、幂等、超时、回滚、重启发现、dry-run 与审计的 Go 编排及 fake conformance 测试 | 实际动作依赖仓库外 `tgsrl-nvidia-binding`、`tgsrl-nvidia-runtime`、`tgsrl-nvidia-mig` helper；MPS 不公开通用 `resize`，MIG L4 需 helper 声明完整 lifecycle transaction；仓库尚未提供这些 helper，也没有真实 NVIDIA/CUDA 证据，因此不能标记为“已实现，待硬件验证”或“支持” |
 | 外部 Runtime Adapter | **有条件支持** | veRL、OpenRLHF、Ray、PyTorch、vLLM、SGLang 的依赖检查、manifest 校验和 typed lifecycle bridge | 必须安装对应 Python 包，并提供可用的 provider hook、执行后端、分布式环境和资源控制 |
 | Kubernetes Operator | **有条件支持** | 编译和调和 `JobRunBundle`、Kueue `Workload`、Kubernetes `Job`、可选 `ResourceClaim`/`RuntimeClass`，并观察状态 | 用户必须提供其余 TGS-RL 服务、兼容的 Kubernetes API、Kueue 和所选 GPU/DRA 组件；随附工件只部署 Operator |
 
@@ -69,11 +72,22 @@ Helm 默认使用 namespace 范围的 RBAC。只有在设置 `runtimeClassCreate
 最小的 cluster-scoped RuntimeClass 写权限；否则应预先创建并引用 RuntimeClass。部署者
 需要先在目标集群确认 API 版本、RBAC、StorageClass、准入策略和 GPU 控制器兼容性。
 
+## NVIDIA Driver v2 启用条件
+
+Scheduler 可通过 `-nvidia-driver-v2` 选择 v2 编排，默认分区模式是 MPS，也可选择 MIG。
+启动后只有 helper 的 capability handshake、generation fencing、幂等与 durable receipt 条件
+全部满足时，Provider 才会公开对应 action。helper 缺失或协议不匹配时返回 unavailable，
+不会静默回退到模拟成功。`-nvidia-dry-run` 只验证命令计划，不能生成 GPU 通过证据。
+MPS `set_share` 必须在写入后读回实际 active-thread percentage，事务提交后才发布该字段的
+Sandbox observation；通用 `resize` 当前不由 MPS 暴露。MIG `rebind/recreate` 只有在 helper
+同时声明 safe-point、checkpoint、stop、restore 和 readiness 时才可用。
+
 ## 明确不支持
 
 - 直接把 Gateway、gRPC 或 Prometheus 端点暴露到公网或不可信共享网络；
 - 内置 TLS、身份认证、授权、多租户隔离、CORS 策略、限流或密钥管理；
-- 使用默认 NVIDIA LocalDriver 执行 GPU 分配、MIG/MPS 管理或 Runtime lifecycle；
+- 在未安装并验证外部 helper 时使用 NVIDIA Driver v2 执行 GPU 分配、MIG/MPS 管理或
+  Runtime lifecycle；
 - 把 `nvidia-smi` 设备发现、Mock 行为或单元测试解释为真实 GPU 调度与执行验证；
 - 依靠 fake backend 在进程重启后恢复 workload 对象；
 - 跨服务原子事务、自动故障转移、HA 或灾备；

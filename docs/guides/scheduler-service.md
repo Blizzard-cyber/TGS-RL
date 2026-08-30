@@ -174,9 +174,10 @@ Medium Planner 处理 pause、resume、sleep 与 offload；Slow Planner 处理 r
 默认 policy 还启用 mutation protection：按 execution/stage 应用 cooldown、hysteresis、
 时间窗 action budget 和 circuit breaker。保护拒绝会形成带 `PROTECTION_*` 原因的 fallback。
 可选择 `low_priority_first` preemption 候选策略，并应用 safe-point/capability 检查；
-默认 CPU Mock policy 将 preemption 关闭为 `noop`。Store 不能原子表达“释放 victim
-并预留 replacement”，所以即使显式启用也会 fail closed 为
-`PREEMPTION_NOT_EXPRESSIBLE`，不会执行 release-only 计划。
+默认 CPU Mock policy 将 preemption 关闭为 `noop`。显式启用时，Store 在一个逻辑事务中
+锁定 victim、预留 replacement capacity 并校验 expected revision；Provider 按有序 action
+执行并在失败时补偿。物理操作本身不是分布式原子事务，补偿失败会进入显式 degraded
+状态并保留审计证据。
 
 路径和环境变量详见[配置、持久化与恢复](configuration-and-recovery.md)。
 
@@ -195,15 +196,22 @@ resource/sandbox watch；执行 action 时先调用 Driver，再提交 Provider 
 不声明 supported actions，并拒绝 bind/release、MIG/MPS share/resize 和 Runtime 控制。
 
 因此默认 NVIDIA 方案只支持设备发现，不能分配 GPU 或运行训练。要执行资源动作，
-用户必须提供基础设施专用 Driver，并为其声明的 action 实现幂等、回滚、调和与隔离语义。
+可显式启用 `-nvidia-driver-v2`。v2 已实现 Go 侧 inventory、MPS/MIG、binding、runtime
+command、事务、幂等、超时、回滚、重启发现、dry-run 和审计编排，但实际动作依赖
+仓库外的 `tgsrl-nvidia-binding`、`tgsrl-nvidia-runtime` 与 `tgsrl-nvidia-mig` helper。
+Provider 只会公开 helper 握手确认的 action；helper 缺失、协议不匹配或能力不完整时
+明确返回 unavailable。MPS 当前只公开带 active-thread percentage 读回校验的
+`set_share`；通用 `resize` 不作为 MPS 能力公开。MIG `rebind/recreate` helper 还必须显式
+声明 safe-point、checkpoint、stop、restore、readiness、durable receipt、generation fence 和
+idempotency，才会公开对应 L4 action。仓库当前没有真实 NVIDIA/CUDA 验证证据。
 
 ## 持久化与恢复
 
 Scheduler 在 `-state-dir` 下维护 checkpoint 与 journal，并在监听请求前恢复 Snapshot、
-Intent、Decision、action result、cursor 和 reservation。启动恢复会先向完整 Provider
-查询或调和未完成 plan，把 reservation 收敛为成功或失败并保存 checkpoint；随后按稳定
-顺序把恢复出的 Intent 重新送入同一权威调度路径。已由恢复 allocation 满足的 Intent
-会被跳过，避免重复执行 bind。无法确认的 in-flight plan 会 fail closed 为失败，不会盲目
-重放外部副作用。持久化失败会关闭后续 mutation 入口；损坏、I/O 或 Provider 调和错误
-会使启动失败。完整恢复边界见
+Intent、Decision、action result、cursor、reservation 和 transaction。启动恢复由统一 Plan
+Executor 调和新式 transaction；旧式 reservation 才使用 Provider 兼容恢复接口。每个外部
+step 前后都会持久化 transaction 状态，无法确认的 effect 不会被盲目重放。收敛并保存
+checkpoint 后，Scheduler 按稳定顺序重新送入恢复出的 Intent；已由 active allocation 满足的
+Intent 会被跳过。持久化失败会关闭后续 mutation 入口；损坏、I/O 或 Provider 调和错误会
+使启动失败。完整恢复边界见
 [配置、持久化与恢复](configuration-and-recovery.md)。
