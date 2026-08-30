@@ -112,6 +112,14 @@ message Allocation {
   string decision_id = 17;
   string plan_id = 18;
   string action_id = 19;
+  optional int32 priority = 20;
+  // sandbox_id is the stable runtime target used by fenced lifecycle and
+  // preemption actions. Legacy allocations may leave it empty and therefore
+  // remain ineligible for destructive replacement.
+  string sandbox_id = 21;
+  // binding_id preserves the provider binding identity required to restore a
+  // preempted allocation exactly. Legacy allocations may leave it empty.
+  string binding_id = 22;
 }
 
 // PendingUnit is a device-independent unit waiting to be placed.

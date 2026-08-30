@@ -24,8 +24,11 @@ const (
 	RuntimeControlService_PrepareRuntime_FullMethodName      = "/tgsrl.v1.RuntimeControlService/PrepareRuntime"
 	RuntimeControlService_StartRuntime_FullMethodName        = "/tgsrl.v1.RuntimeControlService/StartRuntime"
 	RuntimeControlService_PauseRuntime_FullMethodName        = "/tgsrl.v1.RuntimeControlService/PauseRuntime"
+	RuntimeControlService_PreparePauseRuntime_FullMethodName = "/tgsrl.v1.RuntimeControlService/PreparePauseRuntime"
 	RuntimeControlService_ResumeRuntime_FullMethodName       = "/tgsrl.v1.RuntimeControlService/ResumeRuntime"
 	RuntimeControlService_CheckpointRuntime_FullMethodName   = "/tgsrl.v1.RuntimeControlService/CheckpointRuntime"
+	RuntimeControlService_OffloadRuntime_FullMethodName      = "/tgsrl.v1.RuntimeControlService/OffloadRuntime"
+	RuntimeControlService_ReloadRuntime_FullMethodName       = "/tgsrl.v1.RuntimeControlService/ReloadRuntime"
 	RuntimeControlService_StopRuntime_FullMethodName         = "/tgsrl.v1.RuntimeControlService/StopRuntime"
 	RuntimeControlService_TerminateRuntime_FullMethodName    = "/tgsrl.v1.RuntimeControlService/TerminateRuntime"
 	RuntimeControlService_GetRuntimeManifest_FullMethodName  = "/tgsrl.v1.RuntimeControlService/GetRuntimeManifest"
@@ -48,8 +51,11 @@ type RuntimeControlServiceClient interface {
 	PrepareRuntime(ctx context.Context, in *PrepareRuntimeRequest, opts ...grpc.CallOption) (*PrepareRuntimeResponse, error)
 	StartRuntime(ctx context.Context, in *StartRuntimeRequest, opts ...grpc.CallOption) (*StartRuntimeResponse, error)
 	PauseRuntime(ctx context.Context, in *PauseRuntimeRequest, opts ...grpc.CallOption) (*PauseRuntimeResponse, error)
+	PreparePauseRuntime(ctx context.Context, in *PreparePauseRuntimeRequest, opts ...grpc.CallOption) (*PreparePauseRuntimeResponse, error)
 	ResumeRuntime(ctx context.Context, in *ResumeRuntimeRequest, opts ...grpc.CallOption) (*ResumeRuntimeResponse, error)
 	CheckpointRuntime(ctx context.Context, in *CheckpointRuntimeRequest, opts ...grpc.CallOption) (*CheckpointRuntimeResponse, error)
+	OffloadRuntime(ctx context.Context, in *OffloadRuntimeRequest, opts ...grpc.CallOption) (*OffloadRuntimeResponse, error)
+	ReloadRuntime(ctx context.Context, in *ReloadRuntimeRequest, opts ...grpc.CallOption) (*ReloadRuntimeResponse, error)
 	StopRuntime(ctx context.Context, in *StopRuntimeRequest, opts ...grpc.CallOption) (*StopRuntimeResponse, error)
 	TerminateRuntime(ctx context.Context, in *TerminateRuntimeRequest, opts ...grpc.CallOption) (*TerminateRuntimeResponse, error)
 	GetRuntimeManifest(ctx context.Context, in *GetRuntimeManifestRequest, opts ...grpc.CallOption) (*GetRuntimeManifestResponse, error)
@@ -118,6 +124,16 @@ func (c *runtimeControlServiceClient) PauseRuntime(ctx context.Context, in *Paus
 	return out, nil
 }
 
+func (c *runtimeControlServiceClient) PreparePauseRuntime(ctx context.Context, in *PreparePauseRuntimeRequest, opts ...grpc.CallOption) (*PreparePauseRuntimeResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(PreparePauseRuntimeResponse)
+	err := c.cc.Invoke(ctx, RuntimeControlService_PreparePauseRuntime_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (c *runtimeControlServiceClient) ResumeRuntime(ctx context.Context, in *ResumeRuntimeRequest, opts ...grpc.CallOption) (*ResumeRuntimeResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(ResumeRuntimeResponse)
@@ -132,6 +148,26 @@ func (c *runtimeControlServiceClient) CheckpointRuntime(ctx context.Context, in 
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(CheckpointRuntimeResponse)
 	err := c.cc.Invoke(ctx, RuntimeControlService_CheckpointRuntime_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *runtimeControlServiceClient) OffloadRuntime(ctx context.Context, in *OffloadRuntimeRequest, opts ...grpc.CallOption) (*OffloadRuntimeResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(OffloadRuntimeResponse)
+	err := c.cc.Invoke(ctx, RuntimeControlService_OffloadRuntime_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *runtimeControlServiceClient) ReloadRuntime(ctx context.Context, in *ReloadRuntimeRequest, opts ...grpc.CallOption) (*ReloadRuntimeResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ReloadRuntimeResponse)
+	err := c.cc.Invoke(ctx, RuntimeControlService_ReloadRuntime_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -239,8 +275,11 @@ type RuntimeControlServiceServer interface {
 	PrepareRuntime(context.Context, *PrepareRuntimeRequest) (*PrepareRuntimeResponse, error)
 	StartRuntime(context.Context, *StartRuntimeRequest) (*StartRuntimeResponse, error)
 	PauseRuntime(context.Context, *PauseRuntimeRequest) (*PauseRuntimeResponse, error)
+	PreparePauseRuntime(context.Context, *PreparePauseRuntimeRequest) (*PreparePauseRuntimeResponse, error)
 	ResumeRuntime(context.Context, *ResumeRuntimeRequest) (*ResumeRuntimeResponse, error)
 	CheckpointRuntime(context.Context, *CheckpointRuntimeRequest) (*CheckpointRuntimeResponse, error)
+	OffloadRuntime(context.Context, *OffloadRuntimeRequest) (*OffloadRuntimeResponse, error)
+	ReloadRuntime(context.Context, *ReloadRuntimeRequest) (*ReloadRuntimeResponse, error)
 	StopRuntime(context.Context, *StopRuntimeRequest) (*StopRuntimeResponse, error)
 	TerminateRuntime(context.Context, *TerminateRuntimeRequest) (*TerminateRuntimeResponse, error)
 	GetRuntimeManifest(context.Context, *GetRuntimeManifestRequest) (*GetRuntimeManifestResponse, error)
@@ -274,11 +313,20 @@ func (UnimplementedRuntimeControlServiceServer) StartRuntime(context.Context, *S
 func (UnimplementedRuntimeControlServiceServer) PauseRuntime(context.Context, *PauseRuntimeRequest) (*PauseRuntimeResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method PauseRuntime not implemented")
 }
+func (UnimplementedRuntimeControlServiceServer) PreparePauseRuntime(context.Context, *PreparePauseRuntimeRequest) (*PreparePauseRuntimeResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method PreparePauseRuntime not implemented")
+}
 func (UnimplementedRuntimeControlServiceServer) ResumeRuntime(context.Context, *ResumeRuntimeRequest) (*ResumeRuntimeResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method ResumeRuntime not implemented")
 }
 func (UnimplementedRuntimeControlServiceServer) CheckpointRuntime(context.Context, *CheckpointRuntimeRequest) (*CheckpointRuntimeResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method CheckpointRuntime not implemented")
+}
+func (UnimplementedRuntimeControlServiceServer) OffloadRuntime(context.Context, *OffloadRuntimeRequest) (*OffloadRuntimeResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method OffloadRuntime not implemented")
+}
+func (UnimplementedRuntimeControlServiceServer) ReloadRuntime(context.Context, *ReloadRuntimeRequest) (*ReloadRuntimeResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method ReloadRuntime not implemented")
 }
 func (UnimplementedRuntimeControlServiceServer) StopRuntime(context.Context, *StopRuntimeRequest) (*StopRuntimeResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method StopRuntime not implemented")
@@ -415,6 +463,24 @@ func _RuntimeControlService_PauseRuntime_Handler(srv interface{}, ctx context.Co
 	return interceptor(ctx, in, info, handler)
 }
 
+func _RuntimeControlService_PreparePauseRuntime_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(PreparePauseRuntimeRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(RuntimeControlServiceServer).PreparePauseRuntime(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: RuntimeControlService_PreparePauseRuntime_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(RuntimeControlServiceServer).PreparePauseRuntime(ctx, req.(*PreparePauseRuntimeRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 func _RuntimeControlService_ResumeRuntime_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(ResumeRuntimeRequest)
 	if err := dec(in); err != nil {
@@ -447,6 +513,42 @@ func _RuntimeControlService_CheckpointRuntime_Handler(srv interface{}, ctx conte
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
 		return srv.(RuntimeControlServiceServer).CheckpointRuntime(ctx, req.(*CheckpointRuntimeRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _RuntimeControlService_OffloadRuntime_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(OffloadRuntimeRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(RuntimeControlServiceServer).OffloadRuntime(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: RuntimeControlService_OffloadRuntime_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(RuntimeControlServiceServer).OffloadRuntime(ctx, req.(*OffloadRuntimeRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _RuntimeControlService_ReloadRuntime_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ReloadRuntimeRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(RuntimeControlServiceServer).ReloadRuntime(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: RuntimeControlService_ReloadRuntime_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(RuntimeControlServiceServer).ReloadRuntime(ctx, req.(*ReloadRuntimeRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
@@ -616,12 +718,24 @@ var RuntimeControlService_ServiceDesc = grpc.ServiceDesc{
 			Handler:    _RuntimeControlService_PauseRuntime_Handler,
 		},
 		{
+			MethodName: "PreparePauseRuntime",
+			Handler:    _RuntimeControlService_PreparePauseRuntime_Handler,
+		},
+		{
 			MethodName: "ResumeRuntime",
 			Handler:    _RuntimeControlService_ResumeRuntime_Handler,
 		},
 		{
 			MethodName: "CheckpointRuntime",
 			Handler:    _RuntimeControlService_CheckpointRuntime_Handler,
+		},
+		{
+			MethodName: "OffloadRuntime",
+			Handler:    _RuntimeControlService_OffloadRuntime_Handler,
+		},
+		{
+			MethodName: "ReloadRuntime",
+			Handler:    _RuntimeControlService_ReloadRuntime_Handler,
 		},
 		{
 			MethodName: "StopRuntime",
@@ -659,5 +773,114 @@ var RuntimeControlService_ServiceDesc = grpc.ServiceDesc{
 			ServerStreams: true,
 		},
 	},
+	Metadata: "tgsrl/v1/runtime.proto",
+}
+
+const (
+	SchedulerObservationService_ObserveSandbox_FullMethodName = "/tgsrl.v1.SchedulerObservationService/ObserveSandbox"
+)
+
+// SchedulerObservationServiceClient is the client API for SchedulerObservationService service.
+//
+// For semantics around ctx use and closing/ending streaming RPCs, please refer to https://pkg.go.dev/google.golang.org/grpc/?tab=doc#ClientConn.NewStream.
+//
+// SchedulerObservationService projects execution-substrate observations into
+// the scheduler provider and its authoritative resource snapshot.
+type SchedulerObservationServiceClient interface {
+	ObserveSandbox(ctx context.Context, in *ObserveSandboxRequest, opts ...grpc.CallOption) (*ObserveSandboxResponse, error)
+}
+
+type schedulerObservationServiceClient struct {
+	cc grpc.ClientConnInterface
+}
+
+func NewSchedulerObservationServiceClient(cc grpc.ClientConnInterface) SchedulerObservationServiceClient {
+	return &schedulerObservationServiceClient{cc}
+}
+
+func (c *schedulerObservationServiceClient) ObserveSandbox(ctx context.Context, in *ObserveSandboxRequest, opts ...grpc.CallOption) (*ObserveSandboxResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ObserveSandboxResponse)
+	err := c.cc.Invoke(ctx, SchedulerObservationService_ObserveSandbox_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+// SchedulerObservationServiceServer is the server API for SchedulerObservationService service.
+// All implementations must embed UnimplementedSchedulerObservationServiceServer
+// for forward compatibility.
+//
+// SchedulerObservationService projects execution-substrate observations into
+// the scheduler provider and its authoritative resource snapshot.
+type SchedulerObservationServiceServer interface {
+	ObserveSandbox(context.Context, *ObserveSandboxRequest) (*ObserveSandboxResponse, error)
+	mustEmbedUnimplementedSchedulerObservationServiceServer()
+}
+
+// UnimplementedSchedulerObservationServiceServer must be embedded to have
+// forward compatible implementations.
+//
+// NOTE: this should be embedded by value instead of pointer to avoid a nil
+// pointer dereference when methods are called.
+type UnimplementedSchedulerObservationServiceServer struct{}
+
+func (UnimplementedSchedulerObservationServiceServer) ObserveSandbox(context.Context, *ObserveSandboxRequest) (*ObserveSandboxResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method ObserveSandbox not implemented")
+}
+func (UnimplementedSchedulerObservationServiceServer) mustEmbedUnimplementedSchedulerObservationServiceServer() {
+}
+func (UnimplementedSchedulerObservationServiceServer) testEmbeddedByValue() {}
+
+// UnsafeSchedulerObservationServiceServer may be embedded to opt out of forward compatibility for this service.
+// Use of this interface is not recommended, as added methods to SchedulerObservationServiceServer will
+// result in compilation errors.
+type UnsafeSchedulerObservationServiceServer interface {
+	mustEmbedUnimplementedSchedulerObservationServiceServer()
+}
+
+func RegisterSchedulerObservationServiceServer(s grpc.ServiceRegistrar, srv SchedulerObservationServiceServer) {
+	// If the following call pancis, it indicates UnimplementedSchedulerObservationServiceServer was
+	// embedded by pointer and is nil.  This will cause panics if an
+	// unimplemented method is ever invoked, so we test this at initialization
+	// time to prevent it from happening at runtime later due to I/O.
+	if t, ok := srv.(interface{ testEmbeddedByValue() }); ok {
+		t.testEmbeddedByValue()
+	}
+	s.RegisterService(&SchedulerObservationService_ServiceDesc, srv)
+}
+
+func _SchedulerObservationService_ObserveSandbox_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ObserveSandboxRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(SchedulerObservationServiceServer).ObserveSandbox(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: SchedulerObservationService_ObserveSandbox_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(SchedulerObservationServiceServer).ObserveSandbox(ctx, req.(*ObserveSandboxRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+// SchedulerObservationService_ServiceDesc is the grpc.ServiceDesc for SchedulerObservationService service.
+// It's only intended for direct use with grpc.RegisterService,
+// and not to be introspected or modified (even as a copy)
+var SchedulerObservationService_ServiceDesc = grpc.ServiceDesc{
+	ServiceName: "tgsrl.v1.SchedulerObservationService",
+	HandlerType: (*SchedulerObservationServiceServer)(nil),
+	Methods: []grpc.MethodDesc{
+		{
+			MethodName: "ObserveSandbox",
+			Handler:    _SchedulerObservationService_ObserveSandbox_Handler,
+		},
+	},
+	Streams:  []grpc.StreamDesc{},
 	Metadata: "tgsrl/v1/runtime.proto",
 }

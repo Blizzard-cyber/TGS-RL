@@ -54,6 +54,55 @@ def _read_frame(stream: BytesIO) -> bytes:
     return payload
 
 
+def _wire_contains_allocation_priority(payload: bytes) -> bool:
+    stream = BytesIO(payload)
+    while True:
+        first = stream.read(1)
+        if not first:
+            return False
+        key = first[0]
+        field_number = key >> 3
+        wire_type = key & 0x07
+        shift = 4
+        while key & 0x80:
+            continuation = stream.read(1)
+            if not continuation:
+                raise SystemExit("truncated allocation field key")
+            key = continuation[0]
+            field_number |= (key & 0x7F) << shift
+            shift += 7
+        if field_number == 20:
+            return True
+        if wire_type == 0:
+            while True:
+                byte = stream.read(1)
+                if not byte:
+                    raise SystemExit("truncated allocation varint field")
+                if byte[0] < 0x80:
+                    break
+        elif wire_type == 1:
+            if len(stream.read(8)) != 8:
+                raise SystemExit("truncated allocation fixed64 field")
+        elif wire_type == 2:
+            length = 0
+            shift = 0
+            while True:
+                byte = stream.read(1)
+                if not byte:
+                    raise SystemExit("truncated allocation length-delimited field")
+                length |= (byte[0] & 0x7F) << shift
+                if byte[0] < 0x80:
+                    break
+                shift += 7
+            if len(stream.read(length)) != length:
+                raise SystemExit("truncated allocation length-delimited payload")
+        elif wire_type == 5:
+            if len(stream.read(4)) != 4:
+                raise SystemExit("truncated allocation fixed32 field")
+        else:
+            raise SystemExit(f"unsupported allocation wire type {wire_type}")
+
+
 def main() -> None:
     root = Path(__file__).resolve().parent.parent
     contract = build_execution_contract(GRPOAdapter(), PartialAsyncRolloutAdapter())
@@ -239,10 +288,33 @@ def main() -> None:
         rollout_engine="rollout-primary",
         component_versions=[observation.component_versions[0]],
     )
+    allocation_without_priority = resource_pb2.Allocation(
+        allocation_id="allocation-missing-priority",
+        execution_id=intent.execution_id,
+        stage_id=intent.stage_id,
+        intent_version=intent.version,
+        job_id=intent.job_id,
+        pending_unit_id="pending-missing-priority",
+    )
+    allocation_zero_priority = resource_pb2.Allocation(
+        allocation_id="allocation-zero-priority",
+        execution_id=intent.execution_id,
+        stage_id=intent.stage_id,
+        intent_version=intent.version,
+        job_id=intent.job_id,
+        pending_unit_id="pending-zero-priority",
+        priority=0,
+    )
     original_intent = intent.SerializeToString(deterministic=True)
     original_plan = plan.SerializeToString(deterministic=True)
     original_decision = decision.SerializeToString(deterministic=True)
     original_manifest = manifest.SerializeToString(deterministic=True)
+    original_allocation_without_priority = allocation_without_priority.SerializeToString(
+        deterministic=True
+    )
+    original_allocation_zero_priority = allocation_zero_priority.SerializeToString(
+        deterministic=True
+    )
     completed = subprocess.run(
         ["go", "run", "./scripts/proto-roundtrip-go.go"],
         cwd=root,
@@ -251,6 +323,8 @@ def main() -> None:
             + _frame(original_plan)
             + _frame(original_decision)
             + _frame(original_manifest)
+            + _frame(original_allocation_without_priority)
+            + _frame(original_allocation_zero_priority)
         ),
         stdout=subprocess.PIPE,
         check=True,
@@ -260,12 +334,20 @@ def main() -> None:
     plan_output = _read_frame(output)
     decision_output = _read_frame(output)
     manifest_output = _read_frame(output)
+    allocation_without_priority_output = _read_frame(output)
+    allocation_zero_priority_output = _read_frame(output)
     if output.read():
         raise SystemExit("unexpected trailing round-trip bytes")
     decoded = scheduling_pb2.SchedulingIntent.FromString(intent_output)
     decoded_plan = scheduling_pb2.PlacementPlan.FromString(plan_output)
     decoded_decision = scheduling_pb2.DecisionRecord.FromString(decision_output)
     decoded_manifest = runtime_pb2.RuntimeManifest.FromString(manifest_output)
+    decoded_allocation_without_priority = resource_pb2.Allocation.FromString(
+        allocation_without_priority_output
+    )
+    decoded_allocation_zero_priority = resource_pb2.Allocation.FromString(
+        allocation_zero_priority_output
+    )
     if decoded != intent:
         raise SystemExit("Go round-trip changed SchedulingIntent semantics")
     if intent_output != original_intent:
@@ -276,6 +358,24 @@ def main() -> None:
         raise SystemExit("Go round-trip changed DecisionRecord semantics or wire bytes")
     if decoded_manifest != manifest or manifest_output != original_manifest:
         raise SystemExit("Go round-trip changed RuntimeManifest semantics or wire bytes")
+    if decoded_allocation_without_priority != allocation_without_priority:
+        raise SystemExit("Go round-trip changed missing-priority Allocation semantics")
+    if allocation_without_priority_output != original_allocation_without_priority:
+        raise SystemExit("Go round-trip changed missing-priority Allocation wire bytes")
+    if decoded_allocation_zero_priority != allocation_zero_priority:
+        raise SystemExit("Go round-trip changed zero-priority Allocation semantics")
+    if allocation_zero_priority_output != original_allocation_zero_priority:
+        raise SystemExit("Go round-trip changed zero-priority Allocation wire bytes")
+    if decoded_allocation_without_priority.HasField("priority"):
+        raise SystemExit("Go round-trip materialized absent Allocation.priority")
+    if not decoded_allocation_zero_priority.HasField("priority"):
+        raise SystemExit("Go round-trip lost explicit zero Allocation.priority presence")
+    if decoded_allocation_zero_priority.priority != 0:
+        raise SystemExit("Go round-trip changed explicit zero Allocation.priority value")
+    if _wire_contains_allocation_priority(allocation_without_priority_output):
+        raise SystemExit("Allocation without priority unexpectedly encoded field 20")
+    if not _wire_contains_allocation_priority(allocation_zero_priority_output):
+        raise SystemExit("Allocation with explicit zero priority did not encode field 20")
     # Touch the new generated surfaces so import regressions fail fast even when
     # the core wire fixture only round-trips SchedulingIntent.
     evaluation = execution_pb2.ContractEvaluation(
@@ -359,6 +459,8 @@ def main() -> None:
     assert intent.execution_contract.critical_fact_policies[0].observation_policy.missing == (
         execution_pb2.OBSERVATION_DISPOSITION_DEGRADE
     )
+    assert not allocation_without_priority.HasField("priority")
+    assert allocation_zero_priority.HasField("priority")
     assert decision.contract_evaluations[0].predicate.fact_path == "sample.policy_lag"
     assert (
         decision.contract_evaluations[0].predicate.comparison_fact_path == "contract.max_policy_lag"

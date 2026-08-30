@@ -1,6 +1,6 @@
-// Command proto-roundtrip-go decodes a length-delimited SchedulingIntent and
-// PlacementPlan, DecisionRecord, and RuntimeManifest from stdin and writes all
-// deterministic payloads back. The
+// Command proto-roundtrip-go decodes a length-delimited SchedulingIntent,
+// PlacementPlan, DecisionRecord, RuntimeManifest, and two Allocation payloads
+// from stdin and writes all deterministic payloads back. The
 // cross-language test owns fixture construction and semantic assertions.
 package main
 
@@ -19,7 +19,7 @@ func main() {
 	if err != nil {
 		fail(err)
 	}
-	frames, err := splitFrames(wire, 4)
+	frames, err := splitFrames(wire, 6)
 	if err != nil {
 		fail(err)
 	}
@@ -42,21 +42,41 @@ func main() {
 		fail(err)
 	}
 	if decision.GetDecisionId() == "" || len(decision.GetContractEvaluations()) != 1 {
-		fail(fmt.Errorf("decoded decision is missing PR2 evaluation coverage"))
+		fail(fmt.Errorf("decoded decision is missing contract evaluation coverage"))
 	}
 	manifest := &tgsrlv1.RuntimeManifest{}
 	if err := proto.Unmarshal(frames[3], manifest); err != nil {
 		fail(err)
 	}
 	if manifest.GetManifestId() != "roundtrip-manifest" || len(manifest.GetComponentVersions()) != 1 {
-		fail(fmt.Errorf("decoded manifest is missing PR2 component versions"))
+		fail(fmt.Errorf("decoded manifest is missing component versions"))
+	}
+	allocationWithoutPriority := &tgsrlv1.Allocation{}
+	if err := proto.Unmarshal(frames[4], allocationWithoutPriority); err != nil {
+		fail(err)
+	}
+	if allocationWithoutPriority.GetAllocationId() != "allocation-missing-priority" {
+		fail(fmt.Errorf("decoded allocation without priority is missing its identity"))
+	}
+	if allocationWithoutPriority.Priority != nil {
+		fail(fmt.Errorf("decoded allocation without priority unexpectedly has presence"))
+	}
+	allocationZeroPriority := &tgsrlv1.Allocation{}
+	if err := proto.Unmarshal(frames[5], allocationZeroPriority); err != nil {
+		fail(err)
+	}
+	if allocationZeroPriority.GetAllocationId() != "allocation-zero-priority" {
+		fail(fmt.Errorf("decoded allocation with zero priority is missing its identity"))
+	}
+	if allocationZeroPriority.Priority == nil || allocationZeroPriority.GetPriority() != 0 {
+		fail(fmt.Errorf("decoded allocation with explicit zero priority lost presence"))
 	}
 	observation := intent.GetContractObservation()
 	contract := intent.GetExecutionContract()
 	if observation == nil || len(observation.GetFactObservations()) != 1 || len(observation.GetComponentVersions()) != 1 ||
 		contract == nil || len(contract.GetCriticalFactPolicies()) != 1 || len(contract.GetVersionConstraints()) == 0 ||
 		decision.GetContractEvaluations()[0].GetObservationDisposition() != tgsrlv1.ObservationDisposition_OBSERVATION_DISPOSITION_HOLD {
-		fail(fmt.Errorf("decoded messages are missing PR2 freshness/version fields"))
+		fail(fmt.Errorf("decoded messages are missing freshness/version fields"))
 	}
 	factObservation := observation.GetFactObservations()[0]
 	componentVersion := observation.GetComponentVersions()[0]
@@ -84,7 +104,7 @@ func main() {
 		factPolicy.GetObservationPolicy().GetMaximumAge().GetSeconds() != 10 ||
 		factPolicy.GetObservationPolicy().GetMissing() != tgsrlv1.ObservationDisposition_OBSERVATION_DISPOSITION_DEGRADE ||
 		factPolicy.GetObservationPolicy().GetStale() != tgsrlv1.ObservationDisposition_OBSERVATION_DISPOSITION_NOT_APPLICABLE {
-		fail(fmt.Errorf("decoded PR2 field values changed"))
+		fail(fmt.Errorf("decoded freshness/version field values changed"))
 	}
 	intentOut, err := proto.MarshalOptions{Deterministic: true}.Marshal(proto.Clone(intent))
 	if err != nil {
@@ -102,10 +122,20 @@ func main() {
 	if err != nil {
 		fail(err)
 	}
+	allocationWithoutPriorityOut, err := proto.MarshalOptions{Deterministic: true}.Marshal(proto.Clone(allocationWithoutPriority))
+	if err != nil {
+		fail(err)
+	}
+	allocationZeroPriorityOut, err := proto.MarshalOptions{Deterministic: true}.Marshal(proto.Clone(allocationZeroPriority))
+	if err != nil {
+		fail(err)
+	}
 	out := appendFrame(nil, intentOut)
 	out = appendFrame(out, planOut)
 	out = appendFrame(out, decisionOut)
 	out = appendFrame(out, manifestOut)
+	out = appendFrame(out, allocationWithoutPriorityOut)
+	out = appendFrame(out, allocationZeroPriorityOut)
 	if _, err := os.Stdout.Write(out); err != nil {
 		fail(err)
 	}

@@ -199,6 +199,26 @@ def test_generated_proto_surfaces_are_importable() -> None:
     intent.required_capabilities.CopyFrom(capabilities)
     assert capabilities.evidence[0].collector == "unit-test"
     assert intent.required_capabilities.component_versions[0].name == ("execution-backend-primary")
+    allocation_without_priority = resource_pb2.Allocation(
+        allocation_id="allocation-missing-priority",
+        execution_id="execution-1",
+        stage_id="decode",
+        intent_version=1,
+        job_id="job-1",
+        pending_unit_id="pending-1",
+    )
+    allocation_zero_priority = resource_pb2.Allocation(
+        allocation_id="allocation-zero-priority",
+        execution_id="execution-1",
+        stage_id="decode",
+        intent_version=1,
+        job_id="job-1",
+        pending_unit_id="pending-2",
+        priority=0,
+    )
+    assert not allocation_without_priority.HasField("priority")
+    assert allocation_zero_priority.HasField("priority")
+    assert allocation_zero_priority.priority == 0
 
     run = control_pb2.JobRun(
         run_id="run-1",
@@ -295,6 +315,14 @@ def test_generated_proto_surfaces_are_importable() -> None:
         idempotency_key="idem-1",
     )
     runtime_watch = runtime_pb2.WatchRuntimeEventsResponse(sequence=9)
+    runtime_status = runtime_pb2.GetRuntimeStatusResponse(
+        current_generation=3,
+        runtime_status=runtime_pb2.RuntimeStatusSummary(
+            health=runtime_pb2.RUNTIME_HEALTH_PROGRESSING,
+            observed_runtime_state=runtime_pb2.RUNTIME_STATE_RUNNING,
+            converged=False,
+        ),
+    )
     assert run.run_id == manifest.run_id
     assert run.random_seed == 7
     assert run.component_status[0].observed_runtime_state == runtime_pb2.RUNTIME_STATE_RUNNING
@@ -306,6 +334,8 @@ def test_generated_proto_surfaces_are_importable() -> None:
     assert control.action == control_pb2.JOB_COMMAND_TYPE_PAUSE
     assert control.targets[0].expected_generation == 3
     assert runtime_watch.sequence == 9
+    assert runtime_status.current_generation == 3
+    assert runtime_status.runtime_status.health == runtime_pb2.RUNTIME_HEALTH_PROGRESSING
     assert evaluation.predicate.fact_path == "sample.policy_lag"
     assert evaluation.predicate.operands[0].uint64_value == 5
     assert scheduling_pb2.PlacementPlan.DESCRIPTOR.full_name == "tgsrl.v1.PlacementPlan"

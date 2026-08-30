@@ -207,7 +207,7 @@ message SandboxEvent {
   uint64 generation = 7;
   RuntimeState state = 8;
   Binding binding = 9;
-  bool safe_point = 10;
+  optional bool safe_point = 10;
   string detail = 11;
   google.protobuf.Timestamp occurred_at = 12;
   DataKind data_kind = 13;
@@ -287,6 +287,18 @@ message PauseRuntimeResponse {
   string cursor = 2;
 }
 
+message PreparePauseRuntimeRequest {
+  string run_id = 1;
+  string request_id = 2;
+  string idempotency_key = 3;
+  string reason = 4;
+}
+
+message PreparePauseRuntimeResponse {
+  repeated RuntimeUnit runtime_units = 1;
+  string cursor = 2;
+}
+
 message ResumeRuntimeRequest {
   string run_id = 1;
   string request_id = 2;
@@ -310,6 +322,30 @@ message CheckpointRuntimeResponse {
   google.protobuf.Timestamp completed_at = 2;
   string cursor = 3;
   repeated RuntimeArtifact artifacts = 4;
+}
+
+message OffloadRuntimeRequest {
+  string run_id = 1;
+  string request_id = 2;
+  string idempotency_key = 3;
+  string reason = 4;
+}
+
+message OffloadRuntimeResponse {
+  repeated RuntimeUnit runtime_units = 1;
+  string cursor = 2;
+}
+
+message ReloadRuntimeRequest {
+  string run_id = 1;
+  string request_id = 2;
+  string idempotency_key = 3;
+  string reason = 4;
+}
+
+message ReloadRuntimeResponse {
+  repeated RuntimeUnit runtime_units = 1;
+  string cursor = 2;
 }
 
 message StopRuntimeRequest {
@@ -379,8 +415,35 @@ message PublishSandboxEventResponse {
   SandboxEvent event = 1;
 }
 
+message ObserveSandboxRequest {
+  SandboxEvent event = 1;
+}
+
+message ObserveSandboxResponse {
+  SandboxEvent event = 1;
+}
+
 message GetRuntimeStatusRequest {
   string run_id = 1;
+}
+
+enum RuntimeHealth {
+  RUNTIME_HEALTH_UNKNOWN = 0;
+  RUNTIME_HEALTH_HEALTHY = 1;
+  RUNTIME_HEALTH_DEGRADED = 2;
+  RUNTIME_HEALTH_FAILED = 3;
+  RUNTIME_HEALTH_PROGRESSING = 4;
+}
+
+message RuntimeStatusSummary {
+  RuntimeHealth health = 1;
+  string detail = 2;
+  string source = 3;
+  uint64 revision = 4;
+  google.protobuf.Timestamp observed_at = 5;
+  map<string, string> annotations = 6;
+  RuntimeState observed_runtime_state = 7;
+  bool converged = 8;
 }
 
 message GetRuntimeStatusResponse {
@@ -388,6 +451,8 @@ message GetRuntimeStatusResponse {
   repeated RuntimeUnit runtime_units = 2;
   repeated Sandbox sandboxes = 3;
   string cursor = 4;
+  uint64 current_generation = 5;
+  RuntimeStatusSummary runtime_status = 6;
 }
 
 message WatchRuntimeEventsRequest {
@@ -412,8 +477,11 @@ service RuntimeControlService {
   rpc PrepareRuntime(PrepareRuntimeRequest) returns (PrepareRuntimeResponse);
   rpc StartRuntime(StartRuntimeRequest) returns (StartRuntimeResponse);
   rpc PauseRuntime(PauseRuntimeRequest) returns (PauseRuntimeResponse);
+  rpc PreparePauseRuntime(PreparePauseRuntimeRequest) returns (PreparePauseRuntimeResponse);
   rpc ResumeRuntime(ResumeRuntimeRequest) returns (ResumeRuntimeResponse);
   rpc CheckpointRuntime(CheckpointRuntimeRequest) returns (CheckpointRuntimeResponse);
+  rpc OffloadRuntime(OffloadRuntimeRequest) returns (OffloadRuntimeResponse);
+  rpc ReloadRuntime(ReloadRuntimeRequest) returns (ReloadRuntimeResponse);
   rpc StopRuntime(StopRuntimeRequest) returns (StopRuntimeResponse);
   rpc TerminateRuntime(TerminateRuntimeRequest) returns (TerminateRuntimeResponse);
   rpc GetRuntimeManifest(GetRuntimeManifestRequest) returns (GetRuntimeManifestResponse);
@@ -422,4 +490,10 @@ service RuntimeControlService {
   rpc GetRuntimeStatus(GetRuntimeStatusRequest) returns (GetRuntimeStatusResponse);
   rpc WatchRuntimeEvents(WatchRuntimeEventsRequest) returns (stream WatchRuntimeEventsResponse);
   rpc PublishSandboxEvent(PublishSandboxEventRequest) returns (PublishSandboxEventResponse);
+}
+
+// SchedulerObservationService projects execution-substrate observations into
+// the scheduler provider and its authoritative resource snapshot.
+service SchedulerObservationService {
+  rpc ObserveSandbox(ObserveSandboxRequest) returns (ObserveSandboxResponse);
 }

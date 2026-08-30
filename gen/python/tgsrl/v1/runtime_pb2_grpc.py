@@ -41,6 +41,11 @@ class RuntimeControlServiceStub(object):
                 request_serializer=tgsrl_dot_v1_dot_runtime__pb2.PauseRuntimeRequest.SerializeToString,
                 response_deserializer=tgsrl_dot_v1_dot_runtime__pb2.PauseRuntimeResponse.FromString,
                 _registered_method=True)
+        self.PreparePauseRuntime = channel.unary_unary(
+                '/tgsrl.v1.RuntimeControlService/PreparePauseRuntime',
+                request_serializer=tgsrl_dot_v1_dot_runtime__pb2.PreparePauseRuntimeRequest.SerializeToString,
+                response_deserializer=tgsrl_dot_v1_dot_runtime__pb2.PreparePauseRuntimeResponse.FromString,
+                _registered_method=True)
         self.ResumeRuntime = channel.unary_unary(
                 '/tgsrl.v1.RuntimeControlService/ResumeRuntime',
                 request_serializer=tgsrl_dot_v1_dot_runtime__pb2.ResumeRuntimeRequest.SerializeToString,
@@ -50,6 +55,16 @@ class RuntimeControlServiceStub(object):
                 '/tgsrl.v1.RuntimeControlService/CheckpointRuntime',
                 request_serializer=tgsrl_dot_v1_dot_runtime__pb2.CheckpointRuntimeRequest.SerializeToString,
                 response_deserializer=tgsrl_dot_v1_dot_runtime__pb2.CheckpointRuntimeResponse.FromString,
+                _registered_method=True)
+        self.OffloadRuntime = channel.unary_unary(
+                '/tgsrl.v1.RuntimeControlService/OffloadRuntime',
+                request_serializer=tgsrl_dot_v1_dot_runtime__pb2.OffloadRuntimeRequest.SerializeToString,
+                response_deserializer=tgsrl_dot_v1_dot_runtime__pb2.OffloadRuntimeResponse.FromString,
+                _registered_method=True)
+        self.ReloadRuntime = channel.unary_unary(
+                '/tgsrl.v1.RuntimeControlService/ReloadRuntime',
+                request_serializer=tgsrl_dot_v1_dot_runtime__pb2.ReloadRuntimeRequest.SerializeToString,
+                response_deserializer=tgsrl_dot_v1_dot_runtime__pb2.ReloadRuntimeResponse.FromString,
                 _registered_method=True)
         self.StopRuntime = channel.unary_unary(
                 '/tgsrl.v1.RuntimeControlService/StopRuntime',
@@ -128,6 +143,12 @@ class RuntimeControlServiceServicer(object):
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
 
+    def PreparePauseRuntime(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
     def ResumeRuntime(self, request, context):
         """Missing associated documentation comment in .proto file."""
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
@@ -135,6 +156,18 @@ class RuntimeControlServiceServicer(object):
         raise NotImplementedError('Method not implemented!')
 
     def CheckpointRuntime(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def OffloadRuntime(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def ReloadRuntime(self, request, context):
         """Missing associated documentation comment in .proto file."""
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
         context.set_details('Method not implemented!')
@@ -216,6 +249,11 @@ def add_RuntimeControlServiceServicer_to_server(servicer, server):
                     request_deserializer=tgsrl_dot_v1_dot_runtime__pb2.PauseRuntimeRequest.FromString,
                     response_serializer=tgsrl_dot_v1_dot_runtime__pb2.PauseRuntimeResponse.SerializeToString,
             ),
+            'PreparePauseRuntime': grpc.unary_unary_rpc_method_handler(
+                    servicer.PreparePauseRuntime,
+                    request_deserializer=tgsrl_dot_v1_dot_runtime__pb2.PreparePauseRuntimeRequest.FromString,
+                    response_serializer=tgsrl_dot_v1_dot_runtime__pb2.PreparePauseRuntimeResponse.SerializeToString,
+            ),
             'ResumeRuntime': grpc.unary_unary_rpc_method_handler(
                     servicer.ResumeRuntime,
                     request_deserializer=tgsrl_dot_v1_dot_runtime__pb2.ResumeRuntimeRequest.FromString,
@@ -225,6 +263,16 @@ def add_RuntimeControlServiceServicer_to_server(servicer, server):
                     servicer.CheckpointRuntime,
                     request_deserializer=tgsrl_dot_v1_dot_runtime__pb2.CheckpointRuntimeRequest.FromString,
                     response_serializer=tgsrl_dot_v1_dot_runtime__pb2.CheckpointRuntimeResponse.SerializeToString,
+            ),
+            'OffloadRuntime': grpc.unary_unary_rpc_method_handler(
+                    servicer.OffloadRuntime,
+                    request_deserializer=tgsrl_dot_v1_dot_runtime__pb2.OffloadRuntimeRequest.FromString,
+                    response_serializer=tgsrl_dot_v1_dot_runtime__pb2.OffloadRuntimeResponse.SerializeToString,
+            ),
+            'ReloadRuntime': grpc.unary_unary_rpc_method_handler(
+                    servicer.ReloadRuntime,
+                    request_deserializer=tgsrl_dot_v1_dot_runtime__pb2.ReloadRuntimeRequest.FromString,
+                    response_serializer=tgsrl_dot_v1_dot_runtime__pb2.ReloadRuntimeResponse.SerializeToString,
             ),
             'StopRuntime': grpc.unary_unary_rpc_method_handler(
                     servicer.StopRuntime,
@@ -415,6 +463,33 @@ class RuntimeControlService(object):
             _registered_method=True)
 
     @staticmethod
+    def PreparePauseRuntime(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/tgsrl.v1.RuntimeControlService/PreparePauseRuntime',
+            tgsrl_dot_v1_dot_runtime__pb2.PreparePauseRuntimeRequest.SerializeToString,
+            tgsrl_dot_v1_dot_runtime__pb2.PreparePauseRuntimeResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
     def ResumeRuntime(request,
             target,
             options=(),
@@ -458,6 +533,60 @@ class RuntimeControlService(object):
             '/tgsrl.v1.RuntimeControlService/CheckpointRuntime',
             tgsrl_dot_v1_dot_runtime__pb2.CheckpointRuntimeRequest.SerializeToString,
             tgsrl_dot_v1_dot_runtime__pb2.CheckpointRuntimeResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def OffloadRuntime(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/tgsrl.v1.RuntimeControlService/OffloadRuntime',
+            tgsrl_dot_v1_dot_runtime__pb2.OffloadRuntimeRequest.SerializeToString,
+            tgsrl_dot_v1_dot_runtime__pb2.OffloadRuntimeResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def ReloadRuntime(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/tgsrl.v1.RuntimeControlService/ReloadRuntime',
+            tgsrl_dot_v1_dot_runtime__pb2.ReloadRuntimeRequest.SerializeToString,
+            tgsrl_dot_v1_dot_runtime__pb2.ReloadRuntimeResponse.FromString,
             options,
             channel_credentials,
             insecure,
@@ -674,6 +803,84 @@ class RuntimeControlService(object):
             '/tgsrl.v1.RuntimeControlService/PublishSandboxEvent',
             tgsrl_dot_v1_dot_runtime__pb2.PublishSandboxEventRequest.SerializeToString,
             tgsrl_dot_v1_dot_runtime__pb2.PublishSandboxEventResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+
+class SchedulerObservationServiceStub(object):
+    """SchedulerObservationService projects execution-substrate observations into
+    the scheduler provider and its authoritative resource snapshot.
+    """
+
+    def __init__(self, channel):
+        """Constructor.
+
+        Args:
+            channel: A grpc.Channel.
+        """
+        self.ObserveSandbox = channel.unary_unary(
+                '/tgsrl.v1.SchedulerObservationService/ObserveSandbox',
+                request_serializer=tgsrl_dot_v1_dot_runtime__pb2.ObserveSandboxRequest.SerializeToString,
+                response_deserializer=tgsrl_dot_v1_dot_runtime__pb2.ObserveSandboxResponse.FromString,
+                _registered_method=True)
+
+
+class SchedulerObservationServiceServicer(object):
+    """SchedulerObservationService projects execution-substrate observations into
+    the scheduler provider and its authoritative resource snapshot.
+    """
+
+    def ObserveSandbox(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+
+def add_SchedulerObservationServiceServicer_to_server(servicer, server):
+    rpc_method_handlers = {
+            'ObserveSandbox': grpc.unary_unary_rpc_method_handler(
+                    servicer.ObserveSandbox,
+                    request_deserializer=tgsrl_dot_v1_dot_runtime__pb2.ObserveSandboxRequest.FromString,
+                    response_serializer=tgsrl_dot_v1_dot_runtime__pb2.ObserveSandboxResponse.SerializeToString,
+            ),
+    }
+    generic_handler = grpc.method_handlers_generic_handler(
+            'tgsrl.v1.SchedulerObservationService', rpc_method_handlers)
+    server.add_generic_rpc_handlers((generic_handler,))
+    server.add_registered_method_handlers('tgsrl.v1.SchedulerObservationService', rpc_method_handlers)
+
+
+ # This class is part of an EXPERIMENTAL API.
+class SchedulerObservationService(object):
+    """SchedulerObservationService projects execution-substrate observations into
+    the scheduler provider and its authoritative resource snapshot.
+    """
+
+    @staticmethod
+    def ObserveSandbox(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/tgsrl.v1.SchedulerObservationService/ObserveSandbox',
+            tgsrl_dot_v1_dot_runtime__pb2.ObserveSandboxRequest.SerializeToString,
+            tgsrl_dot_v1_dot_runtime__pb2.ObserveSandboxResponse.FromString,
             options,
             channel_credentials,
             insecure,
