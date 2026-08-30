@@ -3,7 +3,7 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 readonly ROOT_DIR
-readonly BUF_VERSION="1.47.2"
+readonly BUF_VERSION="1.72.0"
 STAGING_DIR="$(mktemp -d "${ROOT_DIR}/.proto-gen.XXXXXX")"
 readonly STAGING_DIR
 readonly CANDIDATE_DIR="${STAGING_DIR}/gen"

@@ -15,7 +15,7 @@ pinning_policy:
 toolchain:
   - name: "go-toolchain"
     kind: "language-toolchain"
-    version: "1.23.0"
+    version: "1.26.4"
     source: "https://go.dev"
     source_commit: null
     artifact_digest: null
@@ -37,9 +37,9 @@ toolchain:
 
   - name: "uv"
     kind: "package-manager"
-    version: "0.11.30"
+    version: "0.12.7"
     source: "https://github.com/astral-sh/uv"
-    source_commit: "4cb3d0366c9b30c0f6f1517e946121b4c3879034"
+    source_commit: "61291a8ca5477a9ca653f14d2ac5665587c263fa"
     artifact_digest: null
     license_spdx: "Apache-2.0 OR MIT"
     status: "integrated"
@@ -48,7 +48,7 @@ toolchain:
 
   - name: "buf-cli"
     kind: "build-tool"
-    version: "1.47.2"
+    version: "1.72.0"
     source: "https://github.com/bufbuild/buf"
     source_commit: null
     artifact_digest: null
@@ -56,6 +56,61 @@ toolchain:
     status: "integrated"
     usage: "Protobuf linting and generation bootstrap"
     evidence: "scripts/generate-proto.sh"
+
+  - name: "helm"
+    kind: "deployment-tool"
+    version: "4.2.4"
+    source: "https://github.com/helm/helm"
+    source_commit: null
+    artifact_digest: null
+    license_spdx: "Apache-2.0"
+    status: "integrated"
+    usage: "Operator chart validation and installation"
+    evidence: "deploy/helm/operator"
+
+  - name: "minikube"
+    kind: "local-cluster"
+    version: "1.38.1"
+    source: "https://github.com/kubernetes/minikube"
+    source_commit: null
+    artifact_digest: null
+    license_spdx: "Apache-2.0"
+    status: "development-only"
+    usage: "Local CPU Kubernetes integration environment"
+    evidence: "docs/guides/operator.md"
+
+  - name: "kubernetes"
+    kind: "orchestrator"
+    version: "1.35.1"
+    source: "https://github.com/kubernetes/kubernetes"
+    source_commit: null
+    artifact_digest: null
+    license_spdx: "Apache-2.0"
+    status: "cpu-integration"
+    usage: "Local Operator API-server validation; DRA resource.k8s.io/v1"
+    evidence: "docs/guides/operator.md"
+
+  - name: "kubectl"
+    kind: "deployment-tool"
+    version: "1.35.8"
+    source: "https://github.com/kubernetes/kubernetes"
+    source_commit: null
+    artifact_digest: null
+    license_spdx: "Apache-2.0"
+    status: "development-only"
+    usage: "Local cluster client kept on the Kubernetes 1.35 minor"
+    evidence: "docs/guides/operator.md"
+
+  - name: "kueue"
+    kind: "kubernetes-extension"
+    version: "0.19.2"
+    source: "https://github.com/kubernetes-sigs/kueue"
+    source_commit: null
+    artifact_digest: null
+    license_spdx: "Apache-2.0"
+    status: "cpu-integration"
+    usage: "Local Workload API validation; v1beta2 preferred with v1beta1 compatibility"
+    evidence: "docs/guides/operator.md"
 
   - name: "protoc-gen-go"
     kind: "code-generator"
@@ -104,7 +159,7 @@ toolchain:
 runtime_dependencies:
   - name: "google.golang.org/protobuf"
     ecosystem: "go"
-    version: "1.36.5"
+    version: "1.36.12"
     source: "https://github.com/protocolbuffers/protobuf-go"
     source_commit: null
     artifact_digest: null
@@ -113,7 +168,7 @@ runtime_dependencies:
     evidence: "go.mod and go.sum"
   - name: "google.golang.org/grpc"
     ecosystem: "go"
-    version: "1.71.0"
+    version: "1.83.2"
     source: "https://github.com/grpc/grpc-go"
     source_commit: null
     artifact_digest: null
@@ -131,7 +186,7 @@ runtime_dependencies:
     evidence: "uv.lock"
   - name: "grpcio"
     ecosystem: "python"
-    version: "1.83.0"
+    version: "1.83.1"
     source: "https://github.com/grpc/grpc"
     source_commit: null
     artifact_digest: null
@@ -140,7 +195,7 @@ runtime_dependencies:
     evidence: "uv.lock"
   - name: "hypothesis"
     ecosystem: "python-dev"
-    version: "6.165.10"
+    version: "6.167.0"
     source: "https://github.com/HypothesisWorks/hypothesis"
     source_commit: null
     artifact_digest: null
@@ -176,7 +231,7 @@ runtime_dependencies:
     evidence: "uv.lock"
   - name: "ruff"
     ecosystem: "python-dev"
-    version: "0.16.4"
+    version: "0.16.5"
     source: "https://github.com/astral-sh/ruff"
     source_commit: null
     artifact_digest: null
@@ -204,26 +259,26 @@ runtime_dependencies:
 
 development_images:
   - name: "golang-compose-toolchain"
-    image: "docker.io/library/golang:1.23.0-bookworm"
-    image_digest: "sha256:32096e84705b30bb39cc9c65ef2896efacc4268203b7876049847763cefc934d"
+    image: "docker.io/library/golang:1.26.4-bookworm"
+    image_digest: "sha256:b305420a68d0f229d91eb3b3ed9e519fcf2cf5461da4bef997bf927e8c0bfd2b"
     license_spdx: null
     license_status: "composite-image-sbom-pending"
     status: "development-only"
-    evidence: "compose.yaml"
+    evidence: "Dockerfile.local"
   - name: "python-compose-runtime"
     image: "docker.io/library/python:3.12.14-slim-bookworm"
     image_digest: "sha256:0f5b26b9518d002b6173fd61daad821fa340635ebfec5bba471013f9ca114579"
     license_spdx: null
     license_status: "composite-image-sbom-pending"
     status: "development-only"
-    evidence: "compose.yaml"
+    evidence: "Dockerfile.local"
   - name: "node-compose-console"
-    image: "docker.io/library/node:24.16.0-bookworm-slim"
-    image_digest: "sha256:2c87ef9bd3c6a3bd4b472b4bec2ce9d16354b0c574f736c476489d09f560a203"
+    image: "docker.io/library/node:24.20.0-bookworm-slim"
+    image_digest: "sha256:ba849c60be29959425b8734d57b8b4b7d56f98edd9504c9af091d5281095a71e"
     license_spdx: null
     license_status: "composite-image-sbom-pending"
     status: "development-only"
-    evidence: "compose.yaml"
+    evidence: "Dockerfile.local"
   - name: "operator-distroless-runtime"
     image: "gcr.io/distroless/static-debian12:nonroot"
     image_digest: "sha256:afa5c872c891853ca7fcf1f12c3edb23f7eeef36189728842dd51042ff57f7ab"
@@ -244,6 +299,32 @@ generated_sbom:
 
 registered_patches: []
 patch_ledger: "upstream/patches.json"
+
+host_tooling:
+  note: >-
+    Host versions used for the local verification profile. Compose and release
+    inputs remain independently pinned above.
+  docker_engine: "29.6.1"
+  docker_compose: "5.2.0"
+  helm: "4.2.4"
+  kubectl: "1.35.8"
+  minikube: "1.38.1"
+
+external_integration_targets:
+  note: >-
+    These are interoperability targets, not installed dependencies or verified
+    hardware claims. Real support still requires the compatibility matrix and
+    matching evidence.
+  kubernetes: "1.35.1"
+  kueue: "0.19.2"
+  verl: "0.9.0"
+  openrlhf: "0.11.0"
+  ray: "2.58.0"
+  pytorch: "2.13.0"
+  vllm: "0.28.0"
+  sglang: "0.5.18"
+  nvidia_device_plugin: "0.20.0"
+  nvidia_dra_driver_gpu: "0.5.0"
 
 claims:
   lockfiles_audited: true

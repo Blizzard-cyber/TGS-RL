@@ -1,8 +1,16 @@
 **
 !.dockerignore
 !Dockerfile.operator
+!Dockerfile.local
 !go.mod
 !go.sum
+!pyproject.toml
+!uv.lock
+!console/
+!console/**
+console/node_modules
+console/dist
+console/*.tsbuildinfo
 !cmd/
 !cmd/operator/
 !cmd/operator/**

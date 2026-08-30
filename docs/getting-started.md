@@ -12,7 +12,7 @@ Kubernetes。该方案运行完整控制链，但不会创建真实基础设施�
 无需在主机安装 Go、Python、`uv` 或 Node.js。
 
 ```bash
-docker compose up
+docker compose up --build
 ```
 
 Compose 启动 Scheduler、Runtime/Experiment、Job Controller、Operator、Gateway 和
@@ -37,14 +37,19 @@ docker compose down --volumes
 
 | 工具 | 版本或范围 | 用途 |
 |---|---|---|
-| Go | 1.23.0 | Scheduler、Job Controller、Operator |
+| Go | 1.26.4 | Scheduler、Job Controller、Operator |
 | Python | 3.12.14；最低 3.12 | Runtime、Experiment、Gateway、SDK/CLI |
-| `uv` | 0.11.30 | 安装锁定的 Python 环境 |
-| Node.js | 24.16.0 | Web Console |
+| `uv` | 0.12.7 | 安装锁定的 Python 环境 |
+| Node.js | 24.20.0 LTS | Web Console |
+| Buf | 1.72.0 | Protobuf lint 与代码生成 |
+| Docker | Compose v2；已验证 Engine 29.6.1 / Compose 5.2.0 | 完整六服务本地栈和镜像构建 |
+| Helm | 4.2.4 | Operator chart 校验与安装 |
+| kubectl / minikube | kubectl 与集群相差不超过一个 minor；minikube 1.38.1 | 本地 Kubernetes 集成验证 |
 
 从项目根目录准备依赖与私有状态目录：
 
 ```bash
+make doctor
 uv sync --frozen
 npm --prefix console ci
 umask 077

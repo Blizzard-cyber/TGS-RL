@@ -4,7 +4,11 @@ name: tgsrl-local
 # replacing external hardware and Kubernetes with deterministic local backends.
 services:
   scheduler:
-    image: "golang:1.23.0-bookworm@sha256:32096e84705b30bb39cc9c65ef2896efacc4268203b7876049847763cefc934d"
+    image: "tgsrl-go-service:local"
+    build:
+      context: .
+      dockerfile: Dockerfile.local
+      target: go-service
     working_dir: /workspace
     command:
       - go
@@ -27,9 +31,9 @@ services:
       - ./configs:/workspace/configs:ro
       - ./gen/go:/workspace/gen/go:ro
       - ./scheduler-go:/workspace/scheduler-go:ro
+      - ./storage:/workspace/storage:ro
+      - ./upstream:/workspace/upstream:ro
       - scheduler-state:/state
-      - go-build-cache:/root/.cache/go-build
-      - go-module-cache:/go/pkg/mod
     ports:
       - "127.0.0.1:50051:50051"
       - "127.0.0.1:9090:9090"
@@ -42,18 +46,17 @@ services:
     init: true
 
   runtime:
-    image: "python:3.12.14-slim-bookworm@sha256:0f5b26b9518d002b6173fd61daad821fa340635ebfec5bba471013f9ca114579"
+    image: "tgsrl-python:local"
+    build:
+      context: .
+      dockerfile: Dockerfile.local
+      target: python-service
     working_dir: /workspace
     command:
       - /bin/sh
       - -ceu
       - |
-        python -m venv /tmp/tgsrl-venv
-        /tmp/tgsrl-venv/bin/python -m pip install --disable-pip-version-check uv==0.11.30
-        export UV_PROJECT_ENVIRONMENT=/tmp/tgsrl-project-venv
-        /tmp/tgsrl-venv/bin/uv sync --frozen --no-dev --no-install-project
         PYTHONPATH=/workspace:/workspace/runtime-python:/workspace/gateway-python:/workspace/gen/python \
-          /tmp/tgsrl-venv/bin/uv run --frozen --no-dev --no-sync \
           python -m tgsrl_runtime.runtime_app \
           --bind 0.0.0.0:50071 \
           --scheduler-target scheduler:50051 \
@@ -70,8 +73,8 @@ services:
       - ./gateway-python:/workspace/gateway-python:ro
       - ./gen/python:/workspace/gen/python:ro
       - ./runtime-python:/workspace/runtime-python:ro
+      - ./upstream:/workspace/upstream:ro
       - runtime-state:/state
-      - uv-cache:/root/.cache/uv
     ports:
       - "127.0.0.1:50071:50071"
     depends_on:
@@ -88,7 +91,11 @@ services:
     init: true
 
   job-controller:
-    image: "golang:1.23.0-bookworm@sha256:32096e84705b30bb39cc9c65ef2896efacc4268203b7876049847763cefc934d"
+    image: "tgsrl-go-service:local"
+    build:
+      context: .
+      dockerfile: Dockerfile.local
+      target: go-service
     working_dir: /workspace
     command:
       - go
@@ -107,9 +114,8 @@ services:
       - ./go.sum:/workspace/go.sum:ro
       - ./gen/go:/workspace/gen/go:ro
       - ./job-controller-go:/workspace/job-controller-go:ro
+      - ./storage:/workspace/storage:ro
       - controller-state:/state
-      - go-build-cache:/root/.cache/go-build
-      - go-module-cache:/go/pkg/mod
     ports:
       - "127.0.0.1:50061:50061"
     depends_on:
@@ -124,7 +130,11 @@ services:
     init: true
 
   operator:
-    image: "golang:1.23.0-bookworm@sha256:32096e84705b30bb39cc9c65ef2896efacc4268203b7876049847763cefc934d"
+    image: "tgsrl-go-service:local"
+    build:
+      context: .
+      dockerfile: Dockerfile.local
+      target: go-service
     working_dir: /workspace
     command:
       - go
@@ -151,8 +161,6 @@ services:
       - ./go.sum:/workspace/go.sum:ro
       - ./operator-go:/workspace/operator-go:ro
       - operator-state:/state
-      - go-build-cache:/root/.cache/go-build
-      - go-module-cache:/go/pkg/mod
     ports:
       - "127.0.0.1:50081:50081"
     depends_on:
@@ -167,18 +175,17 @@ services:
     init: true
 
   gateway:
-    image: "python:3.12.14-slim-bookworm@sha256:0f5b26b9518d002b6173fd61daad821fa340635ebfec5bba471013f9ca114579"
+    image: "tgsrl-python:local"
+    build:
+      context: .
+      dockerfile: Dockerfile.local
+      target: python-service
     working_dir: /workspace
     command:
       - /bin/sh
       - -ceu
       - |
-        python -m venv /tmp/tgsrl-venv
-        /tmp/tgsrl-venv/bin/python -m pip install --disable-pip-version-check uv==0.11.30
-        export UV_PROJECT_ENVIRONMENT=/tmp/tgsrl-project-venv
-        /tmp/tgsrl-venv/bin/uv sync --frozen --no-dev --no-install-project
         PYTHONPATH=/workspace:/workspace/runtime-python:/workspace/gateway-python:/workspace/gen/python \
-          /tmp/tgsrl-venv/bin/uv run --frozen --no-dev --no-sync \
           python -m tgsrl_gateway serve \
           --host 0.0.0.0 --port 8080 --backend-mode grpc \
           --job-control-target job-controller:50061 \
@@ -190,7 +197,6 @@ services:
       - ./uv.lock:/workspace/uv.lock:ro
       - ./gateway-python:/workspace/gateway-python:ro
       - ./gen/python:/workspace/gen/python:ro
-      - uv-cache:/root/.cache/uv
     ports:
       - "127.0.0.1:8080:8080"
     depends_on:
@@ -207,23 +213,34 @@ services:
     init: true
 
   console:
-    image: "node:24.16.0-bookworm-slim@sha256:2c87ef9bd3c6a3bd4b472b4bec2ce9d16354b0c574f736c476489d09f560a203"
+    image: "tgsrl-console:local"
+    build:
+      context: .
+      dockerfile: Dockerfile.local
+      target: console
     working_dir: /workspace/console
     command:
       - /bin/sh
       - -ceu
-      - npm ci && exec npm run dev -- --host 0.0.0.0
+      - exec npm run dev -- --host 0.0.0.0
     environment:
       VITE_TGSRL_API_ADAPTER: http
       VITE_TGSRL_GATEWAY_TARGET: http://gateway:8080
-    volumes:
-      - ./console:/workspace/console:ro
-      - console-modules:/workspace/console/node_modules
     ports:
       - "127.0.0.1:4173:4173"
     depends_on:
       gateway:
         condition: service_healthy
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - -e
+        - fetch('http://127.0.0.1:4173').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))
+      interval: 1s
+      timeout: 2s
+      retries: 60
+      start_period: 5s
     init: true
 
 volumes:
@@ -231,7 +248,3 @@ volumes:
   controller-state: {}
   runtime-state: {}
   operator-state: {}
-  go-build-cache: {}
-  go-module-cache: {}
-  uv-cache: {}
-  console-modules: {}

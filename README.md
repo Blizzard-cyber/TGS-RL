@@ -78,7 +78,7 @@ lifecycle control，同时订阅 Scheduler 决策，并把观察到的 Sandbox �
 要求：Docker Engine 和 Docker Compose v2。
 
 ```bash
-docker compose up
+docker compose up --build
 ```
 
 服务就绪后打开 <http://127.0.0.1:4173>，或检查 Gateway：
@@ -103,12 +103,17 @@ docker compose down
 
 | 工具 | 版本或范围 | 用途 |
 |---|---|---|
-| Go | 1.23.0 | Scheduler、Job Controller、Operator |
+| Go | 1.26.4 | Scheduler、Job Controller、Operator |
 | Python | 3.12.14；最低 3.12 | Runtime、Experiment、Gateway、SDK/CLI |
-| `uv` | 0.11.30 | 安装锁定的 Python 环境 |
-| Node.js | 24.16.0 | Web Console |
+| `uv` | 0.12.7 | 安装锁定的 Python 环境 |
+| Node.js | 24.20.0 LTS | Web Console |
+| Buf | 1.72.0 | Protobuf lint 与代码生成 |
+| Docker | Compose v2；已验证 Engine 29.6.1 / Compose 5.2.0 | 完整六服务本地栈和镜像构建 |
+| Helm | 4.2.4 | Operator chart 校验与安装 |
+| kubectl / minikube | kubectl 与集群相差不超过一个 minor；minikube 1.38.1 | 本地 Kubernetes 集成验证 |
 
 ```bash
+make doctor
 uv sync --frozen
 npm --prefix console ci
 mkdir -p .cache/tgsrl
@@ -196,8 +201,9 @@ generation 和 cursor，并在恢复后核对 Decision、Provider 与 backend �
 | 公网或多租户服务 | **不支持直接部署** | HTTP/gRPC/metrics 无 TLS、认证、授权、租户隔离和限流；必须通过受控网络与外部安全层访问 |
 | 性能与训练效果承诺 | **不提供** | Mock、Synthetic 和 Replay 结果不能用于推断真实 GPU 吞吐、利用率、收敛质量、成本或 wall-clock 收益 |
 
-随附 Kubernetes YAML 和 Helm chart 只覆盖 Operator，默认使用 namespace 范围的 RBAC
-和持久化 cursor 目录。创建 RuntimeClass 需要显式启用相应选项及 cluster-scoped 权限。
+随附 Kubernetes YAML 和 Helm chart 只覆盖 Operator，业务对象使用 namespace 范围的
+RBAC；Node、RuntimeClass、DeviceClass 的能力发现使用只读集群权限。创建 RuntimeClass
+需要显式启用相应选项及额外的 cluster-scoped 写权限。
 
 ## 文档
 

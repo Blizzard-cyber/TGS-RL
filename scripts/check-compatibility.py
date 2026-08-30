@@ -12,7 +12,10 @@ from typing import Any
 ROOT = Path(__file__).resolve().parents[1]
 MATRIX = ROOT / "compatibility" / "matrix.json"
 COMPOSE = ROOT / "compose.yaml"
-OPERATOR_DOCKERFILE = ROOT / "Dockerfile.operator"
+DOCKERFILES = (
+    ROOT / "Dockerfile.operator",
+    ROOT / "Dockerfile.local",
+)
 BOM = ROOT / "compatibility" / "bom" / "runtime.yaml"
 SUPPORTED = "supported"
 HARDWARE_PENDING = "implemented-hardware-verification-pending"
@@ -128,8 +131,8 @@ def validate_yaml_evidence(errors: list[str]) -> None:
                 validate_path(match, f"{yaml_path.relative_to(ROOT)}:{line_number}", errors)
 
 
-def parse_compose_images(text: str) -> dict[str, str]:
-    services: dict[str, str] = {}
+def parse_compose_services(text: str) -> dict[str, dict[str, str]]:
+    services: dict[str, dict[str, str]] = {}
     in_services = False
     current_service: str | None = None
     service_indent: int | None = None
@@ -151,6 +154,7 @@ def parse_compose_images(text: str) -> dict[str, str]:
         service_match = re.match(r"^(\s{2})([a-zA-Z0-9_-]+):\s*$", line)
         if service_match:
             current_service = service_match.group(2)
+            services[current_service] = {}
             service_indent = indent
             continue
         if current_service is None or service_indent is None:
@@ -161,7 +165,10 @@ def parse_compose_images(text: str) -> dict[str, str]:
             continue
         image_match = re.match(r'^\s+image:\s*"([^"]+)"\s*$', line)
         if image_match:
-            services[current_service] = image_match.group(1)
+            services[current_service]["image"] = image_match.group(1)
+        dockerfile_match = re.match(r"^\s+dockerfile:\s*([^\s#]+)\s*$", line)
+        if dockerfile_match:
+            services[current_service]["dockerfile"] = dockerfile_match.group(1)
     return services
 
 
@@ -266,7 +273,7 @@ def canonicalize_image_name(repository: str) -> str:
 
 
 def validate_compose_images(errors: list[str]) -> None:
-    services = parse_compose_images(COMPOSE.read_text(encoding="utf-8"))
+    services = parse_compose_services(COMPOSE.read_text(encoding="utf-8"))
     if not services:
         errors.append("compose: services must be an object")
         return
@@ -274,22 +281,41 @@ def validate_compose_images(errors: list[str]) -> None:
     if not bom_images:
         errors.append("bom: development_images must declare image and image_digest")
         return
+    referenced_dockerfiles: set[str] = set()
+    allowed_dockerfiles = {path.name for path in DOCKERFILES}
     for service_name, service in services.items():
+        dockerfile = service.get("dockerfile")
+        if dockerfile:
+            if dockerfile not in allowed_dockerfiles:
+                errors.append(f"compose:{service_name}: unvalidated Dockerfile {dockerfile}")
+            referenced_dockerfiles.add(dockerfile)
+            continue
+        image = service.get("image")
+        if image is None:
+            errors.append(f"compose:{service_name}: image or build.dockerfile is required")
+            continue
         validate_pinned_image(
-            service,
-            context=f"compose:{service_name}",
-            bom_images=bom_images,
-            errors=errors,
+            image, context=f"compose:{service_name}", bom_images=bom_images, errors=errors
         )
-    for index, image in enumerate(
-        parse_dockerfile_images(OPERATOR_DOCKERFILE.read_text(encoding="utf-8")), 1
-    ):
-        validate_pinned_image(
-            image,
-            context=f"Dockerfile.operator:FROM[{index}]",
-            bom_images=bom_images,
-            errors=errors,
-        )
+    for dockerfile in DOCKERFILES:
+        if (
+            dockerfile != ROOT / "Dockerfile.operator"
+            and dockerfile.name not in referenced_dockerfiles
+        ):
+            errors.append(f"compose: unreferenced development Dockerfile {dockerfile.name}")
+            continue
+        if not dockerfile.is_file():
+            errors.append(f"{dockerfile.name}: file is missing")
+            continue
+        for index, image in enumerate(
+            parse_dockerfile_images(dockerfile.read_text(encoding="utf-8")), 1
+        ):
+            validate_pinned_image(
+                image,
+                context=f"{dockerfile.name}:FROM[{index}]",
+                bom_images=bom_images,
+                errors=errors,
+            )
 
 
 def main() -> int:

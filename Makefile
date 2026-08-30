@@ -1,8 +1,8 @@
 SHELL := /bin/sh
 .DEFAULT_GOAL := help
 
-BUF_VERSION := 1.47.2
-UV_VERSION := 0.11.30
+BUF_VERSION := 1.72.0
+UV_VERSION := 0.12.7
 GO_PACKAGES := ./gen/go/... ./scheduler-go/... ./job-controller-go/... ./operator-go/... ./storage/... ./scripts ./cmd/...
 PYTHON_PATHS := adapters runtime-python gateway-python tests/python tests/api tests/storage tests/e2e tests/governance scripts/check-proto-roundtrip.py scripts/check-oci-platforms.py scripts/generate-sbom.py scripts/check-compatibility.py scripts/check-upstream-patches.py
 GO_FORMAT_PATHS := scheduler-go job-controller-go operator-go storage cmd
@@ -14,11 +14,12 @@ GATEWAY_LISTEN ?= 127.0.0.1:8080
 OPERATOR_LISTEN ?= 127.0.0.1:50081
 SCHEDULER_FALLBACK ?= noop
 
-.PHONY: help proto check-generated check-openapi proto-roundtrip check-migrations check-compose check-deploy check-public-content sbom check-governance test-go test-python test-api test-console lint test race demo product-e2e run-scheduler run-controller run-runtime run-gateway run-operator run-console
+.PHONY: help doctor proto check-generated check-openapi proto-roundtrip check-migrations check-compose check-deploy check-public-content sbom check-governance test-go test-python test-api test-console lint test race demo product-e2e run-scheduler run-controller run-runtime run-gateway run-operator run-console
 
 help:
 	@printf '%s\n' \
 	  'TGS-RL commands:' \
+	  '  make doctor           verify the local development toolchain' \
 	  '  make proto            lint and regenerate protobuf outputs' \
 	  '  make check-generated  regenerate and verify committed outputs are current' \
 	  '  make check-openapi    verify committed OpenAPI artifact is current' \
@@ -44,6 +45,9 @@ help:
 	  '  make run-gateway      start the northbound HTTP gateway' \
 	  '  make run-operator     start the infrastructure operator worker' \
 	  '  make run-console      start the web console dev server'
+
+doctor:
+	./scripts/check-environment.sh
 
 proto:
 	@if command -v buf >/dev/null 2>&1 && [ "$$(buf --version)" != "$(BUF_VERSION)" ]; then \

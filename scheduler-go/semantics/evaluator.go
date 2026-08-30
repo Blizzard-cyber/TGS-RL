@@ -748,7 +748,7 @@ func comparisonValue(facts *factRegistry, cond *tgsrlv1.Condition) (*tgsrlv1.Sem
 		value, ok := facts.values[cond.GetComparisonFactPath()]
 		if !ok {
 			if issue, exists := facts.issues[cond.GetComparisonFactPath()]; exists {
-				return nil, []string{cond.GetComparisonFactPath()}, fmt.Errorf(issue.reason)
+				return nil, []string{cond.GetComparisonFactPath()}, errors.New(issue.reason)
 			}
 			return nil, []string{cond.GetComparisonFactPath()}, fmt.Errorf("missing comparison fact")
 		}
