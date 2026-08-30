@@ -8,6 +8,7 @@ import (
 	tgsrlv1 "github.com/Blizzard-cyber/TGS-RL/gen/go/tgsrl/v1"
 	"github.com/Blizzard-cyber/TGS-RL/scheduler-go/actionpolicy"
 	"github.com/Blizzard-cyber/TGS-RL/scheduler-go/candidates"
+	"github.com/Blizzard-cyber/TGS-RL/scheduler-go/constraints"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -102,8 +103,8 @@ func (p FastMutationPlanner) Propose(input PlanningInput) []PlannerProposal {
 	}
 	if (input.Directives.AllowScaleIn || autoScaleIn) && uint32(len(targets)) > input.Intent.GetUnitCount() {
 		releaseCount := len(targets) - int(input.Intent.GetUnitCount())
-		// PR3 emits one deterministic victim per tick. Multi-step scale-in becomes
-		// safe only when the transactional executor owns prepare/commit/abort.
+		// Emit one deterministic victim per tick. The transactional executor
+		// serializes each release and makes retries recoverable.
 		target := targets[len(targets)-1]
 		result = append(result, actionProposal(
 			input,
@@ -270,18 +271,6 @@ func actionEligibility(input PlanningInput, spec adaptiveActionSpec) string {
 		}
 	}
 	return "ELIGIBLE"
-}
-
-func joinedAllocationIDs(specs []adaptiveActionSpec) string {
-	ids := sortedAffectedIDs(specs)
-	result := ""
-	for index, id := range ids {
-		if index > 0 {
-			result += ","
-		}
-		result += id
-	}
-	return result
 }
 
 func missingTargetEvidence(input PlanningInput, kind tgsrlv1.PlannerKind, ids []string) []PlannerProposal {
@@ -548,7 +537,7 @@ func resizeWithinAllocation(current, desired *tgsrlv1.ResourceVector) bool {
 	if current == nil || desired == nil {
 		return false
 	}
-	return resourceLessOrEqual(desired, current)
+	return constraints.ResourceLessOrEqual(desired, current)
 }
 
 func activeAllocationCount(input PlanningInput) int {

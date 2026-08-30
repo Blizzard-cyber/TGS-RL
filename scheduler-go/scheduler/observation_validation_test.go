@@ -19,7 +19,7 @@ func pr2ObservationPolicy(age time.Duration) *tgsrlv1.ObservationPolicy {
 	}
 }
 
-func refreshPR2ContractID(t *testing.T, contract *tgsrlv1.ExecutionContract) {
+func refreshContractID(t *testing.T, contract *tgsrlv1.ExecutionContract) {
 	t.Helper()
 	contract.ContractId = ""
 	id, err := CanonicalContractID(contract)
@@ -29,16 +29,16 @@ func refreshPR2ContractID(t *testing.T, contract *tgsrlv1.ExecutionContract) {
 	contract.ContractId = id
 }
 
-func requirePR2ValidationError(t *testing.T, intent *tgsrlv1.SchedulingIntent, field string) {
+func requireObservationValidationError(t *testing.T, intent *tgsrlv1.SchedulingIntent, field string) {
 	t.Helper()
-	refreshPR2ContractID(t, intent.GetExecutionContract())
+	refreshContractID(t, intent.GetExecutionContract())
 	err := ValidateIntent(intent)
 	if err == nil || !IsValidationError(err) || !strings.Contains(err.Error(), field) {
 		t.Fatalf("ValidateIntent() error = %v, want validation error containing %q", err, field)
 	}
 }
 
-func TestPR2CriticalFactPolicyValidation(t *testing.T) {
+func TestCriticalFactPolicyValidation(t *testing.T) {
 	valid := &tgsrlv1.CriticalFactPolicy{
 		FactPath:          "sample.policy_lag",
 		ObservationPolicy: pr2ObservationPolicy(time.Second),
@@ -75,7 +75,7 @@ func TestPR2CriticalFactPolicyValidation(t *testing.T) {
 			_, intent := validFixture()
 			intent.ExecutionContract.CriticalFactPolicies = []*tgsrlv1.CriticalFactPolicy{proto.Clone(valid).(*tgsrlv1.CriticalFactPolicy)}
 			test.mutate(intent.ExecutionContract)
-			requirePR2ValidationError(t, intent, test.field)
+			requireObservationValidationError(t, intent, test.field)
 		})
 	}
 
@@ -83,13 +83,13 @@ func TestPR2CriticalFactPolicyValidation(t *testing.T) {
 	withoutAge := proto.Clone(valid).(*tgsrlv1.CriticalFactPolicy)
 	withoutAge.ObservationPolicy.MaximumAge = nil
 	intent.ExecutionContract.CriticalFactPolicies = []*tgsrlv1.CriticalFactPolicy{withoutAge}
-	refreshPR2ContractID(t, intent.ExecutionContract)
+	refreshContractID(t, intent.ExecutionContract)
 	if err := ValidateIntent(intent); err != nil {
 		t.Fatalf("ValidateIntent(nil maximum_age) error = %v", err)
 	}
 }
 
-func TestPR2VersionConstraintAliasesAndShape(t *testing.T) {
+func TestVersionConstraintAliasesAndShape(t *testing.T) {
 	aliases := []struct {
 		alias string
 		kind  tgsrlv1.ComponentKind
@@ -133,7 +133,7 @@ func TestPR2VersionConstraintAliasesAndShape(t *testing.T) {
 			} else {
 				intent.ExecutionContract.VersionConstraints = append(intent.ExecutionContract.VersionConstraints, constraint)
 			}
-			refreshPR2ContractID(t, intent.ExecutionContract)
+			refreshContractID(t, intent.ExecutionContract)
 			if err := ValidateIntent(intent); err != nil {
 				t.Fatalf("ValidateIntent(typed %q) error = %v", test.alias, err)
 			}
@@ -142,7 +142,7 @@ func TestPR2VersionConstraintAliasesAndShape(t *testing.T) {
 
 	_, intent := validFixture()
 	intent.ExecutionContract.VersionConstraints[0].Version = "9.9.9"
-	refreshPR2ContractID(t, intent.ExecutionContract)
+	refreshContractID(t, intent.ExecutionContract)
 	if err := ValidateIntent(intent); err != nil {
 		t.Fatalf("ValidateIntent(incompatible protocol shape) error = %v", err)
 	}
@@ -170,7 +170,7 @@ func TestPR2VersionConstraintAliasesAndShape(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			_, intent := validFixture()
 			test.mutate(intent.ExecutionContract)
-			requirePR2ValidationError(t, intent, test.field)
+			requireObservationValidationError(t, intent, test.field)
 		})
 	}
 
@@ -178,7 +178,7 @@ func TestPR2VersionConstraintAliasesAndShape(t *testing.T) {
 	exact := exactIntent.ExecutionContract.VersionConstraints[0]
 	exact.Operator = tgsrlv1.VersionOperator_VERSION_OPERATOR_EXACT
 	exact.Version = "driver-build-2026.08.29"
-	refreshPR2ContractID(t, exactIntent.ExecutionContract)
+	refreshContractID(t, exactIntent.ExecutionContract)
 	if err := ValidateIntent(exactIntent); err != nil {
 		t.Fatalf("ValidateIntent(opaque EXACT version) error = %v", err)
 	}
@@ -191,13 +191,13 @@ func TestPR2VersionConstraintAliasesAndShape(t *testing.T) {
 		Version:           "ray-build-1",
 		ObservationPolicy: pr2ObservationPolicy(time.Second),
 	})
-	refreshPR2ContractID(t, backendIntent.ExecutionContract)
+	refreshContractID(t, backendIntent.ExecutionContract)
 	if err := ValidateIntent(backendIntent); err != nil {
 		t.Fatalf("ValidateIntent(execution backend constraint) error = %v", err)
 	}
 }
 
-func TestPR2VersionConstraintIdentityDeduplication(t *testing.T) {
+func TestVersionConstraintIdentityDeduplication(t *testing.T) {
 	_, intent := validFixture()
 	protocol := intent.ExecutionContract.VersionConstraints[0]
 	protocol.ComponentKind = tgsrlv1.ComponentKind_COMPONENT_KIND_PROTOCOL
@@ -205,10 +205,10 @@ func TestPR2VersionConstraintIdentityDeduplication(t *testing.T) {
 	duplicate := proto.Clone(protocol).(*tgsrlv1.VersionConstraint)
 	duplicate.Component = "PROTOCOL"
 	intent.ExecutionContract.VersionConstraints = append(intent.ExecutionContract.VersionConstraints, duplicate)
-	requirePR2ValidationError(t, intent, "version_constraints[1].component")
+	requireObservationValidationError(t, intent, "version_constraints[1].component")
 }
 
-func TestPR2ComponentVersionValidation(t *testing.T) {
+func TestComponentVersionValidation(t *testing.T) {
 	valid := func() *tgsrlv1.ComponentVersion {
 		return &tgsrlv1.ComponentVersion{
 			Kind:       tgsrlv1.ComponentKind_COMPONENT_KIND_RUNTIME,
@@ -243,7 +243,7 @@ func TestPR2ComponentVersionValidation(t *testing.T) {
 			version := valid()
 			test.mutate(version)
 			intent.RequiredCapabilities.ComponentVersions = []*tgsrlv1.ComponentVersion{version}
-			requirePR2ValidationError(t, intent, test.field)
+			requireObservationValidationError(t, intent, test.field)
 		})
 	}
 
@@ -252,7 +252,7 @@ func TestPR2ComponentVersionValidation(t *testing.T) {
 		version := valid()
 		version.Revision = 0
 		intent.RequiredCapabilities.ComponentVersions = []*tgsrlv1.ComponentVersion{version}
-		refreshPR2ContractID(t, intent.ExecutionContract)
+		refreshContractID(t, intent.ExecutionContract)
 		if err := ValidateIntent(intent); err != nil {
 			t.Fatalf("ValidateIntent(component version revision zero) error = %v", err)
 		}
@@ -264,7 +264,7 @@ func TestPR2ComponentVersionValidation(t *testing.T) {
 		second := proto.Clone(first).(*tgsrlv1.ComponentVersion)
 		second.Name = "RUNTIME-PRIMARY"
 		intent.RequiredCapabilities.ComponentVersions = []*tgsrlv1.ComponentVersion{first, second}
-		requirePR2ValidationError(t, intent, "component_versions[1]")
+		requireObservationValidationError(t, intent, "component_versions[1]")
 	})
 
 	t.Run("duplicate effective observation identity", func(t *testing.T) {
@@ -272,9 +272,9 @@ func TestPR2ComponentVersionValidation(t *testing.T) {
 		first := valid()
 		second := proto.Clone(first).(*tgsrlv1.ComponentVersion)
 		second.Name = "RUNTIME-PRIMARY"
-		intent.ContractObservation = validPR2ContractObservation()
+		intent.ContractObservation = validContractObservation()
 		intent.ContractObservation.ComponentVersions = []*tgsrlv1.ComponentVersion{first, second}
-		requirePR2ValidationError(t, intent, "contract_observation.component_versions[1]")
+		requireObservationValidationError(t, intent, "contract_observation.component_versions[1]")
 	})
 
 	t.Run("snapshot capability component version", func(t *testing.T) {
@@ -288,7 +288,7 @@ func TestPR2ComponentVersionValidation(t *testing.T) {
 	})
 }
 
-func TestPR2ObservedFactValidation(t *testing.T) {
+func TestObservedFactValidation(t *testing.T) {
 	valid := func() *tgsrlv1.ObservedFact {
 		return &tgsrlv1.ObservedFact{
 			Fact: &tgsrlv1.SemanticField{
@@ -316,9 +316,9 @@ func TestPR2ObservedFactValidation(t *testing.T) {
 			_, intent := validFixture()
 			fact := valid()
 			test.mutate(fact)
-			intent.ContractObservation = validPR2ContractObservation()
+			intent.ContractObservation = validContractObservation()
 			intent.ContractObservation.FactObservations = []*tgsrlv1.ObservedFact{fact}
-			requirePR2ValidationError(t, intent, test.field)
+			requireObservationValidationError(t, intent, test.field)
 		})
 	}
 
@@ -326,9 +326,9 @@ func TestPR2ObservedFactValidation(t *testing.T) {
 		_, intent := validFixture()
 		fact := valid()
 		fact.Revision = 0
-		intent.ContractObservation = validPR2ContractObservation()
+		intent.ContractObservation = validContractObservation()
 		intent.ContractObservation.FactObservations = []*tgsrlv1.ObservedFact{fact}
-		refreshPR2ContractID(t, intent.ExecutionContract)
+		refreshContractID(t, intent.ExecutionContract)
 		if err := ValidateIntent(intent); err != nil {
 			t.Fatalf("ValidateIntent(observed fact revision zero) error = %v", err)
 		}
@@ -337,13 +337,13 @@ func TestPR2ObservedFactValidation(t *testing.T) {
 	t.Run("duplicate path", func(t *testing.T) {
 		_, intent := validFixture()
 		first := valid()
-		intent.ContractObservation = validPR2ContractObservation()
+		intent.ContractObservation = validContractObservation()
 		intent.ContractObservation.FactObservations = []*tgsrlv1.ObservedFact{first, proto.Clone(first).(*tgsrlv1.ObservedFact)}
-		requirePR2ValidationError(t, intent, "fact_observations[1].fact.key")
+		requireObservationValidationError(t, intent, "fact_observations[1].fact.key")
 	})
 }
 
-func TestPR2ContractObservationEnvelopeValidation(t *testing.T) {
+func TestContractObservationEnvelopeValidation(t *testing.T) {
 	tests := []struct {
 		name   string
 		mutate func(*tgsrlv1.ContractObservation)
@@ -356,9 +356,9 @@ func TestPR2ContractObservationEnvelopeValidation(t *testing.T) {
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			_, intent := validFixture()
-			intent.ContractObservation = validPR2ContractObservation()
+			intent.ContractObservation = validContractObservation()
 			test.mutate(intent.ContractObservation)
-			requirePR2ValidationError(t, intent, test.field)
+			requireObservationValidationError(t, intent, test.field)
 		})
 	}
 
@@ -370,13 +370,13 @@ func TestPR2ContractObservationEnvelopeValidation(t *testing.T) {
 			Value: &tgsrlv1.SemanticValue{Kind: &tgsrlv1.SemanticValue_Uint64Value{Uint64Value: 1}},
 		}},
 	}
-	refreshPR2ContractID(t, intent.ExecutionContract)
+	refreshContractID(t, intent.ExecutionContract)
 	if err := ValidateIntent(intent); err != nil {
 		t.Fatalf("ValidateIntent(legacy sparse observation) error = %v", err)
 	}
 }
 
-func validPR2ContractObservation() *tgsrlv1.ContractObservation {
+func validContractObservation() *tgsrlv1.ContractObservation {
 	return &tgsrlv1.ContractObservation{
 		ObservedAt: timestamppb.New(time.Unix(100, 0)),
 		Source:     "runtime",

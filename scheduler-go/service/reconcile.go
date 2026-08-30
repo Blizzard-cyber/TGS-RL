@@ -11,6 +11,7 @@ import (
 	"github.com/Blizzard-cyber/TGS-RL/scheduler-go/actionpolicy"
 	"github.com/Blizzard-cyber/TGS-RL/scheduler-go/eventloop"
 	"github.com/Blizzard-cyber/TGS-RL/scheduler-go/observability"
+	"github.com/Blizzard-cyber/TGS-RL/scheduler-go/planexecutor"
 	"github.com/Blizzard-cyber/TGS-RL/scheduler-go/protection"
 	"github.com/Blizzard-cyber/TGS-RL/scheduler-go/provider"
 	"github.com/Blizzard-cyber/TGS-RL/scheduler-go/scheduler"
@@ -55,9 +56,6 @@ func (s *Server) enqueue(ctx context.Context, intent *tgsrlv1.SchedulingIntent, 
 		return
 	}
 	key := workKey{executionID: intent.GetExecutionId(), stageID: intent.GetStageId()}
-	if s.eventLoop != nil {
-		s.eventLoop.PublishIntent(intent)
-	}
 	s.mu.Lock()
 	work := s.workers[key]
 	if work == nil {
@@ -110,38 +108,16 @@ func (s *Server) enqueueThroughRuntime(ctx context.Context, intent *tgsrlv1.Sche
 	if intent == nil {
 		return
 	}
-	if s.eventLoop != nil {
-		s.eventLoop.PublishIntent(intent)
+	runtimeTrigger := cloneRuntimeTrigger(trigger)
+	if runtimeTrigger == nil {
+		runtimeTrigger = &eventloop.Trigger{}
 	}
-	if s.runtime != nil {
-		runtimeTrigger := cloneRuntimeTrigger(trigger)
-		if runtimeTrigger == nil {
-			runtimeTrigger = &eventloop.Trigger{}
-		}
-		runtimeTrigger.ExecutionID = intent.GetExecutionId()
-		runtimeTrigger.StageID = intent.GetStageId()
-		if runtimeTrigger.ContractObservation == nil {
-			runtimeTrigger.ContractObservation = cloneContractObservation(intent.GetContractObservation())
-		}
-		s.runtime.Enqueue(runtimeTrigger)
-		return
+	runtimeTrigger.ExecutionID = intent.GetExecutionId()
+	runtimeTrigger.StageID = intent.GetStageId()
+	if runtimeTrigger.ContractObservation == nil {
+		runtimeTrigger.ContractObservation = cloneContractObservation(intent.GetContractObservation())
 	}
-	legacy := cloneRuntimeTrigger(trigger)
-	if legacy == nil {
-		legacy = &eventloop.Trigger{}
-	}
-	legacy.ExecutionID = intent.GetExecutionId()
-	legacy.StageID = intent.GetStageId()
-	if legacy.TickKind == tgsrlv1.TickKind_TICK_KIND_UNKNOWN {
-		legacy.TickKind = tgsrlv1.TickKind_TICK_KIND_FAST
-	}
-	if legacy.Cause == "" {
-		legacy.Cause = "legacy_direct"
-	}
-	if legacy.ContractObservation == nil {
-		legacy.ContractObservation = cloneContractObservation(intent.GetContractObservation())
-	}
-	s.enqueue(s.workerContext(ctx), intent, legacy)
+	s.tickRuntime.Enqueue(runtimeTrigger)
 }
 
 func (s *Server) runtimeTriggerForIntent(intent *tgsrlv1.SchedulingIntent, cause string, tick tgsrlv1.TickKind) *eventloop.Trigger {
@@ -193,9 +169,6 @@ func (s *Server) processAccepted(ctx context.Context, workItem *reconcileWork) {
 	}
 	intent := workItem.intent
 	triggers := workItem.triggers
-	if len(triggers) == 0 {
-		triggers = []*eventloop.Trigger{s.runtimeTriggerForIntent(intent, "legacy_direct", tgsrlv1.TickKind_TICK_KIND_FAST)}
-	}
 	key := workKey{executionID: intent.GetExecutionId(), stageID: intent.GetStageId()}
 	work := s.workState(key)
 	for _, trigger := range triggers {
@@ -224,8 +197,8 @@ func (s *Server) processAcceptedTrigger(ctx context.Context, work *workState, in
 
 			latest, exists := s.store.LatestIntent(intent.GetExecutionId(), intent.GetStageId())
 			if !exists {
-				if s.runtime != nil {
-					s.runtime.Forget(intent.GetExecutionId(), intent.GetStageId())
+				if s.tickRuntime != nil {
+					s.tickRuntime.Forget(intent.GetExecutionId(), intent.GetStageId())
 				}
 				if err := s.appendTerminalFallback(intent, "INTENT_NOT_FOUND", "accepted intent is no longer available"); err != nil {
 					return true
@@ -239,8 +212,8 @@ func (s *Server) processAcceptedTrigger(ctx context.Context, work *workState, in
 				return true
 			}
 			if _, valid := s.store.LatestValidIntent(intent.GetExecutionId(), intent.GetStageId()); !valid {
-				if s.runtime != nil {
-					s.runtime.Forget(intent.GetExecutionId(), intent.GetStageId())
+				if s.tickRuntime != nil {
+					s.tickRuntime.Forget(intent.GetExecutionId(), intent.GetStageId())
 				}
 				if err := s.appendTerminalFallback(intent, scheduler.FallbackReasonIntentExpired, "intent expired before execution"); err != nil {
 					return true
@@ -294,20 +267,18 @@ func (s *Server) processAcceptedTrigger(ctx context.Context, work *workState, in
 				}
 				return true
 			}
-			if complete, ok := s.provider.(provider.CompleteResourceProvider); ok {
-				health, healthErr := complete.Health(ctx)
-				if healthErr != nil || health == nil || !health.Healthy {
-					reason := "provider health check failed"
-					if healthErr != nil {
-						reason = healthErr.Error()
-					} else if health != nil && health.Reason != "" {
-						reason = health.Reason
-					}
-					if err := s.appendTerminalFallback(intent, "PROVIDER_UNAVAILABLE", reason); err != nil {
-						return true
-					}
+			health, healthErr := s.provider.Health(ctx)
+			if healthErr != nil || health == nil || !health.Healthy {
+				reason := "provider health check failed"
+				if healthErr != nil {
+					reason = healthErr.Error()
+				} else if health != nil && health.Reason != "" {
+					reason = health.Reason
+				}
+				if err := s.appendTerminalFallback(intent, "PROVIDER_UNAVAILABLE", reason); err != nil {
 					return true
 				}
+				return true
 			}
 			if err := actionpolicy.ValidatePlan(plan, evaluationContext.GetTickKind(), actionpolicy.ValidationOptions{
 				AllowLegacyUnknownTickL1: true,
@@ -321,7 +292,7 @@ func (s *Server) processAcceptedTrigger(ctx context.Context, work *workState, in
 				return true
 			}
 			if plan.GetPurpose() != tgsrlv1.PlanPurpose_PLAN_PURPOSE_UNKNOWN {
-				if err := provider.ValidatePlanCapabilities(s.provider, plan); err != nil {
+				if err := validateExecutionCapabilities(ctx, s.provider, plan); err != nil {
 					decision.Fallback = true
 					decision.FallbackReason = "PLAN_POLICY_REJECTED"
 					decision.SelectedPlan.Actions = nil
@@ -333,7 +304,8 @@ func (s *Server) processAcceptedTrigger(ctx context.Context, work *workState, in
 			}
 			beforeReservation := s.store.ExportDurableState()
 			protectionBeforeReservation := s.ExportProtectionState()
-			if _, err := s.store.ReservePlan(plan); err != nil {
+			transaction, err := s.planExecutor.Stage(ctx, plan)
+			if err != nil {
 				if errors.Is(err, state.ErrPlanRevisionConflict) {
 					retry = true
 					return false
@@ -374,10 +346,22 @@ func (s *Server) processAcceptedTrigger(ctx context.Context, work *workState, in
 				return true
 			}
 			s.planMu.Unlock()
-			results, executeErr := s.provider.ExecutePlan(ctx, plan)
+			var outcome *planexecutor.Outcome
+			outcome, executeErr := s.planExecutor.Resume(ctx, transaction.TransactionID)
+			var results []*tgsrlv1.ActionResult
+			if outcome != nil {
+				results = outcome.Results()
+			}
 			s.planMu.Lock()
 			if executeErr != nil {
 				slog.Warn("provider plan execution failed", "error", executeErr, "job_id", intent.GetJobId(), "run_id", intent.GetRunId(), "trace_id", intent.GetTraceId(), "decision_id", decision.GetDecisionId(), "plan_id", plan.GetPlanId())
+				if s.persistenceFailure() != nil {
+					// The executor persists before and after every external side
+					// effect. Once that boundary fails, preserve the last durable
+					// transaction for restart reconciliation instead of inventing a
+					// local failed finalization that cannot be checkpointed.
+					return true
+				}
 			}
 			decision.ActionResults = cloneActionResults(results)
 			s.recordActionResults(intent, decision.ActionResults)
@@ -386,16 +370,18 @@ func (s *Server) processAcceptedTrigger(ctx context.Context, work *workState, in
 					telemetry.RecordAction(intentCorrelation(intent), "failed")
 				}
 			}
-			succeeded := executeErr == nil && allActionsSucceeded(results, len(plan.GetActions()))
-			beforeFinalize := s.store.ExportDurableState()
+			succeeded := executeErr == nil && outcome != nil && outcome.Succeeded() && allActionsSucceeded(results, len(plan.GetActions()))
 			protectionBeforeFinalize := s.ExportProtectionState()
-			finalSnapshot, finalizeErr := s.store.FinalizePlanResults(plan, succeeded, results)
-			if finalizeErr != nil {
+			finalSnapshot, snapshotErr := s.store.GetSnapshot(ctx, 0, true)
+			if snapshotErr != nil {
 				decision.Fallback = true
-				decision.FallbackReason = "STATE_FINALIZE_FAILED"
+				decision.FallbackReason = "STATE_READ_FAILED"
 			} else if !succeeded {
 				decision.Fallback = true
 				decision.FallbackReason = "PROVIDER_EXECUTION_FAILED"
+				if outcome != nil && outcome.Degraded() {
+					decision.FallbackReason = "TRANSACTION_DEGRADED"
+				}
 			}
 			if finalSnapshot != nil {
 				for _, result := range decision.ActionResults {
@@ -406,9 +392,9 @@ func (s *Server) processAcceptedTrigger(ctx context.Context, work *workState, in
 			}
 			s.recordProtectionOutcome(guardKey, succeeded)
 			if err := s.appendDecision(intent.GetJobId(), decision); err != nil {
-				if restoreErr := s.store.Restore(beforeFinalize); restoreErr != nil {
-					slog.Error("finalized state rollback failed after decision checkpoint failure", "error", restoreErr, "job_id", intent.GetJobId(), "run_id", intent.GetRunId(), "trace_id", intent.GetTraceId(), "decision_id", decision.GetDecisionId())
-				}
+				// Transaction and reservation state was durably finalized by the
+				// executor before this audit append. Keep it intact so restart can
+				// reconstruct the missing DecisionRecord without replaying effects.
 				s.restoreProtectionSnapshot(protectionBeforeFinalize)
 			}
 			return true
@@ -424,6 +410,10 @@ func (s *Server) processAcceptedTrigger(ctx context.Context, work *workState, in
 		return false
 	}
 	return true
+}
+
+func validateExecutionCapabilities(ctx context.Context, resourceProvider provider.CompleteResourceProvider, plan *tgsrlv1.PlacementPlan) error {
+	return provider.ValidateExecutionCapabilities(ctx, resourceProvider, plan)
 }
 
 func protectionKey(intent *tgsrlv1.SchedulingIntent) string {
@@ -515,7 +505,7 @@ func shouldEvaluateAdaptively(
 		return false
 	}
 	switch evaluationContext.GetCause() {
-	case "", "legacy_direct", "publish_intent", "startup_replay":
+	case "", "publish_intent", "startup_replay":
 		return false
 	}
 	if hasAdaptiveIntentLabels(intent) {

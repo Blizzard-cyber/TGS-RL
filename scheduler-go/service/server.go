@@ -10,9 +10,9 @@ import (
 	"time"
 
 	tgsrlv1 "github.com/Blizzard-cyber/TGS-RL/gen/go/tgsrl/v1"
-	"github.com/Blizzard-cyber/TGS-RL/scheduler-go/cache"
 	"github.com/Blizzard-cyber/TGS-RL/scheduler-go/eventloop"
 	"github.com/Blizzard-cyber/TGS-RL/scheduler-go/observability"
+	"github.com/Blizzard-cyber/TGS-RL/scheduler-go/planexecutor"
 	"github.com/Blizzard-cyber/TGS-RL/scheduler-go/protection"
 	"github.com/Blizzard-cyber/TGS-RL/scheduler-go/provider"
 	"github.com/Blizzard-cyber/TGS-RL/scheduler-go/scheduler"
@@ -33,9 +33,8 @@ type ContextualEvaluator interface {
 	EvaluateWithContext(*tgsrlv1.ClusterSnapshot, *tgsrlv1.SchedulingIntent, *tgsrlv1.EvaluationContext) (*tgsrlv1.PlacementPlan, *tgsrlv1.DecisionRecord, error)
 }
 
-// AdaptiveEvaluator is an optional service-local seam for adaptive evaluation.
-// Root note: this is a temporary compatibility interface owned by service
-// until scheduler core lands its final EvaluateAdaptive API shape.
+// AdaptiveEvaluator extends the base evaluator with periodic runtime mutation
+// planning while keeping test and alternate evaluator implementations small.
 type AdaptiveEvaluator interface {
 	EvaluateAdaptive(*scheduler.AdaptiveEvaluationInput) (*tgsrlv1.PlacementPlan, *tgsrlv1.DecisionRecord, error)
 }
@@ -56,10 +55,10 @@ func (f ClockFunc) Now() time.Time { return f() }
 type Config struct {
 	Store             *state.Store
 	Scheduler         Evaluator
-	Provider          provider.ResourceProvider
+	Provider          provider.CompleteResourceProvider
+	PlanExecutor      *planexecutor.Executor
 	DecisionRetention int
-	EventLoopRuntime  *eventloop.Runtime
-	EventLoop         *eventloop.EventLoop
+	TickRuntime       *eventloop.Runtime
 	Recorder          observability.Recorder
 	Repository        DurableRepository
 	Clock             Clock
@@ -72,18 +71,19 @@ type Config struct {
 // Server serves the generated SchedulerService contract.
 type Server struct {
 	tgsrlv1.UnimplementedSchedulerServiceServer
+	tgsrlv1.UnimplementedSchedulerObservationServiceServer
 
 	store          *state.Store
 	scheduler      Evaluator
 	guard          *protection.Guard
-	provider       provider.ResourceProvider
+	provider       provider.CompleteResourceProvider
+	planExecutor   *planexecutor.Executor
 	retention      int
 	recorder       observability.Recorder
 	repository     DurableRepository
 	persistenceErr error
 	clock          Clock
-	eventLoop      *eventloop.EventLoop
-	runtime        *eventloop.Runtime
+	tickRuntime    *eventloop.Runtime
 	lifecycleCtx   context.Context
 	lifecycleStop  context.CancelFunc
 	providerWatch  providerWatchState
@@ -103,6 +103,41 @@ type Server struct {
 	started   bool
 	startErr  error
 	sequence  uint64
+}
+
+// ObserveSandbox projects one externally observed runtime event through the
+// configured ResourceProvider. Provider watch streams then update Store, so
+// the Scheduler has one ordering and fencing path for all observations.
+func (s *Server) ObserveSandbox(ctx context.Context, request *tgsrlv1.ObserveSandboxRequest) (*tgsrlv1.ObserveSandboxResponse, error) {
+	if request == nil || request.GetEvent() == nil {
+		return nil, status.Error(codes.InvalidArgument, "sandbox event is required")
+	}
+	event := proto.Clone(request.GetEvent()).(*tgsrlv1.SandboxEvent)
+	accepted, err := s.provider.ObserveSandbox(ctx, event)
+	if err != nil {
+		switch {
+		case errors.Is(err, provider.ErrInvalidArgument):
+			return nil, status.Error(codes.InvalidArgument, err.Error())
+		case errors.Is(err, provider.ErrIdempotencyConflict):
+			return nil, status.Error(codes.AlreadyExists, err.Error())
+		case errors.Is(err, provider.ErrGenerationFenced):
+			return nil, status.Error(codes.FailedPrecondition, err.Error())
+		default:
+			return nil, status.Error(codes.Internal, "sandbox observation failed")
+		}
+	}
+	s.planMu.Lock()
+	_, _, projectionErr := s.store.ApplyProviderSandboxEvent(accepted)
+	if projectionErr == nil {
+		s.mu.Lock()
+		projectionErr = s.checkpointLocked()
+		s.mu.Unlock()
+	}
+	s.planMu.Unlock()
+	if projectionErr != nil {
+		return nil, status.Error(codes.Internal, "sandbox observation checkpoint failed")
+	}
+	return &tgsrlv1.ObserveSandboxResponse{Event: accepted}, nil
 }
 
 type decisionEntry struct {
@@ -189,25 +224,24 @@ func New(config Config) (*Server, error) {
 		changed:       make(chan struct{}),
 		workers:       make(map[workKey]*workState),
 	}
-	if config.EventLoop != nil {
-		server.eventLoop = config.EventLoop
+	if config.PlanExecutor != nil {
+		server.planExecutor = config.PlanExecutor
 	} else {
-		initial, err := config.Store.GetSnapshot(server.backgroundContext(), 0, true)
-		if err != nil {
+		executor, executorErr := planexecutor.NewExecutor(config.Store, config.Provider, func(ctx context.Context, _ *state.TransactionRecord) error {
+			return server.checkpoint()
+		})
+		if executorErr != nil {
 			server.lifecycleStop()
-			return nil, fmt.Errorf("service: initialize event loop from store: %w", err)
+			return nil, fmt.Errorf("service: initialize plan executor: %w", executorErr)
 		}
-		cacheState := cache.NewState(initial, nil)
-		server.eventLoop = eventloop.New(cacheState, nil, config.Recorder)
+		server.planExecutor = executor
 	}
-	if config.EventLoopRuntime != nil {
-		server.runtime = config.EventLoopRuntime
-	} else if server.eventLoop != nil {
-		server.runtime = eventloop.NewRuntime(server.eventLoop, eventloop.RuntimeConfig{})
+	if config.TickRuntime != nil {
+		server.tickRuntime = config.TickRuntime
+	} else {
+		server.tickRuntime = eventloop.NewRuntime(config.Recorder, eventloop.RuntimeConfig{})
 	}
-	if server.runtime != nil {
-		server.runtime.SetTrigger(server.triggerReconcile)
-	}
+	server.tickRuntime.SetTrigger(server.triggerReconcile)
 	if !config.DeferStart {
 		if err := server.Start(); err != nil {
 			return nil, err
@@ -216,23 +250,18 @@ func New(config Config) (*Server, error) {
 	return server, nil
 }
 
-// Start seeds event-loop state and begins provider/runtime background work.
+// Start begins provider watches and periodic scheduling work.
 // Repeated calls are safe.
 func (s *Server) Start() error {
 	if s == nil {
 		return nil
 	}
 	s.startOnce.Do(func() {
-		if s.eventLoop != nil {
-			s.seedEventLoop(s.backgroundContext())
-			if err := s.startProviderWatches(); err != nil {
-				s.startErr = err
-				return
-			}
+		if err := s.startProviderWatches(); err != nil {
+			s.startErr = err
+			return
 		}
-		if s.runtime != nil {
-			s.runtime.Start(s.backgroundContext())
-		}
+		s.tickRuntime.Start(s.backgroundContext())
 		s.mu.Lock()
 		s.started = true
 		s.mu.Unlock()
@@ -301,9 +330,7 @@ func (s *Server) Close() {
 		if s.lifecycleStop != nil {
 			s.lifecycleStop()
 		}
-		if s.runtime != nil {
-			s.runtime.Stop()
-		}
+		s.tickRuntime.Stop()
 	})
 }
 

@@ -173,11 +173,11 @@ func TestStrictAdmissionPlanCapabilityParity(t *testing.T) {
 				CapabilityRequirements: nil,
 				Actions:                []*tgsrlv1.Action{action},
 			}
-			if err := provider.ValidatePlanCapabilities(p, plan); err != nil {
-				t.Fatalf("ValidatePlanCapabilities() error = %v", err)
+			if err := provider.ValidateExecutionCapabilities(context.Background(), p, plan); err != nil {
+				t.Fatalf("ValidateExecutionCapabilities() error = %v", err)
 			}
-			if _, err := p.ExecutePlan(context.Background(), plan); err != nil {
-				t.Fatalf("ExecutePlan() error = %v", err)
+			if err := executeTransaction(context.Background(), p, plan); err != nil {
+				t.Fatalf("transaction execution error = %v", err)
 			}
 		})
 	}
@@ -212,11 +212,11 @@ func TestCompleteProvidersCapabilityHandshakeParity(t *testing.T) {
 			plan := &tgsrlv1.PlacementPlan{PlanId: "capability-parity", CapabilityRequirements: []*tgsrlv1.CapabilityRequirement{{
 				Kind: tgsrlv1.CapabilityRequirementKind_CAPABILITY_REQUIREMENT_KIND_PROVIDER_CAPABILITY, Name: factory.capabilityName, MinVersion: "1.0.0", Required: true,
 			}}}
-			if err := provider.ValidatePlanCapabilities(p, plan); err != nil {
+			if err := provider.ValidateExecutionCapabilities(context.Background(), p, plan); err != nil {
 				t.Fatalf("provider capability handshake failed: %v", err)
 			}
 			plan.CapabilityRequirements = []*tgsrlv1.CapabilityRequirement{{Kind: tgsrlv1.CapabilityRequirementKind_CAPABILITY_REQUIREMENT_KIND_ATOMIC_REPLACEMENT, Required: false}}
-			if err := provider.ValidatePlanCapabilities(p, plan); err != nil {
+			if err := provider.ValidateExecutionCapabilities(context.Background(), p, plan); err != nil {
 				t.Fatalf("optional capability blocked handshake: %v", err)
 			}
 		})
@@ -262,17 +262,13 @@ func testReplayableWatches(t *testing.T, p provider.CompleteResourceProvider) {
 	if firstResource.Cursor == 0 {
 		t.Fatalf("initial resource cursor = %d, want positive", firstResource.Cursor)
 	}
-	injector, ok := p.(provider.SandboxEventInjector)
-	if !ok {
-		t.Fatalf("provider %T does not expose SandboxEventInjector test seam", p)
-	}
-	if err := injector.ApplySandboxEvent(context.Background(), provider.SandboxEvent{
-		EventID:    "watch-event-1",
-		SandboxID:  "sandbox-a",
+	if _, err := p.ObserveSandbox(context.Background(), &tgsrlv1.SandboxEvent{
+		EventId:    "watch-event-1",
+		SandboxId:  "sandbox-a",
 		Generation: 1,
-		State:      provider.SandboxStateRunning,
+		State:      tgsrlv1.RuntimeState_RUNTIME_STATE_RUNNING,
 	}); err != nil {
-		t.Fatalf("ApplySandboxEvent() error = %v", err)
+		t.Fatalf("ObserveSandbox() error = %v", err)
 	}
 
 	var latestResource provider.WatchedResourceEvent
@@ -344,7 +340,7 @@ func testRecoveryReconcile(t *testing.T, p provider.CompleteResourceProvider) {
 	plan.Actions[0].Preconditions = actionpolicy.RequiredPreconditions(plan.Actions[0].GetActionType(), false, false)
 	plan.Actions[0].ExpectedImpacts = append([]tgsrlv1.ExpectedImpact(nil), definition.ExpectedImpacts...)
 	plan.Actions[0].RequiredCapabilities = &tgsrlv1.CapabilitySet{SupportedActions: []string{definition.CapabilityName}}
-	if _, err := p.ExecutePlan(context.Background(), plan); err != nil {
+	if err := executeTransaction(context.Background(), p, plan); err != nil {
 		if errors.Is(err, provider.ErrNotFound) || strings.Contains(err.Error(), "UNAVAILABLE") {
 			recovered, recoverErr := p.RecoverInFlightPlans(context.Background())
 			if recoverErr != nil {
@@ -371,6 +367,21 @@ func testRecoveryReconcile(t *testing.T, p provider.CompleteResourceProvider) {
 	if len(recovered) != 0 {
 		t.Fatalf("RecoverInFlightPlans() = %d, want 0 after succeeded plan", len(recovered))
 	}
+}
+
+func executeTransaction(ctx context.Context, p provider.CompleteResourceProvider, plan *tgsrlv1.PlacementPlan) error {
+	const generation = uint64(1)
+	if _, err := p.PreparePlan(ctx, plan.GetPlanId(), generation, plan); err != nil {
+		return err
+	}
+	for index := range plan.GetActions() {
+		if _, err := p.ExecuteStep(ctx, plan.GetPlanId(), generation, index); err != nil {
+			_, _ = p.AbortPlan(context.WithoutCancel(ctx), plan.GetPlanId(), generation)
+			return err
+		}
+	}
+	_, err := p.CommitPlan(ctx, plan.GetPlanId(), generation)
+	return err
 }
 
 func recvResource(t *testing.T, ch <-chan provider.WatchedResourceEvent) provider.WatchedResourceEvent {

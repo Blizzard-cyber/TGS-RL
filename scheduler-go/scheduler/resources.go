@@ -6,43 +6,16 @@ import (
 	"strings"
 
 	tgsrlv1 "github.com/Blizzard-cyber/TGS-RL/gen/go/tgsrl/v1"
-	"github.com/Blizzard-cyber/TGS-RL/scheduler-go/constraints"
 	"google.golang.org/protobuf/proto"
 )
 
 const scorePrecision = 1_000_000_000.0
-
-func resourceLessOrEqual(left, right *tgsrlv1.ResourceVector) bool {
-	return constraints.ResourceLessOrEqual(left, right)
-}
-
-func resourceIsZero(resources *tgsrlv1.ResourceVector) bool {
-	return constraints.ResourceIsZero(resources)
-}
 
 func cloneResources(resources *tgsrlv1.ResourceVector) *tgsrlv1.ResourceVector {
 	if resources == nil {
 		return &tgsrlv1.ResourceVector{}
 	}
 	return proto.Clone(resources).(*tgsrlv1.ResourceVector)
-}
-
-func addResources(target, value *tgsrlv1.ResourceVector) {
-	if target == nil || value == nil {
-		return
-	}
-	target.CpuMillis = saturatingAdd(target.GetCpuMillis(), value.GetCpuMillis())
-	target.MemoryBytes = saturatingAdd(target.GetMemoryBytes(), value.GetMemoryBytes())
-	target.AcceleratorUnits += value.GetAcceleratorUnits()
-	target.EphemeralStorageBytes = saturatingAdd(target.GetEphemeralStorageBytes(), value.GetEphemeralStorageBytes())
-	target.NetworkBandwidthBps = saturatingAdd(target.GetNetworkBandwidthBps(), value.GetNetworkBandwidthBps())
-}
-
-func saturatingAdd(left, right uint64) uint64 {
-	if ^uint64(0)-left < right {
-		return ^uint64(0)
-	}
-	return left + right
 }
 
 func roundScore(value float64) float64 {

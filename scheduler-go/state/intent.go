@@ -76,6 +76,14 @@ func (p *PreparedIntentPublication) ExportDurableState() DurableState {
 		}
 		result.Reservations = append(result.Reservations, record)
 	}
+	transactionIDs := make([]string, 0, len(p.staged.transactions))
+	for transactionID := range p.staged.transactions {
+		transactionIDs = append(transactionIDs, transactionID)
+	}
+	sort.Strings(transactionIDs)
+	for _, transactionID := range transactionIDs {
+		result.Transactions = append(result.Transactions, *cloneTransactionRecord(p.staged.transactions[transactionID]))
+	}
 	return result
 }
 
@@ -321,6 +329,10 @@ func replacePendingUnits(existing []*tgsrlv1.PendingUnit, intent *tgsrlv1.Schedu
 			RequiredCapabilities: cloneCapabilitySet(intent.GetRequiredCapabilities()),
 			Priority:             intent.GetPriority(),
 			QueuedAt:             timestamppb.New(queuedAt),
+			RunId:                intent.GetRunId(),
+			TraceId:              intent.GetTraceId(),
+			DataKind:             intent.GetDataKind(),
+			RuntimeUnitId:        intent.GetLabels()["runtime_unit_id"],
 		})
 	}
 	sortPendingUnits(pending)

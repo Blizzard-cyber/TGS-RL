@@ -6,12 +6,15 @@ import (
 	"time"
 
 	tgsrlv1 "github.com/Blizzard-cyber/TGS-RL/gen/go/tgsrl/v1"
+	"github.com/Blizzard-cyber/TGS-RL/scheduler-go/actionpolicy"
 	"github.com/Blizzard-cyber/TGS-RL/scheduler-go/policy"
 	"github.com/Blizzard-cyber/TGS-RL/scheduler-go/preemption"
 	"github.com/Blizzard-cyber/TGS-RL/scheduler-go/protection"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
+
+func int32ptr(v int32) *int32 { return &v }
 
 func TestConfiguredPolicyAndProtectionChecksDoNotMutatePureEvaluate(t *testing.T) {
 	snapshot, intent := validFixture()
@@ -250,8 +253,47 @@ func TestPreemptionUnsafeFallsBackWithoutActions(t *testing.T) {
 	}
 }
 
-func TestPreemptionFallsBackWhenAtomicReplacementCannotBeExpressed(t *testing.T) {
+func TestPreemptionBuildsDeterministicTransactionalPlan(t *testing.T) {
 	snapshot, intent := preemptionFixture(t)
+	evaluator, err := New(Config{Fallback: FallbackNoOp, Clock: ClockFunc(func() time.Time { return fixtureTime }), Policy: policy.Bundle{ID: "preempt", Version: "1", Strategy: policy.StrategyScoreFirst, AllowPreemption: true, PreemptionPolicy: "low_priority_first", RequireSafePoint: true}, Preemption: preemption.LowPriorityFirst{}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan, decision, err := evaluator.Evaluate(snapshot, intent)
+	if err != nil || decision.GetFallback() {
+		t.Fatalf("Evaluate() plan=%v decision=%v error=%v", plan, decision, err)
+	}
+	if plan.GetPurpose() != tgsrlv1.PlanPurpose_PLAN_PURPOSE_PREEMPTION || len(plan.GetActions()) != 2 {
+		t.Fatalf("preemption plan = %+v", plan)
+	}
+	if plan.GetActions()[0].GetActionType() != tgsrlv1.ActionType_ACTION_TYPE_RELEASE || plan.GetActions()[0].GetTargetId() != "victim-allocation" {
+		t.Fatalf("release action = %+v", plan.GetActions()[0])
+	}
+	if plan.GetActions()[1].GetActionType() != tgsrlv1.ActionType_ACTION_TYPE_BIND {
+		t.Fatalf("bind action = %+v", plan.GetActions()[1])
+	}
+	if got := plan.GetCapabilityRequirements(); len(got) != 4 {
+		t.Fatalf("capability requirements = %+v", got)
+	}
+	for index, action := range plan.GetActions() {
+		if action.GetTickKind() != decision.GetTickKind() {
+			t.Fatalf("action %d tick_kind = %s, want %s", index, action.GetTickKind(), decision.GetTickKind())
+		}
+		if !action.GetRequiresSafePoint() {
+			t.Fatalf("action %d requires_safe_point = false, want true", index)
+		}
+	}
+	if err := actionpolicy.ValidatePlan(plan, decision.GetTickKind(), actionpolicy.ValidationOptions{}); err != nil {
+		t.Fatalf("actionpolicy.ValidatePlan() error = %v", err)
+	}
+	if err := validatePreemptionPlan(plan, &tgsrlv1.EvaluationContext{TickKind: decision.GetTickKind()}); err != nil {
+		t.Fatalf("validatePreemptionPlan() error = %v", err)
+	}
+}
+
+func TestPreemptionFailsClosedWithoutRuntimeIdentityForVictimSandbox(t *testing.T) {
+	snapshot, intent := preemptionFixture(t)
+	snapshot.Allocations[0].RuntimeUnitId = ""
 	evaluator, err := New(Config{Fallback: FallbackNoOp, Clock: ClockFunc(func() time.Time { return fixtureTime }), Policy: policy.Bundle{ID: "preempt", Version: "1", Strategy: policy.StrategyScoreFirst, AllowPreemption: true, PreemptionPolicy: "low_priority_first", RequireSafePoint: true}, Preemption: preemption.LowPriorityFirst{}})
 	if err != nil {
 		t.Fatal(err)
@@ -259,6 +301,81 @@ func TestPreemptionFallsBackWhenAtomicReplacementCannotBeExpressed(t *testing.T)
 	plan, decision, err := evaluator.Evaluate(snapshot, intent)
 	if err != nil || !decision.GetFallback() || decision.GetFallbackReason() != preemption.FallbackNotExpressible || len(plan.GetActions()) != 0 {
 		t.Fatalf("Evaluate() plan=%v decision=%v error=%v", plan, decision, err)
+	}
+}
+
+func TestPreemptionAggregatesVictimCapacityOnOneDeviceDeterministically(t *testing.T) {
+	snapshot, intent := preemptionFixture(t)
+	intent.ResourcesPerUnit = &tgsrlv1.ResourceVector{CpuMillis: 1000, MemoryBytes: 1 << 30, AcceleratorUnits: .25}
+	snapshot.PendingUnits[0].RequestedResources = proto.Clone(intent.GetResourcesPerUnit()).(*tgsrlv1.ResourceVector)
+	first := proto.Clone(snapshot.Allocations[0]).(*tgsrlv1.Allocation)
+	first.AllocationId = "victim-b"
+	first.Priority = int32ptr(1)
+	first.DeviceIds = []string{"device-a"}
+	first.Resources = &tgsrlv1.ResourceVector{CpuMillis: 500, MemoryBytes: 1 << 30, AcceleratorUnits: .25}
+	second := proto.Clone(snapshot.Allocations[0]).(*tgsrlv1.Allocation)
+	second.AllocationId = "victim-a"
+	second.Priority = int32ptr(1)
+	second.DeviceIds = []string{"device-a"}
+	second.Resources = &tgsrlv1.ResourceVector{CpuMillis: 500, MemoryBytes: 1 << 30, AcceleratorUnits: .25}
+	deviceA := proto.Clone(snapshot.Devices[0]).(*tgsrlv1.Device)
+	deviceA.DeviceId = "device-a"
+	deviceA.Capacity = &tgsrlv1.ResourceVector{CpuMillis: 1000, MemoryBytes: 2 << 30, AcceleratorUnits: .5}
+	deviceA.Allocatable = &tgsrlv1.ResourceVector{}
+	snapshot.Devices = append(snapshot.Devices, deviceA)
+	snapshot.Allocations = []*tgsrlv1.Allocation{first, second}
+	evaluator, err := New(Config{Fallback: FallbackNoOp, Clock: ClockFunc(func() time.Time { return fixtureTime }), Policy: policy.Bundle{ID: "preempt", Version: "1", Strategy: policy.StrategyScoreFirst, AllowPreemption: true, PreemptionPolicy: "low_priority_first", RequireSafePoint: true}, Preemption: preemption.LowPriorityFirst{}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan, decision, err := evaluator.Evaluate(snapshot, intent)
+	if err != nil || decision.GetFallback() {
+		t.Fatalf("Evaluate() plan=%v decision=%v error=%v", plan, decision, err)
+	}
+	if got := []string{plan.GetActions()[0].GetTargetId(), plan.GetActions()[1].GetTargetId()}; got[0] != "victim-a" || got[1] != "victim-b" {
+		t.Fatalf("release order = %v", got)
+	}
+	if bind := plan.GetActions()[2]; bind.GetActionType() != tgsrlv1.ActionType_ACTION_TYPE_BIND || bind.GetBinding().GetDeviceIds()[0] != "device-a" {
+		t.Fatalf("replacement bind = %+v", bind)
+	}
+}
+
+func TestPreemptionUsesExistingHeadroomWithoutReleasingOtherDevices(t *testing.T) {
+	snapshot, intent := preemptionFixture(t)
+	intent.ResourcesPerUnit = &tgsrlv1.ResourceVector{CpuMillis: 1000, MemoryBytes: 100, AcceleratorUnits: .25, EphemeralStorageBytes: 10, NetworkBandwidthBps: 10}
+	snapshot.PendingUnits[0].RequestedResources = proto.Clone(intent.GetResourcesPerUnit()).(*tgsrlv1.ResourceVector)
+	target := snapshot.Allocations[0]
+	target.AllocationId = "target-victim"
+	target.Priority = int32ptr(2)
+	target.DeviceIds = []string{"device-a"}
+	target.Resources = &tgsrlv1.ResourceVector{CpuMillis: 500, MemoryBytes: 100, AcceleratorUnits: .25, EphemeralStorageBytes: 10, NetworkBandwidthBps: 10}
+	snapshot.Devices[0].DeviceId = "device-a"
+	snapshot.Devices[0].Allocatable = &tgsrlv1.ResourceVector{CpuMillis: 500}
+	unrelatedDevice := proto.Clone(snapshot.Devices[0]).(*tgsrlv1.Device)
+	unrelatedDevice.DeviceId = "device-b"
+	unrelatedDevice.Allocatable = &tgsrlv1.ResourceVector{}
+	snapshot.Devices = append(snapshot.Devices, unrelatedDevice)
+	unrelated := proto.Clone(target).(*tgsrlv1.Allocation)
+	unrelated.AllocationId = "unrelated-victim"
+	unrelated.BindingId = "unrelated-binding"
+	unrelated.SandboxId = "unrelated-sandbox"
+	unrelated.RuntimeUnitId = "unrelated-runtime"
+	unrelated.PendingUnitId = "unrelated-pending"
+	unrelated.Priority = int32ptr(1)
+	unrelated.DeviceIds = []string{"device-b"}
+	unrelated.Resources = &tgsrlv1.ResourceVector{CpuMillis: 100}
+	snapshot.Allocations = []*tgsrlv1.Allocation{unrelated, target}
+
+	evaluator, err := New(Config{Fallback: FallbackNoOp, Clock: ClockFunc(func() time.Time { return fixtureTime }), Policy: policy.Bundle{ID: "preempt", Version: "1", Strategy: policy.StrategyScoreFirst, AllowPreemption: true, PreemptionPolicy: "low_priority_first", RequireSafePoint: true}, Preemption: preemption.LowPriorityFirst{}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan, decision, err := evaluator.Evaluate(snapshot, intent)
+	if err != nil || decision.GetFallback() {
+		t.Fatalf("Evaluate() plan=%v decision=%v error=%v", plan, decision, err)
+	}
+	if len(plan.GetActions()) != 2 || plan.GetActions()[0].GetTargetId() != target.GetAllocationId() || plan.GetActions()[1].GetBinding().GetDeviceIds()[0] != "device-a" {
+		t.Fatalf("preemption actions = %+v, want only target-device victim then replacement", plan.GetActions())
 	}
 }
 
@@ -270,12 +387,13 @@ func preemptionFixture(t *testing.T) (*tgsrlv1.ClusterSnapshot, *tgsrlv1.Schedul
 	snapshot.PendingUnits = snapshot.PendingUnits[:1]
 	unit := snapshot.PendingUnits[0]
 	unit.Priority = intent.GetPriority()
+	unit.RuntimeUnitId = "runtime-new"
 	unit.RequestedResources = proto.Clone(intent.GetResourcesPerUnit()).(*tgsrlv1.ResourceVector)
 	device := snapshot.Devices[0]
 	snapshot.Devices = snapshot.Devices[:1]
 	device.Allocatable = &tgsrlv1.ResourceVector{}
 	device.Capabilities.SupportedActions = []string{"bind", "release"}
-	allocation := &tgsrlv1.Allocation{AllocationId: "victim-allocation", ExecutionId: "old-execution", StageId: "old-stage", IntentVersion: 1, JobId: "old-job", PendingUnitId: "victim-unit", DeviceIds: []string{device.GetDeviceId()}, Resources: proto.Clone(intent.GetResourcesPerUnit()).(*tgsrlv1.ResourceVector), State: tgsrlv1.AllocationState_ALLOCATION_STATE_ACTIVE, RuntimeUnitId: "runtime-victim", Generation: 2}
+	allocation := &tgsrlv1.Allocation{AllocationId: "victim-allocation", ExecutionId: "old-execution", StageId: "old-stage", IntentVersion: 1, JobId: "old-job", PendingUnitId: "victim-unit", DeviceIds: []string{device.GetDeviceId()}, Resources: proto.Clone(intent.GetResourcesPerUnit()).(*tgsrlv1.ResourceVector), State: tgsrlv1.AllocationState_ALLOCATION_STATE_ACTIVE, RuntimeUnitId: "runtime-victim", SandboxId: "sandbox-victim", BindingId: "binding-victim", Generation: 2, Priority: int32ptr(1)}
 	snapshot.Allocations = []*tgsrlv1.Allocation{allocation}
 	snapshot.PendingUnits = append(snapshot.PendingUnits, &tgsrlv1.PendingUnit{PendingUnitId: "victim-unit", ExecutionId: "old-execution", StageId: "old-stage", IntentVersion: 1, JobId: "old-job", RequestedResources: proto.Clone(intent.GetResourcesPerUnit()).(*tgsrlv1.ResourceVector), Priority: 1})
 	if !strings.Contains(strings.Join(device.Capabilities.SupportedActions, ","), "release") {

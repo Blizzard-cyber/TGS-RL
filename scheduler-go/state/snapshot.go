@@ -94,6 +94,7 @@ func (s *Store) exportDurableStateLocked() storeDurableState {
 		providerProjection: s.providerProjection.clone(),
 		idempotencyKeys:    make(map[string]intentIdentity, len(s.idempotencyKeys)),
 		reservations:       make(map[string]*planReservation, len(s.reservations)),
+		transactions:       make(map[string]*TransactionRecord, len(s.transactions)),
 	}
 	for key, intent := range s.intents {
 		result.intents[key] = cloneIntent(intent)
@@ -119,6 +120,9 @@ func (s *Store) exportDurableStateLocked() storeDurableState {
 			cloned.pendingUnits = append(cloned.pendingUnits, clonePendingUnit(unit))
 		}
 		result.reservations[planID] = cloned
+	}
+	for transactionID, record := range s.transactions {
+		result.transactions[transactionID] = cloneTransactionRecord(record)
 	}
 	return result
 }
@@ -153,6 +157,10 @@ func (s *Store) restoreDurableStateLocked(durable storeDurableState) {
 			cloned.pendingUnits = append(cloned.pendingUnits, clonePendingUnit(unit))
 		}
 		s.reservations[planID] = cloned
+	}
+	s.transactions = make(map[string]*TransactionRecord, len(durable.transactions))
+	for transactionID, record := range durable.transactions {
+		s.transactions[transactionID] = cloneTransactionRecord(record)
 	}
 }
 
@@ -197,6 +205,14 @@ func (s *Store) ExportDurableState() DurableState {
 			record.PendingUnits = append(record.PendingUnits, clonePendingUnit(unit))
 		}
 		result.Reservations = append(result.Reservations, record)
+	}
+	transactionIDs := make([]string, 0, len(s.transactions))
+	for transactionID := range s.transactions {
+		transactionIDs = append(transactionIDs, transactionID)
+	}
+	sort.Strings(transactionIDs)
+	for _, transactionID := range transactionIDs {
+		result.Transactions = append(result.Transactions, *cloneTransactionRecord(s.transactions[transactionID]))
 	}
 	return result
 }
@@ -250,6 +266,14 @@ func (s *Store) Restore(durable DurableState) error {
 			reservation.pendingUnits = append(reservation.pendingUnits, clonePendingUnit(unit))
 		}
 		s.reservations[record.Plan.GetPlanId()] = reservation
+	}
+	s.transactions = make(map[string]*TransactionRecord, len(durable.Transactions))
+	for index := range durable.Transactions {
+		record := cloneTransactionRecord(&durable.Transactions[index])
+		if err := validateTransactionRecord(record); err != nil {
+			return fmt.Errorf("state: restore transaction: %w", err)
+		}
+		s.transactions[record.TransactionID] = record
 	}
 	s.signalRevisionLocked()
 	return nil

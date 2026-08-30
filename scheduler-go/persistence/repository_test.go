@@ -18,6 +18,42 @@ import (
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
+func testTransactionRecord() state.TransactionRecord {
+	now := timestamppb.New(time.Date(2026, time.August, 29, 13, 0, 0, 0, time.UTC))
+	plan := &tgsrlv1.PlacementPlan{
+		PlanId:           "tx-plan-1",
+		ExecutionId:      "execution-1",
+		StageId:          "stage-1",
+		IntentVersion:    3,
+		SnapshotRevision: 7,
+		Bindings: []*tgsrlv1.Binding{{
+			BindingId: "binding-1", PendingUnitId: "unit-1", DeviceIds: []string{"device-1"},
+			Resources: &tgsrlv1.ResourceVector{CpuMillis: 500, MemoryBytes: 1024},
+		}},
+	}
+	return state.TransactionRecord{
+		TransactionID:         "tx-plan-1",
+		PlanID:                "tx-plan-1",
+		Plan:                  plan,
+		Generation:            3,
+		ProviderGeneration:    1,
+		State:                 state.TransactionStatePrepared,
+		ReservationHeld:       true,
+		AffectedAllocationIDs: []string{"allocation-1"},
+		ProviderReceipt: &state.Receipt{
+			Phase:            "prepared",
+			ObservedRevision: 17,
+			Steps: []state.TransactionStep{{
+				StepIndex: 0, ActionID: "action-1", IdempotencyKey: "idem-1", Status: state.EffectStatusPending, Revision: 17,
+			}},
+			PreparedAt: now,
+			UpdatedAt:  now,
+		},
+		CreatedAt: now,
+		UpdatedAt: now,
+	}
+}
+
 func testSnapshot() *tgsrlv1.ClusterSnapshot {
 	return &tgsrlv1.ClusterSnapshot{
 		SnapshotId: "snapshot-7",
@@ -385,6 +421,101 @@ func TestDecodeCheckpointWithoutProviderProjectionRemainsCompatible(t *testing.T
 	if len(recovered.ProjectedSandboxes) != 0 || len(recovered.ResourceCursors) != 0 || len(recovered.SandboxCursors) != 0 {
 		t.Fatalf("old payload provider state = sandboxes:%+v resources:%+v sandbox cursors:%+v, want empty", recovered.ProjectedSandboxes, recovered.ResourceCursors, recovered.SandboxCursors)
 	}
+}
+
+func TestRepositoryCheckpointRoundTripTransactions(t *testing.T) {
+	repo, err := OpenRepository(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	tx := testTransactionRecord()
+	checkpoint := SchedulerState{
+		Snapshot:     testSnapshot(),
+		Intents:      map[string]*tgsrlv1.SchedulingIntent{},
+		Transactions: []state.TransactionRecord{tx},
+	}
+	if err := repo.SaveCheckpoint(checkpoint); err != nil {
+		t.Fatalf("SaveCheckpoint() error = %v", err)
+	}
+	recovered, err := repo.Recover()
+	if err != nil {
+		t.Fatalf("Recover() error = %v", err)
+	}
+	if len(recovered.Transactions) != 1 {
+		t.Fatalf("len(recovered.Transactions) = %d, want 1", len(recovered.Transactions))
+	}
+	got := recovered.Transactions[0]
+	if got.TransactionID != tx.TransactionID || got.Generation != tx.Generation || got.ProviderGeneration != tx.ProviderGeneration || got.State != tx.State || got.ProviderReceipt == nil || got.ProviderReceipt.Phase != "prepared" {
+		t.Fatalf("recovered transaction = %+v", got)
+	}
+}
+
+func TestDecodeCheckpointV2KeepsLegacyReservationsOnLegacyRecoveryPath(t *testing.T) {
+	planEncoded, err := encodeProto(&tgsrlv1.PlacementPlan{
+		PlanId:           "legacy-plan-1",
+		ExecutionId:      "execution-1",
+		StageId:          "stage-1",
+		IntentVersion:    2,
+		SnapshotRevision: 7,
+		Bindings:         []*tgsrlv1.Binding{{BindingId: "legacy-binding-1"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	payload, err := json.Marshal(map[string]any{
+		"format_version": 2,
+		"snapshot":       mustEncodeProtoForTest(t, testSnapshot()),
+		"intents":        map[string]string{},
+		"reservations": []map[string]any{{
+			"plan":           planEncoded,
+			"allocation_ids": []string{"legacy-allocation-1"},
+		}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	recovered := &SchedulerState{}
+	if err := decodeCheckpoint(payload, recovered); err != nil {
+		t.Fatalf("decodeCheckpoint(v2) error = %v", err)
+	}
+	if len(recovered.Transactions) != 0 {
+		t.Fatalf("len(recovered.Transactions) = %d, want 0 so v2 uses legacy provider reconciliation", len(recovered.Transactions))
+	}
+	if len(recovered.Reservations) != 1 || recovered.Reservations[0].Plan.GetPlanId() != "legacy-plan-1" {
+		t.Fatalf("legacy reservations = %+v", recovered.Reservations)
+	}
+}
+
+func TestDecodeCheckpointRejectsCorruptTransactionPayload(t *testing.T) {
+	payload, err := json.Marshal(map[string]any{
+		"format_version": 3,
+		"snapshot":       mustEncodeProtoForTest(t, testSnapshot()),
+		"intents":        map[string]string{},
+		"transactions": []map[string]any{{
+			"transaction_id": "tx-bad",
+			"plan_id":        "tx-bad",
+			"plan":           "%%%not-base64%%%",
+			"generation":     1,
+			"state":          "reserved",
+		}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	recovered := &SchedulerState{}
+	err = decodeCheckpoint(payload, recovered)
+	if !errors.Is(err, ErrCorruptPayload) {
+		t.Fatalf("decodeCheckpoint(corrupt transaction) error = %v, want ErrCorruptPayload", err)
+	}
+}
+
+func mustEncodeProtoForTest(t *testing.T, message proto.Message) string {
+	t.Helper()
+	encoded, err := encodeProto(message)
+	if err != nil {
+		t.Fatalf("encodeProto() error = %v", err)
+	}
+	return encoded
 }
 
 func TestCheckpointRestartRestoresProjectionFences(t *testing.T) {

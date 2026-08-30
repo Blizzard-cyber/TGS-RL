@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"math"
-	"sort"
 	"strings"
 	"time"
 
@@ -84,142 +83,6 @@ func (p *MockResourceProvider) ExecuteAction(ctx context.Context, action *tgsrlv
 		return result, err
 	}
 	return p.executeActionLocked(ctx, action)
-}
-
-// ExecutePlan executes actions by stable order and compensates prior successes
-// in reverse order after the first failure. A repeated plan ID returns the
-// original cloned results and produces no additional side effect.
-func (p *MockResourceProvider) ExecutePlan(ctx context.Context, plan *tgsrlv1.PlacementPlan) ([]*tgsrlv1.ActionResult, error) {
-	if ctx == nil {
-		ctx = context.Background()
-	}
-	if plan == nil || strings.TrimSpace(plan.GetPlanId()) == "" {
-		return nil, fmt.Errorf("%w: plan_id is required", ErrInvalidArgument)
-	}
-	if err := validatePlanPolicy(plan); err != nil {
-		return nil, err
-	}
-	if err := p.ValidatePlanCapabilities(plan); err != nil {
-		return nil, err
-	}
-
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	if cached, ok := p.plans[plan.GetPlanId()]; ok {
-		if !proto.Equal(p.planRequests[plan.GetPlanId()], plan) {
-			return nil, fmt.Errorf("%w: plan_id %q was reused with different content", ErrIdempotencyConflict, plan.GetPlanId())
-		}
-		return cloneActionResults(cached), p.planErrors[plan.GetPlanId()]
-	}
-	p.setPlanRecordLocked(plan, PlanStatusInFlight, nil, nil)
-
-	ordered := make([]orderedAction, 0, len(plan.GetActions()))
-	for index, action := range plan.GetActions() {
-		if action == nil {
-			return nil, fmt.Errorf("%w: nil action at index %d", ErrInvalidArgument, index)
-		}
-		if action.GetPlanId() != plan.GetPlanId() {
-			return nil, fmt.Errorf("%w: action %q plan_id mismatch", ErrInvalidArgument, action.GetActionId())
-		}
-		if action.GetExpectedSnapshotRevision() != plan.GetSnapshotRevision() {
-			return nil, fmt.Errorf("%w: action %q revision mismatch", ErrInvalidArgument, action.GetActionId())
-		}
-		if action.GetRollback() == nil {
-			return nil, fmt.Errorf("%w: action %q requires explicit rollback", ErrInvalidArgument, action.GetActionId())
-		}
-		if err := p.validateRollbackDeclarationLocked(action); err != nil {
-			return nil, err
-		}
-		ordered = append(ordered, orderedAction{index: index, action: cloneAction(action)})
-	}
-	sort.SliceStable(ordered, func(i, j int) bool {
-		if ordered[i].action.GetOrder() != ordered[j].action.GetOrder() {
-			return ordered[i].action.GetOrder() < ordered[j].action.GetOrder()
-		}
-		return ordered[i].index < ordered[j].index
-	})
-
-	results := make([]*tgsrlv1.ActionResult, 0, len(ordered))
-	before := make([]actionBeforeImage, len(ordered))
-	failedAt := -1
-	var actionErr error
-	for index, entry := range ordered {
-		if p.faults.PartialFailureAt > 0 && index+1 == p.faults.PartialFailureAt {
-			result := p.failedResult(entry.action, ErrorCodeInjectedFailure, "configured partial failure")
-			results = append(results, result)
-			failedAt = index
-			actionErr = ErrPartialFailure
-			break
-		}
-		before[index] = p.captureActionBeforeImageLocked(entry.action)
-		if err := p.validateRollbackBeforeImageLocked(entry.action, before[index]); err != nil {
-			results = append(results, p.resultForError(entry.action, p.now(), err))
-			failedAt = index
-			actionErr = err
-			break
-		}
-		result, err := p.executeActionLocked(ctx, entry.action)
-		results = append(results, result)
-		if err != nil {
-			failedAt = index
-			actionErr = err
-			break
-		}
-	}
-	if failedAt >= 0 {
-		protected := make(map[string]sandboxMutation)
-		for index := failedAt - 1; index >= 0; index-- {
-			action := ordered[index].action
-			result := results[index]
-			if action.GetRollback() == nil {
-				continue
-			}
-			result.RollbackAttempted = true
-			if failure, fail := p.faults.FailRollbackActionIDs[action.GetActionId()]; fail {
-				result.RollbackStatus = tgsrlv1.ActionResultStatus_ACTION_RESULT_STATUS_FAILED
-				result.ErrorCode = failure.Code
-				if result.ErrorCode == "" {
-					result.ErrorCode = ErrorCodeInjectedFailure
-				}
-				if result.ErrorMessage == "" {
-					result.ErrorMessage = failure.Message
-					if result.ErrorMessage == "" {
-						result.ErrorMessage = "configured rollback failure"
-					}
-				}
-				p.recordRollbackResultLocked(action, result)
-				protected[before[index].sandboxID] |= before[index].mutations
-				continue
-			}
-			if err := p.restoreActionBeforeImageLocked(action, before[index], protected[before[index].sandboxID]); err != nil {
-				result.RollbackStatus = tgsrlv1.ActionResultStatus_ACTION_RESULT_STATUS_FAILED
-				result.ErrorCode = ErrorCodeFailedPrecondition
-				if result.ErrorMessage == "" {
-					result.ErrorMessage = err.Error()
-				}
-				p.recordRollbackResultLocked(action, result)
-				protected[before[index].sandboxID] |= before[index].mutations
-				continue
-			}
-			p.revision++
-			result.RollbackStatus = tgsrlv1.ActionResultStatus_ACTION_RESULT_STATUS_ROLLED_BACK
-			result.ObservedRevision = p.revision
-			p.recordRollbackResultLocked(action, result)
-		}
-		for index := failedAt + 1; index < len(ordered); index++ {
-			results = append(results, p.skippedResult(ordered[index].action, "previous action failed"))
-		}
-		p.plans[plan.GetPlanId()] = cloneActionResults(results)
-		planErr := fmt.Errorf("%w: action %d: %v", ErrPartialFailure, failedAt+1, actionErr)
-		p.planErrors[plan.GetPlanId()] = planErr
-		p.planRequests[plan.GetPlanId()] = proto.Clone(plan).(*tgsrlv1.PlacementPlan)
-		p.setPlanRecordLocked(plan, PlanStatusFailed, results, planErr)
-		return cloneActionResults(results), planErr
-	}
-	p.plans[plan.GetPlanId()] = cloneActionResults(results)
-	p.planRequests[plan.GetPlanId()] = proto.Clone(plan).(*tgsrlv1.PlacementPlan)
-	p.setPlanRecordLocked(plan, PlanStatusSucceeded, results, nil)
-	return cloneActionResults(results), nil
 }
 
 func (p *MockResourceProvider) validateRollbackDeclarationLocked(action *tgsrlv1.Action) error {
@@ -401,79 +264,38 @@ func mutationsForAction(action *tgsrlv1.Action, sandboxExists bool) sandboxMutat
 	}
 }
 
-// ApplySandboxEvent applies an observed state update unless its generation is
-// older than the authoritative sandbox generation.
-func (p *MockResourceProvider) ApplySandboxEvent(ctx context.Context, event SandboxEvent) error {
+// ObserveSandbox applies an execution-substrate observation unless its
+// generation is older than the authoritative sandbox generation.
+func (p *MockResourceProvider) ObserveSandbox(ctx context.Context, event *tgsrlv1.SandboxEvent) (*tgsrlv1.SandboxEvent, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
 	if err := ctx.Err(); err != nil {
-		return err
+		return nil, err
 	}
-	if strings.TrimSpace(event.SandboxID) == "" || !validSandboxState(event.State) {
-		return fmt.Errorf("%w: sandbox event is invalid", ErrInvalidArgument)
+	if event == nil {
+		return nil, fmt.Errorf("%w: sandbox event is required", ErrInvalidArgument)
 	}
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	if event.EventID != "" {
-		if previous, duplicate := p.events[event.EventID]; duplicate {
-			if sandboxEventsEqual(previous, event) {
-				return nil
-			}
-			return fmt.Errorf("%w: event_id %q was reused with different content", ErrIdempotencyConflict, event.EventID)
+	if previous, duplicate := p.events[event.GetEventId()]; duplicate {
+		candidate := NormalizeSandboxObservation(event, p.sandboxes[event.GetSandboxId()], previous.GetProviderRevision())
+		if proto.Equal(previous, candidate) {
+			return proto.Clone(previous).(*tgsrlv1.SandboxEvent), nil
 		}
+		return nil, fmt.Errorf("%w: event_id %q was reused with different content", ErrIdempotencyConflict, event.GetEventId())
 	}
-	current, exists := p.sandboxes[event.SandboxID]
-	if exists && event.Generation < current.Generation {
-		return &Error{
-			Code:               ErrorCodeLateEventFenced,
-			Message:            "event generation is older than current sandbox generation",
-			SandboxID:          event.SandboxID,
-			ExpectedGeneration: current.Generation,
-			ObservedGeneration: event.Generation,
-			Cause:              ErrGenerationFenced,
-		}
+	updated, err := ProjectSandboxObservation(p.sandboxes[event.GetSandboxId()], event, p.now())
+	if err != nil {
+		return nil, err
 	}
-	if exists && event.Generation == current.Generation {
-		if event.Binding != nil && current.Binding != nil && !proto.Equal(event.Binding, current.Binding) {
-			return &Error{Code: ErrorCodeLateEventFenced, Message: "same-generation event cannot replace binding", SandboxID: event.SandboxID, ExpectedGeneration: current.Generation, ObservedGeneration: event.Generation, Cause: ErrGenerationFenced}
-		}
-		if eventWouldRegress(current.State, event.State) {
-			return &Error{Code: ErrorCodeLateEventFenced, Message: "same-generation event would regress sandbox state", SandboxID: event.SandboxID, ExpectedGeneration: current.Generation, ObservedGeneration: event.Generation, Cause: ErrGenerationFenced}
-		}
-	}
-	confirmedAt := p.now()
-	lifecycleChanged := !exists || current.State != event.State || current.Generation != event.Generation
-	updated := current
-	updated.SandboxID = event.SandboxID
-	updated.Generation = event.Generation
-	updated.State = event.State
-	if event.Binding != nil {
-		updated.Binding = cloneBinding(event.Binding)
-	}
-	if event.SafePoint != nil {
-		updated.SafePoint = *event.SafePoint
-	}
-	if event.SemanticContext != nil {
-		updated.SemanticContext = cloneSemanticEnvelope(event.SemanticContext)
-	}
-	if lifecycleChanged {
-		updated.StateChangedAt = confirmedAt
-		if !event.StateChangedAt.IsZero() {
-			updated.StateChangedAt = event.StateChangedAt
-		}
-	} else if updated.StateChangedAt.IsZero() && !event.StateChangedAt.IsZero() {
-		updated.StateChangedAt = event.StateChangedAt
-	}
-	updated.UpdatedAt = confirmedAt
-	p.sandboxes[event.SandboxID] = updated
-	if event.EventID != "" {
-		p.events[event.EventID] = cloneSandboxEvent(event)
-	}
+	p.sandboxes[event.GetSandboxId()] = updated
 	p.revision++
-	p.publishSandboxSnapshotLocked(updated, "runtime event applied")
+	accepted := NormalizeSandboxObservation(event, updated, p.revision)
+	p.events[event.GetEventId()] = accepted
+	p.publishSandboxEventLocked(accepted)
 	p.publishSnapshotLocked(tgsrlv1.ResourceEventType_RESOURCE_EVENT_TYPE_SNAPSHOT_PUBLISHED)
-	return nil
+	return proto.Clone(accepted).(*tgsrlv1.SandboxEvent), nil
 }
 
 func (p *MockResourceProvider) executeActionLocked(ctx context.Context, action *tgsrlv1.Action) (*tgsrlv1.ActionResult, error) {
@@ -740,68 +562,6 @@ func validatePlanPolicy(plan *tgsrlv1.PlacementPlan) error {
 	return translatePolicyError(action, err)
 }
 
-func supportedPlanCapabilities() []*tgsrlv1.CapabilityRequirement {
-	capabilities := []*tgsrlv1.CapabilityRequirement{
-		actionpolicy.NewCapabilityRequirement(tgsrlv1.CapabilityRequirementKind_CAPABILITY_REQUIREMENT_KIND_ORDERED_ACTION_EXECUTION),
-		actionpolicy.NewCapabilityRequirement(tgsrlv1.CapabilityRequirementKind_CAPABILITY_REQUIREMENT_KIND_COMPENSATING_ROLLBACK),
-	}
-	for _, capability := range capabilities {
-		capability.MinVersion = "1.0.0"
-	}
-	return capabilities
-}
-
-func clonePlanCapabilities(values []*tgsrlv1.CapabilityRequirement) []*tgsrlv1.CapabilityRequirement {
-	result := make([]*tgsrlv1.CapabilityRequirement, 0, len(values))
-	for _, value := range values {
-		result = append(result, proto.Clone(value).(*tgsrlv1.CapabilityRequirement))
-	}
-	return result
-}
-
-func ValidatePlanCapabilitiesForRequirements(available []*tgsrlv1.CapabilityRequirement, plan *tgsrlv1.PlacementPlan) error {
-	for _, required := range plan.GetCapabilityRequirements() {
-		if required == nil {
-			return fmt.Errorf("%w: nil plan capability requirement", ErrInvalidArgument)
-		}
-		if !required.GetRequired() {
-			continue
-		}
-		if required.GetKind() == tgsrlv1.CapabilityRequirementKind_CAPABILITY_REQUIREMENT_KIND_PROVIDER_CAPABILITY {
-			continue
-		}
-		found := false
-		for _, capability := range available {
-			if capability == nil || capability.GetKind() != required.GetKind() || capability.GetName() != required.GetName() {
-				continue
-			}
-			versionOK, versionErr := versionAtLeast(capability.GetMinVersion(), required.GetMinVersion())
-			if versionErr != nil {
-				return &Error{Code: ErrorCodeUnsupported, Message: versionErr.Error(), PlanID: plan.GetPlanId(), Cause: ErrUnsupported}
-			}
-			if versionOK {
-				found = true
-				break
-			}
-		}
-		if !found {
-			return &Error{Code: ErrorCodeUnsupported, Message: fmt.Sprintf("executor does not support plan capability %s", required.GetKind()), PlanID: plan.GetPlanId(), Cause: ErrUnsupported}
-		}
-	}
-	return nil
-}
-
-func withoutProviderCapabilityRequirements(plan *tgsrlv1.PlacementPlan) *tgsrlv1.PlacementPlan {
-	cloned := proto.Clone(plan).(*tgsrlv1.PlacementPlan)
-	cloned.CapabilityRequirements = cloned.CapabilityRequirements[:0]
-	for _, required := range plan.GetCapabilityRequirements() {
-		if required != nil && required.GetKind() != tgsrlv1.CapabilityRequirementKind_CAPABILITY_REQUIREMENT_KIND_PROVIDER_CAPABILITY {
-			cloned.CapabilityRequirements = append(cloned.CapabilityRequirements, proto.Clone(required).(*tgsrlv1.CapabilityRequirement))
-		}
-	}
-	return cloned
-}
-
 func translatePolicyError(action *tgsrlv1.Action, err error) error {
 	var policyErr *actionpolicy.ValidationError
 	if !errors.As(err, &policyErr) {
@@ -937,26 +697,6 @@ func validSandboxState(state SandboxState) bool {
 	default:
 		return false
 	}
-}
-
-func cloneSandboxEvent(event SandboxEvent) SandboxEvent {
-	event.Binding = cloneBinding(event.Binding)
-	event.SemanticContext = cloneSemanticEnvelope(event.SemanticContext)
-	if event.SafePoint != nil {
-		value := *event.SafePoint
-		event.SafePoint = &value
-	}
-	return event
-}
-
-func sandboxEventsEqual(left, right SandboxEvent) bool {
-	if left.EventID != right.EventID || left.SandboxID != right.SandboxID || left.Generation != right.Generation || left.State != right.State || !proto.Equal(left.Binding, right.Binding) || !proto.Equal(left.SemanticContext, right.SemanticContext) || !left.StateChangedAt.Equal(right.StateChangedAt) {
-		return false
-	}
-	if left.SafePoint == nil || right.SafePoint == nil {
-		return left.SafePoint == nil && right.SafePoint == nil
-	}
-	return *left.SafePoint == *right.SafePoint
 }
 
 func eventWouldRegress(current, next SandboxState) bool {

@@ -144,7 +144,7 @@ type PlanningInput struct {
 type AdaptiveEvaluationInput = PlanningInput
 
 // PlannerProposal is one auditable alternative. A rejected proposal has no
-// plan. An eligible proposal carries a complete one- or multi-action PR1 plan.
+// plan. An eligible proposal carries a complete one- or multi-action plan.
 type PlannerProposal struct {
 	Plan     *tgsrlv1.PlacementPlan
 	Evidence *tgsrlv1.PlannerEvidence

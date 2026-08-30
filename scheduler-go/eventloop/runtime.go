@@ -6,12 +6,11 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	tgsrlv1 "github.com/Blizzard-cyber/TGS-RL/gen/go/tgsrl/v1"
-	"github.com/Blizzard-cyber/TGS-RL/scheduler-go/loops"
 	"github.com/Blizzard-cyber/TGS-RL/scheduler-go/observability"
-	"github.com/Blizzard-cyber/TGS-RL/scheduler-go/queue"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -19,12 +18,12 @@ import (
 // keys stay active until Forget is called or the runtime stops.
 type Runtime struct {
 	trigger        TriggerFunc
-	fastQueue      *queue.Keyed[uint64]
-	mediumQueue    *queue.Keyed[uint64]
-	slowQueue      *queue.Keyed[uint64]
-	fastTicker     *loops.Ticker
-	mediumTicker   *loops.Ticker
-	slowTicker     *loops.Ticker
+	fastQueue      *keyedQueue
+	mediumQueue    *keyedQueue
+	slowQueue      *keyedQueue
+	fastTicker     *tickerLoop
+	mediumTicker   *tickerLoop
+	slowTicker     *tickerLoop
 	startOnce      sync.Once
 	stopOnce       sync.Once
 	mu             sync.Mutex
@@ -64,7 +63,7 @@ type RuntimeConfig struct {
 
 // NewRuntime constructs a background runtime around one event loop's trigger
 // cadence. The runtime does not own authoritative scheduling state.
-func NewRuntime(loop *EventLoop, cfg RuntimeConfig) *Runtime {
+func NewRuntime(recorder observability.Recorder, cfg RuntimeConfig) *Runtime {
 	if cfg.FastInterval <= 0 {
 		cfg.FastInterval = 25 * time.Millisecond
 	}
@@ -74,17 +73,16 @@ func NewRuntime(loop *EventLoop, cfg RuntimeConfig) *Runtime {
 	if cfg.SlowInterval <= 0 {
 		cfg.SlowInterval = 250 * time.Millisecond
 	}
-	var recorder observability.Recorder = observability.NopRecorder{}
-	if loop != nil && loop.recorder != nil {
-		recorder = loop.recorder
+	if recorder == nil {
+		recorder = observability.NopRecorder{}
 	}
 	return &Runtime{
-		fastQueue:    queue.NewKeyed(latestGeneration),
-		mediumQueue:  queue.NewKeyed(latestGeneration),
-		slowQueue:    queue.NewKeyed(latestGeneration),
-		fastTicker:   loops.NewTicker(loops.NewRunner(loops.TickFast, recorder), cfg.FastInterval),
-		mediumTicker: loops.NewTicker(loops.NewRunner(loops.TickMedium, recorder), cfg.MediumInterval),
-		slowTicker:   loops.NewTicker(loops.NewRunner(loops.TickSlow, recorder), cfg.SlowInterval),
+		fastQueue:    newKeyedQueue(),
+		mediumQueue:  newKeyedQueue(),
+		slowQueue:    newKeyedQueue(),
+		fastTicker:   newTickerLoop(newTickRunner("fast", recorder), cfg.FastInterval),
+		mediumTicker: newTickerLoop(newTickRunner("medium", recorder), cfg.MediumInterval),
+		slowTicker:   newTickerLoop(newTickRunner("slow", recorder), cfg.SlowInterval),
 		active:       make(map[string]activeTrigger),
 	}
 }
@@ -203,11 +201,11 @@ func (r *Runtime) Forget(executionID, stageID string) bool {
 	return true
 }
 
-func (r *Runtime) drain(ctx context.Context, q *queue.Keyed[uint64], kind tgsrlv1.TickKind) {
+func (r *Runtime) drain(ctx context.Context, q *keyedQueue, kind tgsrlv1.TickKind) {
 	for _, item := range q.Drain() {
 		r.mu.Lock()
-		active, ok := r.active[item.Key]
-		if r.stopped || !ok || active.generation != item.Value {
+		active, ok := r.active[item.key]
+		if r.stopped || !ok || active.generation != item.generation {
 			r.mu.Unlock()
 			continue
 		}
@@ -231,9 +229,9 @@ func (r *Runtime) drain(ctx context.Context, q *queue.Keyed[uint64], kind tgsrlv
 		// Enqueue has already queued its newer generation, while Forget and Stop
 		// deliberately leave no active entry to requeue.
 		r.mu.Lock()
-		active, ok = r.active[item.Key]
-		if !r.stopped && ctx.Err() == nil && ok && active.generation == item.Value {
-			q.Push(item.Key, item.Value)
+		active, ok = r.active[item.key]
+		if !r.stopped && ctx.Err() == nil && ok && active.generation == item.generation {
+			q.Push(item.key, item.generation)
 		}
 		r.mu.Unlock()
 	}
@@ -251,10 +249,6 @@ func (r *Runtime) clearQueues() {
 	r.fastQueue.Drain()
 	r.mediumQueue.Drain()
 	r.slowQueue.Drain()
-}
-
-func latestGeneration(_, incoming uint64) uint64 {
-	return incoming
 }
 
 // MergeTrigger coalesces two triggers without losing the newest revision or
@@ -333,4 +327,126 @@ func CloneTrigger(trigger *Trigger) *Trigger {
 		cloned.ContractObservation = proto.Clone(trigger.ContractObservation).(*tgsrlv1.ContractObservation)
 	}
 	return &cloned
+}
+
+type queueItem struct {
+	key        string
+	generation uint64
+}
+
+type keyedQueue struct {
+	mu      sync.Mutex
+	pending []string
+	items   map[string]uint64
+}
+
+func newKeyedQueue() *keyedQueue {
+	return &keyedQueue{items: make(map[string]uint64)}
+}
+
+func (q *keyedQueue) Push(key string, generation uint64) bool {
+	if key == "" {
+		return false
+	}
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	if _, exists := q.items[key]; exists {
+		q.items[key] = generation
+		return false
+	}
+	q.items[key] = generation
+	q.pending = append(q.pending, key)
+	return true
+}
+
+func (q *keyedQueue) Drain() []queueItem {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	items := make([]queueItem, 0, len(q.pending))
+	for _, key := range q.pending {
+		generation, exists := q.items[key]
+		if exists {
+			items = append(items, queueItem{key: key, generation: generation})
+		}
+	}
+	q.pending = q.pending[:0]
+	clear(q.items)
+	return items
+}
+
+func (q *keyedQueue) Len() int {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	return len(q.pending)
+}
+
+type tickRunner struct {
+	kind        string
+	recorder    observability.Recorder
+	inFlight    atomic.Int32
+	triggered   atomic.Int64
+	skipped     atomic.Int64
+	completions atomic.Int64
+}
+
+func newTickRunner(kind string, recorder observability.Recorder) *tickRunner {
+	return &tickRunner{kind: kind, recorder: recorder}
+}
+
+func (r *tickRunner) trigger(ctx context.Context, fn func(context.Context)) bool {
+	if !r.inFlight.CompareAndSwap(0, 1) {
+		r.skipped.Add(1)
+		r.recorder.IncCounter("ticks_skipped_"+r.kind, 1)
+		return false
+	}
+	r.triggered.Add(1)
+	r.recorder.IncCounter("ticks_started_"+r.kind, 1)
+	startedAt := time.Now()
+	go func() {
+		defer r.inFlight.Store(0)
+		defer r.completions.Add(1)
+		defer r.recorder.IncCounter("ticks_completed_"+r.kind, 1)
+		defer func() {
+			r.recorder.ObserveHistogram("tick_latency_"+r.kind, time.Since(startedAt).Seconds())
+		}()
+		fn(ctx)
+	}()
+	return true
+}
+
+func (r *tickRunner) stats() (triggered, skipped, completed int64) {
+	return r.triggered.Load(), r.skipped.Load(), r.completions.Load()
+}
+
+type tickerLoop struct {
+	runner   *tickRunner
+	interval time.Duration
+}
+
+func newTickerLoop(runner *tickRunner, interval time.Duration) *tickerLoop {
+	return &tickerLoop{runner: runner, interval: interval}
+}
+
+func (t *tickerLoop) Run(ctx context.Context, fn func(context.Context)) {
+	if t == nil || t.runner == nil || fn == nil {
+		return
+	}
+	ticker := time.NewTicker(t.interval)
+	defer ticker.Stop()
+	var wg sync.WaitGroup
+	for {
+		select {
+		case <-ctx.Done():
+			wg.Wait()
+			return
+		case <-ticker.C:
+			wg.Add(1)
+			if !t.runner.trigger(ctx, func(ctx context.Context) {
+				defer wg.Done()
+				fn(ctx)
+			}) {
+				wg.Done()
+			}
+		}
+	}
 }

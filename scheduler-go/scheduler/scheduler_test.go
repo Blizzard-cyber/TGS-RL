@@ -9,6 +9,7 @@ import (
 	"time"
 
 	tgsrlv1 "github.com/Blizzard-cyber/TGS-RL/gen/go/tgsrl/v1"
+	"github.com/Blizzard-cyber/TGS-RL/scheduler-go/constraints"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/durationpb"
 	"google.golang.org/protobuf/types/known/timestamppb"
@@ -121,6 +122,41 @@ func TestEvaluateBuildsCompleteDeterministicDecision(t *testing.T) {
 	plan.Bindings[0].DeviceIds[0] = "mutated-output"
 	if record.GetSelectedPlan().GetBindings()[0].GetDeviceIds()[0] != returnedDevice {
 		t.Fatal("returned plan aliases DecisionRecord.selected_plan")
+	}
+}
+
+func TestEvaluateReturnsNoChangeWhenIntentIsAlreadySatisfied(t *testing.T) {
+	snapshot, intent := validFixture()
+	snapshot.PendingUnits = nil
+	snapshot.Allocations = []*tgsrlv1.Allocation{
+		{
+			AllocationId:  "allocation-a",
+			ExecutionId:   intent.GetExecutionId(),
+			StageId:       intent.GetStageId(),
+			IntentVersion: intent.GetVersion(),
+			JobId:         intent.GetJobId(),
+			DeviceIds:     []string{"device-a"},
+			Resources:     proto.Clone(intent.GetResourcesPerUnit()).(*tgsrlv1.ResourceVector),
+			State:         tgsrlv1.AllocationState_ALLOCATION_STATE_ACTIVE,
+		},
+		{
+			AllocationId:  "allocation-b",
+			ExecutionId:   intent.GetExecutionId(),
+			StageId:       intent.GetStageId(),
+			IntentVersion: intent.GetVersion(),
+			JobId:         intent.GetJobId(),
+			DeviceIds:     []string{"device-b"},
+			Resources:     proto.Clone(intent.GetResourcesPerUnit()).(*tgsrlv1.ResourceVector),
+			State:         tgsrlv1.AllocationState_ALLOCATION_STATE_ACTIVE,
+		},
+	}
+
+	plan, record, err := testScheduler(t, FallbackNoOp).Evaluate(snapshot, intent)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if record.GetFallback() || plan.GetPurpose() != tgsrlv1.PlanPurpose_PLAN_PURPOSE_RECONCILIATION || len(plan.GetActions()) != 0 {
+		t.Fatalf("already-satisfied decision = plan:%+v record:%+v", plan, record)
 	}
 }
 
@@ -606,7 +642,7 @@ func TestResourceConstraintProperty(t *testing.T) {
 			EphemeralStorageBytes: uint64(random.Intn(10_000)),
 			NetworkBandwidthBps:   uint64(random.Intn(10_000)),
 		}
-		if resourceIsZero(request) {
+		if constraints.ResourceIsZero(request) {
 			request.CpuMillis = 1
 		}
 		intent.ResourcesPerUnit = proto.Clone(request).(*tgsrlv1.ResourceVector)
@@ -625,11 +661,11 @@ func TestResourceConstraintProperty(t *testing.T) {
 		if err != nil {
 			t.Fatalf("trial %d Evaluate() error = %v", trial, err)
 		}
-		fits := resourceLessOrEqual(request, capacity) && request.GetAcceleratorUnits() <= 1+1e-12
+		fits := constraints.ResourceLessOrEqual(request, capacity) && request.GetAcceleratorUnits() <= 1+1e-12
 		if fits == record.GetFallback() {
 			t.Fatalf("trial %d fits=%v fallback=%v request=%v capacity=%v plan=%v", trial, fits, record.GetFallback(), request, capacity, plan)
 		}
-		if !record.GetFallback() && !resourceLessOrEqual(plan.GetBindings()[0].GetResources(), capacity) {
+		if !record.GetFallback() && !constraints.ResourceLessOrEqual(plan.GetBindings()[0].GetResources(), capacity) {
 			t.Fatalf("trial %d selected an over-capacity binding", trial)
 		}
 	}

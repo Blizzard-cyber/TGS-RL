@@ -184,9 +184,6 @@ func validatePolicy(policy *PolicyBundle) error {
 	if !policy.Preemption.Enabled && policy.Preemption.Strategy != "noop" {
 		return configError("policy.preemption.strategy must be noop when disabled", "schema_validation", policy.Path, "policy.preemption.strategy", nil)
 	}
-	if policy.Preemption.Enabled {
-		return configError("policy.preemption.enabled=true is not yet supported because the authoritative scheduler cannot atomically express replacement after release", "schema_validation", policy.Path, "policy.preemption.enabled", nil)
-	}
 	if !policy.Determinism.ExplicitSeedRequired {
 		return configError("policy.determinism.explicit_seed_required=false is not supported by the authoritative scheduler", "schema_validation", policy.Path, "policy.determinism.explicit_seed_required", nil)
 	}

@@ -15,7 +15,6 @@ import (
 	"time"
 
 	tgsrlv1 "github.com/Blizzard-cyber/TGS-RL/gen/go/tgsrl/v1"
-	"github.com/Blizzard-cyber/TGS-RL/scheduler-go/cache"
 	configpkg "github.com/Blizzard-cyber/TGS-RL/scheduler-go/config"
 	"github.com/Blizzard-cyber/TGS-RL/scheduler-go/eventloop"
 	"github.com/Blizzard-cyber/TGS-RL/scheduler-go/observability"
@@ -83,17 +82,15 @@ func run() error {
 		return fmt.Errorf("create scheduler: %w", err)
 	}
 	recorder := observability.NewPrometheusRecorder()
-	eventLoopInstance := buildEventLoop(initial, startup, recorder)
-	runtime := eventloop.NewRuntime(eventLoopInstance, startup.RuntimeConfig)
+	tickRuntime := eventloop.NewRuntime(recorder, startup.RuntimeConfig)
 	server, err := service.New(service.Config{
-		Store:            store,
-		Scheduler:        evaluator,
-		Provider:         providerInstance,
-		EventLoop:        eventLoopInstance,
-		EventLoopRuntime: runtime,
-		Recorder:         recorder,
-		Repository:       repository,
-		DeferStart:       true,
+		Store:       store,
+		Scheduler:   evaluator,
+		Provider:    providerInstance,
+		TickRuntime: tickRuntime,
+		Recorder:    recorder,
+		Repository:  repository,
+		DeferStart:  true,
 	})
 	if err != nil {
 		return fmt.Errorf("create scheduling service: %w", err)
@@ -120,6 +117,7 @@ func run() error {
 	}
 	grpcServer := grpc.NewServer()
 	tgsrlv1.RegisterSchedulerServiceServer(grpcServer, server)
+	tgsrlv1.RegisterSchedulerObservationServiceServer(grpcServer, server)
 
 	go func() {
 		defer func() {
@@ -162,23 +160,30 @@ func buildSchedulerConfig(startup *runtimeConfig) (scheduler.Config, error) {
 }
 
 type cliArgs struct {
-	ListenAddress  string
-	ConfigRoot     string
-	ManifestPath   string
-	FallbackFlag   string
-	StateDirectory string
-	MetricsAddress string
+	ListenAddress        string
+	ConfigRoot           string
+	ManifestPath         string
+	FallbackFlag         string
+	StateDirectory       string
+	MetricsAddress       string
+	NVIDIADriverV2       bool
+	NVIDIAPartitionMode  string
+	NVIDIADryRun         bool
+	NVIDIACommandTimeout time.Duration
 }
 
 type runtimeConfig struct {
-	ListenAddress      string
-	StartupConfig      *configpkg.StartupConfig
-	ProviderCaps       *tgsrlv1.CapabilitySet
-	FallbackMode       scheduler.FallbackMode
-	Provider           provider.ResourceProvider
-	EventLoop          *eventloop.EventLoop
-	RuntimeConfig      eventloop.RuntimeConfig
-	ResolvedConfigRoot string
+	ListenAddress        string
+	StartupConfig        *configpkg.StartupConfig
+	ProviderCaps         *tgsrlv1.CapabilitySet
+	FallbackMode         scheduler.FallbackMode
+	Provider             provider.CompleteResourceProvider
+	RuntimeConfig        eventloop.RuntimeConfig
+	ResolvedConfigRoot   string
+	NVIDIADriverV2       bool
+	NVIDIAPartitionMode  nvidiaprovider.PartitionMode
+	NVIDIADryRun         bool
+	NVIDIACommandTimeout time.Duration
 }
 
 func parseArgs(argv []string) (*cliArgs, error) {
@@ -189,16 +194,33 @@ func parseArgs(argv []string) (*cliArgs, error) {
 	fallbackFlag := fs.String("fallback", "", "legacy fallback policy override: noop or static")
 	stateDirectory := fs.String("state-dir", ".tmp/scheduler-state", "durable scheduler state directory")
 	metricsAddress := fs.String("metrics-listen", "127.0.0.1:9090", "Prometheus metrics listen address; empty disables")
+	nvidiaDriverV2 := fs.Bool("nvidia-driver-v2", false, "use the NVIDIA Driver v2 backend")
+	nvidiaPartitionMode := fs.String("nvidia-partition-mode", string(nvidiaprovider.PartitionModeMPS), "NVIDIA Driver v2 partition mode: mps or mig")
+	nvidiaDryRun := fs.Bool("nvidia-dry-run", false, "plan NVIDIA Driver v2 mutations without applying them")
+	nvidiaCommandTimeout := fs.Duration("nvidia-command-timeout", 15*time.Second, "NVIDIA Driver v2 command timeout")
 	if err := fs.Parse(argv); err != nil {
 		return nil, err
 	}
+	if *nvidiaDriverV2 {
+		mode := nvidiaprovider.PartitionMode(*nvidiaPartitionMode)
+		if mode != nvidiaprovider.PartitionModeMPS && mode != nvidiaprovider.PartitionModeMIG {
+			return nil, fmt.Errorf("unsupported NVIDIA partition mode %q", *nvidiaPartitionMode)
+		}
+		if *nvidiaCommandTimeout <= 0 {
+			return nil, fmt.Errorf("NVIDIA command timeout must be positive")
+		}
+	}
 	return &cliArgs{
-		ListenAddress:  *listenAddress,
-		ConfigRoot:     *configRoot,
-		ManifestPath:   *manifestPath,
-		FallbackFlag:   *fallbackFlag,
-		StateDirectory: *stateDirectory,
-		MetricsAddress: *metricsAddress,
+		ListenAddress:        *listenAddress,
+		ConfigRoot:           *configRoot,
+		ManifestPath:         *manifestPath,
+		FallbackFlag:         *fallbackFlag,
+		StateDirectory:       *stateDirectory,
+		MetricsAddress:       *metricsAddress,
+		NVIDIADriverV2:       *nvidiaDriverV2,
+		NVIDIAPartitionMode:  *nvidiaPartitionMode,
+		NVIDIADryRun:         *nvidiaDryRun,
+		NVIDIACommandTimeout: *nvidiaCommandTimeout,
 	}, nil
 }
 
@@ -228,16 +250,20 @@ func loadStartupConfig(args *cliArgs) (*runtimeConfig, error) {
 		return nil, fmt.Errorf("project startup capabilities: %w", err)
 	}
 	return &runtimeConfig{
-		ListenAddress:      args.ListenAddress,
-		StartupConfig:      startupConfig,
-		ProviderCaps:       providerCaps,
-		FallbackMode:       fallbackMode,
-		RuntimeConfig:      eventloop.RuntimeConfig{FastInterval: startupConfig.RuntimeIntervals.Fast, MediumInterval: startupConfig.RuntimeIntervals.Medium, SlowInterval: startupConfig.RuntimeIntervals.Slow},
-		ResolvedConfigRoot: startupConfig.Root,
+		ListenAddress:        args.ListenAddress,
+		StartupConfig:        startupConfig,
+		ProviderCaps:         providerCaps,
+		FallbackMode:         fallbackMode,
+		RuntimeConfig:        eventloop.RuntimeConfig{FastInterval: startupConfig.RuntimeIntervals.Fast, MediumInterval: startupConfig.RuntimeIntervals.Medium, SlowInterval: startupConfig.RuntimeIntervals.Slow},
+		ResolvedConfigRoot:   startupConfig.Root,
+		NVIDIADriverV2:       args.NVIDIADriverV2,
+		NVIDIAPartitionMode:  nvidiaprovider.PartitionMode(args.NVIDIAPartitionMode),
+		NVIDIADryRun:         args.NVIDIADryRun,
+		NVIDIACommandTimeout: args.NVIDIACommandTimeout,
 	}, nil
 }
 
-func buildProvider(cfg *runtimeConfig) (provider.ResourceProvider, error) {
+func buildProvider(cfg *runtimeConfig) (provider.CompleteResourceProvider, error) {
 	if cfg == nil || cfg.StartupConfig == nil {
 		return nil, fmt.Errorf("startup config is required")
 	}
@@ -256,7 +282,15 @@ func buildProvider(cfg *runtimeConfig) (provider.ResourceProvider, error) {
 		cfg.Provider = instance
 		return instance, nil
 	case nvidiaprovider.ProviderID:
-		instance, err := nvidiaprovider.New()
+		options := []nvidiaprovider.Option{}
+		if cfg.NVIDIADriverV2 {
+			options = append(options, nvidiaprovider.WithDriverV2(nvidiaprovider.LocalDriverV2Options{
+				PartitionMode:  cfg.NVIDIAPartitionMode,
+				CommandTimeout: cfg.NVIDIACommandTimeout,
+				DryRun:         cfg.NVIDIADryRun,
+			}))
+		}
+		instance, err := nvidiaprovider.New(options...)
 		if err != nil {
 			return nil, fmt.Errorf("create nvidia provider: %w", err)
 		}
@@ -272,17 +306,6 @@ func cloneCapabilitySet(capabilities *tgsrlv1.CapabilitySet) *tgsrlv1.Capability
 		return nil
 	}
 	return proto.Clone(capabilities).(*tgsrlv1.CapabilitySet)
-}
-
-func buildEventLoop(initial *tgsrlv1.ClusterSnapshot, cfg *runtimeConfig, recorders ...observability.Recorder) *eventloop.EventLoop {
-	var recorder observability.Recorder = observability.NopRecorder{}
-	if len(recorders) > 0 && recorders[0] != nil {
-		recorder = recorders[0]
-	}
-	state := cache.NewState(initial, nil)
-	loop := eventloop.New(state, nil, recorder)
-	cfg.EventLoop = loop
-	return loop
 }
 
 type recoveredStateResumer interface {

@@ -125,10 +125,6 @@ func TestLoadStartupConfigUsesDefaultManifest(t *testing.T) {
 	if !proto.Equal(snapshot.GetDevices()[0].GetCapabilities(), cfg.ProviderCaps) {
 		t.Fatalf("Snapshot device capabilities = %#v, want %#v", snapshot.GetDevices()[0].GetCapabilities(), cfg.ProviderCaps)
 	}
-	loop := buildEventLoop(nil, cfg)
-	if loop == nil {
-		t.Fatal("buildEventLoop() returned nil")
-	}
 	schedulerConfig, err := buildSchedulerConfig(cfg)
 	if err != nil {
 		t.Fatalf("buildSchedulerConfig() error = %v", err)

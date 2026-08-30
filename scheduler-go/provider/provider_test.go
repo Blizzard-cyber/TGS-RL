@@ -97,8 +97,8 @@ func TestSandboxObservationTimestampsAndSemanticContext(t *testing.T) {
 	}
 	semanticContext := testSemanticContext()
 	observedStateChangedAt := current.Add(-time.Minute)
-	if err := p.ApplySandboxEvent(context.Background(), SandboxEvent{
-		EventID: "created", SandboxID: "sandbox-a", Generation: 1, State: SandboxStateRunning, SemanticContext: semanticContext, StateChangedAt: observedStateChangedAt,
+	if _, err := p.ObserveSandbox(context.Background(), &tgsrlv1.SandboxEvent{
+		EventId: "created", SandboxId: "sandbox-a", Generation: 1, State: tgsrlv1.RuntimeState_RUNTIME_STATE_RUNNING, SemanticContext: semanticContext, OccurredAt: timestamppb.New(observedStateChangedAt),
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -114,8 +114,8 @@ func TestSandboxObservationTimestampsAndSemanticContext(t *testing.T) {
 
 	stateChangedAt := created.StateChangedAt
 	current = current.Add(time.Minute)
-	if err := p.ApplySandboxEvent(context.Background(), SandboxEvent{
-		EventID: "confirmed", SandboxID: "sandbox-a", Generation: 1, State: SandboxStateRunning,
+	if _, err := p.ObserveSandbox(context.Background(), &tgsrlv1.SandboxEvent{
+		EventId: "confirmed", SandboxId: "sandbox-a", Generation: 1, State: tgsrlv1.RuntimeState_RUNTIME_STATE_RUNNING,
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -230,8 +230,8 @@ func TestExistingBindRollbackRestoresObservationMetadata(t *testing.T) {
 	fail := testAction("fail-after-bind", "bind-rollback-plan", "fail-after-bind-key", tgsrlv1.ActionType_ACTION_TYPE_SET_SHARE, tgsrlv1.ActionLevel_ACTION_LEVEL_L1, 1)
 	fail.Rollback = &tgsrlv1.Rollback{ActionType: tgsrlv1.ActionType_ACTION_TYPE_SET_SHARE, TargetId: "sandbox-a"}
 
-	if _, err := p.ExecutePlan(context.Background(), strictReconciliationPlan("bind-rollback-plan", 1, bind, fail)); !errors.Is(err, ErrPartialFailure) {
-		t.Fatalf("ExecutePlan() error = %v, want ErrPartialFailure", err)
+	if _, err := executeTestTransaction(context.Background(), p, strictReconciliationPlan("bind-rollback-plan", 1, bind, fail)); !errors.Is(err, ErrPartialFailure) {
+		t.Fatalf("transaction error = %v, want ErrPartialFailure", err)
 	}
 	after, err := p.GetSandbox(context.Background(), "sandbox-a")
 	if err != nil {
@@ -620,7 +620,7 @@ func TestExecuteActionDeadlineAndFailedRetry(t *testing.T) {
 	}
 }
 
-func TestExecutePlanPartialFailureRollsBackInReverseAndIsIdempotent(t *testing.T) {
+func TestTransactionPartialFailureRollsBackInReverseAndIsIdempotent(t *testing.T) {
 	initial := testSandbox(SandboxStateRunning)
 	initial.Share = 0.25
 	initial.Priority = 3
@@ -641,9 +641,9 @@ func TestExecutePlanPartialFailureRollsBackInReverseAndIsIdempotent(t *testing.T
 	third.Rollback = &tgsrlv1.Rollback{ActionType: tgsrlv1.ActionType_ACTION_TYPE_RESUME, TargetId: "sandbox-a"}
 	plan := strictReconciliationPlan("plan", 1, first, second, third)
 
-	results, err := provider.ExecutePlan(context.Background(), plan)
+	results, err := executeTestTransaction(context.Background(), provider, plan)
 	if !errors.Is(err, ErrPartialFailure) {
-		t.Fatalf("ExecutePlan() error = %v, want ErrPartialFailure", err)
+		t.Fatalf("transaction error = %v, want ErrPartialFailure", err)
 	}
 	if len(results) != 3 {
 		t.Fatalf("len(results) = %d, want 3", len(results))
@@ -661,27 +661,15 @@ func TestExecutePlanPartialFailureRollsBackInReverseAndIsIdempotent(t *testing.T
 	if sandbox.Share != initial.Share || sandbox.Priority != initial.Priority || sandbox.State != initial.State {
 		t.Fatalf("sandbox after rollback = %+v, want original %+v", sandbox, initial)
 	}
-	actionRetry, actionRetryErr := provider.ExecuteAction(context.Background(), proto.Clone(first).(*tgsrlv1.Action))
-	if actionRetryErr != nil {
-		t.Fatalf("rolled-back action retry error = %v", actionRetryErr)
-	}
-	if actionRetry.GetRollbackStatus() != tgsrlv1.ActionResultStatus_ACTION_RESULT_STATUS_ROLLED_BACK {
-		t.Fatalf("rolled-back action retry = %v, want recorded rollback result", actionRetry)
-	}
-	sandbox, _ = provider.GetSandbox(context.Background(), "sandbox-a")
-	if sandbox.Share != initial.Share {
-		t.Fatalf("rolled-back action retry reapplied share = %v, want %v", sandbox.Share, initial.Share)
-	}
-
 	results[0].ErrorCode = "caller-mutated"
 	snapshot, _ := provider.Snapshot(context.Background())
 	revision := snapshot.GetRevision()
-	retry, retryErr := provider.ExecutePlan(context.Background(), proto.Clone(plan).(*tgsrlv1.PlacementPlan))
-	if !errors.Is(retryErr, ErrPartialFailure) {
-		t.Fatalf("retry ExecutePlan() error = %v, want ErrPartialFailure", retryErr)
+	retry, retryErr := provider.PreparePlan(context.Background(), plan.GetPlanId(), 1, proto.Clone(plan).(*tgsrlv1.PlacementPlan))
+	if retryErr != nil {
+		t.Fatalf("retry PreparePlan() error = %v", retryErr)
 	}
-	if retry[0].GetErrorCode() == "caller-mutated" {
-		t.Fatal("retry result aliases prior caller-owned result")
+	if retry.Phase != TransactionPhaseAborted || len(retry.Effects) != 3 || retry.Effects[0].Status != EffectStatusCompensated {
+		t.Fatalf("retry receipt = %+v, want detached aborted receipt", retry)
 	}
 	snapshot, _ = provider.Snapshot(context.Background())
 	if snapshot.GetRevision() != revision {
@@ -689,32 +677,32 @@ func TestExecutePlanPartialFailureRollsBackInReverseAndIsIdempotent(t *testing.T
 	}
 }
 
-func TestExecutePlanRejectsPlanIDReuseWithDifferentPayload(t *testing.T) {
+func TestTransactionRejectsPlanIDReuseWithDifferentPayload(t *testing.T) {
 	provider := newTestProvider(t, WithSandboxes(testSandbox(SandboxStateRunning)))
 	action := testAction("share", "plan", "share-key", tgsrlv1.ActionType_ACTION_TYPE_SET_SHARE, tgsrlv1.ActionLevel_ACTION_LEVEL_L1, 1)
 	action.Share = 0.5
 	action.Rollback = &tgsrlv1.Rollback{ActionType: tgsrlv1.ActionType_ACTION_TYPE_SET_SHARE, TargetId: "sandbox-a"}
 	plan := strictReconciliationPlan("plan", 1, action)
-	if _, err := provider.ExecutePlan(context.Background(), plan); err != nil {
-		t.Fatalf("first ExecutePlan() error = %v", err)
+	if _, err := provider.PreparePlan(context.Background(), plan.GetPlanId(), 1, plan); err != nil {
+		t.Fatalf("first PreparePlan() error = %v", err)
 	}
 
 	conflict := proto.Clone(plan).(*tgsrlv1.PlacementPlan)
 	conflict.Actions[0].ActionId = "different-action"
 	conflict.Actions[0].IdempotencyKey = "different-key"
-	if _, err := provider.ExecutePlan(context.Background(), conflict); !errors.Is(err, ErrIdempotencyConflict) {
-		t.Fatalf("conflicting ExecutePlan() error = %v, want ErrIdempotencyConflict", err)
+	if _, err := provider.PreparePlan(context.Background(), conflict.GetPlanId(), 1, conflict); !errors.Is(err, ErrIdempotencyConflict) {
+		t.Fatalf("conflicting PreparePlan() error = %v, want ErrIdempotencyConflict", err)
 	}
 }
 
-func TestExecutePlanRequiresExplicitRollback(t *testing.T) {
+func TestTransactionRequiresExplicitRollback(t *testing.T) {
 	provider := newTestProvider(t, WithSandboxes(testSandbox(SandboxStateRunning)))
 	action := testAction("share", "plan", "share-key", tgsrlv1.ActionType_ACTION_TYPE_SET_SHARE, tgsrlv1.ActionLevel_ACTION_LEVEL_L1, 1)
 	action.Share = 0.5
 	plan := strictReconciliationPlan("plan", 1, action)
 
-	if _, err := provider.ExecutePlan(context.Background(), plan); !errors.Is(err, ErrInvalidArgument) {
-		t.Fatalf("ExecutePlan() error = %v, want ErrInvalidArgument for missing rollback", err)
+	if _, err := provider.PreparePlan(context.Background(), plan.GetPlanId(), 1, plan); !errors.Is(err, ErrInvalidArgument) {
+		t.Fatalf("PreparePlan() error = %v, want ErrInvalidArgument for missing rollback", err)
 	}
 	snapshot, _ := provider.Snapshot(context.Background())
 	if snapshot.GetRevision() != 1 {
@@ -722,7 +710,7 @@ func TestExecutePlanRequiresExplicitRollback(t *testing.T) {
 	}
 }
 
-func TestExecutePlanRejectsTickPolicyMismatch(t *testing.T) {
+func TestTransactionRejectsTickPolicyMismatch(t *testing.T) {
 	provider := newTestProvider(t, WithSandboxes(testSandbox(SandboxStateRunning)))
 	first := testAction("share", "plan", "share-key", tgsrlv1.ActionType_ACTION_TYPE_SET_SHARE, tgsrlv1.ActionLevel_ACTION_LEVEL_L1, 1)
 	first.TickKind = tgsrlv1.TickKind_TICK_KIND_MEDIUM
@@ -732,22 +720,26 @@ func TestExecutePlanRejectsTickPolicyMismatch(t *testing.T) {
 	second.TickKind = tgsrlv1.TickKind_TICK_KIND_FAST
 	second.Rollback = &tgsrlv1.Rollback{ActionType: tgsrlv1.ActionType_ACTION_TYPE_RESUME, TargetId: "sandbox-a"}
 
-	if _, err := provider.ExecutePlan(context.Background(), &tgsrlv1.PlacementPlan{
+	plan := &tgsrlv1.PlacementPlan{
 		PlanId:           "plan",
 		SnapshotRevision: 1,
 		Actions:          []*tgsrlv1.Action{first, second},
-	}); !errors.Is(err, ErrUnsupported) {
-		t.Fatalf("ExecutePlan() error = %v, want ErrUnsupported", err)
+	}
+	if _, err := provider.PreparePlan(context.Background(), plan.GetPlanId(), 1, plan); !errors.Is(err, ErrUnsupported) {
+		t.Fatalf("PreparePlan() error = %v, want ErrUnsupported", err)
 	}
 }
 
-func TestExecutePlanRejectsPreemptionBeforeAnyMutation(t *testing.T) {
+func TestTransactionPreparesAtomicReplacementWithoutMutation(t *testing.T) {
 	initial := testSandbox(SandboxStateRunning)
 	provider := newTestProvider(t, WithSandboxes(initial))
 	release := testAction("release", "preempt", "release-key", tgsrlv1.ActionType_ACTION_TYPE_RELEASE, tgsrlv1.ActionLevel_ACTION_LEVEL_L1, 1)
 	release.TargetId = "allocation-1"
+	release.SandboxId = "sandbox-a"
+	release.RequiresSafePoint = true
 	release.Rollback = &tgsrlv1.Rollback{ActionType: tgsrlv1.ActionType_ACTION_TYPE_BIND, TargetId: "sandbox-a", RestoreBinding: testBinding("sandbox-a", 1)}
 	bind := testAction("replacement", "preempt", "bind-key", tgsrlv1.ActionType_ACTION_TYPE_BIND, tgsrlv1.ActionLevel_ACTION_LEVEL_L1, 1)
+	bind.Binding.RuntimeUnitId = "runtime-replacement"
 	bind.Rollback = &tgsrlv1.Rollback{ActionType: tgsrlv1.ActionType_ACTION_TYPE_RELEASE, TargetId: bind.GetBinding().GetBindingId()}
 	plan := strictReconciliationPlan("preempt", 1, release, bind)
 	plan.Purpose = tgsrlv1.PlanPurpose_PLAN_PURPOSE_PREEMPTION
@@ -758,44 +750,37 @@ func TestExecutePlanRejectsPreemptionBeforeAnyMutation(t *testing.T) {
 			actionpolicy.NewCapabilityRequirement(tgsrlv1.CapabilityRequirementKind_CAPABILITY_REQUIREMENT_KIND_ATOMIC_REPLACEMENT),
 		)...,
 	)
-	release.Preconditions = append(release.Preconditions, tgsrlv1.ActionPrecondition_ACTION_PRECONDITION_AFFECTED_ALLOCATIONS_ACTIVE)
+	release.Preconditions = actionpolicy.RequiredPreconditions(release.GetActionType(), true, true)
 
-	if _, err := provider.ExecutePlan(context.Background(), plan); !errors.Is(err, ErrUnsupported) {
-		t.Fatalf("ExecutePlan(preemption) error = %v, want ErrUnsupported", err)
+	receipt, err := provider.PreparePlan(context.Background(), plan.GetPlanId(), 1, plan)
+	if err != nil || receipt.Phase != TransactionPhasePrepared {
+		t.Fatalf("PreparePlan(preemption) = (%+v, %v), want prepared", receipt, err)
 	}
 	after, err := provider.GetSandbox(context.Background(), "sandbox-a")
 	if err != nil {
 		t.Fatalf("GetSandbox() error = %v", err)
 	}
 	if after.State != initial.State || after.Generation != initial.Generation || !proto.Equal(after.Binding, initial.Binding) {
-		t.Fatalf("preemption rejection mutated sandbox: got %+v want %+v", after, initial)
+		t.Fatalf("preemption prepare mutated sandbox: got %+v want %+v", after, initial)
 	}
 	snapshot, _ := provider.Snapshot(context.Background())
 	if snapshot.GetRevision() != 1 {
-		t.Fatalf("preemption rejection advanced revision to %d", snapshot.GetRevision())
+		t.Fatalf("preemption prepare advanced revision to %d", snapshot.GetRevision())
 	}
 }
 
-func TestPlanCapabilitiesAreTypedAndDetached(t *testing.T) {
+func TestTransactionCapabilitiesMatchExecutableContract(t *testing.T) {
 	provider := newTestProvider(t)
-	first := PlanCapabilities(provider)
-	want := []*tgsrlv1.CapabilityRequirement{
-		actionpolicy.NewCapabilityRequirement(tgsrlv1.CapabilityRequirementKind_CAPABILITY_REQUIREMENT_KIND_ORDERED_ACTION_EXECUTION),
-		actionpolicy.NewCapabilityRequirement(tgsrlv1.CapabilityRequirementKind_CAPABILITY_REQUIREMENT_KIND_COMPENSATING_ROLLBACK),
+	capabilities, err := provider.DescribeCapabilities(context.Background())
+	if err != nil {
+		t.Fatalf("DescribeCapabilities() error = %v", err)
 	}
-	for _, capability := range want {
-		capability.MinVersion = "1.0.0"
-	}
-	if len(first) != len(want) || !proto.Equal(first[0], want[0]) || !proto.Equal(first[1], want[1]) {
-		t.Fatalf("PlanCapabilities() = %v, want %v", first, want)
-	}
-	first[0].Kind = tgsrlv1.CapabilityRequirementKind_CAPABILITY_REQUIREMENT_KIND_ATOMIC_REPLACEMENT
-	if next := PlanCapabilities(provider); len(next) != len(want) || !proto.Equal(next[0], want[0]) || !proto.Equal(next[1], want[1]) {
-		t.Fatalf("PlanCapabilities() aliases provider state: %v", next)
+	if !capabilities.OrderedStepExecution || !capabilities.CompensatingAbort || !capabilities.StepIdempotency || !capabilities.GenerationFence || !capabilities.PartialEffectReporting || !capabilities.AtomicReplacement {
+		t.Fatalf("DescribeCapabilities() = %+v, want complete transaction contract", capabilities)
 	}
 }
 
-func TestValidatePlanCapabilitiesHonorsRequiredProviderCapability(t *testing.T) {
+func TestValidateExecutionCapabilitiesHonorsRequiredProviderCapability(t *testing.T) {
 	provider := newTestProvider(t)
 	plan := &tgsrlv1.PlacementPlan{PlanId: "capability-plan"}
 	optional := &tgsrlv1.CapabilityRequirement{
@@ -805,7 +790,7 @@ func TestValidatePlanCapabilitiesHonorsRequiredProviderCapability(t *testing.T) 
 		Required:   false,
 	}
 	plan.CapabilityRequirements = []*tgsrlv1.CapabilityRequirement{optional}
-	if err := ValidatePlanCapabilities(provider, plan); err != nil {
+	if err := ValidateExecutionCapabilities(context.Background(), provider, plan); err != nil {
 		t.Fatalf("optional capability blocked handshake: %v", err)
 	}
 
@@ -815,17 +800,17 @@ func TestValidatePlanCapabilitiesHonorsRequiredProviderCapability(t *testing.T) 
 		MinVersion: "1.0.0",
 		Required:   true,
 	}}
-	if err := ValidatePlanCapabilities(provider, plan); err != nil {
+	if err := ValidateExecutionCapabilities(context.Background(), provider, plan); err != nil {
 		t.Fatalf("normalized provider capability handshake failed: %v", err)
 	}
 
 	plan.CapabilityRequirements[0].MinVersion = "1.0.1"
-	if err := ValidatePlanCapabilities(provider, plan); !errors.Is(err, ErrUnsupported) {
+	if err := ValidateExecutionCapabilities(context.Background(), provider, plan); !errors.Is(err, ErrUnsupported) {
 		t.Fatalf("newer provider capability version error = %v, want ErrUnsupported", err)
 	}
 	plan.CapabilityRequirements[0].Name = "logical-gpu"
 	plan.CapabilityRequirements[0].MinVersion = ""
-	if err := ValidatePlanCapabilities(provider, plan); !errors.Is(err, ErrUnsupported) {
+	if err := ValidateExecutionCapabilities(context.Background(), provider, plan); !errors.Is(err, ErrUnsupported) {
 		t.Fatalf("missing provider capability error = %v, want ErrUnsupported", err)
 	}
 }
@@ -860,7 +845,7 @@ func TestVersionAtLeastUsesStrictSemanticVersioning(t *testing.T) {
 	}
 }
 
-func TestExecutePlanRejectsCapabilityBeforeMutationOrRecord(t *testing.T) {
+func TestTransactionRejectsMissingProviderCapabilityBeforeMutationOrRecord(t *testing.T) {
 	initial := testSandbox(SandboxStateRunning)
 	provider := newTestProvider(t, WithSandboxes(initial))
 	action := testAction("share", "unsupported-plan", "share-key", tgsrlv1.ActionType_ACTION_TYPE_SET_SHARE, tgsrlv1.ActionLevel_ACTION_LEVEL_L1, 1)
@@ -868,12 +853,13 @@ func TestExecutePlanRejectsCapabilityBeforeMutationOrRecord(t *testing.T) {
 	action.Rollback = &tgsrlv1.Rollback{ActionType: tgsrlv1.ActionType_ACTION_TYPE_SET_SHARE, TargetId: "sandbox-a"}
 	plan := strictReconciliationPlan("unsupported-plan", 1, action)
 	plan.CapabilityRequirements = actionpolicy.StableCapabilityRequirements(&tgsrlv1.CapabilityRequirement{
-		Kind:     tgsrlv1.CapabilityRequirementKind_CAPABILITY_REQUIREMENT_KIND_ATOMIC_REPLACEMENT,
+		Kind:     tgsrlv1.CapabilityRequirementKind_CAPABILITY_REQUIREMENT_KIND_PROVIDER_CAPABILITY,
+		Name:     "unavailable-provider-feature",
 		Required: true,
 	})
 
-	if _, err := provider.ExecutePlan(context.Background(), plan); !errors.Is(err, ErrUnsupported) {
-		t.Fatalf("ExecutePlan() error = %v, want ErrUnsupported", err)
+	if _, err := provider.PreparePlan(context.Background(), plan.GetPlanId(), 1, plan); !errors.Is(err, ErrUnsupported) {
+		t.Fatalf("PreparePlan() error = %v, want ErrUnsupported", err)
 	}
 	sandbox, err := provider.GetSandbox(context.Background(), "sandbox-a")
 	if err != nil {
@@ -891,7 +877,7 @@ func TestExecutePlanRejectsCapabilityBeforeMutationOrRecord(t *testing.T) {
 	}
 }
 
-func TestExecutePlanUsesActionOrder(t *testing.T) {
+func TestTransactionUsesActionOrder(t *testing.T) {
 	provider := newTestProvider(t, WithSandboxes(testSandbox(SandboxStateRunning)))
 	pause := testAction("pause", "plan", "pause-key", tgsrlv1.ActionType_ACTION_TYPE_PAUSE, tgsrlv1.ActionLevel_ACTION_LEVEL_L2, 1)
 	pause.Order = 1
@@ -901,12 +887,12 @@ func TestExecutePlanUsesActionOrder(t *testing.T) {
 	resume.Rollback = &tgsrlv1.Rollback{ActionType: tgsrlv1.ActionType_ACTION_TYPE_PAUSE, TargetId: "sandbox-a"}
 	plan := strictReconciliationPlan("plan", 1, pause, resume)
 
-	results, err := provider.ExecutePlan(context.Background(), plan)
+	results, err := executeTestTransaction(context.Background(), provider, plan)
 	if err != nil {
-		t.Fatalf("ExecutePlan() error = %v", err)
+		t.Fatalf("transaction error = %v", err)
 	}
 	if len(results) != 2 || results[0].GetActionId() != "pause" || results[1].GetActionId() != "resume" {
-		t.Fatalf("ExecutePlan() result order = %v, want pause then resume", results)
+		t.Fatalf("transaction result order = %v, want pause then resume", results)
 	}
 	sandbox, _ := provider.GetSandbox(context.Background(), "sandbox-a")
 	if sandbox.State != SandboxStateRunning {
@@ -914,7 +900,7 @@ func TestExecutePlanUsesActionOrder(t *testing.T) {
 	}
 }
 
-func TestExecutePlanMarksRemainingActionsSkipped(t *testing.T) {
+func TestTransactionMarksRemainingActionsSkipped(t *testing.T) {
 	provider := newTestProvider(t,
 		WithSandboxes(testSandbox(SandboxStateRunning)),
 		WithFaults(FaultOptions{PartialFailureAt: 2}),
@@ -932,9 +918,9 @@ func TestExecutePlanMarksRemainingActionsSkipped(t *testing.T) {
 	priority.Rollback = &tgsrlv1.Rollback{ActionType: tgsrlv1.ActionType_ACTION_TYPE_SET_PRIORITY, TargetId: "sandbox-a"}
 	plan := strictReconciliationPlan("plan", 1, share, pause, priority)
 
-	results, err := provider.ExecutePlan(context.Background(), plan)
+	results, err := executeTestTransaction(context.Background(), provider, plan)
 	if !errors.Is(err, ErrPartialFailure) {
-		t.Fatalf("ExecutePlan() error = %v, want ErrPartialFailure", err)
+		t.Fatalf("transaction error = %v, want ErrPartialFailure", err)
 	}
 	if len(results) != 3 || results[2].GetStatus() != tgsrlv1.ActionResultStatus_ACTION_RESULT_STATUS_SKIPPED {
 		t.Fatalf("results = %v, want third action skipped", results)
@@ -982,7 +968,7 @@ func TestConfiguredRollbackFailureIsExplicit(t *testing.T) {
 	pause.Rollback = &tgsrlv1.Rollback{ActionType: tgsrlv1.ActionType_ACTION_TYPE_RESUME, TargetId: "sandbox-a"}
 	plan := strictReconciliationPlan("plan", 1, share, pause)
 
-	results, err := provider.ExecutePlan(context.Background(), plan)
+	results, err := executeTestTransaction(context.Background(), provider, plan)
 	if !errors.Is(err, ErrPartialFailure) {
 		t.Fatalf("ExecutePlan() error = %v, want ErrPartialFailure", err)
 	}
@@ -1018,7 +1004,7 @@ func TestRollbackFailureIsNotUndoneByEarlierRollbackOnSameSandbox(t *testing.T) 
 	pause.Order = 3
 	pause.Rollback = &tgsrlv1.Rollback{ActionType: tgsrlv1.ActionType_ACTION_TYPE_RESUME, TargetId: "sandbox-a"}
 
-	results, err := provider.ExecutePlan(context.Background(), strictReconciliationPlan("plan", 1, share, priority, pause))
+	results, err := executeTestTransaction(context.Background(), provider, strictReconciliationPlan("plan", 1, share, priority, pause))
 	if !errors.Is(err, ErrPartialFailure) {
 		t.Fatalf("ExecutePlan() error = %v, want ErrPartialFailure", err)
 	}
@@ -1056,7 +1042,7 @@ func TestOverlappingRollbackFailurePreservesLatestSideEffect(t *testing.T) {
 	pause.Order = 3
 	pause.Rollback = &tgsrlv1.Rollback{ActionType: tgsrlv1.ActionType_ACTION_TYPE_RESUME, TargetId: "sandbox-a"}
 
-	results, err := provider.ExecutePlan(context.Background(), strictReconciliationPlan("plan", 1, first, latest, pause))
+	results, err := executeTestTransaction(context.Background(), provider, strictReconciliationPlan("plan", 1, first, latest, pause))
 	if !errors.Is(err, ErrPartialFailure) {
 		t.Fatalf("ExecutePlan() error = %v, want ErrPartialFailure", err)
 	}
@@ -1102,7 +1088,7 @@ func TestRollbackDoesNotOverwriteAnotherSandbox(t *testing.T) {
 	pause.Order = 3
 	pause.Rollback = &tgsrlv1.Rollback{ActionType: tgsrlv1.ActionType_ACTION_TYPE_RESUME, TargetId: "sandbox-a"}
 
-	results, err := provider.ExecutePlan(context.Background(), strictReconciliationPlan("plan", 1, share, priority, pause))
+	results, err := executeTestTransaction(context.Background(), provider, strictReconciliationPlan("plan", 1, share, priority, pause))
 	if !errors.Is(err, ErrPartialFailure) {
 		t.Fatalf("ExecutePlan() error = %v, want ErrPartialFailure", err)
 	}
@@ -1122,7 +1108,7 @@ func TestRollbackDoesNotOverwriteAnotherSandbox(t *testing.T) {
 	}
 }
 
-func TestExecutePlanRejectsFalseRollbackDeclarations(t *testing.T) {
+func TestTransactionRejectsFalseRollbackDeclarations(t *testing.T) {
 	tests := []struct {
 		name     string
 		rollback *tgsrlv1.Rollback
@@ -1141,7 +1127,7 @@ func TestExecutePlanRejectsFalseRollbackDeclarations(t *testing.T) {
 			action.Share = 0.8
 			action.Rollback = test.rollback
 
-			if _, err := provider.ExecutePlan(context.Background(), strictReconciliationPlan("plan", 1, action)); !errors.Is(err, ErrInvalidArgument) {
+			if _, err := executeTestTransaction(context.Background(), provider, strictReconciliationPlan("plan", 1, action)); !errors.Is(err, ErrInvalidArgument) {
 				t.Fatalf("ExecutePlan() error = %v, want ErrInvalidArgument", err)
 			}
 			sandbox, lookupErr := provider.GetSandbox(context.Background(), "sandbox-a")
@@ -1155,7 +1141,7 @@ func TestExecutePlanRejectsFalseRollbackDeclarations(t *testing.T) {
 	}
 }
 
-func TestExecutePlanRejectsMismatchedRestoreBindingAndRollsBackPriorMutation(t *testing.T) {
+func TestTransactionRejectsMismatchedRestoreBindingAndRollsBackPriorMutation(t *testing.T) {
 	initial := testSandbox(SandboxStateRunning)
 	initial.Share = 0.25
 	provider := newTestProvider(t, WithSandboxes(initial))
@@ -1170,7 +1156,7 @@ func TestExecutePlanRejectsMismatchedRestoreBindingAndRollsBackPriorMutation(t *
 	mismatched.Resources.CpuMillis = 500
 	resize.Rollback = &tgsrlv1.Rollback{ActionType: tgsrlv1.ActionType_ACTION_TYPE_RESIZE, TargetId: "sandbox-a", RestoreBinding: mismatched}
 
-	results, err := provider.ExecutePlan(context.Background(), strictReconciliationPlan("plan", 1, share, resize))
+	results, err := executeTestTransaction(context.Background(), provider, strictReconciliationPlan("plan", 1, share, resize))
 	if !errors.Is(err, ErrPartialFailure) {
 		t.Fatalf("ExecutePlan() error = %v, want ErrPartialFailure", err)
 	}
@@ -1186,7 +1172,7 @@ func TestExecutePlanRejectsMismatchedRestoreBindingAndRollsBackPriorMutation(t *
 	}
 }
 
-func TestExecutePlanBindRollbackUsesBindingTarget(t *testing.T) {
+func TestTransactionBindRollbackUsesBindingTarget(t *testing.T) {
 	provider := newTestProvider(t, WithFaults(FaultOptions{PartialFailureAt: 2}))
 	bind := testAction("bind", "plan", "bind-key", tgsrlv1.ActionType_ACTION_TYPE_BIND, tgsrlv1.ActionLevel_ACTION_LEVEL_L1, 1)
 	bind.Order = 1
@@ -1195,7 +1181,7 @@ func TestExecutePlanBindRollbackUsesBindingTarget(t *testing.T) {
 	share.Order = 2
 	share.Rollback = &tgsrlv1.Rollback{ActionType: tgsrlv1.ActionType_ACTION_TYPE_SET_SHARE, TargetId: "sandbox-a"}
 
-	results, err := provider.ExecutePlan(context.Background(), strictReconciliationPlan("plan", 1, bind, share))
+	results, err := executeTestTransaction(context.Background(), provider, strictReconciliationPlan("plan", 1, bind, share))
 	if !errors.Is(err, ErrPartialFailure) {
 		t.Fatalf("ExecutePlan() error = %v, want ErrPartialFailure", err)
 	}
@@ -1214,13 +1200,14 @@ func TestL4GenerationFencesLateEvent(t *testing.T) {
 		t.Fatalf("ExecuteAction() error = %v", err)
 	}
 	before, _ := provider.Snapshot(context.Background())
-	err := provider.ApplySandboxEvent(context.Background(), SandboxEvent{
-		SandboxID:  "sandbox-a",
+	_, err := provider.ObserveSandbox(context.Background(), &tgsrlv1.SandboxEvent{
+		EventId:    "late-event",
+		SandboxId:  "sandbox-a",
 		Generation: 1,
-		State:      SandboxStateRunning,
+		State:      tgsrlv1.RuntimeState_RUNTIME_STATE_RUNNING,
 	})
 	if !errors.Is(err, ErrGenerationFenced) {
-		t.Fatalf("ApplySandboxEvent() error = %v, want ErrGenerationFenced", err)
+		t.Fatalf("ObserveSandbox() error = %v, want ErrGenerationFenced", err)
 	}
 	after, _ := provider.Snapshot(context.Background())
 	if after.GetRevision() != before.GetRevision() {
@@ -1232,19 +1219,20 @@ func TestL4GenerationFencesLateEvent(t *testing.T) {
 	}
 }
 
-func TestApplySandboxEventClonesBinding(t *testing.T) {
+func TestObserveSandboxClonesBinding(t *testing.T) {
 	provider := newTestProvider(t)
 	safePoint := true
 	binding := testBinding("sandbox-a", 1)
-	err := provider.ApplySandboxEvent(context.Background(), SandboxEvent{
-		SandboxID:  "sandbox-a",
+	_, err := provider.ObserveSandbox(context.Background(), &tgsrlv1.SandboxEvent{
+		EventId:    "cloned-binding-event",
+		SandboxId:  "sandbox-a",
 		Generation: 1,
-		State:      SandboxStateRunning,
+		State:      tgsrlv1.RuntimeState_RUNTIME_STATE_RUNNING,
 		Binding:    binding,
 		SafePoint:  &safePoint,
 	})
 	if err != nil {
-		t.Fatalf("ApplySandboxEvent() error = %v", err)
+		t.Fatalf("ObserveSandbox() error = %v", err)
 	}
 	binding.DeviceIds[0] = "caller-mutated"
 	sandbox, err := provider.GetSandbox(context.Background(), "sandbox-a")
@@ -1253,6 +1241,33 @@ func TestApplySandboxEventClonesBinding(t *testing.T) {
 	}
 	if sandbox.Binding.GetDeviceIds()[0] != "mock-cpu-0" || !sandbox.SafePoint {
 		t.Fatalf("sandbox event was not cloned or applied: %+v", sandbox)
+	}
+}
+
+func TestObserveSandboxPreservesUnknownSafePointAndDeduplicatesEvent(t *testing.T) {
+	provider := newTestProvider(t, WithSandboxes(testSandbox(SandboxStateRunning)))
+	event := &tgsrlv1.SandboxEvent{
+		EventId: "observation-without-safe-point", SandboxId: "sandbox-a", Generation: 1,
+		State: tgsrlv1.RuntimeState_RUNTIME_STATE_RUNNING, OccurredAt: timestamppb.New(fixtureNow),
+	}
+	before, _ := provider.Snapshot(context.Background())
+	if _, err := provider.ObserveSandbox(context.Background(), event); err != nil {
+		t.Fatal(err)
+	}
+	observed, err := provider.GetSandbox(context.Background(), "sandbox-a")
+	if err != nil || !observed.SafePoint {
+		t.Fatalf("missing safe-point field overwrote known value: sandbox=%+v err=%v", observed, err)
+	}
+	afterFirst, _ := provider.Snapshot(context.Background())
+	if afterFirst.GetRevision() != before.GetRevision()+1 {
+		t.Fatalf("first observation revision = %d, want %d", afterFirst.GetRevision(), before.GetRevision()+1)
+	}
+	if _, err := provider.ObserveSandbox(context.Background(), proto.Clone(event).(*tgsrlv1.SandboxEvent)); err != nil {
+		t.Fatalf("idempotent observation error = %v", err)
+	}
+	afterReplay, _ := provider.Snapshot(context.Background())
+	if afterReplay.GetRevision() != afterFirst.GetRevision() {
+		t.Fatalf("idempotent observation advanced revision to %d", afterReplay.GetRevision())
 	}
 }
 
@@ -1301,6 +1316,96 @@ func TestConcurrentDuplicateActionHasOneSideEffect(t *testing.T) {
 	if snapshot.GetRevision() != 2 {
 		t.Fatalf("revision after duplicate storm = %d, want 2", snapshot.GetRevision())
 	}
+}
+
+func TestMockTransactionalProviderAbortCompensatesInReverseOrder(t *testing.T) {
+	provider := newTestProvider(t, WithSandboxes(testSandbox(SandboxStateRunning)))
+	txp, ok := any(provider).(TransactionalResourceProvider)
+	if !ok {
+		t.Fatal("mock provider does not implement TransactionalResourceProvider")
+	}
+
+	pause := testAction("pause-tx", "tx-mock", "pause-tx-key", tgsrlv1.ActionType_ACTION_TYPE_PAUSE, tgsrlv1.ActionLevel_ACTION_LEVEL_L2, 1)
+	pause.Rollback = &tgsrlv1.Rollback{ActionType: tgsrlv1.ActionType_ACTION_TYPE_RESUME, TargetId: "sandbox-a"}
+	resume := testAction("resume-tx", "tx-mock", "resume-tx-key", tgsrlv1.ActionType_ACTION_TYPE_RESUME, tgsrlv1.ActionLevel_ACTION_LEVEL_L2, 1)
+	resume.Rollback = &tgsrlv1.Rollback{ActionType: tgsrlv1.ActionType_ACTION_TYPE_PAUSE, TargetId: "sandbox-a"}
+	plan := strictReconciliationPlan("tx-mock", 1, pause, resume)
+
+	prepared, err := txp.PreparePlan(context.Background(), "tx-mock", 3, plan)
+	if err != nil {
+		t.Fatalf("PreparePlan() error = %v", err)
+	}
+	if prepared.Generation != 3 || prepared.Phase != TransactionPhasePrepared {
+		t.Fatalf("prepared receipt = %+v", prepared)
+	}
+
+	first, err := txp.ExecuteStep(context.Background(), "tx-mock", 3, 0)
+	if err != nil {
+		t.Fatalf("ExecuteStep(0) error = %v", err)
+	}
+	if first.Effects[0].Status != EffectStatusApplied || first.Effects[1].Status != EffectStatusNotApplied {
+		t.Fatalf("first receipt = %+v", first)
+	}
+	second, err := txp.ExecuteStep(context.Background(), "tx-mock", 3, 1)
+	if err != nil {
+		t.Fatalf("ExecuteStep(1) error = %v", err)
+	}
+	if second.Effects[1].Status != EffectStatusApplied {
+		t.Fatalf("second receipt = %+v", second)
+	}
+
+	aborted, err := txp.AbortPlan(context.Background(), "tx-mock", 3)
+	if err != nil {
+		t.Fatalf("AbortPlan() error = %v", err)
+	}
+	if aborted.Phase != TransactionPhaseAborted {
+		t.Fatalf("abort phase = %s, want aborted", aborted.Phase)
+	}
+	if aborted.Effects[0].Status != EffectStatusCompensated || aborted.Effects[1].Status != EffectStatusCompensated {
+		t.Fatalf("abort receipt effects = %+v", aborted.Effects)
+	}
+	sandbox, err := provider.GetSandbox(context.Background(), "sandbox-a")
+	if err != nil {
+		t.Fatalf("GetSandbox() error = %v", err)
+	}
+	if sandbox.State != SandboxStateRunning {
+		t.Fatalf("sandbox state after abort = %s, want running", sandbox.State)
+	}
+}
+
+func TestMockTransactionalProviderGenerationFence(t *testing.T) {
+	provider := newTestProvider(t, WithSandboxes(testSandbox(SandboxStateRunning)))
+	txp := any(provider).(TransactionalResourceProvider)
+	action := testAction("pause-fence", "tx-fence", "pause-fence-key", tgsrlv1.ActionType_ACTION_TYPE_PAUSE, tgsrlv1.ActionLevel_ACTION_LEVEL_L2, 1)
+	action.Rollback = &tgsrlv1.Rollback{ActionType: tgsrlv1.ActionType_ACTION_TYPE_RESUME, TargetId: "sandbox-a"}
+	plan := strictReconciliationPlan("tx-fence", 1, action)
+
+	if _, err := txp.PreparePlan(context.Background(), "tx-fence", 5, plan); err != nil {
+		t.Fatalf("PreparePlan() error = %v", err)
+	}
+	if _, err := txp.ExecuteStep(context.Background(), "tx-fence", 4, 0); !errors.Is(err, ErrGenerationFenced) {
+		t.Fatalf("ExecuteStep() error = %v, want ErrGenerationFenced", err)
+	}
+}
+
+func executeTestTransaction(ctx context.Context, p TransactionalResourceProvider, plan *tgsrlv1.PlacementPlan) ([]*tgsrlv1.ActionResult, error) {
+	const generation = uint64(1)
+	receipt, err := p.PreparePlan(ctx, plan.GetPlanId(), generation, plan)
+	if err != nil {
+		return nil, err
+	}
+	for index := range plan.GetActions() {
+		receipt, err = p.ExecuteStep(ctx, plan.GetPlanId(), generation, index)
+		if err != nil {
+			aborted, abortErr := p.AbortPlan(context.WithoutCancel(ctx), plan.GetPlanId(), generation)
+			if aborted != nil {
+				receipt = aborted
+			}
+			return transactionReceiptResults(receipt), errors.Join(ErrPartialFailure, err, abortErr)
+		}
+	}
+	receipt, err = p.CommitPlan(ctx, plan.GetPlanId(), generation)
+	return transactionReceiptResults(receipt), err
 }
 
 func newTestProvider(t *testing.T, options ...MockOption) *MockResourceProvider {

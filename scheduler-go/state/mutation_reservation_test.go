@@ -433,10 +433,20 @@ func TestRebindFinalizePreservesNextGenerationIdentity(t *testing.T) {
 	if _, err := store.ReservePlan(plan); err != nil {
 		t.Fatalf("ReservePlan(rebind) error = %v", err)
 	}
-	results, err := resourceProvider.ExecutePlan(context.Background(), plan)
-	if err != nil {
-		t.Fatalf("ExecutePlan(rebind) error = %v", err)
+	receipt, err := resourceProvider.PreparePlan(context.Background(), plan.GetPlanId(), 1, plan)
+	if err == nil {
+		receipt, err = resourceProvider.ExecuteStep(context.Background(), plan.GetPlanId(), 1, 0)
 	}
+	if err == nil {
+		receipt, err = resourceProvider.CommitPlan(context.Background(), plan.GetPlanId(), 1)
+	}
+	if err != nil {
+		t.Fatalf("execute transaction(rebind) error = %v", err)
+	}
+	results := []*tgsrlv1.ActionResult{{
+		ActionId: plan.GetActions()[0].GetActionId(), Status: tgsrlv1.ActionResultStatus_ACTION_RESULT_STATUS_SUCCEEDED,
+		ObservedRevision: receipt.ObservedRevision, PlanId: plan.GetPlanId(), IdempotencyKey: plan.GetActions()[0].GetIdempotencyKey(),
+	}}
 	final, err := store.FinalizePlanResults(plan, true, results)
 	if err != nil {
 		t.Fatalf("FinalizePlanResults(rebind) error = %v", err)

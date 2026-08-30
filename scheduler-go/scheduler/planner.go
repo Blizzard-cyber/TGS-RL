@@ -29,9 +29,14 @@ func populateBindingMetadata(binding *tgsrlv1.Binding, decisionID string, intent
 		return
 	}
 	binding.BindingId = stableID("binding", decisionID, binding.GetPendingUnitId(), binding.GetDeviceIds()[0])
-	binding.RuntimeUnitId = intent.GetLabels()["runtime_unit_id"]
+	if runtimeUnitID := intent.GetLabels()["runtime_unit_id"]; runtimeUnitID != "" {
+		binding.RuntimeUnitId = runtimeUnitID
+	}
 	binding.SandboxId = stableID("sandbox", decisionID, binding.GetPendingUnitId())
-	binding.Generation = 1
+	binding.Generation = intent.GetGeneration()
+	if binding.Generation == 0 {
+		binding.Generation = 1
+	}
 }
 
 func populateCandidatePlanMetadata(plan *tgsrlv1.PlacementPlan, candidateID, decisionID string, snapshot *tgsrlv1.ClusterSnapshot, intent *tgsrlv1.SchedulingIntent, now time.Time, requiresSafePoint bool, tick tgsrlv1.TickKind) {

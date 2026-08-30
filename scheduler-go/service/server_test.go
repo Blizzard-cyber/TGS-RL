@@ -12,10 +12,11 @@ import (
 	"time"
 
 	tgsrlv1 "github.com/Blizzard-cyber/TGS-RL/gen/go/tgsrl/v1"
-	"github.com/Blizzard-cyber/TGS-RL/scheduler-go/cache"
 	"github.com/Blizzard-cyber/TGS-RL/scheduler-go/eventloop"
 	"github.com/Blizzard-cyber/TGS-RL/scheduler-go/observability"
 	"github.com/Blizzard-cyber/TGS-RL/scheduler-go/persistence"
+	"github.com/Blizzard-cyber/TGS-RL/scheduler-go/policy"
+	"github.com/Blizzard-cyber/TGS-RL/scheduler-go/preemption"
 	"github.com/Blizzard-cyber/TGS-RL/scheduler-go/protection"
 	"github.com/Blizzard-cyber/TGS-RL/scheduler-go/provider"
 	"github.com/Blizzard-cyber/TGS-RL/scheduler-go/scheduler"
@@ -289,7 +290,7 @@ func TestDecisionUnaryQueriesPaginationFilteringAndErrors(t *testing.T) {
 	}
 }
 
-func TestServiceBootstrapsEventLoopRuntime(t *testing.T) {
+func TestServiceBootstrapsProviderProjectionAndTickRuntime(t *testing.T) {
 	now := time.Date(2026, 8, 27, 10, 0, 0, 0, time.UTC)
 	store, err := state.NewStore(serviceSnapshot(now), state.WithClock(state.ClockFunc(func() time.Time { return now })))
 	if err != nil {
@@ -324,35 +325,32 @@ func TestServiceBootstrapsEventLoopRuntime(t *testing.T) {
 		t.Fatalf("NewMockResourceProvider() error = %v", err)
 	}
 	recorder := observability.NewInMemoryRecorder()
-	loop := eventloop.New(cache.NewState(nil, nil), nil, recorder)
-	runtime := eventloop.NewRuntime(loop, eventloop.RuntimeConfig{
+	runtime := eventloop.NewRuntime(recorder, eventloop.RuntimeConfig{
 		FastInterval:   10 * time.Millisecond,
 		MediumInterval: 20 * time.Millisecond,
 		SlowInterval:   30 * time.Millisecond,
 	})
 	implementation, err := New(Config{
-		Store:            store,
-		Scheduler:        evaluator,
-		Provider:         mockProvider,
-		Recorder:         recorder,
-		EventLoop:        loop,
-		EventLoopRuntime: runtime,
-		Clock:            ClockFunc(func() time.Time { return now }),
-		DeferStart:       true,
+		Store:       store,
+		Scheduler:   evaluator,
+		Provider:    mockProvider,
+		Recorder:    recorder,
+		TickRuntime: runtime,
+		Clock:       ClockFunc(func() time.Time { return now }),
+		DeferStart:  true,
 	})
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
 	defer implementation.Close()
-	if implementation.eventLoop != loop || implementation.runtime != runtime {
-		t.Fatalf("service did not retain injected loop/runtime: loop=%v runtime=%v", implementation.eventLoop, implementation.runtime)
+	if implementation.tickRuntime != runtime {
+		t.Fatalf("service did not retain injected tick runtime: got=%v want=%v", implementation.tickRuntime, runtime)
 	}
 	if runtimeStarted(runtime) {
 		t.Fatal("injected runtime started before Start()")
 	}
-	view := loop.View()
-	if len(view.Snapshot.GetDevices()) != 0 {
-		t.Fatalf("pre-start event loop devices = %d, want 0 before seed/start", len(view.Snapshot.GetDevices()))
+	if sandboxes := store.ListProjectedSandboxes(); len(sandboxes) != 0 {
+		t.Fatalf("pre-start projected sandboxes = %d, want 0", len(sandboxes))
 	}
 	if err := implementation.Start(); err != nil {
 		t.Fatalf("Start() error = %v", err)
@@ -360,50 +358,41 @@ func TestServiceBootstrapsEventLoopRuntime(t *testing.T) {
 	if !runtimeStarted(runtime) {
 		t.Fatal("injected runtime was not started")
 	}
-	view = loop.View()
-	if len(view.Snapshot.GetDevices()) == 0 {
-		t.Fatalf("bootstrapped event loop devices = %d, want > 0", len(view.Snapshot.GetDevices()))
-	}
-	if sandbox := view.Sandboxes["sandbox-a"]; sandbox == nil || sandbox.GetGeneration() != 2 || sandbox.GetState() != tgsrlv1.RuntimeState_RUNTIME_STATE_RUNNING {
+	projected := store.ListProjectedSandboxes()
+	if len(projected) != 1 || projected[0].GetGeneration() != 2 || projected[0].GetState() != tgsrlv1.RuntimeState_RUNTIME_STATE_RUNNING {
+		sandbox := (*tgsrlv1.Sandbox)(nil)
+		if len(projected) > 0 {
+			sandbox = projected[0]
+		}
 		t.Fatalf("bootstrapped sandbox = %+v, want generation 2 running", sandbox)
 	}
 	safePoint := false
-	injector, ok := any(mockProvider).(provider.SandboxEventInjector)
-	if !ok {
-		t.Fatalf("provider %T does not expose SandboxEventInjector test seam", mockProvider)
-	}
-	if err := injector.ApplySandboxEvent(context.Background(), provider.SandboxEvent{
-		EventID:    "sandbox-update",
-		SandboxID:  "sandbox-a",
+	if _, err := mockProvider.ObserveSandbox(context.Background(), &tgsrlv1.SandboxEvent{
+		EventId:    "sandbox-update",
+		SandboxId:  "sandbox-a",
 		Generation: 3,
-		State:      provider.SandboxStatePaused,
+		State:      tgsrlv1.RuntimeState_RUNTIME_STATE_PAUSED,
 		SafePoint:  &safePoint,
 	}); err != nil {
-		t.Fatalf("ApplySandboxEvent() error = %v", err)
+		t.Fatalf("ObserveSandbox() error = %v", err)
 	}
 	deadline := time.Now().Add(time.Second)
 	for time.Now().Before(deadline) {
-		view = loop.View()
-		sandbox := view.Sandboxes["sandbox-a"]
-		if sandbox != nil && sandbox.GetGeneration() == 3 && sandbox.GetState() == tgsrlv1.RuntimeState_RUNTIME_STATE_PAUSED {
+		projected = store.ListProjectedSandboxes()
+		if len(projected) == 1 && projected[0].GetGeneration() == 3 && projected[0].GetState() == tgsrlv1.RuntimeState_RUNTIME_STATE_PAUSED {
 			return
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
-	t.Fatalf("provider sandbox watch did not update injected event loop view: %+v", loop.View().Sandboxes["sandbox-a"])
+	t.Fatalf("provider sandbox watch did not update Store projection: %+v", store.ListProjectedSandboxes())
 }
 
 type failingEvaluator struct {
 	err error
 }
 
-type unhealthyProvider struct{ provider.ResourceProvider }
-
-func (p unhealthyProvider) PlanCapabilities() []*tgsrlv1.CapabilityRequirement {
-	return provider.PlanCapabilities(p.ResourceProvider)
-}
-func (p unhealthyProvider) ValidatePlanCapabilities(plan *tgsrlv1.PlacementPlan) error {
-	return provider.ValidatePlanCapabilities(p.ResourceProvider, plan)
+type unhealthyProvider struct {
+	provider.CompleteResourceProvider
 }
 
 func (p unhealthyProvider) ID(context.Context) (string, error) { return "unhealthy", nil }
@@ -424,54 +413,11 @@ func (p unhealthyProvider) RecoverInFlightPlans(context.Context) ([]*provider.Pl
 }
 
 type cursorExpiringWatchProvider struct {
-	base            provider.CompleteResourceProvider
+	provider.CompleteResourceProvider
 	resourceCursor  uint64
 	sandboxCursor   uint64
 	resourceWatched bool
 	sandboxWatched  bool
-}
-
-func (p *cursorExpiringWatchProvider) PlanCapabilities() []*tgsrlv1.CapabilityRequirement {
-	return provider.PlanCapabilities(p.base)
-}
-func (p *cursorExpiringWatchProvider) ValidatePlanCapabilities(plan *tgsrlv1.PlacementPlan) error {
-	return provider.ValidatePlanCapabilities(p.base, plan)
-}
-
-func (p *cursorExpiringWatchProvider) Capabilities(ctx context.Context) (*tgsrlv1.CapabilitySet, error) {
-	return p.base.Capabilities(ctx)
-}
-
-func (p *cursorExpiringWatchProvider) Snapshot(ctx context.Context) (*tgsrlv1.ClusterSnapshot, error) {
-	return p.base.Snapshot(ctx)
-}
-
-func (p *cursorExpiringWatchProvider) ListDevices(ctx context.Context) ([]*tgsrlv1.Device, error) {
-	return p.base.ListDevices(ctx)
-}
-
-func (p *cursorExpiringWatchProvider) ListSandboxes(ctx context.Context) ([]provider.Sandbox, error) {
-	return p.base.ListSandboxes(ctx)
-}
-
-func (p *cursorExpiringWatchProvider) GetSandbox(ctx context.Context, sandboxID string) (provider.Sandbox, error) {
-	return p.base.GetSandbox(ctx, sandboxID)
-}
-
-func (p *cursorExpiringWatchProvider) ExecuteAction(ctx context.Context, action *tgsrlv1.Action) (*tgsrlv1.ActionResult, error) {
-	return p.base.ExecuteAction(ctx, action)
-}
-
-func (p *cursorExpiringWatchProvider) ExecutePlan(ctx context.Context, plan *tgsrlv1.PlacementPlan) ([]*tgsrlv1.ActionResult, error) {
-	return p.base.ExecutePlan(ctx, plan)
-}
-
-func (p *cursorExpiringWatchProvider) ID(ctx context.Context) (string, error) {
-	return p.base.ID(ctx)
-}
-
-func (p *cursorExpiringWatchProvider) Health(ctx context.Context) (*provider.HealthStatus, error) {
-	return p.base.Health(ctx)
 }
 
 func (p *cursorExpiringWatchProvider) WatchResources(_ context.Context, cursor uint64) (<-chan provider.WatchedResourceEvent, error) {
@@ -491,60 +437,9 @@ func (p *cursorExpiringWatchProvider) WatchSandboxes(_ context.Context, cursor u
 	return ch, nil
 }
 
-func (p *cursorExpiringWatchProvider) ReconcilePlan(ctx context.Context, plan *tgsrlv1.PlacementPlan) (*provider.PlanRecord, error) {
-	return p.base.ReconcilePlan(ctx, plan)
-}
-
-func (p *cursorExpiringWatchProvider) RecoverInFlightPlans(ctx context.Context) ([]*provider.PlanRecord, error) {
-	return p.base.RecoverInFlightPlans(ctx)
-}
-
 type watchFailingProvider struct {
-	base provider.CompleteResourceProvider
-	err  error
-}
-
-func (p watchFailingProvider) PlanCapabilities() []*tgsrlv1.CapabilityRequirement {
-	return provider.PlanCapabilities(p.base)
-}
-func (p watchFailingProvider) ValidatePlanCapabilities(plan *tgsrlv1.PlacementPlan) error {
-	return provider.ValidatePlanCapabilities(p.base, plan)
-}
-
-func (p watchFailingProvider) Capabilities(ctx context.Context) (*tgsrlv1.CapabilitySet, error) {
-	return p.base.Capabilities(ctx)
-}
-
-func (p watchFailingProvider) Snapshot(ctx context.Context) (*tgsrlv1.ClusterSnapshot, error) {
-	return p.base.Snapshot(ctx)
-}
-
-func (p watchFailingProvider) ListDevices(ctx context.Context) ([]*tgsrlv1.Device, error) {
-	return p.base.ListDevices(ctx)
-}
-
-func (p watchFailingProvider) ListSandboxes(ctx context.Context) ([]provider.Sandbox, error) {
-	return p.base.ListSandboxes(ctx)
-}
-
-func (p watchFailingProvider) GetSandbox(ctx context.Context, sandboxID string) (provider.Sandbox, error) {
-	return p.base.GetSandbox(ctx, sandboxID)
-}
-
-func (p watchFailingProvider) ExecuteAction(ctx context.Context, action *tgsrlv1.Action) (*tgsrlv1.ActionResult, error) {
-	return p.base.ExecuteAction(ctx, action)
-}
-
-func (p watchFailingProvider) ExecutePlan(ctx context.Context, plan *tgsrlv1.PlacementPlan) ([]*tgsrlv1.ActionResult, error) {
-	return p.base.ExecutePlan(ctx, plan)
-}
-
-func (p watchFailingProvider) ID(ctx context.Context) (string, error) {
-	return p.base.ID(ctx)
-}
-
-func (p watchFailingProvider) Health(ctx context.Context) (*provider.HealthStatus, error) {
-	return p.base.Health(ctx)
+	provider.CompleteResourceProvider
+	err error
 }
 
 func (p watchFailingProvider) WatchResources(context.Context, uint64) (<-chan provider.WatchedResourceEvent, error) {
@@ -555,16 +450,8 @@ func (p watchFailingProvider) WatchSandboxes(context.Context, uint64) (<-chan pr
 	return nil, p.err
 }
 
-func (p watchFailingProvider) ReconcilePlan(ctx context.Context, plan *tgsrlv1.PlacementPlan) (*provider.PlanRecord, error) {
-	return p.base.ReconcilePlan(ctx, plan)
-}
-
-func (p watchFailingProvider) RecoverInFlightPlans(ctx context.Context) ([]*provider.PlanRecord, error) {
-	return p.base.RecoverInFlightPlans(ctx)
-}
-
 type reconnectingWatchProvider struct {
-	base provider.CompleteResourceProvider
+	provider.CompleteResourceProvider
 
 	mu                  sync.Mutex
 	resourceWatchCalls  int
@@ -573,55 +460,12 @@ type reconnectingWatchProvider struct {
 	allowResourceWatch  chan struct{}
 }
 
-func (p *reconnectingWatchProvider) PlanCapabilities() []*tgsrlv1.CapabilityRequirement {
-	return provider.PlanCapabilities(p.base)
-}
-func (p *reconnectingWatchProvider) ValidatePlanCapabilities(plan *tgsrlv1.PlacementPlan) error {
-	return provider.ValidatePlanCapabilities(p.base, plan)
-}
-
 func newReconnectingWatchProvider(base provider.CompleteResourceProvider) *reconnectingWatchProvider {
 	return &reconnectingWatchProvider{
-		base:                base,
-		resourceReconnectCh: make(chan struct{}, 8),
-		allowResourceWatch:  make(chan struct{}),
+		CompleteResourceProvider: base,
+		resourceReconnectCh:      make(chan struct{}, 8),
+		allowResourceWatch:       make(chan struct{}),
 	}
-}
-
-func (p *reconnectingWatchProvider) Capabilities(ctx context.Context) (*tgsrlv1.CapabilitySet, error) {
-	return p.base.Capabilities(ctx)
-}
-
-func (p *reconnectingWatchProvider) Snapshot(ctx context.Context) (*tgsrlv1.ClusterSnapshot, error) {
-	return p.base.Snapshot(ctx)
-}
-
-func (p *reconnectingWatchProvider) ListDevices(ctx context.Context) ([]*tgsrlv1.Device, error) {
-	return p.base.ListDevices(ctx)
-}
-
-func (p *reconnectingWatchProvider) ListSandboxes(ctx context.Context) ([]provider.Sandbox, error) {
-	return p.base.ListSandboxes(ctx)
-}
-
-func (p *reconnectingWatchProvider) GetSandbox(ctx context.Context, sandboxID string) (provider.Sandbox, error) {
-	return p.base.GetSandbox(ctx, sandboxID)
-}
-
-func (p *reconnectingWatchProvider) ExecuteAction(ctx context.Context, action *tgsrlv1.Action) (*tgsrlv1.ActionResult, error) {
-	return p.base.ExecuteAction(ctx, action)
-}
-
-func (p *reconnectingWatchProvider) ExecutePlan(ctx context.Context, plan *tgsrlv1.PlacementPlan) ([]*tgsrlv1.ActionResult, error) {
-	return p.base.ExecutePlan(ctx, plan)
-}
-
-func (p *reconnectingWatchProvider) ID(ctx context.Context) (string, error) {
-	return p.base.ID(ctx)
-}
-
-func (p *reconnectingWatchProvider) Health(ctx context.Context) (*provider.HealthStatus, error) {
-	return p.base.Health(ctx)
 }
 
 func (p *reconnectingWatchProvider) WatchResources(context.Context, uint64) (<-chan provider.WatchedResourceEvent, error) {
@@ -649,14 +493,6 @@ func (p *reconnectingWatchProvider) WatchSandboxes(context.Context, uint64) (<-c
 	p.sandboxWatchCalls++
 	ch := make(chan provider.WatchedSandboxEvent, 1)
 	return ch, nil
-}
-
-func (p *reconnectingWatchProvider) ReconcilePlan(ctx context.Context, plan *tgsrlv1.PlacementPlan) (*provider.PlanRecord, error) {
-	return p.base.ReconcilePlan(ctx, plan)
-}
-
-func (p *reconnectingWatchProvider) RecoverInFlightPlans(ctx context.Context) ([]*provider.PlanRecord, error) {
-	return p.base.RecoverInFlightPlans(ctx)
 }
 
 type panicEvaluator struct {
@@ -732,7 +568,7 @@ func TestNewStartsProviderWatchesFromZeroCursor(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewMockResourceProvider() error = %v", err)
 	}
-	watched := &cursorExpiringWatchProvider{base: base}
+	watched := &cursorExpiringWatchProvider{CompleteResourceProvider: base}
 	implementation, err := New(Config{
 		Store:     store,
 		Scheduler: evaluator,
@@ -776,7 +612,7 @@ func TestNewReturnsProviderWatchStartupError(t *testing.T) {
 	if _, err := New(Config{
 		Store:     store,
 		Scheduler: evaluator,
-		Provider:  watchFailingProvider{base: base, err: watchErr},
+		Provider:  watchFailingProvider{CompleteResourceProvider: base, err: watchErr},
 		Clock:     ClockFunc(func() time.Time { return now }),
 	}); err == nil || !strings.Contains(err.Error(), "start resource watch") || !errors.Is(err, provider.ErrCursorExpired) {
 		t.Fatalf("New() error = %v, want wrapped start resource watch + ErrCursorExpired", err)
@@ -1147,6 +983,39 @@ type failAfterRepository struct {
 	err       error
 }
 
+type failFinalDecisionRepository struct {
+	mu    sync.Mutex
+	saves []persistence.SchedulerState
+	err   error
+}
+
+func (r *failFinalDecisionRepository) SaveCheckpoint(checkpoint persistence.SchedulerState) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for _, decision := range checkpoint.Decisions {
+		if decision.GetSequence() > 0 {
+			return r.err
+		}
+	}
+	r.saves = append(r.saves, checkpoint)
+	return nil
+}
+
+func (r *failFinalDecisionRepository) SaveCount() int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return len(r.saves)
+}
+
+func (r *failFinalDecisionRepository) Last() persistence.SchedulerState {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if len(r.saves) == 0 {
+		return persistence.SchedulerState{}
+	}
+	return r.saves[len(r.saves)-1]
+}
+
 func (r *failAfterRepository) SaveCheckpoint(checkpoint persistence.SchedulerState) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -1200,36 +1069,25 @@ func (r *recordingRepository) Last() persistence.SchedulerState {
 }
 
 type countingWatchProvider struct {
-	base       provider.CompleteResourceProvider
+	provider.CompleteResourceProvider
 	resourceCh chan provider.WatchedResourceEvent
 	sandboxCh  chan provider.WatchedSandboxEvent
 
 	mu             sync.Mutex
-	executePlans   int
+	executedSteps  int
 	latestSnapshot *tgsrlv1.ClusterSnapshot
-}
-
-func (p *countingWatchProvider) PlanCapabilities() []*tgsrlv1.CapabilityRequirement {
-	return provider.PlanCapabilities(p.base)
-}
-func (p *countingWatchProvider) ValidatePlanCapabilities(plan *tgsrlv1.PlacementPlan) error {
-	return provider.ValidatePlanCapabilities(p.base, plan)
 }
 
 func newCountingWatchProvider(base provider.CompleteResourceProvider) *countingWatchProvider {
 	wrapper := &countingWatchProvider{
-		base:       base,
-		resourceCh: make(chan provider.WatchedResourceEvent, 16),
-		sandboxCh:  make(chan provider.WatchedSandboxEvent, 16),
+		CompleteResourceProvider: base,
+		resourceCh:               make(chan provider.WatchedResourceEvent, 16),
+		sandboxCh:                make(chan provider.WatchedSandboxEvent, 16),
 	}
 	if snapshot, err := base.Snapshot(context.Background()); err == nil && snapshot != nil {
 		wrapper.latestSnapshot = proto.Clone(snapshot).(*tgsrlv1.ClusterSnapshot)
 	}
 	return wrapper
-}
-
-func (p *countingWatchProvider) Capabilities(ctx context.Context) (*tgsrlv1.CapabilitySet, error) {
-	return p.base.Capabilities(ctx)
 }
 
 func (p *countingWatchProvider) Snapshot(ctx context.Context) (*tgsrlv1.ClusterSnapshot, error) {
@@ -1240,7 +1098,7 @@ func (p *countingWatchProvider) Snapshot(ctx context.Context) (*tgsrlv1.ClusterS
 		return snapshot, nil
 	}
 	p.mu.Unlock()
-	return p.base.Snapshot(ctx)
+	return p.CompleteResourceProvider.Snapshot(ctx)
 }
 
 func (p *countingWatchProvider) ListDevices(ctx context.Context) ([]*tgsrlv1.Device, error) {
@@ -1254,30 +1112,14 @@ func (p *countingWatchProvider) ListDevices(ctx context.Context) ([]*tgsrlv1.Dev
 		return devices, nil
 	}
 	p.mu.Unlock()
-	return p.base.ListDevices(ctx)
+	return p.CompleteResourceProvider.ListDevices(ctx)
 }
 
-func (p *countingWatchProvider) ListSandboxes(ctx context.Context) ([]provider.Sandbox, error) {
-	return p.base.ListSandboxes(ctx)
-}
-
-func (p *countingWatchProvider) GetSandbox(ctx context.Context, sandboxID string) (provider.Sandbox, error) {
-	return p.base.GetSandbox(ctx, sandboxID)
-}
-
-func (p *countingWatchProvider) ExecuteAction(ctx context.Context, action *tgsrlv1.Action) (*tgsrlv1.ActionResult, error) {
-	return p.base.ExecuteAction(ctx, action)
-}
-
-func (p *countingWatchProvider) ExecutePlan(ctx context.Context, plan *tgsrlv1.PlacementPlan) ([]*tgsrlv1.ActionResult, error) {
+func (p *countingWatchProvider) ExecuteStep(ctx context.Context, transactionID string, generation uint64, stepIndex int) (*provider.TransactionReceipt, error) {
 	p.mu.Lock()
-	p.executePlans++
+	p.executedSteps++
 	p.mu.Unlock()
-	return p.base.ExecutePlan(ctx, plan)
-}
-
-func (p *countingWatchProvider) ID(ctx context.Context) (string, error) {
-	return p.base.ID(ctx)
+	return p.CompleteResourceProvider.ExecuteStep(ctx, transactionID, generation, stepIndex)
 }
 
 func (p *countingWatchProvider) Health(ctx context.Context) (*provider.HealthStatus, error) {
@@ -1302,7 +1144,7 @@ func (p *countingWatchProvider) Health(ctx context.Context) (*provider.HealthSta
 		}, nil
 	}
 	p.mu.Unlock()
-	return p.base.Health(ctx)
+	return p.CompleteResourceProvider.Health(ctx)
 }
 
 func (p *countingWatchProvider) WatchResources(context.Context, uint64) (<-chan provider.WatchedResourceEvent, error) {
@@ -1313,18 +1155,10 @@ func (p *countingWatchProvider) WatchSandboxes(context.Context, uint64) (<-chan 
 	return p.sandboxCh, nil
 }
 
-func (p *countingWatchProvider) ReconcilePlan(ctx context.Context, plan *tgsrlv1.PlacementPlan) (*provider.PlanRecord, error) {
-	return p.base.ReconcilePlan(ctx, plan)
-}
-
-func (p *countingWatchProvider) RecoverInFlightPlans(ctx context.Context) ([]*provider.PlanRecord, error) {
-	return p.base.RecoverInFlightPlans(ctx)
-}
-
-func (p *countingWatchProvider) ExecutePlanCount() int {
+func (p *countingWatchProvider) ExecuteStepCount() int {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	return p.executePlans
+	return p.executedSteps
 }
 
 func (p *countingWatchProvider) SendResourceEvent(event *tgsrlv1.ResourceEvent) {
@@ -1512,8 +1346,8 @@ func TestStartDelaysProviderBacklogUntilAfterRecovery(t *testing.T) {
 		},
 	})
 	time.Sleep(150 * time.Millisecond)
-	if watched.ExecutePlanCount() != 0 {
-		t.Fatalf("ExecutePlan count before Start = %d, want 0", watched.ExecutePlanCount())
+	if watched.ExecuteStepCount() != 0 {
+		t.Fatalf("ExecuteStep count before Start = %d, want 0", watched.ExecuteStepCount())
 	}
 	entries, _, _ := implementation.decisionsAfter(0)
 	if len(entries) != 0 {
@@ -1610,9 +1444,9 @@ func TestDecisionCheckpointFailureRecoversCompletePendingAudit(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// PublishIntent and the pre-execution reservation/audit checkpoint succeed;
-	// the final decision checkpoint is injected to fail.
-	repository := &failAfterRepository{failAfter: 2, err: errors.New("injected final checkpoint failure")}
+	// All transaction phase checkpoints succeed; only publication of the
+	// sequence-bearing final DecisionRecord is injected to fail.
+	repository := &failFinalDecisionRepository{err: errors.New("injected final checkpoint failure")}
 	implementation, err := New(Config{Store: store, Scheduler: evaluator, Provider: mockProvider, Repository: repository, Clock: ClockFunc(func() time.Time { return now })})
 	if err != nil {
 		t.Fatal(err)
@@ -1645,15 +1479,18 @@ func TestDecisionCheckpointFailureRecoversCompletePendingAudit(t *testing.T) {
 	default:
 	}
 	durable := repository.Last()
-	if repository.SaveCount() != 2 || durable.Cursor != 0 || len(durable.Decisions) != 1 || durable.Decisions[0].GetSequence() != 0 {
-		t.Fatalf("durable pending audit = %+v saves=%d, want one sequence-zero audit after two checkpoints", durable.Decisions, repository.SaveCount())
+	if repository.SaveCount() < 3 || durable.Cursor != 0 || len(durable.Decisions) != 1 || durable.Decisions[0].GetSequence() != 0 {
+		t.Fatalf("durable pending audit = %+v saves=%d, want one sequence-zero audit after transaction checkpoints", durable.Decisions, repository.SaveCount())
 	}
 	pending := durable.Decisions[0]
 	if pending.GetSelectedPlan() == nil || len(pending.GetCandidates()) == 0 || pending.GetCodeRevision() != "audit-code" || pending.GetConfigRevision() != "audit-config" {
 		t.Fatalf("pending audit lost complete decision fields: %+v", pending)
 	}
-	if len(durable.Reservations) != 1 || durable.Reservations[0].Finalized {
-		t.Fatalf("durable reservation = %+v, want retryable in-flight state", durable.Reservations)
+	if len(durable.Reservations) != 1 || !durable.Reservations[0].Finalized || !durable.Reservations[0].Succeeded {
+		t.Fatalf("durable reservation = %+v, want committed transaction state before audit publication", durable.Reservations)
+	}
+	if len(durable.Transactions) != 1 || durable.Transactions[0].State != state.TransactionStateCommitted {
+		t.Fatalf("durable transactions = %+v, want committed transaction awaiting final audit", durable.Transactions)
 	}
 
 	restartedStore, err := state.NewStore(serviceSnapshot(now), state.WithClock(state.ClockFunc(func() time.Time { return now })))
@@ -1939,7 +1776,7 @@ func TestProviderUnavailableEmitsNoOpFallbackAndKeepsIntent(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	implementation, err := New(Config{Store: store, Scheduler: evaluator, Provider: unhealthyProvider{ResourceProvider: base}, Clock: ClockFunc(func() time.Time { return now })})
+	implementation, err := New(Config{Store: store, Scheduler: evaluator, Provider: unhealthyProvider{CompleteResourceProvider: base}, Clock: ClockFunc(func() time.Time { return now })})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -2165,7 +2002,7 @@ func TestProviderWatchCheckpointsProjectionBeforeNoChangeSuppression(t *testing.
 	}
 	defer implementation.Close()
 
-	implementation.runtime.Enqueue(&eventloop.Trigger{
+	implementation.tickRuntime.Enqueue(&eventloop.Trigger{
 		ExecutionID: intent.GetExecutionId(),
 		StageID:     intent.GetStageId(),
 		TickKind:    tgsrlv1.TickKind_TICK_KIND_MEDIUM,
@@ -2314,7 +2151,7 @@ func TestRuntimeTriggersAuthorityReconcileWithoutPhantomDecisionOrDuplicateBind(
 	if _, err := store.PublishIntent(intent); err != nil {
 		t.Fatalf("store.PublishIntent() error = %v", err)
 	}
-	implementation.runtime.Enqueue(&eventloop.Trigger{
+	implementation.tickRuntime.Enqueue(&eventloop.Trigger{
 		ExecutionID: intent.GetExecutionId(),
 		StageID:     intent.GetStageId(),
 		Cause:       "test-runtime",
@@ -2323,7 +2160,7 @@ func TestRuntimeTriggersAuthorityReconcileWithoutPhantomDecisionOrDuplicateBind(
 	deadline := time.Now().Add(time.Second)
 	for time.Now().Before(deadline) {
 		entries, _, _ := implementation.decisionsAfter(0)
-		if len(entries) == 1 && mockProvider.ExecutePlanCount() == 1 {
+		if len(entries) == 1 && mockProvider.ExecuteStepCount() == 1 {
 			break
 		}
 		time.Sleep(20 * time.Millisecond)
@@ -2332,11 +2169,11 @@ func TestRuntimeTriggersAuthorityReconcileWithoutPhantomDecisionOrDuplicateBind(
 	if len(entries) != 1 {
 		t.Fatalf("retained decisions = %d, want exactly 1 committed decision from authority reconcile", len(entries))
 	}
-	if mockProvider.ExecutePlanCount() != 1 {
-		t.Fatalf("ExecutePlan count = %d, want exactly 1 after runtime triggers", mockProvider.ExecutePlanCount())
+	if mockProvider.ExecuteStepCount() != 1 {
+		t.Fatalf("ExecuteStep count = %d, want exactly 1 after runtime triggers", mockProvider.ExecuteStepCount())
 	}
-	if implementation.eventLoop.View().Intents[intent.GetExecutionId()+"/"+intent.GetStageId()] == nil {
-		t.Fatal("event loop lost accepted intent cache entry")
+	if _, ok := store.LatestIntent(intent.GetExecutionId(), intent.GetStageId()); !ok {
+		t.Fatal("Store lost accepted intent")
 	}
 	snapshot, err := store.GetSnapshot(context.Background(), 0, true)
 	if err != nil {
@@ -2381,7 +2218,6 @@ func TestResourceWatchTriggersAuthorityReconcileWithoutDuplicateBind(t *testing.
 	if _, err := store.PublishIntent(intent); err != nil {
 		t.Fatalf("store.PublishIntent() error = %v", err)
 	}
-	implementation.eventLoop.PublishIntent(intent)
 	mockProvider.SendResourceEvent(&tgsrlv1.ResourceEvent{
 		EventId:          "resource-trigger-1",
 		EventType:        tgsrlv1.ResourceEventType_RESOURCE_EVENT_TYPE_SNAPSHOT_PUBLISHED,
@@ -2394,17 +2230,17 @@ func TestResourceWatchTriggersAuthorityReconcileWithoutDuplicateBind(t *testing.
 	deadline := time.Now().Add(time.Second)
 	for time.Now().Before(deadline) {
 		entries, _, _ := implementation.decisionsAfter(0)
-		if len(entries) == 1 && mockProvider.ExecutePlanCount() == 1 {
+		if len(entries) == 1 && mockProvider.ExecuteStepCount() == 1 {
 			break
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
-	if implementation.eventLoop.View().Intents[intent.GetExecutionId()+"/"+intent.GetStageId()] == nil {
-		t.Fatal("event loop lost watched intent cache entry")
+	if _, ok := store.LatestIntent(intent.GetExecutionId(), intent.GetStageId()); !ok {
+		t.Fatal("Store lost watched intent")
 	}
 	firstEntries, _, _ := implementation.decisionsAfter(0)
-	if len(firstEntries) != 1 || mockProvider.ExecutePlanCount() != 1 {
-		t.Fatalf("after first resource trigger: decisions=%d executePlans=%d, want 1/1", len(firstEntries), mockProvider.ExecutePlanCount())
+	if len(firstEntries) != 1 || mockProvider.ExecuteStepCount() != 1 {
+		t.Fatalf("after first resource trigger: decisions=%d executedSteps=%d, want 1/1", len(firstEntries), mockProvider.ExecuteStepCount())
 	}
 
 	mockProvider.SendResourceEvent(&tgsrlv1.ResourceEvent{
@@ -2421,8 +2257,8 @@ func TestResourceWatchTriggersAuthorityReconcileWithoutDuplicateBind(t *testing.
 	if len(secondEntries) != 1 {
 		t.Fatalf("resource retrigger retained %d decisions, want still 1 because satisfied intent must not emit extra committed decisions", len(secondEntries))
 	}
-	if mockProvider.ExecutePlanCount() != 1 {
-		t.Fatalf("ExecutePlan count = %d, want still 1 because satisfied intent must not bind twice", mockProvider.ExecutePlanCount())
+	if mockProvider.ExecuteStepCount() != 1 {
+		t.Fatalf("ExecuteStep count = %d, want still 1 because satisfied intent must not bind twice", mockProvider.ExecuteStepCount())
 	}
 }
 
@@ -2483,8 +2319,8 @@ func TestResourceWatchProjectsIntoStoreBeforeAuthorityEvaluate(t *testing.T) {
 	if entries, _, _ := implementation.decisionsAfter(0); len(entries) != 1 || !entries[0].decision.GetFallback() {
 		t.Fatalf("initial decisions = %+v, want one fallback while Store still shows unavailable device", entries)
 	}
-	if mockProvider.ExecutePlanCount() != 0 {
-		t.Fatalf("initial ExecutePlan count = %d, want 0 before resource projection", mockProvider.ExecutePlanCount())
+	if mockProvider.ExecuteStepCount() != 0 {
+		t.Fatalf("initial ExecuteStep count = %d, want 0 before resource projection", mockProvider.ExecuteStepCount())
 	}
 
 	mockProvider.SendResourceEvent(&tgsrlv1.ResourceEvent{
@@ -2499,7 +2335,7 @@ func TestResourceWatchProjectsIntoStoreBeforeAuthorityEvaluate(t *testing.T) {
 	deadline = time.Now().Add(time.Second)
 	for time.Now().Before(deadline) {
 		entries, _, _ := implementation.decisionsAfter(0)
-		if len(entries) >= 2 && mockProvider.ExecutePlanCount() == 1 {
+		if len(entries) >= 2 && mockProvider.ExecuteStepCount() == 1 {
 			break
 		}
 		time.Sleep(20 * time.Millisecond)
@@ -2512,8 +2348,8 @@ func TestResourceWatchProjectsIntoStoreBeforeAuthorityEvaluate(t *testing.T) {
 	if last.GetFallback() || len(last.GetSelectedPlan().GetActions()) != 1 {
 		t.Fatalf("last decision = %+v, want committed bind after Store projection", last)
 	}
-	if mockProvider.ExecutePlanCount() != 1 {
-		t.Fatalf("ExecutePlan count = %d, want 1 after resource projection", mockProvider.ExecutePlanCount())
+	if mockProvider.ExecuteStepCount() != 1 {
+		t.Fatalf("ExecuteStep count = %d, want 1 after resource projection", mockProvider.ExecuteStepCount())
 	}
 	snapshot, err := store.GetSnapshot(context.Background(), 0, true)
 	if err != nil {
@@ -2609,7 +2445,7 @@ func TestServiceStampsTickKindAcrossDecisionAndCandidatePlans(t *testing.T) {
 	if _, err := store.PublishIntent(intent); err != nil {
 		t.Fatalf("store.PublishIntent() error = %v", err)
 	}
-	implementation.runtime.Enqueue(&eventloop.Trigger{
+	implementation.tickRuntime.Enqueue(&eventloop.Trigger{
 		ExecutionID: intent.GetExecutionId(),
 		StageID:     intent.GetStageId(),
 		Cause:       "test-stamp",
@@ -2717,7 +2553,7 @@ func TestAdaptiveProductionRetainsFirstConvergedAuditAndSuppressesDuplicateProvi
 	}
 	defer implementation.Close()
 
-	implementation.runtime.Enqueue(&eventloop.Trigger{
+	implementation.tickRuntime.Enqueue(&eventloop.Trigger{
 		ExecutionID: intent.GetExecutionId(),
 		StageID:     intent.GetStageId(),
 		TickKind:    tgsrlv1.TickKind_TICK_KIND_MEDIUM,
@@ -2747,8 +2583,8 @@ func TestAdaptiveProductionRetainsFirstConvergedAuditAndSuppressesDuplicateProvi
 	if len(first.GetPlannerEvidence()) == 0 || first.GetPlannerEvidence()[0].GetReason() != "CONVERGED_NO_TRIGGER" {
 		t.Fatalf("first converged evidence = %+v, want CONVERGED_NO_TRIGGER", first.GetPlannerEvidence())
 	}
-	if mockProvider.ExecutePlanCount() != 0 {
-		t.Fatalf("ExecutePlan count after converged audit = %d, want 0", mockProvider.ExecutePlanCount())
+	if mockProvider.ExecuteStepCount() != 0 {
+		t.Fatalf("ExecuteStep count after converged audit = %d, want 0", mockProvider.ExecuteStepCount())
 	}
 
 	mockProvider.SendResourceEvent(&tgsrlv1.ResourceEvent{
@@ -2765,8 +2601,8 @@ func TestAdaptiveProductionRetainsFirstConvergedAuditAndSuppressesDuplicateProvi
 	if len(entries) != 1 {
 		t.Fatalf("retained decisions after duplicate provider_event = %d, want still 1", len(entries))
 	}
-	if mockProvider.ExecutePlanCount() != 0 {
-		t.Fatalf("ExecutePlan count after duplicate provider_event = %d, want still 0", mockProvider.ExecutePlanCount())
+	if mockProvider.ExecuteStepCount() != 0 {
+		t.Fatalf("ExecuteStep count after duplicate provider_event = %d, want still 0", mockProvider.ExecuteStepCount())
 	}
 }
 
@@ -2851,7 +2687,7 @@ func TestAdaptiveProductionMutationReachesProviderAndStore(t *testing.T) {
 	}
 	defer implementation.Close()
 
-	implementation.runtime.Enqueue(&eventloop.Trigger{
+	implementation.tickRuntime.Enqueue(&eventloop.Trigger{
 		ExecutionID: intent.GetExecutionId(),
 		StageID:     intent.GetStageId(),
 		TickKind:    tgsrlv1.TickKind_TICK_KIND_MEDIUM,
@@ -2898,6 +2734,72 @@ func TestAdaptiveProductionMutationReachesProviderAndStore(t *testing.T) {
 		return
 	}
 	t.Fatalf("adaptive pause did not converge in provider and Store; decision=%+v sandboxes=%+v", mutationDecision, store.ListProjectedSandboxes())
+}
+
+func TestPreemptionTransactionReplacesVictimWithoutExposingCapacity(t *testing.T) {
+	now := time.Date(2026, 8, 29, 2, 0, 0, 0, time.UTC)
+	resources := &tgsrlv1.ResourceVector{CpuMillis: 500, MemoryBytes: 1 << 30, AcceleratorUnits: .25}
+	capabilities := provider.DefaultMockCapabilities()
+	capabilities.SupportedActions = []string{"bind", "release"}
+	priority := int32(1)
+	victimBinding := &tgsrlv1.Binding{BindingId: "binding-victim", PendingUnitId: "pending-victim", RuntimeUnitId: "runtime-victim", SandboxId: "sandbox-victim", DeviceIds: []string{"mock-cpu-0"}, Resources: proto.Clone(resources).(*tgsrlv1.ResourceVector), Generation: 1}
+	initial := &tgsrlv1.ClusterSnapshot{
+		SnapshotId: "snapshot-preemption", Revision: 5, ObservedAt: timestamppb.New(now),
+		Annotations: map[string]string{scheduler.SafePointAnnotation: "true"},
+		Devices:     []*tgsrlv1.Device{{DeviceId: "mock-cpu-0", Kind: tgsrlv1.DeviceKind_DEVICE_KIND_CPU, Health: tgsrlv1.DeviceHealth_DEVICE_HEALTH_READY, Capacity: proto.Clone(resources).(*tgsrlv1.ResourceVector), Allocatable: &tgsrlv1.ResourceVector{}, Capabilities: proto.Clone(capabilities).(*tgsrlv1.CapabilitySet)}},
+		Allocations: []*tgsrlv1.Allocation{{AllocationId: "allocation-victim", ExecutionId: "old-execution", StageId: "old-stage", IntentVersion: 1, JobId: "old-job", PendingUnitId: victimBinding.GetPendingUnitId(), DeviceIds: append([]string(nil), victimBinding.GetDeviceIds()...), Resources: proto.Clone(resources).(*tgsrlv1.ResourceVector), State: tgsrlv1.AllocationState_ALLOCATION_STATE_ACTIVE, RuntimeUnitId: victimBinding.GetRuntimeUnitId(), SandboxId: victimBinding.GetSandboxId(), BindingId: victimBinding.GetBindingId(), Generation: 1, Priority: &priority}},
+	}
+	store, err := state.NewStore(initial, state.WithClock(state.ClockFunc(func() time.Time { return now })))
+	if err != nil {
+		t.Fatal(err)
+	}
+	intent := serviceIntent(now)
+	intent.Priority = 100
+	intent.ResourcesPerUnit = proto.Clone(resources).(*tgsrlv1.ResourceVector)
+	intent.RequiredCapabilities = proto.Clone(capabilities).(*tgsrlv1.CapabilitySet)
+	intent.Labels = map[string]string{"runtime_unit_id": "runtime-replacement"}
+	evaluator, err := scheduler.New(scheduler.Config{Fallback: scheduler.FallbackNoOp, Clock: scheduler.ClockFunc(func() time.Time { return now }), Policy: policy.Bundle{ID: "preempt", Version: "1", Strategy: policy.StrategyScoreFirst, TopK: 1, AllowPreemption: true, PreemptionPolicy: "low_priority_first", RequireSafePoint: true}, Preemption: preemption.LowPriorityFirst{}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	resourceProvider, err := provider.NewMockResourceProvider(provider.WithNow(func() time.Time { return now }), provider.WithDevices(initial.GetDevices()...), provider.WithCapabilities(capabilities), provider.WithSandboxes(provider.Sandbox{SandboxID: victimBinding.GetSandboxId(), State: provider.SandboxStateRunning, Generation: 1, Binding: victimBinding, SafePoint: true, UpdatedAt: now}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	implementation, err := New(Config{Store: store, Scheduler: evaluator, Provider: resourceProvider, Clock: ClockFunc(func() time.Time { return now })})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer implementation.Close()
+	if _, err := implementation.PublishIntent(context.Background(), &tgsrlv1.PublishIntentRequest{Intent: intent}); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		entries, _, _ := implementation.decisionsAfter(0)
+		for _, entry := range entries {
+			decision := entry.decision
+			if decision.GetSelectedPlan().GetPurpose() != tgsrlv1.PlanPurpose_PLAN_PURPOSE_PREEMPTION {
+				continue
+			}
+			if decision.GetFallback() || len(decision.GetActionResults()) != 2 {
+				t.Fatalf("preemption decision = %+v", decision)
+			}
+			snapshot, snapshotErr := store.GetSnapshot(context.Background(), 0, true)
+			if snapshotErr != nil {
+				t.Fatal(snapshotErr)
+			}
+			if len(snapshot.GetAllocations()) != 1 || snapshot.GetAllocations()[0].GetPendingUnitId() == victimBinding.GetPendingUnitId() || snapshot.GetAllocations()[0].GetState() != tgsrlv1.AllocationState_ALLOCATION_STATE_ACTIVE {
+				t.Fatalf("allocations after preemption = %+v, want one active replacement", snapshot.GetAllocations())
+			}
+			if got := snapshot.GetDevices()[0].GetAllocatable().GetCpuMillis(); got != 0 {
+				t.Fatalf("allocatable cpu = %d, want 0 while replacement owns released capacity", got)
+			}
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatalf("preemption did not converge; decisions=%+v", implementation.decisions)
 }
 
 func TestResumeRecoveredStateReconcilesReservationsAndReplaysIntent(t *testing.T) {
@@ -3015,8 +2917,8 @@ func TestResumeRecoveredStateReconcilesReservationsAndReplaysIntent(t *testing.T
 	if len(entries) != 1 {
 		t.Fatalf("retained decisions = %d, want only the restored committed decision after satisfied replay", len(entries))
 	}
-	if implementation.eventLoop.View().Intents[intent.GetExecutionId()+"/"+intent.GetStageId()] == nil {
-		t.Fatal("event loop lost recovered intent cache entry")
+	if _, ok := store.LatestIntent(intent.GetExecutionId(), intent.GetStageId()); !ok {
+		t.Fatal("Store lost recovered intent")
 	}
 	finalSnapshot, err := store.GetSnapshot(context.Background(), 0, true)
 	if err != nil {
@@ -3247,11 +3149,12 @@ func runtimeStarted(runtime *eventloop.Runtime) bool {
 	return cancel.IsValid() && !cancel.IsNil()
 }
 
-func startTestServer(t *testing.T, implementation tgsrlv1.SchedulerServiceServer) (tgsrlv1.SchedulerServiceClient, func()) {
+func startTestServer(t *testing.T, implementation *Server) (tgsrlv1.SchedulerServiceClient, func()) {
 	t.Helper()
 	listener := bufconn.Listen(testBufferSize)
 	server := grpc.NewServer()
 	tgsrlv1.RegisterSchedulerServiceServer(server, implementation)
+	tgsrlv1.RegisterSchedulerObservationServiceServer(server, implementation)
 	serveErrors := make(chan error, 1)
 	go func() {
 		defer func() {

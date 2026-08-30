@@ -42,6 +42,29 @@ func TestProviderProjectionUsesStoreClockForDualSandboxTimes(t *testing.T) {
 	}
 }
 
+func TestProviderProjectionPreservesSafePointWhenMutableReadbackOmitsIt(t *testing.T) {
+	store, _ := newTestStore(t)
+	observedAt := time.Date(2026, time.August, 29, 9, 0, 0, 0, time.UTC)
+	safePoint := true
+	if _, changed, err := store.ApplyProviderSandboxEvent(&tgsrlv1.SandboxEvent{
+		EventId: "runtime-observation", SandboxId: "sandbox-1", Generation: 4, ProviderRevision: 10,
+		State: tgsrlv1.RuntimeState_RUNTIME_STATE_RUNNING, SafePoint: &safePoint, OccurredAt: timestamppb.New(observedAt),
+	}); err != nil || !changed {
+		t.Fatalf("ApplyProviderSandboxEvent(runtime) = changed:%v err:%v", changed, err)
+	}
+	share := 0.75
+	projected, changed, err := store.ApplyProviderSandboxEvent(&tgsrlv1.SandboxEvent{
+		EventId: "share-readback", SandboxId: "sandbox-1", Generation: 4, ProviderRevision: 11,
+		State: tgsrlv1.RuntimeState_RUNTIME_STATE_RUNNING, Share: &share, OccurredAt: timestamppb.New(observedAt.Add(time.Second)),
+	})
+	if err != nil || !changed {
+		t.Fatalf("ApplyProviderSandboxEvent(share) = changed:%v err:%v", changed, err)
+	}
+	if !projected.GetSafePoint() || projected.GetShare() != share {
+		t.Fatalf("mutable readback projection = %+v, want preserved safe point and share %v", projected, share)
+	}
+}
+
 func TestBootstrapProviderSnapshotDeepClonesComponentVersions(t *testing.T) {
 	store, _ := newTestStore(t)
 	observedAt := time.Date(2026, time.August, 29, 8, 30, 0, 0, time.UTC)

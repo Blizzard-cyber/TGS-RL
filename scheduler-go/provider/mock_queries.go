@@ -287,7 +287,7 @@ func (p *MockResourceProvider) publishSandboxSnapshotLocked(sandbox Sandbox, det
 	if nextRevision == 0 {
 		nextRevision = p.sandboxSeq + 1
 	}
-	share, priority, offloaded := sandbox.Share, sandbox.Priority, sandbox.Offloaded
+	share, priority, safePoint, offloaded := sandbox.Share, sandbox.Priority, sandbox.SafePoint, sandbox.Offloaded
 	event := &tgsrlv1.SandboxEvent{
 		EventId:          fmt.Sprintf("%s-sandbox-%d", p.providerID, p.sandboxSeq+1),
 		EventType:        sandboxStateToEventType(sandbox.State),
@@ -298,7 +298,7 @@ func (p *MockResourceProvider) publishSandboxSnapshotLocked(sandbox Sandbox, det
 		SemanticContext:  cloneSemanticEnvelope(sandbox.SemanticContext),
 		Share:            &share,
 		Priority:         &priority,
-		SafePoint:        sandbox.SafePoint,
+		SafePoint:        &safePoint,
 		Offloaded:        &offloaded,
 		Detail:           detail,
 		OccurredAt:       timestamppb.New(occurredAt),

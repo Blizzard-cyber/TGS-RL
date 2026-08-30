@@ -8,6 +8,7 @@ import (
 
 	tgsrlv1 "github.com/Blizzard-cyber/TGS-RL/gen/go/tgsrl/v1"
 	"github.com/Blizzard-cyber/TGS-RL/scheduler-go/persistence"
+	"github.com/Blizzard-cyber/TGS-RL/scheduler-go/planexecutor"
 	"github.com/Blizzard-cyber/TGS-RL/scheduler-go/protection"
 	"github.com/Blizzard-cyber/TGS-RL/scheduler-go/provider"
 	"github.com/Blizzard-cyber/TGS-RL/scheduler-go/state"
@@ -130,6 +131,9 @@ func (s *Server) ResumeRecoveredState(ctx context.Context, recovered *persistenc
 	if err := s.RestoreDecisions(recovered.Decisions, recovered.Cursor); err != nil {
 		return err
 	}
+	if err := s.reconcileRecoveredTransactions(ctx); err != nil {
+		return err
+	}
 	if err := s.reconcileRecoveredReservations(ctx, recovered); err != nil {
 		return err
 	}
@@ -146,11 +150,74 @@ func (s *Server) ResumeRecoveredState(ctx context.Context, recovered *persistenc
 	return nil
 }
 
+func (s *Server) reconcileRecoveredTransactions(ctx context.Context) error {
+	if s == nil || s.planExecutor == nil {
+		return nil
+	}
+	if _, err := s.planExecutor.ResumeAll(ctx); err != nil {
+		return fmt.Errorf("service: resume plan transactions: %w", err)
+	}
+	records := s.store.ExportDurableState().Transactions
+	sort.Slice(records, func(i, j int) bool { return records[i].TransactionID < records[j].TransactionID })
+	for _, record := range records {
+		if !record.Terminal || record.Plan == nil {
+			return fmt.Errorf("service: transaction %q did not converge during recovery", record.TransactionID)
+		}
+		if _, committed := s.decisionForPlan(record.Plan); committed {
+			continue
+		}
+		pending, ok := s.pendingDecisionForPlan(record.Plan)
+		if !ok {
+			return fmt.Errorf("service: recovered transaction %q is missing its pending decision audit", record.TransactionID)
+		}
+		transaction, err := s.planExecutor.Get(ctx, record.TransactionID)
+		if err != nil {
+			return fmt.Errorf("service: read recovered transaction %q: %w", record.TransactionID, err)
+		}
+		outcome := &planexecutor.Outcome{Transaction: transaction, Terminal: true}
+		results := outcome.Results()
+		succeeded := outcome.Succeeded()
+		protectionBeforeFinalize := s.ExportProtectionState()
+		finalSnapshot, err := s.store.GetSnapshot(ctx, 0, true)
+		if err != nil {
+			return fmt.Errorf("service: read snapshot for recovered transaction %q: %w", record.TransactionID, err)
+		}
+		s.recordProtectionOutcome(protectionKeyFromPlan(record.Plan), succeeded)
+		providerStatus := provider.PlanStatusFailed
+		if succeeded {
+			providerStatus = provider.PlanStatusSucceeded
+		}
+		decision, err := recoveredReservationDecision(pending, record.Plan, &provider.PlanRecord{Plan: record.Plan, Status: providerStatus, Results: results}, finalSnapshot)
+		if err != nil {
+			s.restoreProtectionSnapshot(protectionBeforeFinalize)
+			return err
+		}
+		if outcome.Degraded() {
+			decision.Fallback = true
+			decision.FallbackReason = "TRANSACTION_DEGRADED"
+		}
+		if err := s.appendDecision(decision.GetJobId(), decision); err != nil {
+			s.restoreProtectionSnapshot(protectionBeforeFinalize)
+			return fmt.Errorf("service: persist recovered transaction decision %q: %w", decision.GetDecisionId(), err)
+		}
+	}
+	return nil
+}
+
 func (s *Server) reconcileRecoveredReservations(ctx context.Context, recovered *persistence.SchedulerState) error {
 	pending := make([]persistence.ReservationRecord, 0, len(recovered.Reservations))
+	transactionPlans := make(map[string]struct{}, len(recovered.Transactions))
+	for _, transaction := range recovered.Transactions {
+		if transaction.PlanID != "" {
+			transactionPlans[transaction.PlanID] = struct{}{}
+		}
+	}
 	for _, reservation := range recovered.Reservations {
 		if reservation.Plan == nil || reservation.Plan.GetPlanId() == "" {
 			return fmt.Errorf("service: recovered reservation requires plan_id")
+		}
+		if _, transactional := transactionPlans[reservation.Plan.GetPlanId()]; transactional {
+			continue
 		}
 		if !reservation.Finalized {
 			pending = append(pending, reservation)
@@ -159,10 +226,7 @@ func (s *Server) reconcileRecoveredReservations(ctx context.Context, recovered *
 	if len(pending) == 0 {
 		return nil
 	}
-	completeProvider, ok := s.provider.(provider.CompleteResourceProvider)
-	if !ok {
-		return errors.New("service: provider does not support recovered plan reconciliation")
-	}
+	completeProvider := s.provider
 	recoveredPlans, err := completeProvider.RecoverInFlightPlans(ctx)
 	if err != nil {
 		return fmt.Errorf("service: recover in-flight plans: %w", err)

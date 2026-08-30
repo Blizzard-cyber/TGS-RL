@@ -15,7 +15,7 @@ func (s *Store) reserveMutationPlanLocked(
 	plan *tgsrlv1.PlacementPlan,
 ) (*tgsrlv1.ClusterSnapshot, error) {
 	if plan.GetPurpose() == tgsrlv1.PlanPurpose_PLAN_PURPOSE_PREEMPTION {
-		return nil, fmt.Errorf("%w: preemption is not supported", ErrInvalidIntent)
+		return s.reservePreemptionPlanLocked(plan)
 	}
 	if len(plan.GetActions()) != 1 {
 		return nil, fmt.Errorf("%w: mutation plans require exactly one action", ErrInvalidIntent)
@@ -258,6 +258,63 @@ func reserveReplacementAction(
 	return nil
 }
 
+func cloneOptionalInt32(value *int32) *int32 {
+	if value == nil {
+		return nil
+	}
+	cloned := *value
+	return &cloned
+}
+
+func int32Pointer(value int32) *int32 { return &value }
+
+func consumeReplacementPendingUnit(
+	pending []*tgsrlv1.PendingUnit,
+	plan *tgsrlv1.PlacementPlan,
+	binding *tgsrlv1.Binding,
+) (*tgsrlv1.PendingUnit, []*tgsrlv1.PendingUnit, error) {
+	remaining := make([]*tgsrlv1.PendingUnit, 0, len(pending))
+	var matched *tgsrlv1.PendingUnit
+	for _, unit := range pending {
+		if matched == nil &&
+			unit.GetPendingUnitId() == binding.GetPendingUnitId() &&
+			unit.GetExecutionId() == plan.GetExecutionId() &&
+			unit.GetStageId() == plan.GetStageId() &&
+			unit.GetIntentVersion() == plan.GetIntentVersion() {
+			if !proto.Equal(unit.GetRequestedResources(), binding.GetResources()) {
+				return nil, nil, fmt.Errorf("%w: replacement binding resources differ from pending request", ErrInvalidIntent)
+			}
+			matched = clonePendingUnit(unit)
+			continue
+		}
+		remaining = append(remaining, unit)
+	}
+	if matched == nil {
+		return nil, nil, fmt.Errorf("%w: %q", ErrPendingUnitNotFound, binding.GetPendingUnitId())
+	}
+	return matched, remaining, nil
+}
+
+func containsString(values []string, target string) bool {
+	for _, value := range values {
+		if value == target {
+			return true
+		}
+	}
+	return false
+}
+
+func addResources(available, returned *tgsrlv1.ResourceVector) {
+	if available == nil || returned == nil {
+		return
+	}
+	available.CpuMillis += returned.GetCpuMillis()
+	available.MemoryBytes += returned.GetMemoryBytes()
+	available.AcceleratorUnits += returned.GetAcceleratorUnits()
+	available.EphemeralStorageBytes += returned.GetEphemeralStorageBytes()
+	available.NetworkBandwidthBps += returned.GetNetworkBandwidthBps()
+}
+
 func buildReplacementAllocation(
 	plan *tgsrlv1.PlacementPlan,
 	action *tgsrlv1.Action,
@@ -292,6 +349,9 @@ func buildReplacementAllocation(
 		DecisionId:    plan.GetDecisionId(),
 		PlanId:        plan.GetPlanId(),
 		ActionId:      action.GetActionId(),
+		Priority:      cloneOptionalInt32(source.Priority),
+		SandboxId:     binding.GetSandboxId(),
+		BindingId:     binding.GetBindingId(),
 	}
 }
 

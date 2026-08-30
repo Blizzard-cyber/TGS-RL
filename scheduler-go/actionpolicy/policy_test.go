@@ -262,7 +262,7 @@ func TestValidatePlanPurposeContracts(t *testing.T) {
 	}
 }
 
-func TestValidatePlanLegacyAndPreemptionFailClosed(t *testing.T) {
+func TestValidatePlanLegacyCompatibility(t *testing.T) {
 	legacy := &tgsrlv1.PlacementPlan{
 		PlanId: "legacy",
 		Actions: []*tgsrlv1.Action{{
@@ -288,30 +288,80 @@ func TestValidatePlanLegacyAndPreemptionFailClosed(t *testing.T) {
 	if _, _, err := EffectivePurpose(unknownMutation); err == nil {
 		t.Fatal("EffectivePurpose(unknown mutation) error = nil")
 	}
+}
 
-	preemption := &tgsrlv1.PlacementPlan{
-		PlanId:                "preempt",
-		SnapshotRevision:      7,
-		Purpose:               tgsrlv1.PlanPurpose_PLAN_PURPOSE_PREEMPTION,
-		RollbackPolicy:        tgsrlv1.RollbackPolicy_ROLLBACK_POLICY_REQUIRED_COMPENSATION,
-		AffectedAllocationIds: []string{"allocation-1"},
-		CapabilityRequirements: []*tgsrlv1.CapabilityRequirement{
-			NewCapabilityRequirement(tgsrlv1.CapabilityRequirementKind_CAPABILITY_REQUIREMENT_KIND_ORDERED_ACTION_EXECUTION),
-			NewCapabilityRequirement(tgsrlv1.CapabilityRequirementKind_CAPABILITY_REQUIREMENT_KIND_COMPENSATING_ROLLBACK),
-			NewCapabilityRequirement(tgsrlv1.CapabilityRequirementKind_CAPABILITY_REQUIREMENT_KIND_TRANSACTIONAL_PLAN_EXECUTION),
-			NewCapabilityRequirement(tgsrlv1.CapabilityRequirementKind_CAPABILITY_REQUIREMENT_KIND_ATOMIC_REPLACEMENT),
-		},
-		Actions: []*tgsrlv1.Action{
-			strictPolicyAction(tgsrlv1.ActionType_ACTION_TYPE_RELEASE, tgsrlv1.ActionLevel_ACTION_LEVEL_L1, 1),
-			strictPolicyAction(tgsrlv1.ActionType_ACTION_TYPE_BIND, tgsrlv1.ActionLevel_ACTION_LEVEL_L1, 2),
-		},
+func TestValidatePlanPreemptionContracts(t *testing.T) {
+	base := strictPreemptionPlan()
+	tests := []struct {
+		name     string
+		mutate   func(*tgsrlv1.PlacementPlan)
+		wantKind ViolationKind
+	}{
+		{name: "valid preemption"},
+		{name: "missing ordered capability", mutate: func(plan *tgsrlv1.PlacementPlan) {
+			plan.CapabilityRequirements = removeCapabilityRequirement(plan.CapabilityRequirements, tgsrlv1.CapabilityRequirementKind_CAPABILITY_REQUIREMENT_KIND_ORDERED_ACTION_EXECUTION)
+		}, wantKind: ViolationCapabilityRequirement},
+		{name: "missing compensation capability", mutate: func(plan *tgsrlv1.PlacementPlan) {
+			plan.CapabilityRequirements = removeCapabilityRequirement(plan.CapabilityRequirements, tgsrlv1.CapabilityRequirementKind_CAPABILITY_REQUIREMENT_KIND_COMPENSATING_ROLLBACK)
+		}, wantKind: ViolationCapabilityRequirement},
+		{name: "missing transactional capability", mutate: func(plan *tgsrlv1.PlacementPlan) {
+			plan.CapabilityRequirements = removeCapabilityRequirement(plan.CapabilityRequirements, tgsrlv1.CapabilityRequirementKind_CAPABILITY_REQUIREMENT_KIND_TRANSACTIONAL_PLAN_EXECUTION)
+		}, wantKind: ViolationCapabilityRequirement},
+		{name: "missing atomic capability", mutate: func(plan *tgsrlv1.PlacementPlan) {
+			plan.CapabilityRequirements = removeCapabilityRequirement(plan.CapabilityRequirements, tgsrlv1.CapabilityRequirementKind_CAPABILITY_REQUIREMENT_KIND_ATOMIC_REPLACEMENT)
+		}, wantKind: ViolationCapabilityRequirement},
+		{name: "rollback not required", mutate: func(plan *tgsrlv1.PlacementPlan) {
+			plan.RollbackPolicy = tgsrlv1.RollbackPolicy_ROLLBACK_POLICY_NOT_REQUIRED
+		}, wantKind: ViolationRollbackPolicy},
+		{name: "release and bind both required", mutate: func(plan *tgsrlv1.PlacementPlan) {
+			plan.Actions = plan.Actions[:1]
+		}, wantKind: ViolationPurposeMismatch},
+		{name: "preemption allows only release and bind", mutate: func(plan *tgsrlv1.PlacementPlan) {
+			plan.Actions = append(plan.Actions, strictPolicyAction(tgsrlv1.ActionType_ACTION_TYPE_PAUSE, tgsrlv1.ActionLevel_ACTION_LEVEL_L2, 3))
+		}, wantKind: ViolationPurposeMismatch},
+		{name: "affected allocations must match release targets", mutate: func(plan *tgsrlv1.PlacementPlan) {
+			plan.AffectedAllocationIds = []string{"allocation-2"}
+		}, wantKind: ViolationPurposeMismatch},
+		{name: "release requires sandbox id", mutate: func(plan *tgsrlv1.PlacementPlan) {
+			plan.Actions[0].SandboxId = ""
+		}, wantKind: ViolationPrecondition},
+		{name: "release requires safe point fencing", mutate: func(plan *tgsrlv1.PlacementPlan) {
+			plan.Actions[0].RequiresSafePoint = false
+			plan.Actions[0].Preconditions = []tgsrlv1.ActionPrecondition{
+				tgsrlv1.ActionPrecondition_ACTION_PRECONDITION_SNAPSHOT_REVISION_MATCH,
+				tgsrlv1.ActionPrecondition_ACTION_PRECONDITION_TARGET_GENERATION_MATCH,
+				tgsrlv1.ActionPrecondition_ACTION_PRECONDITION_AFFECTED_ALLOCATIONS_ACTIVE,
+			}
+		}, wantKind: ViolationPrecondition},
+		{name: "bind requires replacement runtime identity", mutate: func(plan *tgsrlv1.PlacementPlan) {
+			plan.Actions[1].Binding.RuntimeUnitId = ""
+		}, wantKind: ViolationPrecondition},
+		{name: "bind requires replacement generation", mutate: func(plan *tgsrlv1.PlacementPlan) {
+			plan.Actions[1].Binding.Generation = 0
+		}, wantKind: ViolationPrecondition},
+		{name: "bind action sandbox must match binding sandbox", mutate: func(plan *tgsrlv1.PlacementPlan) {
+			plan.Actions[1].SandboxId = "other-sandbox"
+		}, wantKind: ViolationPrecondition},
 	}
-	preemption.Actions[0].TargetId = "allocation-1"
-	preemption.Actions[0].Preconditions = append(preemption.Actions[0].Preconditions, tgsrlv1.ActionPrecondition_ACTION_PRECONDITION_AFFECTED_ALLOCATIONS_ACTIVE)
-	err = ValidatePlan(preemption, tgsrlv1.TickKind_TICK_KIND_SLOW, ValidationOptions{})
-	var validationErr *ValidationError
-	if !errors.As(err, &validationErr) || validationErr.Kind != ViolationPreemptionUnavailable {
-		t.Fatalf("ValidatePlan(preemption) error = %v, want fail closed", err)
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			plan := proto.Clone(base).(*tgsrlv1.PlacementPlan)
+			if test.mutate != nil {
+				test.mutate(plan)
+			}
+			err := ValidatePlan(plan, tgsrlv1.TickKind_TICK_KIND_SLOW, ValidationOptions{})
+			if test.wantKind == "" {
+				if err != nil {
+					t.Fatalf("ValidatePlan() error = %v", err)
+				}
+				return
+			}
+			var validationErr *ValidationError
+			if !errors.As(err, &validationErr) || validationErr.Kind != test.wantKind {
+				t.Fatalf("ValidatePlan() error = %v, want kind %s", err, test.wantKind)
+			}
+		})
 	}
 }
 
@@ -389,6 +439,69 @@ func strictPolicyAction(actionType tgsrlv1.ActionType, level tgsrlv1.ActionLevel
 		action.Rollback.RestoreBinding = &tgsrlv1.Binding{BindingId: "binding-a", SandboxId: "sandbox-a"}
 	}
 	return action
+}
+
+func strictPreemptionPlan() *tgsrlv1.PlacementPlan {
+	release := strictPolicyAction(tgsrlv1.ActionType_ACTION_TYPE_RELEASE, tgsrlv1.ActionLevel_ACTION_LEVEL_L1, 1)
+	release.TargetId = "allocation-1"
+	release.SandboxId = "sandbox-victim"
+	release.RequiresSafePoint = true
+	release.Preconditions = []tgsrlv1.ActionPrecondition{
+		tgsrlv1.ActionPrecondition_ACTION_PRECONDITION_SNAPSHOT_REVISION_MATCH,
+		tgsrlv1.ActionPrecondition_ACTION_PRECONDITION_TARGET_GENERATION_MATCH,
+		tgsrlv1.ActionPrecondition_ACTION_PRECONDITION_SAFE_POINT_REACHED,
+		tgsrlv1.ActionPrecondition_ACTION_PRECONDITION_AFFECTED_ALLOCATIONS_ACTIVE,
+	}
+	release.Rollback.TargetId = "sandbox-victim"
+	if release.Rollback.RestoreBinding != nil {
+		release.Rollback.RestoreBinding = &tgsrlv1.Binding{
+			BindingId:     "binding-victim",
+			PendingUnitId: "unit-victim",
+			SandboxId:     "sandbox-victim",
+			RuntimeUnitId: "runtime-victim",
+			Generation:    4,
+		}
+	}
+
+	bind := strictPolicyAction(tgsrlv1.ActionType_ACTION_TYPE_BIND, tgsrlv1.ActionLevel_ACTION_LEVEL_L1, 2)
+	bind.TargetId = "unit-replacement"
+	bind.SandboxId = "sandbox-replacement"
+	bind.Binding = &tgsrlv1.Binding{
+		BindingId:     "binding-replacement",
+		PendingUnitId: "unit-replacement",
+		SandboxId:     "sandbox-replacement",
+		RuntimeUnitId: "runtime-replacement",
+		Generation:    5,
+		DeviceIds:     []string{"device-a"},
+		Resources:     &tgsrlv1.ResourceVector{CpuMillis: 1000},
+	}
+	bind.Rollback.TargetId = bind.Binding.GetBindingId()
+
+	return &tgsrlv1.PlacementPlan{
+		PlanId:                "preempt",
+		SnapshotRevision:      7,
+		Purpose:               tgsrlv1.PlanPurpose_PLAN_PURPOSE_PREEMPTION,
+		RollbackPolicy:        tgsrlv1.RollbackPolicy_ROLLBACK_POLICY_REQUIRED_COMPENSATION,
+		AffectedAllocationIds: []string{"allocation-1"},
+		CapabilityRequirements: []*tgsrlv1.CapabilityRequirement{
+			NewCapabilityRequirement(tgsrlv1.CapabilityRequirementKind_CAPABILITY_REQUIREMENT_KIND_ORDERED_ACTION_EXECUTION),
+			NewCapabilityRequirement(tgsrlv1.CapabilityRequirementKind_CAPABILITY_REQUIREMENT_KIND_COMPENSATING_ROLLBACK),
+			NewCapabilityRequirement(tgsrlv1.CapabilityRequirementKind_CAPABILITY_REQUIREMENT_KIND_TRANSACTIONAL_PLAN_EXECUTION),
+			NewCapabilityRequirement(tgsrlv1.CapabilityRequirementKind_CAPABILITY_REQUIREMENT_KIND_ATOMIC_REPLACEMENT),
+		},
+		Actions: []*tgsrlv1.Action{release, bind},
+	}
+}
+
+func removeCapabilityRequirement(values []*tgsrlv1.CapabilityRequirement, kind tgsrlv1.CapabilityRequirementKind) []*tgsrlv1.CapabilityRequirement {
+	result := make([]*tgsrlv1.CapabilityRequirement, 0, len(values))
+	for _, value := range values {
+		if value != nil && value.GetKind() == kind {
+			continue
+		}
+		result = append(result, proto.Clone(value).(*tgsrlv1.CapabilityRequirement))
+	}
+	return result
 }
 
 func testAction(actionType tgsrlv1.ActionType, level tgsrlv1.ActionLevel, tick tgsrlv1.TickKind) *tgsrlv1.Action {

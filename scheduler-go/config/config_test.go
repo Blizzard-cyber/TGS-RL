@@ -6,6 +6,9 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/Blizzard-cyber/TGS-RL/scheduler-go/preemption"
+	"github.com/Blizzard-cyber/TGS-RL/scheduler-go/scheduler"
 )
 
 func TestLoadBundleReadsRealConfigGraph(t *testing.T) {
@@ -309,7 +312,7 @@ func TestLoadPolicyRejectsUnsupportedConstraintRelaxation(t *testing.T) {
 	}
 }
 
-func TestLoadPolicyRejectsUnsupportedPreemptionEnablement(t *testing.T) {
+func TestLoadPolicyAllowsSupportedPreemptionEnablement(t *testing.T) {
 	t.Helper()
 	repoRoot := repoRootFromTest(t)
 	path := filepath.Join(t.TempDir(), "policy.yaml")
@@ -322,19 +325,35 @@ func TestLoadPolicyRejectsUnsupportedPreemptionEnablement(t *testing.T) {
 		t.Fatalf("write invalid policy: %v", err)
 	}
 
-	_, err = LoadPolicy(path)
-	if err == nil {
-		t.Fatal("LoadPolicy() error = nil, want schema_validation")
+	policyBundle, err := LoadPolicy(path)
+	if err != nil {
+		t.Fatalf("LoadPolicy() error = %v", err)
 	}
-	configErr, ok := err.(*ConfigError)
-	if !ok {
-		t.Fatalf("error type = %T, want *ConfigError", err)
+	if !policyBundle.Preemption.Enabled {
+		t.Fatalf("preemption enabled = %v, want true", policyBundle.Preemption.Enabled)
 	}
-	if configErr.Field != "policy.preemption.enabled" {
-		t.Fatalf("error field = %q, want policy.preemption.enabled", configErr.Field)
+	if policyBundle.Preemption.Strategy != "low_priority_first" {
+		t.Fatalf("preemption strategy = %q, want low_priority_first", policyBundle.Preemption.Strategy)
 	}
-	if !strings.Contains(configErr.Message, "not yet supported") {
-		t.Fatalf("error message = %q, want not yet supported", configErr.Message)
+	if !policyBundle.Preemption.RequireSafePoint {
+		t.Fatalf("preemption require_safe_point = %v, want true", policyBundle.Preemption.RequireSafePoint)
+	}
+
+	projected, err := policyBundle.ApplyToScheduler(scheduler.Config{})
+	if err != nil {
+		t.Fatalf("ApplyToScheduler() error = %v", err)
+	}
+	if !projected.Policy.AllowPreemption {
+		t.Fatalf("projected policy allow_preemption = %v, want true", projected.Policy.AllowPreemption)
+	}
+	if projected.Policy.PreemptionPolicy != "low_priority_first" {
+		t.Fatalf("projected policy preemption = %q, want low_priority_first", projected.Policy.PreemptionPolicy)
+	}
+	if !projected.Policy.RequireSafePoint {
+		t.Fatalf("projected policy require_safe_point = %v, want true", projected.Policy.RequireSafePoint)
+	}
+	if _, ok := projected.Preemption.(preemption.LowPriorityFirst); !ok {
+		t.Fatalf("projected preemption strategy type = %T, want preemption.LowPriorityFirst", projected.Preemption)
 	}
 }
 

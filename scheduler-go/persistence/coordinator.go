@@ -25,7 +25,7 @@ type CheckpointRepository interface {
 
 // IsEmpty reports whether recovery found no durable scheduler state.
 func IsEmpty(recovered *SchedulerState) bool {
-	return recovered == nil || (recovered.Snapshot == nil && len(recovered.Intents) == 0 && len(recovered.Decisions) == 0 && len(recovered.Reservations) == 0 && len(recovered.ProjectedSandboxes) == 0 && len(recovered.ResourceCursors) == 0 && len(recovered.SandboxCursors) == 0)
+	return recovered == nil || (recovered.Snapshot == nil && len(recovered.Intents) == 0 && len(recovered.Decisions) == 0 && len(recovered.Reservations) == 0 && len(recovered.Transactions) == 0 && len(recovered.ProjectedSandboxes) == 0 && len(recovered.ResourceCursors) == 0 && len(recovered.SandboxCursors) == 0)
 }
 
 // Capture combines Store authority and service-owned decision state into one
@@ -69,6 +69,9 @@ func Capture(store durableStateExporter, decisions []*tgsrlv1.DecisionRecord, cu
 		}
 		checkpoint.Reservations = append(checkpoint.Reservations, record)
 	}
+	for _, transaction := range durable.Transactions {
+		checkpoint.Transactions = append(checkpoint.Transactions, *cloneTransactionRecord(&transaction))
+	}
 	checkpoint.Protection = protectionState
 	return checkpoint, nil
 }
@@ -104,6 +107,9 @@ func RestoreStore(store *state.Store, recovered *SchedulerState) error {
 			record.PendingUnits = append(record.PendingUnits, clonePendingUnit(unit))
 		}
 		durable.Reservations = append(durable.Reservations, record)
+	}
+	for index := range recovered.Transactions {
+		durable.Transactions = append(durable.Transactions, *cloneTransactionRecord(&recovered.Transactions[index]))
 	}
 	if err := store.Restore(durable); err != nil {
 		return fmt.Errorf("scheduler persistence: restore store: %w", err)
@@ -191,4 +197,52 @@ func clonePendingUnit(unit *tgsrlv1.PendingUnit) *tgsrlv1.PendingUnit {
 		return nil
 	}
 	return proto.Clone(unit).(*tgsrlv1.PendingUnit)
+}
+
+func cloneTransactionRecord(record *state.TransactionRecord) *state.TransactionRecord {
+	if record == nil {
+		return nil
+	}
+	cloned := &state.TransactionRecord{
+		TransactionID:         record.TransactionID,
+		PlanID:                record.PlanID,
+		Plan:                  clonePlan(record.Plan),
+		Generation:            record.Generation,
+		ProviderGeneration:    record.ProviderGeneration,
+		State:                 record.State,
+		ReservationHeld:       record.ReservationHeld,
+		Terminal:              record.Terminal,
+		FailureClass:          record.FailureClass,
+		FailureReason:         record.FailureReason,
+		AffectedAllocationIDs: append([]string(nil), record.AffectedAllocationIDs...),
+		CreatedAt:             cloneTimestamp(record.CreatedAt),
+		UpdatedAt:             cloneTimestamp(record.UpdatedAt),
+		FinalizedAt:           cloneTimestamp(record.FinalizedAt),
+		FinalizedSucceeded:    record.FinalizedSucceeded,
+		RetainedAllocationIDs: append([]string(nil), record.RetainedAllocationIDs...),
+	}
+	if record.ProviderReceipt != nil {
+		cloned.ProviderReceipt = &state.Receipt{
+			Phase:            record.ProviderReceipt.Phase,
+			ObservedRevision: record.ProviderReceipt.ObservedRevision,
+			ErrorCode:        record.ProviderReceipt.ErrorCode,
+			ErrorMessage:     record.ProviderReceipt.ErrorMessage,
+			PreparedAt:       cloneTimestamp(record.ProviderReceipt.PreparedAt),
+			UpdatedAt:        cloneTimestamp(record.ProviderReceipt.UpdatedAt),
+		}
+		for _, step := range record.ProviderReceipt.Steps {
+			cloned.ProviderReceipt.Steps = append(cloned.ProviderReceipt.Steps, state.TransactionStep{
+				StepIndex:             step.StepIndex,
+				ActionID:              step.ActionID,
+				IdempotencyKey:        step.IdempotencyKey,
+				Status:                step.Status,
+				Revision:              step.Revision,
+				ErrorCode:             step.ErrorCode,
+				ErrorMessage:          step.ErrorMessage,
+				CompensationAttempted: step.CompensationAttempted,
+				Compensated:           step.Compensated,
+			})
+		}
+	}
+	return cloned
 }

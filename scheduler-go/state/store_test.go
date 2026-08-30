@@ -206,6 +206,34 @@ func TestPublishIntentAcceptanceDedupAndPendingMaterialization(t *testing.T) {
 	}
 }
 
+func TestPublishIntentProjectsRuntimeIdentityIntoPendingUnits(t *testing.T) {
+	store, clock := newTestStore(t)
+	intent := testIntent(clock, 1, "runtime-identity")
+	intent.RunId = "run-1"
+	intent.TraceId = "trace-1"
+	intent.DataKind = tgsrlv1.DataKind_DATA_KIND_SYNTHETIC
+	intent.Labels = map[string]string{"runtime_unit_id": "runtime-1"}
+
+	if _, err := store.PublishIntent(intent); err != nil {
+		t.Fatalf("PublishIntent() error = %v", err)
+	}
+	snapshot, err := store.GetSnapshot(context.Background(), 0, true)
+	if err != nil {
+		t.Fatalf("GetSnapshot() error = %v", err)
+	}
+	if len(snapshot.GetPendingUnits()) != int(intent.GetUnitCount()) {
+		t.Fatalf("pending units = %d, want %d", len(snapshot.GetPendingUnits()), intent.GetUnitCount())
+	}
+	for _, pending := range snapshot.GetPendingUnits() {
+		if pending.GetRuntimeUnitId() != "runtime-1" ||
+			pending.GetRunId() != intent.GetRunId() ||
+			pending.GetTraceId() != intent.GetTraceId() ||
+			pending.GetDataKind() != intent.GetDataKind() {
+			t.Fatalf("pending unit metadata = %+v, want intent runtime correlation", pending)
+		}
+	}
+}
+
 func TestPublishIntentRejectsConflictsAndInvalidLifetime(t *testing.T) {
 	store, clock := newTestStore(t)
 	if _, err := store.PublishIntent(testIntent(clock, 2, "idempotency-2")); err != nil {

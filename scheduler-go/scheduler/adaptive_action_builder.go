@@ -91,6 +91,11 @@ func buildAdaptivePlan(input PlanningInput, kind tgsrlv1.PlannerKind, purpose tg
 		}
 		if spec.binding != nil {
 			action.Binding = proto.Clone(spec.binding).(*tgsrlv1.Binding)
+			if spec.actionType == tgsrlv1.ActionType_ACTION_TYPE_REBIND || spec.actionType == tgsrlv1.ActionType_ACTION_TYPE_RECREATE {
+				// Plan bindings are desired workload deltas consumed by the
+				// Operator after the Provider commits the resource mutation.
+				plan.Bindings = append(plan.Bindings, proto.Clone(spec.binding).(*tgsrlv1.Binding))
+			}
 		}
 		plan.Actions = append(plan.Actions, action)
 	}

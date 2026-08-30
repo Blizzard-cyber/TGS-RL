@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	tgsrlv1 "github.com/Blizzard-cyber/TGS-RL/gen/go/tgsrl/v1"
+	"github.com/Blizzard-cyber/TGS-RL/scheduler-go/constraints"
 	"github.com/Blizzard-cyber/TGS-RL/scheduler-go/semantics"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/durationpb"
@@ -80,7 +81,7 @@ func validateSnapshot(snapshot *tgsrlv1.ClusterSnapshot) error {
 		if err := validateResourceVector(prefix+".allocatable", device.GetAllocatable()); err != nil {
 			return err
 		}
-		if !resourceLessOrEqual(device.GetAllocatable(), device.GetCapacity()) {
+		if !constraints.ResourceLessOrEqual(device.GetAllocatable(), device.GetCapacity()) {
 			return invalid(prefix+".allocatable", "must not exceed capacity in any dimension")
 		}
 		if err := validateCapabilityShape(prefix+".capabilities", device.GetCapabilities()); err != nil {
@@ -205,7 +206,7 @@ func validateIntent(intent *tgsrlv1.SchedulingIntent) error {
 	if err := validateResourceVector("intent.resources_per_unit", intent.GetResourcesPerUnit()); err != nil {
 		return err
 	}
-	if resourceIsZero(intent.GetResourcesPerUnit()) {
+	if constraints.ResourceIsZero(intent.GetResourcesPerUnit()) {
 		return invalid("intent.resources_per_unit", "at least one dimension must be positive")
 	}
 	if err := validateCapabilityShape("intent.required_capabilities", intent.GetRequiredCapabilities()); err != nil {

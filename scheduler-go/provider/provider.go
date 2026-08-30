@@ -63,7 +63,11 @@ func NewMockResourceProvider(options ...MockOption) (*MockResourceProvider, erro
 		planErrors:   make(map[string]error),
 		planRequests: make(map[string]*tgsrlv1.PlacementPlan),
 		planRecords:  make(map[string]*PlanRecord),
-		events:       make(map[string]SandboxEvent),
+		txPlans:      make(map[string]*tgsrlv1.PlacementPlan),
+		txReceipts:   make(map[string]*TransactionReceipt),
+		txBefore:     make(map[string][]actionBeforeImage),
+		txApplied:    make(map[string][]bool),
+		events:       make(map[string]*tgsrlv1.SandboxEvent),
 		actionPlans:  make(map[string]string),
 		resourceSubs: make(map[uint64]chan WatchedResourceEvent),
 		sandboxSubs:  make(map[uint64]chan WatchedSandboxEvent),
@@ -113,19 +117,6 @@ func DefaultMockCapabilities() *tgsrlv1.CapabilitySet {
 	}
 	capabilities.Attributes[CapabilityVersionAttributeKey("logical-cpu")] = "1.0.0"
 	return capabilities
-}
-
-// PlanCapabilities reports the mock executor semantics that are implemented
-// today. Atomic allocation replacement is intentionally absent.
-func (p *MockResourceProvider) PlanCapabilities() []*tgsrlv1.CapabilityRequirement {
-	return clonePlanCapabilities(supportedPlanCapabilities())
-}
-
-func (p *MockResourceProvider) ValidatePlanCapabilities(plan *tgsrlv1.PlacementPlan) error {
-	if err := ValidateProviderCapabilityRequirements(p.capabilities, plan); err != nil {
-		return err
-	}
-	return ValidatePlanCapabilitiesForRequirements(supportedPlanCapabilities(), plan)
 }
 
 // DefaultMockDevices returns one ready logical CPU device.

@@ -51,7 +51,7 @@ func TestAdaptivePlannersGenerateCompleteActionContracts(t *testing.T) {
 				t.Fatalf("action/purpose = %s/%s, want %s/%s", action.GetActionType(), result.Plan.GetPurpose(), test.wantAction, test.wantPurpose)
 			}
 			if action.GetPlanId() != result.Plan.GetPlanId() || action.GetExpectedSnapshotRevision() != input.Snapshot.GetRevision() || action.GetExpectedGeneration() != input.Sandboxes[0].GetGeneration() || action.GetDeadline() == nil || action.GetIdempotencyKey() == "" || action.GetRollback() == nil || len(action.GetPreconditions()) == 0 || len(action.GetExpectedImpacts()) == 0 {
-				t.Fatalf("incomplete PR1 action contract: %+v", action)
+				t.Fatalf("incomplete action contract: %+v", action)
 			}
 			if err := validateActionPlan(result.Plan, input.EvaluationContext); err != nil {
 				t.Fatalf("generated plan invalid: %v\nplan=%v", err, result.Plan)
@@ -272,7 +272,7 @@ func TestParseCompatibilityDirectivesIsStrict(t *testing.T) {
 	}
 }
 
-func TestPR3DoesNotGeneratePreemption(t *testing.T) {
+func TestAdaptivePlannerDoesNotGeneratePreemption(t *testing.T) {
 	input := adaptiveFixture(tgsrlv1.TickKind_TICK_KIND_SLOW, tgsrlv1.RuntimeState_RUNTIME_STATE_RUNNING)
 	input.Directives.AllowRebind = true
 	input.Directives.ReplacementBindings = map[string]*tgsrlv1.Binding{"allocation-a": adaptiveReplacementBinding()}
@@ -284,7 +284,7 @@ func TestPR3DoesNotGeneratePreemption(t *testing.T) {
 		t.Fatalf("Plan() produced no ordinary mutation: %+v", result)
 	}
 	if result.Plan.GetPurpose() == tgsrlv1.PlanPurpose_PLAN_PURPOSE_PREEMPTION {
-		t.Fatalf("PR3 generated preemption: %+v", result.Plan)
+		t.Fatalf("adaptive planner generated preemption: %+v", result.Plan)
 	}
 	for _, action := range result.Plan.GetActions() {
 		if action.GetActionType() == tgsrlv1.ActionType_ACTION_TYPE_BIND || action.GetActionType() == tgsrlv1.ActionType_ACTION_TYPE_RELEASE {
@@ -361,6 +361,9 @@ func TestSlowPlannerCompletesExplicitReplacementBindingIdentity(t *testing.T) {
 			allocation := input.Snapshot.GetAllocations()[0]
 			if action.GetActionType() != test.action || binding == nil {
 				t.Fatalf("replacement action = %+v, want %s with binding", action, test.action)
+			}
+			if len(first.Plan.GetBindings()) != 1 || !proto.Equal(first.Plan.GetBindings()[0], binding) {
+				t.Fatalf("replacement desired-state binding = %+v, want action binding", first.Plan.GetBindings())
 			}
 			if binding.GetBindingId() == "" || binding.GetBindingId() == current.GetBindingId() || binding.GetBindingId() == override.GetBindingId() {
 				t.Fatalf("replacement binding_id = %q, current=%q caller=%q", binding.GetBindingId(), current.GetBindingId(), override.GetBindingId())

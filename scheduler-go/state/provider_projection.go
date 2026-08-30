@@ -250,7 +250,9 @@ func (s *Store) ApplyProviderSandboxEvent(event *tgsrlv1.SandboxEvent) (*tgsrlv1
 		if next.GetBinding() != nil {
 			merged.Binding = cloneProjectedBinding(next.GetBinding())
 		}
-		merged.SafePoint = next.GetSafePoint()
+		if event.SafePoint != nil {
+			merged.SafePoint = event.GetSafePoint()
+		}
 		if event.Share != nil {
 			merged.Share = event.GetShare()
 		}
@@ -281,6 +283,8 @@ func (s *Store) ApplyProviderSandboxEvent(event *tgsrlv1.SandboxEvent) (*tgsrlv1
 		return cloneProjectedSandbox(current), false, nil
 	}
 	s.providerProjection.sandboxes[event.GetSandboxId()] = cloneProjectedSandbox(next)
+	working := cloneSnapshot(s.snapshot)
+	s.commitSnapshotLocked(working)
 	return cloneProjectedSandbox(next), true, nil
 }
 

@@ -30,7 +30,6 @@ const (
 	ViolationExpectedImpact        ViolationKind = "expected_impact"
 	ViolationRollbackPolicy        ViolationKind = "rollback_policy"
 	ViolationCapabilityRequirement ViolationKind = "capability_requirement"
-	ViolationPreemptionUnavailable ViolationKind = "preemption_unavailable"
 )
 
 type ValidationError struct {
@@ -191,9 +190,6 @@ func ValidatePlan(plan *tgsrlv1.PlacementPlan, expectedTick tgsrlv1.TickKind, op
 			return err
 		}
 	}
-	if purpose == tgsrlv1.PlanPurpose_PLAN_PURPOSE_PREEMPTION {
-		return &ValidationError{Kind: ViolationPreemptionUnavailable, Message: fmt.Sprintf("plan %q requests preemption before atomic replacement is available", plan.GetPlanId()), Purpose: purpose}
-	}
 	return nil
 }
 
@@ -262,8 +258,18 @@ func validatePlanContract(plan *tgsrlv1.PlacementPlan, purpose tgsrlv1.PlanPurpo
 		return &ValidationError{Kind: ViolationPurposeMismatch, Message: fmt.Sprintf("rebalance plan %q must identify affected allocations", plan.GetPlanId()), Purpose: purpose}
 	}
 	if purpose == tgsrlv1.PlanPurpose_PLAN_PURPOSE_PREEMPTION {
-		if !containsCapabilityRequirement(plan.GetCapabilityRequirements(), tgsrlv1.CapabilityRequirementKind_CAPABILITY_REQUIREMENT_KIND_TRANSACTIONAL_PLAN_EXECUTION) || !containsCapabilityRequirement(plan.GetCapabilityRequirements(), tgsrlv1.CapabilityRequirementKind_CAPABILITY_REQUIREMENT_KIND_ATOMIC_REPLACEMENT) {
-			return &ValidationError{Kind: ViolationCapabilityRequirement, Message: fmt.Sprintf("preemption plan %q requires transactional execution and atomic replacement", plan.GetPlanId()), Purpose: purpose}
+		if plan.GetRollbackPolicy() != tgsrlv1.RollbackPolicy_ROLLBACK_POLICY_REQUIRED_COMPENSATION {
+			return &ValidationError{Kind: ViolationRollbackPolicy, Message: fmt.Sprintf("preemption plan %q must require rollback compensation", plan.GetPlanId()), Purpose: purpose}
+		}
+		for _, kind := range []tgsrlv1.CapabilityRequirementKind{
+			tgsrlv1.CapabilityRequirementKind_CAPABILITY_REQUIREMENT_KIND_ORDERED_ACTION_EXECUTION,
+			tgsrlv1.CapabilityRequirementKind_CAPABILITY_REQUIREMENT_KIND_COMPENSATING_ROLLBACK,
+			tgsrlv1.CapabilityRequirementKind_CAPABILITY_REQUIREMENT_KIND_TRANSACTIONAL_PLAN_EXECUTION,
+			tgsrlv1.CapabilityRequirementKind_CAPABILITY_REQUIREMENT_KIND_ATOMIC_REPLACEMENT,
+		} {
+			if !containsCapabilityRequirement(plan.GetCapabilityRequirements(), kind) {
+				return &ValidationError{Kind: ViolationCapabilityRequirement, Message: fmt.Sprintf("preemption plan %q omits required capability %s", plan.GetPlanId(), kind), Purpose: purpose, CapabilityRequirement: kind}
+			}
 		}
 		hasRelease, hasBind := false, false
 		releaseTargets := make([]string, 0, len(plan.GetActions()))
@@ -304,11 +310,48 @@ func validatePurposeAction(plan *tgsrlv1.PlacementPlan, purpose tgsrlv1.PlanPurp
 		if action.GetActionType() != tgsrlv1.ActionType_ACTION_TYPE_BIND && action.GetActionType() != tgsrlv1.ActionType_ACTION_TYPE_RELEASE {
 			return purposeActionError(plan, action, purpose, "preemption plans allow only release and replacement bind")
 		}
+		if err := validatePreemptionActionContract(action); err != nil {
+			err.Purpose = purpose
+			return err
+		}
 	case tgsrlv1.PlanPurpose_PLAN_PURPOSE_RECOVERY:
 		switch action.GetActionType() {
 		case tgsrlv1.ActionType_ACTION_TYPE_RESUME, tgsrlv1.ActionType_ACTION_TYPE_REBIND, tgsrlv1.ActionType_ACTION_TYPE_RECREATE:
 		default:
 			return purposeActionError(plan, action, purpose, "recovery plans allow only resume, rebind, or recreate")
+		}
+	}
+	return nil
+}
+
+func validatePreemptionActionContract(action *tgsrlv1.Action) *ValidationError {
+	switch action.GetActionType() {
+	case tgsrlv1.ActionType_ACTION_TYPE_RELEASE:
+		if strings.TrimSpace(action.GetSandboxId()) == "" {
+			return actionError(ViolationPrecondition, action, fmt.Sprintf("preemption release %q must declare sandbox_id", action.GetActionId()))
+		}
+		if !action.GetRequiresSafePoint() {
+			return actionError(ViolationPrecondition, action, fmt.Sprintf("preemption release %q must require a safe point fence", action.GetActionId()))
+		}
+	case tgsrlv1.ActionType_ACTION_TYPE_BIND:
+		binding := action.GetBinding()
+		if binding == nil {
+			return actionError(ViolationPrecondition, action, fmt.Sprintf("preemption bind %q must declare replacement binding identity", action.GetActionId()))
+		}
+		switch {
+		case strings.TrimSpace(binding.GetBindingId()) == "":
+			return actionError(ViolationPrecondition, action, fmt.Sprintf("preemption bind %q must declare replacement binding_id", action.GetActionId()))
+		case strings.TrimSpace(binding.GetPendingUnitId()) == "":
+			return actionError(ViolationPrecondition, action, fmt.Sprintf("preemption bind %q must declare replacement pending_unit_id", action.GetActionId()))
+		case strings.TrimSpace(binding.GetSandboxId()) == "":
+			return actionError(ViolationPrecondition, action, fmt.Sprintf("preemption bind %q must declare replacement sandbox_id", action.GetActionId()))
+		case strings.TrimSpace(binding.GetRuntimeUnitId()) == "":
+			return actionError(ViolationPrecondition, action, fmt.Sprintf("preemption bind %q must declare replacement runtime_unit_id", action.GetActionId()))
+		case binding.GetGeneration() == 0:
+			return actionError(ViolationPrecondition, action, fmt.Sprintf("preemption bind %q must declare replacement generation", action.GetActionId()))
+		}
+		if action.GetSandboxId() != "" && action.GetSandboxId() != binding.GetSandboxId() {
+			return actionError(ViolationPrecondition, action, fmt.Sprintf("preemption bind %q sandbox_id %q does not match replacement sandbox_id %q", action.GetActionId(), action.GetSandboxId(), binding.GetSandboxId()))
 		}
 	}
 	return nil

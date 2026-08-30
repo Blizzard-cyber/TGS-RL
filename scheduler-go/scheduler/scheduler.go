@@ -100,6 +100,11 @@ func (s *Scheduler) EvaluateWithContext(snapshot *tgsrlv1.ClusterSnapshot, inten
 		}}
 		return s.fallbackResult(snapshot, intent, now, record, fallbackReason)
 	}
+	if len(units) == 0 {
+		plan := makeConvergedPlan(decisionID, snapshot, intent, ctx)
+		record.SelectedPlan = proto.Clone(plan).(*tgsrlv1.PlacementPlan)
+		return proto.Clone(plan).(*tgsrlv1.PlacementPlan), proto.Clone(record).(*tgsrlv1.DecisionRecord), nil
+	}
 	if s.policy != nil && (s.policy.Name() == "noop" || s.policy.Name() == "static") {
 		_, reason := s.policy.Choose(snapshot, intent, policy.SelectionInput{})
 		return s.fallbackResult(snapshot, intent, now, record, "POLICY_"+reason)
@@ -151,7 +156,7 @@ func (s *Scheduler) EvaluateWithContext(snapshot *tgsrlv1.ClusterSnapshot, inten
 	if len(result.Selected) != len(units) {
 		if len(result.Selected) == 0 && len(units) == 1 {
 			if preemptionPlan, reason := s.preemptionPlan(snapshot, intent, now, record, units[0], safePoint); preemptionPlan != nil {
-				if err := validateActionPlan(preemptionPlan, ctx); err != nil {
+				if err := s.validateAuthoritativePlan(preemptionPlan, ctx); err != nil {
 					return s.fallbackResult(snapshot, intent, now, record, "ACTION_POLICY_"+err.Error())
 				}
 				guardKey := intent.GetExecutionId() + "/" + intent.GetStageId()
@@ -200,4 +205,14 @@ func (s *Scheduler) EvaluateWithContext(snapshot *tgsrlv1.ClusterSnapshot, inten
 		record.Score = roundScore(record.Score / float64(len(result.Selected)))
 	}
 	return proto.Clone(plan).(*tgsrlv1.PlacementPlan), proto.Clone(record).(*tgsrlv1.DecisionRecord), nil
+}
+
+func (s *Scheduler) validateAuthoritativePlan(plan *tgsrlv1.PlacementPlan, ctx *tgsrlv1.EvaluationContext) error {
+	if plan == nil {
+		return nil
+	}
+	if plan.GetPurpose() == tgsrlv1.PlanPurpose_PLAN_PURPOSE_PREEMPTION {
+		return validatePreemptionPlan(plan, ctx)
+	}
+	return validateActionPlan(plan, ctx)
 }

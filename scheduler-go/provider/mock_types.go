@@ -124,19 +124,110 @@ type Sandbox struct {
 	UpdatedAt       time.Time
 }
 
-// SandboxEvent is an observed runtime update. Generation fences make old
-// events harmless after an L4 replacement.
-type SandboxEvent struct {
-	// EventID enables exact retry deduplication. A new confirmation without an
-	// event ID still refreshes the sandbox's UpdatedAt timestamp.
-	EventID         string
-	SandboxID       string
-	Generation      uint64
-	State           SandboxState
-	Binding         *tgsrlv1.Binding
-	SafePoint       *bool
-	SemanticContext *tgsrlv1.SemanticEnvelope
-	StateChangedAt  time.Time
+// ProjectSandboxObservation validates and applies one external observation to
+// a provider-owned sandbox projection. Providers share this implementation so
+// generation and same-generation transition rules cannot drift by backend.
+func ProjectSandboxObservation(current Sandbox, event *tgsrlv1.SandboxEvent, confirmedAt time.Time) (Sandbox, error) {
+	if event == nil {
+		return Sandbox{}, fmt.Errorf("%w: sandbox event is required", ErrInvalidArgument)
+	}
+	state, validState := SandboxStateFromRuntime(event.GetState())
+	if strings.TrimSpace(event.GetEventId()) == "" || strings.TrimSpace(event.GetSandboxId()) == "" || event.GetGeneration() == 0 || !validState {
+		return Sandbox{}, fmt.Errorf("%w: sandbox event is invalid", ErrInvalidArgument)
+	}
+	exists := current.SandboxID != ""
+	if exists && event.GetGeneration() < current.Generation {
+		return Sandbox{}, &Error{Code: ErrorCodeLateEventFenced, Message: "event generation is older than current sandbox generation", SandboxID: event.GetSandboxId(), ExpectedGeneration: current.Generation, ObservedGeneration: event.GetGeneration(), Cause: ErrGenerationFenced}
+	}
+	if exists && event.GetGeneration() == current.Generation {
+		if event.GetBinding() != nil && current.Binding != nil && !proto.Equal(event.GetBinding(), current.Binding) {
+			return Sandbox{}, &Error{Code: ErrorCodeLateEventFenced, Message: "same-generation event cannot replace binding", SandboxID: event.GetSandboxId(), ExpectedGeneration: current.Generation, ObservedGeneration: event.GetGeneration(), Cause: ErrGenerationFenced}
+		}
+		if eventWouldRegress(current.State, state) {
+			return Sandbox{}, &Error{Code: ErrorCodeLateEventFenced, Message: "same-generation event would regress sandbox state", SandboxID: event.GetSandboxId(), ExpectedGeneration: current.Generation, ObservedGeneration: event.GetGeneration(), Cause: ErrGenerationFenced}
+		}
+	}
+	lifecycleChanged := !exists || current.State != state || current.Generation != event.GetGeneration()
+	current.SandboxID = event.GetSandboxId()
+	current.Generation = event.GetGeneration()
+	current.State = state
+	if event.GetBinding() != nil {
+		current.Binding = proto.Clone(event.GetBinding()).(*tgsrlv1.Binding)
+	}
+	if event.SafePoint != nil {
+		current.SafePoint = event.GetSafePoint()
+	} else if !exists || lifecycleChanged {
+		current.SafePoint = false
+	}
+	if event.Share != nil {
+		current.Share = event.GetShare()
+	}
+	if event.Priority != nil {
+		current.Priority = event.GetPriority()
+	}
+	if event.Offloaded != nil {
+		current.Offloaded = event.GetOffloaded()
+	}
+	if event.GetSemanticContext() != nil {
+		current.SemanticContext = proto.Clone(event.GetSemanticContext()).(*tgsrlv1.SemanticEnvelope)
+	}
+	if lifecycleChanged {
+		current.StateChangedAt = confirmedAt
+		if event.GetOccurredAt() != nil && event.GetOccurredAt().CheckValid() == nil {
+			current.StateChangedAt = event.GetOccurredAt().AsTime()
+		}
+	}
+	current.UpdatedAt = confirmedAt
+	return current, nil
+}
+
+// NormalizeSandboxObservation returns the canonical event accepted into the
+// provider revision domain. Missing mutable values are filled from the
+// resulting projection, while safe_point keeps its presence semantics because
+// absence means that the execution substrate supplied no fresh safe-point
+// evidence. Event ID is the deterministic idempotency key of that observation
+// when no action-scoped key exists.
+func NormalizeSandboxObservation(event *tgsrlv1.SandboxEvent, projected Sandbox, revision uint64) *tgsrlv1.SandboxEvent {
+	accepted := proto.Clone(event).(*tgsrlv1.SandboxEvent)
+	accepted.ProviderRevision = revision
+	if accepted.GetIdempotencyKey() == "" {
+		accepted.IdempotencyKey = accepted.GetEventId()
+	}
+	if accepted.Share == nil {
+		value := projected.Share
+		accepted.Share = &value
+	}
+	if accepted.Priority == nil {
+		value := projected.Priority
+		accepted.Priority = &value
+	}
+	if accepted.Offloaded == nil {
+		value := projected.Offloaded
+		accepted.Offloaded = &value
+	}
+	return accepted
+}
+
+// SandboxStateFromRuntime converts the wire state to the provider state model.
+func SandboxStateFromRuntime(state tgsrlv1.RuntimeState) (SandboxState, bool) {
+	switch state {
+	case tgsrlv1.RuntimeState_RUNTIME_STATE_REQUESTED:
+		return SandboxStateRequested, true
+	case tgsrlv1.RuntimeState_RUNTIME_STATE_BOUND:
+		return SandboxStateBound, true
+	case tgsrlv1.RuntimeState_RUNTIME_STATE_RUNNING:
+		return SandboxStateRunning, true
+	case tgsrlv1.RuntimeState_RUNTIME_STATE_PAUSED:
+		return SandboxStatePaused, true
+	case tgsrlv1.RuntimeState_RUNTIME_STATE_SLEEPING:
+		return SandboxStateSleeping, true
+	case tgsrlv1.RuntimeState_RUNTIME_STATE_FAILED:
+		return SandboxStateFailed, true
+	case tgsrlv1.RuntimeState_RUNTIME_STATE_TERMINATED:
+		return SandboxStateTerminated, true
+	default:
+		return "", false
+	}
 }
 
 // ResourceEvent is a cloned provider state notification.
@@ -153,55 +244,6 @@ type ResourceProvider interface {
 	ListDevices(context.Context) ([]*tgsrlv1.Device, error)
 	ListSandboxes(context.Context) ([]Sandbox, error)
 	GetSandbox(context.Context, string) (Sandbox, error)
-	ExecuteAction(context.Context, *tgsrlv1.Action) (*tgsrlv1.ActionResult, error)
-	ExecutePlan(context.Context, *tgsrlv1.PlacementPlan) ([]*tgsrlv1.ActionResult, error)
-}
-
-// PlanCapabilityProvider advertises typed executor semantics. Callers must
-// treat providers that do not implement this optional interface as supporting
-// no plan capabilities; this prevents rolling upgrades from silently ignoring
-// safety-critical PlacementPlan fields.
-type PlanCapabilityProvider interface {
-	PlanCapabilities() []*tgsrlv1.CapabilityRequirement
-}
-
-// PlanCapabilityValidator lets an executor perform its capability handshake
-// against the exact plan shape. This is required when a guarantee, such as
-// compensation, depends on whether the plan contains one or several actions.
-type PlanCapabilityValidator interface {
-	ValidatePlanCapabilities(*tgsrlv1.PlacementPlan) error
-}
-
-// PlanCapabilities returns a detached capability list, or nil when the
-// provider has not opted in to the typed plan-capability handshake.
-func PlanCapabilities(resourceProvider ResourceProvider) []*tgsrlv1.CapabilityRequirement {
-	capable, ok := resourceProvider.(PlanCapabilityProvider)
-	if !ok {
-		return nil
-	}
-	result := make([]*tgsrlv1.CapabilityRequirement, 0, len(capable.PlanCapabilities()))
-	for _, capability := range capable.PlanCapabilities() {
-		if capability != nil {
-			result = append(result, proto.Clone(capability).(*tgsrlv1.CapabilityRequirement))
-		}
-	}
-	return result
-}
-
-// ValidatePlanCapabilities performs the strongest typed handshake exposed by
-// a provider and falls back to its static capability list.
-func ValidatePlanCapabilities(resourceProvider ResourceProvider, plan *tgsrlv1.PlacementPlan) error {
-	if validator, ok := resourceProvider.(PlanCapabilityValidator); ok {
-		return validator.ValidatePlanCapabilities(plan)
-	}
-	providerCapabilities, err := resourceProvider.Capabilities(context.Background())
-	if err != nil {
-		return err
-	}
-	if err := ValidateProviderCapabilityRequirements(providerCapabilities, plan); err != nil {
-		return err
-	}
-	return ValidatePlanCapabilitiesForRequirements(PlanCapabilities(resourceProvider), plan)
 }
 
 // CapabilityVersionAttributeKey returns the transitional CapabilitySet
@@ -408,13 +450,6 @@ func containsCapabilityName(values []string, expected string) bool {
 	return false
 }
 
-// SandboxEventInjector is an optional test/helper seam for providers that can
-// project synthetic runtime sandbox events into their local provider state.
-// It is intentionally excluded from the product ResourceProvider contract.
-type SandboxEventInjector interface {
-	ApplySandboxEvent(context.Context, SandboxEvent) error
-}
-
 // HealthStatus reports provider readiness without exposing provider-internal
 // implementation details.
 type HealthStatus struct {
@@ -460,10 +495,10 @@ type PlanRecord struct {
 	UpdatedAt        time.Time
 }
 
-// CompleteResourceProvider extends the baseline provider API without breaking
-// existing interface consumers that only require ResourceProvider.
+// CompleteResourceProvider is the production scheduler boundary: providers
+// must support durable transaction execution, health, watches, and recovery.
 type CompleteResourceProvider interface {
-	ResourceProvider
+	TransactionalResourceProvider
 	ID(context.Context) (string, error)
 	Health(context.Context) (*HealthStatus, error)
 	WatchResources(context.Context, uint64) (<-chan WatchedResourceEvent, error)
@@ -506,7 +541,11 @@ type MockResourceProvider struct {
 	planErrors   map[string]error
 	planRequests map[string]*tgsrlv1.PlacementPlan
 	planRecords  map[string]*PlanRecord
-	events       map[string]SandboxEvent
+	txPlans      map[string]*tgsrlv1.PlacementPlan
+	txReceipts   map[string]*TransactionReceipt
+	txBefore     map[string][]actionBeforeImage
+	txApplied    map[string][]bool
+	events       map[string]*tgsrlv1.SandboxEvent
 	actionPlans  map[string]string
 	resourceSeq  uint64
 	sandboxSeq   uint64

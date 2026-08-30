@@ -27,6 +27,10 @@ var (
 	ErrPlanNotReserved      = errors.New("state: plan is not reserved")
 	ErrPendingUnitNotFound  = errors.New("state: pending unit not found")
 	ErrInsufficientResource = errors.New("state: insufficient allocatable resources")
+	ErrTransactionNotFound  = errors.New("state: transaction not found")
+	ErrTransactionConflict  = errors.New("state: transaction conflict")
+	ErrTransactionImmutable = errors.New("state: transaction is immutable")
+	ErrTransactionLocked    = errors.New("state: transaction lock conflict")
 )
 
 // Clock makes expiry checks and committed timestamps deterministic in tests
@@ -120,6 +124,7 @@ type DurableState struct {
 	Snapshot           *tgsrlv1.ClusterSnapshot
 	Intents            []*tgsrlv1.SchedulingIntent
 	Reservations       []ReservationRecord
+	Transactions       []TransactionRecord
 	ProjectedSandboxes []*tgsrlv1.Sandbox
 	ResourceCursors    map[string]ProviderResourceCursor
 	SandboxCursors     map[string]ProviderSandboxCursor
@@ -139,6 +144,7 @@ type Store struct {
 	// identifies one immutable publish operation for the Store's lifetime.
 	idempotencyKeys map[string]intentIdentity
 	reservations    map[string]*planReservation
+	transactions    map[string]*TransactionRecord
 
 	// revisionChanged is closed after each committed revision and immediately
 	// replaced. Snapshot waiters copy the channel while holding mu.
@@ -151,6 +157,7 @@ type storeDurableState struct {
 	providerProjection providerProjectionState
 	idempotencyKeys    map[string]intentIdentity
 	reservations       map[string]*planReservation
+	transactions       map[string]*TransactionRecord
 }
 
 // NewStore creates a Store from an optional initial snapshot. The input is
@@ -162,6 +169,7 @@ func NewStore(initial *tgsrlv1.ClusterSnapshot, options ...Option) (*Store, erro
 		providerProjection: newProviderProjectionState(),
 		idempotencyKeys:    make(map[string]intentIdentity),
 		reservations:       make(map[string]*planReservation),
+		transactions:       make(map[string]*TransactionRecord),
 		revisionChanged:    make(chan struct{}),
 	}
 	for _, option := range options {

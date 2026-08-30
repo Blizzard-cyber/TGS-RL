@@ -32,6 +32,7 @@ type SchedulerState struct {
 	ActionResults      []*tgsrlv1.ActionResult
 	Cursor             uint64
 	Reservations       []ReservationRecord
+	Transactions       []state.TransactionRecord
 	ProjectedSandboxes []*tgsrlv1.Sandbox
 	ResourceCursors    map[string]state.ProviderResourceCursor
 	SandboxCursors     map[string]state.ProviderSandboxCursor
@@ -52,7 +53,7 @@ type ReservationRecord struct {
 	RetainedAllocationIDs []string
 }
 
-const checkpointFormatVersion = 2
+const checkpointFormatVersion = 3
 
 type checkpointEnvelope struct {
 	FormatVersion      int                               `json:"format_version"`
@@ -62,6 +63,7 @@ type checkpointEnvelope struct {
 	ActionResults      []string                          `json:"action_results,omitempty"`
 	Cursor             uint64                            `json:"cursor,omitempty"`
 	Reservations       []reservationEnvelope             `json:"reservations,omitempty"`
+	Transactions       []transactionEnvelope             `json:"transactions,omitempty"`
 	ProjectedSandboxes []string                          `json:"projected_sandboxes,omitempty"`
 	ResourceCursors    map[string]resourceCursorEnvelope `json:"resource_cursors,omitempty"`
 	SandboxCursors     map[string]sandboxCursorEnvelope  `json:"sandbox_cursors,omitempty"`
@@ -92,6 +94,48 @@ type reservationEnvelope struct {
 	Finalized             bool              `json:"finalized,omitempty"`
 	Succeeded             bool              `json:"succeeded,omitempty"`
 	RetainedAllocationIDs []string          `json:"retained_allocation_ids,omitempty"`
+}
+
+type receiptEnvelope struct {
+	Phase            string                    `json:"phase,omitempty"`
+	ObservedRevision uint64                    `json:"observed_revision,omitempty"`
+	Steps            []transactionStepEnvelope `json:"steps,omitempty"`
+	ErrorCode        string                    `json:"error_code,omitempty"`
+	ErrorMessage     string                    `json:"error_message,omitempty"`
+	PreparedAt       string                    `json:"prepared_at,omitempty"`
+	UpdatedAt        string                    `json:"updated_at,omitempty"`
+}
+
+type transactionStepEnvelope struct {
+	StepIndex             int    `json:"step_index,omitempty"`
+	ActionID              string `json:"action_id,omitempty"`
+	IdempotencyKey        string `json:"idempotency_key,omitempty"`
+	Status                string `json:"status,omitempty"`
+	Revision              uint64 `json:"revision,omitempty"`
+	ErrorCode             string `json:"error_code,omitempty"`
+	ErrorMessage          string `json:"error_message,omitempty"`
+	CompensationAttempted bool   `json:"compensation_attempted,omitempty"`
+	Compensated           bool   `json:"compensated,omitempty"`
+}
+
+type transactionEnvelope struct {
+	TransactionID         string           `json:"transaction_id"`
+	PlanID                string           `json:"plan_id"`
+	Plan                  string           `json:"plan"`
+	Generation            uint64           `json:"generation,omitempty"`
+	ProviderGeneration    uint64           `json:"provider_generation,omitempty"`
+	State                 string           `json:"state,omitempty"`
+	ReservationHeld       bool             `json:"reservation_held,omitempty"`
+	Terminal              bool             `json:"terminal,omitempty"`
+	FailureClass          string           `json:"failure_class,omitempty"`
+	FailureReason         string           `json:"failure_reason,omitempty"`
+	AffectedAllocationIDs []string         `json:"affected_allocation_ids,omitempty"`
+	ProviderReceipt       *receiptEnvelope `json:"provider_receipt,omitempty"`
+	CreatedAt             string           `json:"created_at,omitempty"`
+	UpdatedAt             string           `json:"updated_at,omitempty"`
+	FinalizedAt           string           `json:"finalized_at,omitempty"`
+	FinalizedSucceeded    bool             `json:"finalized_succeeded,omitempty"`
+	RetainedAllocationIDs []string         `json:"retained_allocation_ids,omitempty"`
 }
 
 type protectionEnvelope struct {
@@ -398,6 +442,80 @@ func encodeCheckpoint(state SchedulerState) (checkpointEnvelope, error) {
 		}
 		envelope.Reservations = append(envelope.Reservations, encoded)
 	}
+	for _, transaction := range state.Transactions {
+		encodedPlan, encodeErr := encodeProto(transaction.Plan)
+		if encodeErr != nil {
+			return checkpointEnvelope{}, encodeErr
+		}
+		encoded := transactionEnvelope{
+			TransactionID:         transaction.TransactionID,
+			PlanID:                transaction.PlanID,
+			Plan:                  encodedPlan,
+			Generation:            transaction.Generation,
+			ProviderGeneration:    transaction.ProviderGeneration,
+			State:                 string(transaction.State),
+			ReservationHeld:       transaction.ReservationHeld,
+			Terminal:              transaction.Terminal,
+			FailureClass:          string(transaction.FailureClass),
+			FailureReason:         transaction.FailureReason,
+			AffectedAllocationIDs: append([]string(nil), transaction.AffectedAllocationIDs...),
+			FinalizedSucceeded:    transaction.FinalizedSucceeded,
+			RetainedAllocationIDs: append([]string(nil), transaction.RetainedAllocationIDs...),
+		}
+		if transaction.CreatedAt != nil {
+			encoded.CreatedAt, encodeErr = encodeProto(transaction.CreatedAt)
+			if encodeErr != nil {
+				return checkpointEnvelope{}, encodeErr
+			}
+		}
+		if transaction.UpdatedAt != nil {
+			encoded.UpdatedAt, encodeErr = encodeProto(transaction.UpdatedAt)
+			if encodeErr != nil {
+				return checkpointEnvelope{}, encodeErr
+			}
+		}
+		if transaction.FinalizedAt != nil {
+			encoded.FinalizedAt, encodeErr = encodeProto(transaction.FinalizedAt)
+			if encodeErr != nil {
+				return checkpointEnvelope{}, encodeErr
+			}
+		}
+		if transaction.ProviderReceipt != nil {
+			receipt := &receiptEnvelope{
+				Phase:            transaction.ProviderReceipt.Phase,
+				ObservedRevision: transaction.ProviderReceipt.ObservedRevision,
+				ErrorCode:        transaction.ProviderReceipt.ErrorCode,
+				ErrorMessage:     transaction.ProviderReceipt.ErrorMessage,
+			}
+			if transaction.ProviderReceipt.PreparedAt != nil {
+				receipt.PreparedAt, encodeErr = encodeProto(transaction.ProviderReceipt.PreparedAt)
+				if encodeErr != nil {
+					return checkpointEnvelope{}, encodeErr
+				}
+			}
+			if transaction.ProviderReceipt.UpdatedAt != nil {
+				receipt.UpdatedAt, encodeErr = encodeProto(transaction.ProviderReceipt.UpdatedAt)
+				if encodeErr != nil {
+					return checkpointEnvelope{}, encodeErr
+				}
+			}
+			for _, step := range transaction.ProviderReceipt.Steps {
+				receipt.Steps = append(receipt.Steps, transactionStepEnvelope{
+					StepIndex:             step.StepIndex,
+					ActionID:              step.ActionID,
+					IdempotencyKey:        step.IdempotencyKey,
+					Status:                string(step.Status),
+					Revision:              step.Revision,
+					ErrorCode:             step.ErrorCode,
+					ErrorMessage:          step.ErrorMessage,
+					CompensationAttempted: step.CompensationAttempted,
+					Compensated:           step.Compensated,
+				})
+			}
+			encoded.ProviderReceipt = receipt
+		}
+		envelope.Transactions = append(envelope.Transactions, encoded)
+	}
 	return envelope, nil
 }
 
@@ -406,7 +524,7 @@ func decodeCheckpoint(payload []byte, recovered *SchedulerState) error {
 	if err := json.Unmarshal(payload, &envelope); err != nil {
 		return err
 	}
-	if envelope.FormatVersion != checkpointFormatVersion {
+	if envelope.FormatVersion != 2 && envelope.FormatVersion != checkpointFormatVersion {
 		return fmt.Errorf("unsupported format version %d", envelope.FormatVersion)
 	}
 	if envelope.Snapshot != "" {
@@ -535,6 +653,83 @@ func decodeCheckpoint(payload []byte, recovered *SchedulerState) error {
 			record.PendingUnits = append(record.PendingUnits, unit)
 		}
 		recovered.Reservations = append(recovered.Reservations, record)
+	}
+	if envelope.FormatVersion >= 3 {
+		for _, encoded := range envelope.Transactions {
+			record := state.TransactionRecord{
+				TransactionID:         encoded.TransactionID,
+				PlanID:                encoded.PlanID,
+				Generation:            encoded.Generation,
+				ProviderGeneration:    encoded.ProviderGeneration,
+				State:                 state.TransactionState(encoded.State),
+				ReservationHeld:       encoded.ReservationHeld,
+				Terminal:              encoded.Terminal,
+				FailureClass:          state.FailureClass(encoded.FailureClass),
+				FailureReason:         encoded.FailureReason,
+				AffectedAllocationIDs: append([]string(nil), encoded.AffectedAllocationIDs...),
+				FinalizedSucceeded:    encoded.FinalizedSucceeded,
+				RetainedAllocationIDs: append([]string(nil), encoded.RetainedAllocationIDs...),
+			}
+			record.Plan = &tgsrlv1.PlacementPlan{}
+			if err := decodeProto(encoded.Plan, record.Plan); err != nil {
+				return err
+			}
+			if record.ProviderGeneration == 0 {
+				record.ProviderGeneration = 1
+			}
+			if encoded.CreatedAt != "" {
+				record.CreatedAt = &timestamppb.Timestamp{}
+				if err := decodeProto(encoded.CreatedAt, record.CreatedAt); err != nil {
+					return err
+				}
+			}
+			if encoded.UpdatedAt != "" {
+				record.UpdatedAt = &timestamppb.Timestamp{}
+				if err := decodeProto(encoded.UpdatedAt, record.UpdatedAt); err != nil {
+					return err
+				}
+			}
+			if encoded.FinalizedAt != "" {
+				record.FinalizedAt = &timestamppb.Timestamp{}
+				if err := decodeProto(encoded.FinalizedAt, record.FinalizedAt); err != nil {
+					return err
+				}
+			}
+			if encoded.ProviderReceipt != nil {
+				record.ProviderReceipt = &state.Receipt{
+					Phase:            encoded.ProviderReceipt.Phase,
+					ObservedRevision: encoded.ProviderReceipt.ObservedRevision,
+					ErrorCode:        encoded.ProviderReceipt.ErrorCode,
+					ErrorMessage:     encoded.ProviderReceipt.ErrorMessage,
+				}
+				if encoded.ProviderReceipt.PreparedAt != "" {
+					record.ProviderReceipt.PreparedAt = &timestamppb.Timestamp{}
+					if err := decodeProto(encoded.ProviderReceipt.PreparedAt, record.ProviderReceipt.PreparedAt); err != nil {
+						return err
+					}
+				}
+				if encoded.ProviderReceipt.UpdatedAt != "" {
+					record.ProviderReceipt.UpdatedAt = &timestamppb.Timestamp{}
+					if err := decodeProto(encoded.ProviderReceipt.UpdatedAt, record.ProviderReceipt.UpdatedAt); err != nil {
+						return err
+					}
+				}
+				for _, step := range encoded.ProviderReceipt.Steps {
+					record.ProviderReceipt.Steps = append(record.ProviderReceipt.Steps, state.TransactionStep{
+						StepIndex:             step.StepIndex,
+						ActionID:              step.ActionID,
+						IdempotencyKey:        step.IdempotencyKey,
+						Status:                state.EffectStatus(step.Status),
+						Revision:              step.Revision,
+						ErrorCode:             step.ErrorCode,
+						ErrorMessage:          step.ErrorMessage,
+						CompensationAttempted: step.CompensationAttempted,
+						Compensated:           step.Compensated,
+					})
+				}
+			}
+			recovered.Transactions = append(recovered.Transactions, record)
+		}
 	}
 	return nil
 }

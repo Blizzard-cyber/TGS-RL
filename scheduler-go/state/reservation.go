@@ -51,6 +51,10 @@ func (s *Store) ReservePlan(plan *tgsrlv1.PlacementPlan) (*tgsrlv1.ClusterSnapsh
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	return s.reservePlanLocked(plan)
+}
+
+func (s *Store) reservePlanLocked(plan *tgsrlv1.PlacementPlan) (*tgsrlv1.ClusterSnapshot, error) {
 	if existing, ok := s.reservations[plan.GetPlanId()]; ok {
 		if proto.Equal(existing.plan, plan) {
 			return cloneSnapshot(s.snapshot), ErrPlanAlreadyReserved
@@ -117,6 +121,7 @@ func (s *Store) ReservePlan(plan *tgsrlv1.PlacementPlan) (*tgsrlv1.ClusterSnapsh
 		reservation.pendingUnits = append(reservation.pendingUnits, clonePendingUnit(unit))
 		reservation.allocationIDs = append(reservation.allocationIDs, allocationID)
 		actionID := actionIDForBinding(plan, binding.GetBindingId())
+		priority := unit.GetPriority()
 		working.Allocations = append(working.Allocations, &tgsrlv1.Allocation{
 			AllocationId:  allocationID,
 			ExecutionId:   plan.GetExecutionId(),
@@ -137,6 +142,9 @@ func (s *Store) ReservePlan(plan *tgsrlv1.PlacementPlan) (*tgsrlv1.ClusterSnapsh
 			DecisionId:    plan.GetDecisionId(),
 			PlanId:        plan.GetPlanId(),
 			ActionId:      actionID,
+			Priority:      &priority,
+			SandboxId:     binding.GetSandboxId(),
+			BindingId:     binding.GetBindingId(),
 		})
 		delete(pending, binding.GetPendingUnitId())
 	}
@@ -199,11 +207,25 @@ func (s *Store) FinalizePlanResults(plan *tgsrlv1.PlacementPlan, succeeded bool,
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	return s.finalizePlanResultsLocked(plan, succeeded, results)
+}
+
+func (s *Store) finalizePlanResultsLocked(plan *tgsrlv1.PlacementPlan, succeeded bool, results []*tgsrlv1.ActionResult) (*tgsrlv1.ClusterSnapshot, error) {
 	reservation, ok := s.reservations[plan.GetPlanId()]
 	if !ok || !proto.Equal(reservation.plan, plan) {
 		return nil, fmt.Errorf("%w: %q", ErrPlanNotReserved, plan.GetPlanId())
 	}
 	purpose, _ := effectivePlanPurpose(plan)
+	if purpose == tgsrlv1.PlanPurpose_PLAN_PURPOSE_PREEMPTION {
+		snapshot, retainedIDs, err := finalizePreemptionPlanResultsLocked(s, plan, reservation, succeeded, results)
+		if err != nil {
+			return nil, err
+		}
+		reservation.finalized = true
+		reservation.succeeded = succeeded
+		reservation.retainedAllocationIDs = retainedIDs
+		return snapshot, nil
+	}
 	if isMutationPurpose(purpose) {
 		outcome := mutationOutcome(plan, reservation, succeeded, results)
 		if reservation.finalized {

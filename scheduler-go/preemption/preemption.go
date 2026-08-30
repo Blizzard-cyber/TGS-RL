@@ -1,7 +1,6 @@
 package preemption
 
 import (
-	"math"
 	"sort"
 
 	tgsrlv1 "github.com/Blizzard-cyber/TGS-RL/gen/go/tgsrl/v1"
@@ -46,37 +45,34 @@ func (LowPriorityFirst) Pick(snapshot *tgsrlv1.ClusterSnapshot, unit *tgsrlv1.Pe
 	}
 	victims := make([]Victim, 0, len(snapshot.GetAllocations()))
 	for _, allocation := range snapshot.GetAllocations() {
-		if allocation.GetState() != tgsrlv1.AllocationState_ALLOCATION_STATE_ACTIVE {
+		if allocation.GetState() != tgsrlv1.AllocationState_ALLOCATION_STATE_ACTIVE || allocation.Priority == nil {
 			continue
 		}
-		if allocationPriority(snapshot, allocation) >= unit.GetPriority() {
+		if allocation.GetPriority() >= unit.GetPriority() {
 			continue
 		}
-		// The current Allocation DTO does not carry authoritative workload
-		// priority. Treat only metadata-complete, explicitly lower-priority
-		// allocations as candidates; unknown priority is handled conservatively.
-		pressure := float64(allocationPriority(snapshot, allocation))
+		pressure := float64(allocation.GetPriority())
 		victims = append(victims, Victim{Allocation: allocation, Pressure: pressure})
 	}
 	sort.SliceStable(victims, func(i, j int) bool {
 		if victims[i].Pressure != victims[j].Pressure {
 			return victims[i].Pressure < victims[j].Pressure
 		}
+		leftDevices := append([]string(nil), victims[i].Allocation.GetDeviceIds()...)
+		rightDevices := append([]string(nil), victims[j].Allocation.GetDeviceIds()...)
+		sort.Strings(leftDevices)
+		sort.Strings(rightDevices)
+		for index := 0; index < len(leftDevices) && index < len(rightDevices); index++ {
+			if leftDevices[index] != rightDevices[index] {
+				return leftDevices[index] < rightDevices[index]
+			}
+		}
+		if len(leftDevices) != len(rightDevices) {
+			return len(leftDevices) < len(rightDevices)
+		}
 		return victims[i].Allocation.GetAllocationId() < victims[j].Allocation.GetAllocationId()
 	})
 	return victims
-}
-
-func allocationPriority(snapshot *tgsrlv1.ClusterSnapshot, allocation *tgsrlv1.Allocation) int32 {
-	if snapshot == nil || allocation == nil {
-		return 0
-	}
-	for _, unit := range snapshot.GetPendingUnits() {
-		if unit.GetPendingUnitId() == allocation.GetPendingUnitId() {
-			return unit.GetPriority()
-		}
-	}
-	return math.MaxInt32
 }
 
 // CanRelease verifies that a victim can be represented as an explicit,
@@ -86,14 +82,12 @@ func CanRelease(snapshot *tgsrlv1.ClusterSnapshot, victim Victim, safePoint bool
 	if !safePoint {
 		return FallbackUnsafe, false
 	}
-	if allocation == nil || allocation.GetAllocationId() == "" || allocation.GetPendingUnitId() == "" || allocation.GetRuntimeUnitId() == "" || allocation.GetGeneration() == 0 || len(allocation.GetDeviceIds()) == 0 {
+	if allocation == nil || allocation.Priority == nil || allocation.GetAllocationId() == "" || allocation.GetPendingUnitId() == "" || allocation.GetRuntimeUnitId() == "" || allocation.GetSandboxId() == "" || allocation.GetBindingId() == "" || allocation.GetGeneration() == 0 || len(allocation.GetDeviceIds()) != 1 {
 		return FallbackNotExpressible, false
 	}
-	for _, deviceID := range allocation.GetDeviceIds() {
-		for _, device := range snapshot.GetDevices() {
-			if device.GetDeviceId() == deviceID && supportsRelease(device.GetCapabilities()) {
-				return "", true
-			}
+	for _, device := range snapshot.GetDevices() {
+		if device.GetDeviceId() == allocation.GetDeviceIds()[0] && supportsRelease(device.GetCapabilities()) {
+			return "", true
 		}
 	}
 	return FallbackNotExpressible, false

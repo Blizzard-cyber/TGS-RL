@@ -208,9 +208,6 @@ func New(config Config) (*Scheduler, error) {
 	return scheduler, nil
 }
 
-// NewScheduler is an explicit-name alias useful at service composition sites.
-func NewScheduler(config Config) (*Scheduler, error) { return New(config) }
-
 // Guard returns the scheduler's configured protection guard.
 func (s *Scheduler) Guard() *protection.Guard {
 	if s == nil {
