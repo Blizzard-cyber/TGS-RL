@@ -2,6 +2,7 @@ package nvidia
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strconv"
 	"strings"
@@ -13,47 +14,42 @@ import (
 
 // CommandRuntimeBackend delegates lifecycle control to an argv-only helper.
 type CommandRuntimeBackend struct {
-	executor CommandExecutor
-	timeout  time.Duration
-	binary   string
+	executor  CommandExecutor
+	timeout   time.Duration
+	binary    string
+	statePath string
 }
 
 // NewCommandRuntimeBackend constructs a runtime helper backend.
 func NewCommandRuntimeBackend(executor CommandExecutor, timeout time.Duration) *CommandRuntimeBackend {
+	return NewCommandRuntimeBackendWithConfig(executor, timeout, "", "")
+}
+
+func NewCommandRuntimeBackendWithConfig(executor CommandExecutor, timeout time.Duration, binary, statePath string) *CommandRuntimeBackend {
 	if executor == nil {
 		executor = NewExecCommandExecutor()
 	}
 	if timeout <= 0 {
 		timeout = defaultCommandTimeout
 	}
-	return &CommandRuntimeBackend{executor: executor, timeout: timeout, binary: "tgsrl-nvidia-runtime"}
+	if strings.TrimSpace(binary) == "" {
+		binary = "tgsrl-nvidia-runtime"
+	}
+	return &CommandRuntimeBackend{executor: executor, timeout: timeout, binary: binary, statePath: strings.TrimSpace(statePath)}
 }
 
 // Discover verifies the helper protocol before advertising lifecycle actions.
 func (b *CommandRuntimeBackend) Discover(ctx context.Context) (*RuntimeBackendStatus, error) {
-	command := Command{Argv: []string{b.binary, "capabilities", "--format=csv"}}
-	executionContext, cancel := commandContext(ctx, b.timeout)
-	defer cancel()
-	result, err := b.executor.Execute(executionContext, command)
+	handshake, err := b.discoverCapabilities(ctx)
 	if isCommandUnavailable(err) {
 		return &RuntimeBackendStatus{Reason: "nvidia runtime helper is unavailable"}, nil
 	}
 	if err != nil {
 		return nil, err
 	}
-	handshake, handshakeErr := parseBackendHandshake(result.Stdout, "tgsrl-nvidia-runtime", map[string]tgsrlv1.ActionType{
-		"pause":   tgsrlv1.ActionType_ACTION_TYPE_PAUSE,
-		"resume":  tgsrlv1.ActionType_ACTION_TYPE_RESUME,
-		"sleep":   tgsrlv1.ActionType_ACTION_TYPE_SLEEP,
-		"offload": tgsrlv1.ActionType_ACTION_TYPE_OFFLOAD,
-	})
-	if handshakeErr != nil {
-		return &RuntimeBackendStatus{Reason: handshakeErr.Error()}, nil
-	}
-	if len(handshake.actions) == 0 || !handshake.features["generation_fence"] || !handshake.features["idempotency"] {
-		return &RuntimeBackendStatus{Reason: "nvidia runtime helper reported no supported actions"}, nil
-	}
-	sandboxCommand := Command{Argv: []string{b.binary, "discover", "--format=csv"}}
+	sandboxCommand := b.command([]string{b.binary, "discover", "--format=csv"})
+	executionContext, cancel := commandContext(ctx, b.timeout)
+	defer cancel()
 	sandboxResult, sandboxErr := b.executor.Execute(executionContext, sandboxCommand)
 	if sandboxErr != nil {
 		return nil, sandboxErr
@@ -65,6 +61,54 @@ func (b *CommandRuntimeBackend) Discover(ctx context.Context) (*RuntimeBackendSt
 	return &RuntimeBackendStatus{Available: true, SupportedActions: handshake.actions, Sandboxes: sandboxes, SandboxesAuthoritative: true}, nil
 }
 
+func (b *CommandRuntimeBackend) DiscoverReceipts(ctx context.Context) ([]RecoveredAction, error) {
+	if _, err := b.discoverCapabilities(ctx); err != nil {
+		if isCommandUnavailable(err) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	command := b.command([]string{b.binary, "receipts", "--format=csv"})
+	executionContext, cancel := commandContext(ctx, b.timeout)
+	defer cancel()
+	result, err := b.executor.Execute(executionContext, command)
+	if isCommandUnavailable(err) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return parseRecoveredActions(result.Stdout)
+}
+
+func (b *CommandRuntimeBackend) discoverCapabilities(ctx context.Context) (backendHandshake, error) {
+	command := b.command([]string{b.binary, "capabilities", "--format=csv"})
+	executionContext, cancel := commandContext(ctx, b.timeout)
+	defer cancel()
+	result, err := b.executor.Execute(executionContext, command)
+	if err != nil {
+		return backendHandshake{}, err
+	}
+	handshake, err := parseBackendHandshake(result.Stdout, "tgsrl-nvidia-runtime", map[string]tgsrlv1.ActionType{
+		"pause":   tgsrlv1.ActionType_ACTION_TYPE_PAUSE,
+		"resume":  tgsrlv1.ActionType_ACTION_TYPE_RESUME,
+		"sleep":   tgsrlv1.ActionType_ACTION_TYPE_SLEEP,
+		"offload": tgsrlv1.ActionType_ACTION_TYPE_OFFLOAD,
+	})
+	if err != nil {
+		return backendHandshake{}, err
+	}
+	if len(handshake.actions) == 0 {
+		return backendHandshake{}, errors.New("nvidia runtime helper reported no supported actions")
+	}
+	for _, feature := range []string{"generation_fence", "idempotency", "durable_receipts", "safe_point", "checkpoint", "reload", "readiness"} {
+		if !handshake.features[feature] {
+			return backendHandshake{}, fmt.Errorf("nvidia runtime helper does not advertise required feature %q", feature)
+		}
+	}
+	return handshake, nil
+}
+
 func parseRuntimeSandboxes(output []byte) ([]base.Sandbox, error) {
 	if strings.TrimSpace(string(output)) == "" {
 		return nil, nil
@@ -74,8 +118,8 @@ func parseRuntimeSandboxes(output []byte) ([]base.Sandbox, error) {
 	seen := make(map[string]struct{}, len(rows))
 	for row, raw := range rows {
 		fields := strings.Split(raw, ",")
-		if len(fields) != 6 {
-			return nil, fmt.Errorf("nvidia runtime row %d has %d fields, want 6", row+1, len(fields))
+		if len(fields) != 6 && len(fields) != 9 {
+			return nil, fmt.Errorf("nvidia runtime row %d has %d fields, want 6 or 9", row+1, len(fields))
 		}
 		for index := range fields {
 			fields[index] = strings.TrimSpace(fields[index])
@@ -104,7 +148,16 @@ func parseRuntimeSandboxes(output []byte) ([]base.Sandbox, error) {
 		if !ok {
 			return nil, fmt.Errorf("nvidia runtime row %d has invalid state %q", row+1, fields[2])
 		}
-		result = append(result, base.Sandbox{SandboxID: fields[0], Generation: generation, State: state, SafePoint: safePoint, Offloaded: offloaded, Priority: int32(priority)})
+		sandbox := base.Sandbox{SandboxID: fields[0], Generation: generation, State: state, SafePoint: safePoint, Offloaded: offloaded, Priority: int32(priority)}
+		if len(fields) == 9 {
+			share, parseErr := strconv.ParseFloat(fields[8], 64)
+			if parseErr != nil || fields[6] == "" || !strings.HasPrefix(fields[7], "MIG-") || !validShare(share) {
+				return nil, fmt.Errorf("nvidia runtime row %d has invalid binding metadata", row+1)
+			}
+			sandbox.Share = share
+			sandbox.Binding = &tgsrlv1.Binding{BindingId: fields[6], SandboxId: fields[0], Generation: generation, DeviceIds: []string{fields[7]}, Resources: &tgsrlv1.ResourceVector{AcceleratorUnits: share}}
+		}
+		result = append(result, sandbox)
 	}
 	return result, nil
 }
@@ -129,7 +182,13 @@ func (b *CommandRuntimeBackend) Apply(ctx context.Context, request BackendAction
 	if verb == "" {
 		return nil, fmt.Errorf("%w: runtime backend does not support %s", base.ErrUnsupported, action.GetActionType())
 	}
-	command := Command{Argv: []string{b.binary, verb, "--sandbox", actionSandboxID(action), "--generation", strconv.FormatUint(action.GetExpectedGeneration(), 10), "--idempotency-key", action.GetIdempotencyKey()}}
+	if actionSandboxID(action) == "" || action.GetExpectedGeneration() == 0 || action.GetIdempotencyKey() == "" {
+		return nil, fmt.Errorf("%w: runtime action requires sandbox, generation, and idempotency key", base.ErrInvalidArgument)
+	}
+	argv := []string{b.binary, verb, "--sandbox", actionSandboxID(action), "--generation", strconv.FormatUint(action.GetExpectedGeneration(), 10), "--idempotency-key", action.GetIdempotencyKey()}
+	argv = appendHelperReceiptArgs(argv, request.Receipt)
+	argv = append(argv, "--action-id", action.GetActionId(), "--plan-id", action.GetPlanId())
+	command := b.command(argv)
 	result := &BackendActionResult{Detail: "nvidia runtime " + verb + " applied", Commands: []Command{command}}
 	if request.DryRun {
 		return result, nil
@@ -139,9 +198,33 @@ func (b *CommandRuntimeBackend) Apply(ctx context.Context, request BackendAction
 	commandResult, err := b.executor.Execute(executionContext, command)
 	result.Results = []CommandResult{commandResult}
 	if err != nil {
+		result.MutationMayHaveApplied = runtimeMutationMayHaveApplied(err)
 		return result, err
 	}
 	return result, nil
+}
+
+func (b *CommandRuntimeBackend) command(argv []string) Command {
+	env := map[string]string{}
+	if b.statePath != "" {
+		env["TGSRL_NVIDIA_RUNTIME_STATE"] = b.statePath
+	}
+	return Command{Argv: argv, Env: env}
+}
+
+func runtimeMutationMayHaveApplied(err error) bool {
+	var commandErr *CommandError
+	if !errors.As(err, &commandErr) {
+		return true
+	}
+	switch commandErr.Kind {
+	case CommandFailureTimeout, CommandFailureCanceled:
+		return true
+	case CommandFailureExit:
+		return commandErr.ExitCode == 75
+	default:
+		return false
+	}
 }
 
 func runtimeVerb(action *tgsrlv1.Action) string {

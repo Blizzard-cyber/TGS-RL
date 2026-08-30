@@ -28,9 +28,10 @@ const (
 	compatPlannerOffloadAfter   = "tgsrl.io/adaptive.offload-after"
 )
 
-// EvaluateAdaptive preserves legacy admission by delegating it to
-// EvaluateWithContext. Only already-satisfied work reaches the pure adaptive
-// coordinator. Projected sandboxes and recent decisions are explicit inputs.
+// EvaluateAdaptive delegates placement candidate generation to
+// EvaluateWithContext, then arbitrates admission actions together with the
+// current tick's safety, recovery, and runtime proposals. Projected sandboxes
+// and recent decisions are explicit inputs.
 func (s *Scheduler) EvaluateAdaptive(input *AdaptiveEvaluationInput) (*tgsrlv1.PlacementPlan, *tgsrlv1.DecisionRecord, error) {
 	if input == nil {
 		return nil, nil, &ValidationError{Field: "adaptive_input", Reason: "must not be nil"}
@@ -62,12 +63,51 @@ func (s *Scheduler) EvaluateAdaptive(input *AdaptiveEvaluationInput) (*tgsrlv1.P
 		if ctx == nil {
 			ctx = input.EvaluationContext
 		}
-		coordinated, coordinateErr := s.coordinator.Plan(PlanningInput{Snapshot: input.Snapshot, Intent: input.Intent, EvaluationContext: ctx, Sandboxes: input.Sandboxes, RecentDecisions: input.RecentDecisions, Directives: input.Directives, Signals: input.Signals, AdmissionPlan: plan, DecisionID: record.GetDecisionId(), SafePoint: input.SafePoint, ContractAggregate: input.ContractAggregate})
+		safe, aggregate, evaluations, contractErr := resolveAdaptiveContract(input, input.Snapshot, input.Intent, ctx, s.safePointKey)
+		if contractErr != nil {
+			return nil, nil, &ValidationError{Field: "intent.execution_contract", Reason: contractErr.Error()}
+		}
+		directives := cloneDirectives(input.Directives)
+		if directivesEmpty(directives) {
+			directives, err = parseCompatibilityDirectives(input.Intent.GetLabels())
+			if err != nil {
+				return nil, nil, &ValidationError{Field: "intent.labels", Reason: err.Error()}
+			}
+		}
+		coordinated, coordinateErr := s.coordinator.Plan(PlanningInput{Snapshot: input.Snapshot, Intent: input.Intent, EvaluationContext: ctx, Sandboxes: input.Sandboxes, RecentDecisions: input.RecentDecisions, Directives: directives, Signals: input.Signals, AdmissionPlan: plan, DecisionID: record.GetDecisionId(), SafePoint: safe, ContractAggregate: aggregate})
 		if coordinateErr != nil {
 			return nil, nil, coordinateErr
 		}
 		applyPlannerResult(record, coordinated)
-		return plan, record, nil
+		if coordinated.Plan == nil {
+			if aggregate.Blocking {
+				appendBlockingContractRejections(record, evaluations)
+				return s.fallbackResult(input.Snapshot, input.Intent, ctx.GetEvaluationTime().AsTime(), record, contractFallbackReason(aggregate))
+			}
+			if coordinated.FallbackReason != "" {
+				return s.fallbackResult(input.Snapshot, input.Intent, ctx.GetEvaluationTime().AsTime(), record, coordinated.FallbackReason)
+			}
+			return plan, record, nil
+		}
+		if aggregate.Blocking && !plannerResultSatisfiesPause(coordinated) {
+			appendBlockingContractRejections(record, evaluations)
+			return s.fallbackResult(input.Snapshot, input.Intent, ctx.GetEvaluationTime().AsTime(), record, contractFallbackReason(aggregate))
+		}
+		if err := validateActionPlan(coordinated.Plan, ctx); err != nil {
+			markSelectedPlannerRejected(record, "ACTION_POLICY_"+err.Error())
+			return s.fallbackResult(input.Snapshot, input.Intent, ctx.GetEvaluationTime().AsTime(), record, "ACTION_POLICY_"+err.Error())
+		}
+		guardKey := input.Intent.GetExecutionId() + "/" + input.Intent.GetStageId()
+		if guardDecision := s.guard.CheckN(guardKey, float64(selectedPlannerUtility(record))/1e9, len(coordinated.Plan.GetActions())); !guardDecision.Allowed {
+			reason := "PROTECTION_" + guardDecision.Reason
+			markSelectedPlannerRejected(record, reason, guardEvidence(s.guard, guardDecision.Reason)...)
+			return s.fallbackResult(input.Snapshot, input.Intent, ctx.GetEvaluationTime().AsTime(), record, reason)
+		}
+		record.SelectedPlan = proto.Clone(coordinated.Plan).(*tgsrlv1.PlacementPlan)
+		record.Fallback = false
+		record.FallbackReason = ""
+		record.Score = selectedAdmissionScore(record, coordinated.Plan)
+		return proto.Clone(coordinated.Plan).(*tgsrlv1.PlacementPlan), proto.Clone(record).(*tgsrlv1.DecisionRecord), nil
 	}
 
 	// Reuse validation/context normalization and decision metadata without
@@ -171,12 +211,40 @@ func applyPlannerResult(record *tgsrlv1.DecisionRecord, result PlannerResult) {
 }
 
 func selectedPlannerUtility(record *tgsrlv1.DecisionRecord) int64 {
+	var result int64
 	for _, evidence := range record.GetPlannerEvidence() {
 		if evidence.GetDisposition() == tgsrlv1.PlannerDisposition_PLANNER_DISPOSITION_SELECTED {
-			return evidence.GetUtilityNanos()
+			result = saturatingUtilityAdd(result, evidence.GetUtilityNanos())
 		}
 	}
-	return 0
+	return result
+}
+
+func selectedAdmissionScore(record *tgsrlv1.DecisionRecord, plan *tgsrlv1.PlacementPlan) float64 {
+	if record == nil || plan == nil || plan.GetPurpose() != tgsrlv1.PlanPurpose_PLAN_PURPOSE_ADMISSION {
+		return 0
+	}
+	selectedBindings := make(map[string]struct{}, len(plan.GetBindings()))
+	for _, binding := range plan.GetBindings() {
+		if binding != nil {
+			selectedBindings[binding.GetBindingId()] = struct{}{}
+		}
+	}
+	var score float64
+	count := 0
+	for _, candidate := range record.GetCandidates() {
+		for _, binding := range candidate.GetPlan().GetBindings() {
+			if _, selected := selectedBindings[binding.GetBindingId()]; selected {
+				score += candidate.GetScore()
+				count++
+				break
+			}
+		}
+	}
+	if count == 0 {
+		return 0
+	}
+	return roundScore(score / float64(count))
 }
 
 func markSelectedPlannerRejected(record *tgsrlv1.DecisionRecord, reason string, fields ...*tgsrlv1.SemanticField) {

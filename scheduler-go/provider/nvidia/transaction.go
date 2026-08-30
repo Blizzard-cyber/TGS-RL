@@ -2,6 +2,8 @@ package nvidia
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"sort"
 	"strings"
@@ -31,6 +33,26 @@ func (p *Provider) PreparePlan(ctx context.Context, transactionID string, genera
 		return nil, err
 	}
 	p.mu.Lock()
+	if existing := p.txPlans[transactionID]; existing != nil {
+		if !proto.Equal(existing, plan) {
+			p.mu.Unlock()
+			return nil, fmt.Errorf("%w: transaction_id %q was reused with different content", base.ErrIdempotencyConflict, transactionID)
+		}
+		receipt := p.txReceipts[transactionID]
+		if receipt == nil || receipt.Generation != generation {
+			p.mu.Unlock()
+			return nil, fmt.Errorf("%w: transaction %q generation mismatch", base.ErrGenerationFenced, transactionID)
+		}
+		p.mu.Unlock()
+		return cloneTransactionReceipt(receipt), nil
+	}
+	p.mu.Unlock()
+	actions := orderedPlanActions(plan)
+	recoveredReceipt, err := p.recoveredTransactionReceipt(transactionID, generation, plan, actions)
+	if err != nil {
+		return nil, err
+	}
+	p.mu.Lock()
 	defer p.mu.Unlock()
 	if existing := p.txPlans[transactionID]; existing != nil {
 		if !proto.Equal(existing, plan) {
@@ -42,15 +64,84 @@ func (p *Provider) PreparePlan(ctx context.Context, transactionID string, genera
 		}
 		return cloneTransactionReceipt(receipt), nil
 	}
-	actions := orderedPlanActions(plan)
 	receipt := &base.TransactionReceipt{TransactionID: transactionID, PlanID: plan.GetPlanId(), Generation: generation, Phase: base.TransactionPhasePrepared, PreparedAt: p.now(), UpdatedAt: p.now(), Effects: make([]base.TransactionEffect, len(actions))}
 	for index, action := range actions {
 		receipt.Effects[index] = base.TransactionEffect{StepIndex: index, ActionID: action.GetActionId(), IdempotencyKey: action.GetIdempotencyKey(), Status: base.EffectStatusNotApplied, Generation: generation}
+	}
+	if recoveredReceipt != nil {
+		receipt = recoveredReceipt
 	}
 	p.txPlans[transactionID] = clonePlacementPlan(plan)
 	p.txReceipts[transactionID] = cloneTransactionReceipt(receipt)
 	p.plans[plan.GetPlanId()] = &base.PlanRecord{Plan: clonePlacementPlan(plan), Status: base.PlanStatusInFlight, ObservedRevision: p.revision, UpdatedAt: p.now()}
 	return cloneTransactionReceipt(receipt), nil
+}
+
+func (p *Provider) recoveredTransactionReceipt(transactionID string, generation uint64, plan *tgsrlv1.PlacementPlan, actions []*tgsrlv1.Action) (*base.TransactionReceipt, error) {
+	v2, ok := p.driver.(V2Driver)
+	if !ok {
+		return nil, nil
+	}
+	planDigest, err := placementPlanDigest(plan)
+	if err != nil {
+		return nil, err
+	}
+	receipts := v2.RecoveredActions()
+	effects := make([]base.TransactionEffect, len(actions))
+	for index, action := range actions {
+		effects[index] = base.TransactionEffect{StepIndex: index, ActionID: action.GetActionId(), IdempotencyKey: action.GetIdempotencyKey(), Status: base.EffectStatusNotApplied, Generation: generation}
+	}
+	found := 0
+	failed := false
+	seenSteps := make(map[int]struct{}, len(actions))
+	for _, recovered := range receipts {
+		if recovered.PlanID != transactionID {
+			continue
+		}
+		if recovered.Generation != generation {
+			return nil, fmt.Errorf("%w: recovered transaction %q generation mismatch", base.ErrGenerationFenced, transactionID)
+		}
+		if recovered.ExpectedActions != len(actions) || recovered.PlanDigest != planDigest || recovered.StepIndex < 0 || recovered.StepIndex >= len(actions) {
+			return nil, fmt.Errorf("%w: recovered transaction %q receipt set does not match the durable plan", base.ErrFailedPrecondition, transactionID)
+		}
+		if _, duplicate := seenSteps[recovered.StepIndex]; duplicate {
+			return nil, fmt.Errorf("%w: recovered transaction %q duplicates step %d", base.ErrFailedPrecondition, transactionID, recovered.StepIndex)
+		}
+		action := actions[recovered.StepIndex]
+		digest, digestErr := actionDigest(action)
+		if digestErr != nil {
+			return nil, digestErr
+		}
+		actionGeneration := recovered.ActionGeneration
+		if actionGeneration == 0 {
+			actionGeneration = recovered.Generation
+		}
+		if recovered.ActionID != action.GetActionId() || recovered.IdempotencyKey != action.GetIdempotencyKey() || recovered.SandboxID != actionSandboxID(action) || actionGeneration != receiptActionGeneration(action) || recovered.CommandDigest != digest {
+			return nil, fmt.Errorf("%w: recovered transaction %q step %d identity does not match the durable plan", base.ErrIdempotencyConflict, transactionID, recovered.StepIndex)
+		}
+		status := base.EffectStatusApplied
+		if !recovered.Succeeded {
+			status = base.EffectStatusFailed
+			failed = true
+		}
+		effects[recovered.StepIndex] = base.TransactionEffect{StepIndex: recovered.StepIndex, ActionID: recovered.ActionID, IdempotencyKey: recovered.IdempotencyKey, Status: status, Generation: generation, ErrorCode: recovered.ErrorCode, ErrorMessage: recovered.ErrorMessage}
+		seenSteps[recovered.StepIndex] = struct{}{}
+		found++
+	}
+	if found == 0 {
+		return nil, nil
+	}
+	for index := 0; index < found; index++ {
+		if _, ok := seenSteps[index]; !ok {
+			return nil, fmt.Errorf("%w: recovered transaction %q receipts are not an applied prefix", base.ErrFailedPrecondition, transactionID)
+		}
+	}
+	phase := base.TransactionPhaseExecuting
+	if failed {
+		phase = base.TransactionPhaseDegraded
+	}
+	now := p.now()
+	return &base.TransactionReceipt{TransactionID: transactionID, PlanID: plan.GetPlanId(), Generation: generation, Phase: phase, PreparedAt: now, UpdatedAt: now, Effects: effects}, nil
 }
 
 // ExecuteStep applies one ordered provider transaction step.
@@ -73,7 +164,16 @@ func (p *Provider) ExecuteStep(ctx context.Context, transactionID string, genera
 	if receipt.Effects[stepIndex].Status == base.EffectStatusApplied || receipt.Effects[stepIndex].Status == base.EffectStatusCompensated {
 		return receipt, nil
 	}
-	result, _, applied, executeErr := p.executeAction(ctx, actions[stepIndex], actionExecutionPlan)
+	action := actions[stepIndex]
+	planDigest, digestErr := placementPlanDigest(plan)
+	if digestErr != nil {
+		return nil, digestErr
+	}
+	commandDigest, digestErr := actionDigest(action)
+	if digestErr != nil {
+		return nil, digestErr
+	}
+	result, _, applied, executeErr := p.executeAction(ctx, action, actionExecutionPlan, &HelperReceiptContext{StepIndex: stepIndex, ExpectedActions: len(actions), TransactionGeneration: generation, PlanDigest: planDigest, CommandDigest: commandDigest})
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	receipt = p.txReceipts[transactionID]
@@ -95,6 +195,15 @@ func (p *Provider) ExecuteStep(ctx context.Context, transactionID string, genera
 	receipt.Effects[stepIndex], receipt.UpdatedAt = effect, p.now()
 	p.txReceipts[transactionID] = cloneTransactionReceipt(receipt)
 	return cloneTransactionReceipt(receipt), executeErr
+}
+
+func placementPlanDigest(plan *tgsrlv1.PlacementPlan) (string, error) {
+	wire, err := proto.MarshalOptions{Deterministic: true}.Marshal(plan)
+	if err != nil {
+		return "", fmt.Errorf("marshal NVIDIA plan digest: %w", err)
+	}
+	digest := sha256.Sum256(wire)
+	return "sha256:" + hex.EncodeToString(digest[:]), nil
 }
 
 // CommitPlan marks an all-applied provider transaction committed.
@@ -197,60 +306,16 @@ func (p *Provider) publishConfirmedMutableSandboxLocked(action *tgsrlv1.Action, 
 
 // ReconcilePlanTransaction resolves local or helper-recovered transaction receipts.
 func (p *Provider) ReconcilePlanTransaction(ctx context.Context, transactionID string, generation uint64) (*base.TransactionReceipt, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	p.mu.Lock()
 	_, receipt, err := p.transactionStateLocked(transactionID, generation)
 	p.mu.Unlock()
-	if err == nil {
-		return receipt, nil
-	}
-	v2, ok := p.driver.(V2Driver)
-	if !ok {
-		return nil, err
-	}
-	var recoveredEffects []base.TransactionEffect
-	failed := false
-	expectedActions := 0
-	committed := false
-	planDigest := ""
-	for _, recovered := range v2.RecoveredActions() {
-		if recovered.PlanID != transactionID || recovered.Generation != generation {
-			continue
-		}
-		if expectedActions == 0 {
-			expectedActions, committed, planDigest = recovered.ExpectedActions, recovered.Committed, recovered.PlanDigest
-		}
-		if recovered.ExpectedActions != expectedActions || recovered.Committed != committed || recovered.PlanDigest == "" || recovered.PlanDigest != planDigest {
-			return nil, fmt.Errorf("%w: recovered transaction %q receipt set is inconsistent", base.ErrFailedPrecondition, transactionID)
-		}
-		status := base.EffectStatusFailed
-		if recovered.Succeeded {
-			status = base.EffectStatusApplied
-		} else {
-			failed = true
-		}
-		recoveredEffects = append(recoveredEffects, base.TransactionEffect{StepIndex: recovered.StepIndex, ActionID: recovered.ActionID, IdempotencyKey: recovered.IdempotencyKey, Status: status, Generation: generation, ErrorCode: recovered.ErrorCode, ErrorMessage: recovered.ErrorMessage})
-	}
-	if len(recoveredEffects) == 0 {
-		return nil, err
-	}
-	if expectedActions != len(recoveredEffects) {
-		return nil, fmt.Errorf("%w: recovered transaction %q has %d of %d action receipts", base.ErrFailedPrecondition, transactionID, len(recoveredEffects), expectedActions)
-	}
-	sort.Slice(recoveredEffects, func(i, j int) bool {
-		return recoveredEffects[i].StepIndex < recoveredEffects[j].StepIndex
-	})
-	for index, effect := range recoveredEffects {
-		if effect.StepIndex != index {
-			return nil, fmt.Errorf("%w: recovered transaction %q is missing step %d", base.ErrFailedPrecondition, transactionID, index)
-		}
-	}
-	phase := base.TransactionPhaseReconciled
-	if failed {
-		phase = base.TransactionPhaseDegraded
-	} else if committed {
-		phase = base.TransactionPhaseCommitted
-	}
-	return &base.TransactionReceipt{TransactionID: transactionID, PlanID: transactionID, Generation: generation, Phase: phase, UpdatedAt: p.now(), Effects: recoveredEffects}, nil
+	return receipt, err
 }
 
 // DescribeCapabilities reports NVIDIA provider transaction guarantees.

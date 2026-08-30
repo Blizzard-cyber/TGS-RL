@@ -41,6 +41,14 @@ func (p PolicyBundle) ApplyToScheduler(base scheduler.Config) (scheduler.Config,
 	base.Policy = bundle
 	base.Guard = protection.NewGuard(guardConfig, base.Clock)
 	base.Preemption = strategy
+	base.PlannerPerTickActionBudget = projection.Actions.MaxActionsPerTick
+	base.PlannerBudget = scheduler.PlannerBudgetConfig{
+		MaxActions:             projection.Actions.MaxActionsPerTick,
+		MaxAffectedSandboxes:   projection.Actions.MaxAffectedSandboxes,
+		MaxGPUReconfigurations: projection.Actions.MaxGPUReconfigurations,
+		MaxRecoveryCostNanos:   projection.Actions.MaxRecoveryCostNanos,
+		DisableL4:              projection.Actions.DisableL4,
+	}
 	base.ConfigRevision = projection.PolicyVersion
 	return base, nil
 }

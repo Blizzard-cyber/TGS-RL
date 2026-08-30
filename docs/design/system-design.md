@@ -138,10 +138,13 @@ ResourceProvider 是硬件或基础设施能力边界。通用 Intent、Plan 和
 - **NVIDIA Provider + 默认 LocalDriver**：可以通过 `nvidia-smi` 发现本机设备；
   不声明或执行 bind/release、MIG/MPS、resize 或 Runtime 控制。
 - **NVIDIA Driver v2（可选）**：Go 侧实现 inventory、MPS/MIG、binding、runtime command、
-  transaction、reconciliation 和审计编排；只有仓库外 `tgsrl-nvidia-*` helper 完成能力
-  握手后才公开相应 action。MPS share 需硬件读回后才形成 observation；MIG L4 helper
-  必须声明完整 safe-point/checkpoint/stop/restore/readiness 事务。helper 和真实 GPU 验证
-  证据未随仓库提供，因此该路径是 Conditional，不是 Supported。
+  transaction、reconciliation 和审计编排；仓库内 `tgsrl-nvidia-binding` 负责持久化
+  binding authority、generation fence、幂等 receipt 与重启发现；仓库内
+  `tgsrl-nvidia-runtime` 负责本机进程信号控制与 managed-worker safe-point/checkpoint/offload/
+  reload/readiness 协议；仓库内 `tgsrl-nvidia-mig` 在现有 MIG 实例之间执行完整 lifecycle
+  后的 rebind/recreate，并用 `nvidia-smi -L` 回读目标实例。MPS share 需可用 server PID 与
+  硬件读回后才形成 observation。当前 helper 不隐式创建或销毁 MIG 拓扑，且真实 GPU 验证
+  证据尚未提供，因此该路径是 Conditional，不是 Supported。
 
 Operator backend 决定 workload 对象的落点：
 

@@ -11,7 +11,7 @@ on:
         options:
           - ci-simulator
           - cpu-integration
-          - gpu-manual
+          - gpu-single-node
 
 permissions:
   contents: read
@@ -63,11 +63,15 @@ jobs:
         uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.12.14"
+      - name: Install locked dependencies
+        run: |
+          python -m pip install uv==0.12.7
+          uv sync --frozen
       - name: Capture CPU smoke evidence
         run: |
-          python3 scripts/gate-tools.py cpu-smoke --smoke-command "python -c 'print(\"cpu smoke\")'"
-          python3 scripts/gate-tools.py report
-          python3 scripts/gate-tools.py evaluate
+          uv run --frozen python scripts/gate-tools.py cpu-smoke --smoke-command "python -c 'print(\"cpu smoke\")'"
+          uv run --frozen python scripts/gate-tools.py report
+          uv run --frozen python scripts/gate-tools.py evaluate
       - name: Upload CPU artifacts
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
@@ -77,23 +81,32 @@ jobs:
             .cache/tgsrl/gate-gi/artifacts/raw/archive.tar.gz
             .cache/tgsrl/gate-gi/artifacts/traces/*.json
 
-  gpu-manual:
-    name: Gate G/I manual GPU entry
-    if: ${{ github.event.inputs.mode == 'gpu-manual' }}
+  gpu-runner:
+    name: Gate G/I GPU workload runner
+    if: ${{ github.event.inputs.mode == 'gpu-single-node' }}
     runs-on: [self-hosted, gpu]
     steps:
       - name: Check out repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - name: Manual operator instructions
+      - name: Install Python 3.12.14
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12.14"
+      - name: Install locked dependencies
         run: |
-          echo "Manual GPU validation entry."
-          echo "1. Capture environment fingerprint:"
-          echo "   python3 scripts/gate-tools.py fingerprint --execution-mode gpu-manual"
-          echo "2. Initial gate posture is NOT_RUN until a real external run record is produced."
-          echo "3. Produce the baseline/variant traces and an external run record."
-          echo "4. Create an external JSON run record with simulated=false, GPU_* evidence, hardware fingerprint, and required artifact paths."
-          echo "5. Ingest and evaluate:"
-          echo "   python3 scripts/gate-tools.py ingest --report /path/to/real-gpu-report.json"
-          echo "   python3 scripts/gate-tools.py report"
-          echo "   python3 scripts/gate-tools.py evaluate"
-          echo "The simulator path must not be used to claim a real GPU gate pass."
+          python -m pip install uv==0.12.7
+          uv sync --frozen
+      - name: Execute locked GPU workload and evaluate
+        run: |
+          nvidia-smi -L
+          uv run --frozen python scripts/gate-tools.py hardware-run --evidence GPU_SINGLE_NODE
+          uv run --frozen python scripts/gate-tools.py report
+          uv run --frozen python scripts/gate-tools.py evaluate
+      - name: Upload GPU evidence bundle
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: gate-gi-${{ github.event.inputs.mode }}
+          path: |
+            .cache/tgsrl/gate-gi/report.json
+            .cache/tgsrl/gate-gi/artifacts/raw/archive.tar.gz
+            .cache/tgsrl/gate-gi/artifacts/traces/*.json

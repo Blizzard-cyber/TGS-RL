@@ -258,6 +258,11 @@ class ActionPolicy:
     require_idempotency_key: bool
     require_explicit_rollback: bool
     require_generation_fence_for_l4: bool
+    max_actions_per_tick: int
+    max_affected_sandboxes: int
+    max_gpu_reconfigurations: int
+    max_recovery_cost_nanos: int
+    disable_l4: bool
 
 
 @dataclass(frozen=True, slots=True)

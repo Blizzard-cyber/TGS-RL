@@ -37,7 +37,7 @@ func LoadPolicy(path string) (*PolicyBundle, error) {
 	if err != nil {
 		return nil, err
 	}
-	if err := rejectUnknownFields(actions, "policy.actions", "unsupported_action", "require_idempotency_key", "require_explicit_rollback", "require_generation_fence_for_l4"); err != nil {
+	if err := rejectUnknownFields(actions, "policy.actions", "unsupported_action", "require_idempotency_key", "require_explicit_rollback", "require_generation_fence_for_l4", "max_actions_per_tick", "max_affected_sandboxes", "max_gpu_reconfigurations", "max_recovery_cost_nanos", "disable_l4"); err != nil {
 		return nil, err
 	}
 	protectionConfig, err := mapping(data["protection"], "policy.protection")
@@ -156,6 +156,31 @@ func LoadPolicy(path string) (*PolicyBundle, error) {
 	if err != nil {
 		return nil, err
 	}
+	maxActionsPerTick, maxAffectedSandboxes, maxGPUReconfigurations := 1, 1, 1
+	maxRecoveryCost := int(^uint(0) >> 1)
+	disableL4 := false
+	for _, item := range []struct {
+		key    string
+		target *int
+	}{
+		{"max_actions_per_tick", &maxActionsPerTick},
+		{"max_affected_sandboxes", &maxAffectedSandboxes},
+		{"max_gpu_reconfigurations", &maxGPUReconfigurations},
+		{"max_recovery_cost_nanos", &maxRecoveryCost},
+	} {
+		if raw, present := actions[item.key]; present {
+			*item.target, err = mustInt(raw, "policy.actions."+item.key)
+			if err != nil {
+				return nil, err
+			}
+		}
+	}
+	if raw, present := actions["disable_l4"]; present {
+		disableL4, err = mustBool(raw, "policy.actions.disable_l4")
+		if err != nil {
+			return nil, err
+		}
+	}
 	protectionEnabled, err := mustBool(protectionConfig["enabled"], "policy.protection.enabled")
 	if err != nil {
 		return nil, err
@@ -259,6 +284,11 @@ func LoadPolicy(path string) (*PolicyBundle, error) {
 			RequireIdempotencyKey:       requireIdempotencyKey,
 			RequireExplicitRollback:     requireExplicitRollback,
 			RequireGenerationFenceForL4: requireGenerationFenceForL4,
+			MaxActionsPerTick:           maxActionsPerTick,
+			MaxAffectedSandboxes:        maxAffectedSandboxes,
+			MaxGPUReconfigurations:      maxGPUReconfigurations,
+			MaxRecoveryCostNanos:        int64(maxRecoveryCost),
+			DisableL4:                   disableL4,
 		},
 		Protection: ProtectionPolicy{
 			Enabled:             protectionEnabled,

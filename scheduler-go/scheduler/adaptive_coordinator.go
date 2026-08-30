@@ -16,6 +16,7 @@ import (
 type Coordinator struct {
 	evidenceBudget    int
 	actionBudget      int
+	budget            PlannerBudgetConfig
 	utility           PlannerUtilityConfig
 	idleSleepAfter    time.Duration
 	idleOffloadAfter  time.Duration
@@ -40,7 +41,10 @@ func NewCoordinator(config Config) *Coordinator {
 		offloadAfter = DefaultPlannerIdleOffloadAfter
 	}
 	sandboxMaximumAge := config.PlannerSandboxMaximumAge
-	return &Coordinator{evidenceBudget: budget, actionBudget: actionBudget, utility: normalizePlannerUtilityConfig(config.PlannerUtility), idleSleepAfter: sleepAfter, idleOffloadAfter: offloadAfter, sandboxMaximumAge: sandboxMaximumAge}
+	if config.PlannerBudget.MaxActions > 0 {
+		actionBudget = config.PlannerBudget.MaxActions
+	}
+	return &Coordinator{evidenceBudget: budget, actionBudget: actionBudget, budget: config.PlannerBudget, utility: normalizePlannerUtilityConfig(config.PlannerUtility), idleSleepAfter: sleepAfter, idleOffloadAfter: offloadAfter, sandboxMaximumAge: sandboxMaximumAge}
 }
 
 func (c *Coordinator) Plan(input PlanningInput) (PlannerResult, error) {
@@ -80,18 +84,17 @@ func (c *Coordinator) Plan(input PlanningInput) (PlannerResult, error) {
 		input.DecisionID = stableID("planner-decision", input.Snapshot.GetSnapshotId(), fmt.Sprint(input.Snapshot.GetRevision()), input.Intent.GetExecutionId(), input.Intent.GetStageId(), fmt.Sprint(input.EvaluationContext.GetDecisionSequence()), fmt.Sprint(input.Intent.GetDeterministicSeed()))
 	}
 
-	var planners []Planner
+	planners := make([]Planner, 0, 2)
 	if input.AdmissionPlan != nil {
-		planners = []Planner{AdmissionPlanner{Utility: c.utility}}
-	} else {
-		switch input.EvaluationContext.GetTickKind() {
-		case tgsrlv1.TickKind_TICK_KIND_FAST:
-			planners = []Planner{FastMutationPlanner{Utility: c.utility}}
-		case tgsrlv1.TickKind_TICK_KIND_MEDIUM:
-			planners = []Planner{MediumLifecyclePlanner{Utility: c.utility}}
-		case tgsrlv1.TickKind_TICK_KIND_SLOW:
-			planners = []Planner{SlowReconfigurationPlanner{Utility: c.utility}}
-		}
+		planners = append(planners, AdmissionPlanner{Utility: c.utility})
+	}
+	switch input.EvaluationContext.GetTickKind() {
+	case tgsrlv1.TickKind_TICK_KIND_FAST:
+		planners = append(planners, FastMutationPlanner{Utility: c.utility})
+	case tgsrlv1.TickKind_TICK_KIND_MEDIUM:
+		planners = append(planners, MediumLifecyclePlanner{Utility: c.utility})
+	case tgsrlv1.TickKind_TICK_KIND_SLOW:
+		planners = append(planners, SlowReconfigurationPlanner{Utility: c.utility})
 	}
 	proposals := make([]PlannerProposal, 0)
 	for _, planner := range planners {
@@ -112,29 +115,12 @@ func (c *Coordinator) Plan(input PlanningInput) (PlannerResult, error) {
 			break
 		}
 	}
-	sortProposals(proposals)
-	applyActionBudget(proposals, input.Signals.PerTickActionBudget)
-	selected := -1
-	for index := range proposals {
-		if proposals[index].Plan != nil && proposals[index].Evidence.GetDisposition() != tgsrlv1.PlannerDisposition_PLANNER_DISPOSITION_REJECTED {
-			selected = index
-			break
-		}
-	}
-	if selected >= 0 {
-		proposals[selected].Evidence.Disposition = tgsrlv1.PlannerDisposition_PLANNER_DISPOSITION_SELECTED
-		proposals[selected].Evidence.Reason = "SELECTED_MAX_UTILITY"
-		for index := range proposals {
-			if index == selected || proposals[index].Plan == nil || proposals[index].Evidence.GetDisposition() == tgsrlv1.PlannerDisposition_PLANNER_DISPOSITION_REJECTED {
-				continue
-			}
-			proposals[index].Evidence.Disposition = tgsrlv1.PlannerDisposition_PLANNER_DISPOSITION_DEFERRED
-			proposals[index].Evidence.Reason = "LOWER_UTILITY_OR_STABLE_TIE_BREAK"
-		}
-	}
+	budget := normalizePlannerBudget(c.budget, input.Signals.PerTickActionBudget)
+	annotateArbitrationBudget(proposals, budget)
+	selected, plan := arbitrateProposals(input, proposals, budget)
 	result := PlannerResult{TotalProposalCount: uint64(len(proposals))}
-	if selected >= 0 {
-		result.Plan = proto.Clone(proposals[selected].Plan).(*tgsrlv1.PlacementPlan)
+	if len(selected) > 0 {
+		result.Plan = plan
 	} else if len(proposals) > 0 && !allAlreadySatisfied {
 		result.FallbackReason = "NO_ELIGIBLE_PLANNER_PROPOSAL"
 	} else if len(proposals) == 0 {
@@ -159,16 +145,18 @@ func plannerKindForTick(tick tgsrlv1.TickKind) tgsrlv1.PlannerKind {
 	}
 }
 
-func projectPlannerEvidence(proposals []PlannerProposal, budget, selected int) []*tgsrlv1.PlannerEvidence {
+func projectPlannerEvidence(proposals []PlannerProposal, budget int, selected []int) []*tgsrlv1.PlannerEvidence {
 	if budget <= 0 {
 		budget = DefaultPlannerEvidenceBudget
 	}
 	indexes := make([]int, 0, len(proposals))
-	if selected >= 0 {
-		indexes = append(indexes, selected)
+	selectedSet := make(map[int]struct{}, len(selected))
+	for _, index := range selected {
+		selectedSet[index] = struct{}{}
+		indexes = append(indexes, index)
 	}
 	for index := range proposals {
-		if index == selected || len(indexes) >= budget {
+		if _, ok := selectedSet[index]; ok || len(indexes) >= budget {
 			continue
 		}
 		indexes = append(indexes, index)

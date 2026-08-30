@@ -167,7 +167,7 @@ func (e *Executor) ensureProviderPrepared(ctx context.Context, record *state.Tra
 	if err != nil {
 		return nil, err
 	}
-	if err := ValidateReceipt(receipt, record.ProviderGeneration); err != nil {
+	if err := validateReceiptForPlan(receipt, record.ProviderGeneration, record.Plan); err != nil {
 		return nil, err
 	}
 	return e.advance(ctx, record, state.TransactionStatePrepared, state.FailureClassUnknown, "", receipt)
@@ -179,7 +179,7 @@ func (e *Executor) prepare(ctx context.Context, record *state.TransactionRecord)
 		failed, finalizeErr := e.finalize(ctx, record, false, state.TransactionStatePrepareFailed, state.FailureClassProvider, err.Error(), nil)
 		return failed, true, finalizeErr
 	}
-	if err := ValidateReceipt(receipt, record.ProviderGeneration); err != nil {
+	if err := validateReceiptForPlan(receipt, record.ProviderGeneration, record.Plan); err != nil {
 		return nil, false, err
 	}
 	prepared, err := e.advance(ctx, record, state.TransactionStatePrepared, state.FailureClassUnknown, "", receipt)
@@ -203,7 +203,7 @@ func (e *Executor) apply(ctx context.Context, record *state.TransactionRecord) (
 		if executeErr != nil {
 			return e.handleApplyFailure(ctx, current, receipt, executeErr)
 		}
-		if err := ValidateReceipt(receipt, current.ProviderGeneration); err != nil {
+		if err := validateReceiptForPlan(receipt, current.ProviderGeneration, current.Plan); err != nil {
 			return nil, false, err
 		}
 		status, ambiguous := classifyStepReceipt(receipt, index)
@@ -223,7 +223,7 @@ func (e *Executor) apply(ctx context.Context, record *state.TransactionRecord) (
 	if err != nil {
 		return e.handleCommitFailure(ctx, current, receipt, err)
 	}
-	if err := ValidateReceipt(receipt, current.ProviderGeneration); err != nil {
+	if err := validateReceiptForPlan(receipt, current.ProviderGeneration, current.Plan); err != nil {
 		return nil, false, err
 	}
 	if isAmbiguousPhase(receipt.Phase) {
@@ -246,7 +246,7 @@ func (e *Executor) abort(ctx context.Context, record *state.TransactionRecord) (
 	if abortErr != nil {
 		return e.handleAbortFailure(ctx, current, receipt, abortErr)
 	}
-	if err := ValidateReceipt(receipt, current.ProviderGeneration); err != nil {
+	if err := validateReceiptForPlan(receipt, current.ProviderGeneration, current.Plan); err != nil {
 		return nil, false, err
 	}
 	if isAmbiguousPhase(receipt.Phase) {
@@ -257,6 +257,15 @@ func (e *Executor) abort(ctx context.Context, record *state.TransactionRecord) (
 }
 
 func (e *Executor) resumeFromProviderReceipt(ctx context.Context, record *state.TransactionRecord) (*state.TransactionRecord, bool, error) {
+	prepared, err := e.provider.PreparePlan(ctx, record.TransactionID, record.ProviderGeneration, record.Plan)
+	if err != nil {
+		degraded, finalizeErr := e.finalize(ctx, record, false, state.TransactionStateDegraded, state.FailureClassInfrastructure, err.Error(), nil)
+		return degraded, true, finalizeErr
+	}
+	if err := validateReceiptForPlan(prepared, record.ProviderGeneration, record.Plan); err != nil {
+		degraded, finalizeErr := e.finalize(ctx, record, false, state.TransactionStateDegraded, state.FailureClassInfrastructure, err.Error(), nil)
+		return degraded, true, finalizeErr
+	}
 	receipt, err := e.reconcile(ctx, record)
 	if err != nil {
 		degraded, finalizeErr := e.finalize(ctx, record, false, state.TransactionStateDegraded, state.FailureClassInfrastructure, err.Error(), nil)
@@ -348,7 +357,7 @@ func (e *Executor) reconcile(ctx context.Context, record *state.TransactionRecor
 	if err != nil {
 		return nil, err
 	}
-	if err := ValidateReceipt(receipt, record.ProviderGeneration); err != nil {
+	if err := validateReceiptForPlan(receipt, record.ProviderGeneration, record.Plan); err != nil {
 		return nil, err
 	}
 	return receipt, nil

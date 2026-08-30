@@ -4,9 +4,13 @@ SHELL := /bin/sh
 BUF_VERSION := 1.72.0
 UV_VERSION := 0.12.7
 GO_PACKAGES := ./gen/go/... ./scheduler-go/... ./job-controller-go/... ./operator-go/... ./storage/... ./scripts ./cmd/...
-PYTHON_PATHS := adapters runtime-python gateway-python tests/python tests/api tests/storage tests/e2e tests/governance scripts/check-proto-roundtrip.py scripts/check-oci-platforms.py scripts/generate-sbom.py scripts/check-compatibility.py scripts/check-upstream-patches.py
+PYTHON_PATHS := adapters runtime-python gateway-python tests/python tests/api tests/storage tests/e2e tests/governance scripts/check-proto-roundtrip.py scripts/check-oci-platforms.py scripts/generate-sbom.py scripts/check-compatibility.py scripts/check-upstream-patches.py scripts/gate-tools.py scripts/verl-reference-workload.py
 GO_FORMAT_PATHS := scheduler-go job-controller-go operator-go storage cmd
 SCHEDULER_PACKAGE := ./scheduler-go/cmd/scheduler
+NVIDIA_BINDING_PACKAGE := ./cmd/tgsrl-nvidia-binding
+NVIDIA_RUNTIME_PACKAGE := ./cmd/tgsrl-nvidia-runtime
+NVIDIA_MIG_PACKAGE := ./cmd/tgsrl-nvidia-mig
+BIN_DIR ?= bin
 SCHEDULER_LISTEN ?= 127.0.0.1:50051
 CONTROLLER_LISTEN ?= 127.0.0.1:50061
 RUNTIME_LISTEN ?= 127.0.0.1:50071
@@ -14,7 +18,7 @@ GATEWAY_LISTEN ?= 127.0.0.1:8080
 OPERATOR_LISTEN ?= 127.0.0.1:50081
 SCHEDULER_FALLBACK ?= noop
 
-.PHONY: help doctor proto check-generated check-openapi proto-roundtrip check-migrations check-compose check-deploy check-public-content sbom check-governance test-go test-python test-api test-console lint test race demo product-e2e run-scheduler run-controller run-runtime run-gateway run-operator run-console
+.PHONY: help doctor proto check-generated check-openapi proto-roundtrip check-migrations check-compose check-deploy check-public-content sbom check-governance test-go test-python test-api test-console lint test race build-nvidia-binding build-nvidia-runtime build-nvidia-mig demo product-e2e run-scheduler run-controller run-runtime run-gateway run-operator run-console
 
 help:
 	@printf '%s\n' \
@@ -37,6 +41,9 @@ help:
 	  '  make test-console     type-check, lint, test, and build the web console' \
 	  '  make test             run all Go, Python, API, and console tests' \
 	  '  make race             run Go tests with the race detector' \
+	  '  make build-nvidia-binding build the durable NVIDIA binding helper' \
+	  '  make build-nvidia-runtime build the managed NVIDIA runtime helper' \
+	  '  make build-nvidia-mig     build the safe MIG reconfiguration helper' \
 	  '  make demo             run the local Python-to-Go scheduler process E2E' \
 	  '  make product-e2e      run the complete local product process E2E' \
 	  '  make run-scheduler    start the scheduling service' \
@@ -156,6 +163,18 @@ test: test-go test-python test-api test-console proto-roundtrip check-migrations
 
 race:
 	go test -race $(GO_PACKAGES)
+
+build-nvidia-binding:
+	@mkdir -p "$(BIN_DIR)"
+	go build -trimpath -o "$(BIN_DIR)/tgsrl-nvidia-binding" $(NVIDIA_BINDING_PACKAGE)
+
+build-nvidia-runtime:
+	@mkdir -p "$(BIN_DIR)"
+	go build -trimpath -o "$(BIN_DIR)/tgsrl-nvidia-runtime" $(NVIDIA_RUNTIME_PACKAGE)
+
+build-nvidia-mig:
+	@mkdir -p "$(BIN_DIR)"
+	go build -trimpath -o "$(BIN_DIR)/tgsrl-nvidia-mig" $(NVIDIA_MIG_PACKAGE)
 
 demo:
 	@test -f scripts/demo.sh || { \

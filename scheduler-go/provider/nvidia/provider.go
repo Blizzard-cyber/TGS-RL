@@ -165,11 +165,11 @@ func New(options ...Option) (*Provider, error) {
 }
 
 func (p *Provider) ExecuteAction(ctx context.Context, action *tgsrlv1.Action) (*tgsrlv1.ActionResult, error) {
-	result, _, _, err := p.executeAction(ctx, action, actionExecutionStandalone)
+	result, _, _, err := p.executeAction(ctx, action, actionExecutionStandalone, nil)
 	return result, err
 }
 
-func (p *Provider) executeAction(ctx context.Context, action *tgsrlv1.Action, mode actionExecutionMode) (*tgsrlv1.ActionResult, actionBeforeImage, bool, error) {
+func (p *Provider) executeAction(ctx context.Context, action *tgsrlv1.Action, mode actionExecutionMode, receipt *HelperReceiptContext) (*tgsrlv1.ActionResult, actionBeforeImage, bool, error) {
 	var before actionBeforeImage
 	if ctx == nil {
 		ctx = context.Background()
@@ -242,7 +242,15 @@ func (p *Provider) executeAction(ctx context.Context, action *tgsrlv1.Action, mo
 	state := p.driverStateLocked()
 	p.mu.Unlock()
 
-	execution, err := p.driver.ExecuteAction(ctx, state, action)
+	var execution *ActionExecution
+	var err error
+	if transactional, ok := p.driver.(interface {
+		executeTransactionAction(context.Context, *DriverState, *tgsrlv1.Action, *HelperReceiptContext) (*ActionExecution, error)
+	}); ok && receipt != nil {
+		execution, err = transactional.executeTransactionAction(ctx, state, action, receipt)
+	} else {
+		execution, err = p.driver.ExecuteAction(ctx, state, action)
+	}
 	err = normalizeDriverError(action, err)
 
 	p.mu.Lock()
@@ -806,17 +814,18 @@ func (p *Provider) rollbackActionLocked(ctx context.Context, action *tgsrlv1.Act
 		return false, nil
 	}
 	rollbackAction := &tgsrlv1.Action{
-		ActionId:       action.GetActionId() + "-rollback",
-		ActionType:     rollback.GetActionType(),
-		Level:          action.GetLevel(),
-		TargetId:       rollback.GetTargetId(),
-		Binding:        cloneBinding(rollback.GetRestoreBinding()),
-		Share:          before.sandbox.Share,
-		Priority:       before.sandbox.Priority,
-		PlanId:         action.GetPlanId(),
-		SandboxId:      actionSandboxID(action),
-		Deadline:       action.GetDeadline(),
-		IdempotencyKey: action.GetIdempotencyKey() + ":rollback",
+		ActionId:           action.GetActionId() + "-rollback",
+		ActionType:         rollback.GetActionType(),
+		Level:              action.GetLevel(),
+		TargetId:           rollback.GetTargetId(),
+		Binding:            cloneBinding(rollback.GetRestoreBinding()),
+		Share:              before.sandbox.Share,
+		Priority:           before.sandbox.Priority,
+		PlanId:             action.GetPlanId(),
+		SandboxId:          actionSandboxID(action),
+		ExpectedGeneration: receiptActionGeneration(action),
+		Deadline:           action.GetDeadline(),
+		IdempotencyKey:     action.GetIdempotencyKey() + ":rollback",
 	}
 	state := p.driverStateLocked()
 	p.mu.Unlock()

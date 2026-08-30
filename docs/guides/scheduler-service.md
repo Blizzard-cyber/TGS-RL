@@ -168,8 +168,21 @@ Action 声明的 level 必须与 type 匹配，`tick_kind` 必须与 Decision �
 该 tick 的 ceiling；不符合规则的 plan 会 fail closed，执行前还会再次校验。Admission
 Planner 生成 `bind`；Fast Planner 处理 share、priority、resize 与逐次 scale-in release；
 Medium Planner 处理 pause、resume、sleep 与 offload；Slow Planner 处理 rebind 与 recreate。
-每个候选都会记录触发事实、固定点 utility、拒绝原因与最终选择。仅兼容输入允许缺失 tick
-的旧式 L1 action；新调用方应始终发送明确的 `tick_kind`。
+所有 eligible Planner（包括存在待调度单元时的 Admission 和当前 tick 对应的 mutation
+Planner）进入同一个候选池。仲裁顺序优先处理 Contract pause、Recovery、Preemption、
+Admission，再处理普通 Rebalance/对账；只合并 PlanPurpose 相同且 mutation 维度不冲突的
+action。`actions.max_actions_per_tick`、`max_affected_sandboxes`、
+`max_gpu_reconfigurations`、`max_recovery_cost_nanos` 和 `disable_l4` 在最终事务计划上限制
+实际 action 集合，因此多 unit admission 也不能绕过预算。每个候选都会记录触发事实、
+固定点 utility、拒绝原因与最终选择。仅兼容输入允许缺失 tick 的旧式 L1 action；新调用方
+应始终发送明确的 `tick_kind`。
+
+Fast Planner 在没有显式 target 时会把结构化信号转换为方向明确的 share 目标：高 buffer
+pressure 或 policy lag 会降低 rollout/decode 生产侧 share，并提高 actor/optimizer 消费侧
+share；sample staleness 和低 ESS 只会降低生产侧 share，不会给无关的 priority、resize 或
+release 动作加分。每次变化使用有界步长，并在最近一次同目标方向调节后的 observation
+window 内保持不变；证据记录 current、target、delta、reason、预期收益和恢复成本。没有这些
+方向信号时，仍保留按 Intent 进行 share/priority/resource 对账的兼容路径。
 
 默认 policy 还启用 mutation protection：按 execution/stage 应用 cooldown、hysteresis、
 时间窗 action budget 和 circuit breaker。保护拒绝会形成带 `PROTECTION_*` 原因的 fallback。
@@ -197,13 +210,34 @@ resource/sandbox watch；执行 action 时先调用 Driver，再提交 Provider 
 
 因此默认 NVIDIA 方案只支持设备发现，不能分配 GPU 或运行训练。要执行资源动作，
 可显式启用 `-nvidia-driver-v2`。v2 已实现 Go 侧 inventory、MPS/MIG、binding、runtime
-command、事务、幂等、超时、回滚、重启发现、dry-run 和审计编排，但实际动作依赖
-仓库外的 `tgsrl-nvidia-binding`、`tgsrl-nvidia-runtime` 与 `tgsrl-nvidia-mig` helper。
+command、事务、幂等、超时、回滚、重启发现、dry-run 和审计编排。仓库内
+`tgsrl-nvidia-binding` 提供 binding 状态、generation fence、幂等 durable receipt 和重启
+发现；它不直接修改已启动进程的 GPU 可见性，实际设备注入仍由 Runtime/容器集成完成。
+仓库内 `tgsrl-nvidia-runtime` 提供 PID identity、generation fence、幂等 receipt、
+SIGSTOP/SIGCONT pause/resume，以及 Unix socket managed-worker 的 safe-point、checkpoint、
+offload、reload 和 readiness 协议。仓库内 `tgsrl-nvidia-mig` 复用同一 worker 状态，在
+已经发现的 MIG 实例之间执行 checkpoint/stop/reload/readiness；它不会在 Scheduler 不知情时
+创建或销毁 MIG 实例。
 Provider 只会公开 helper 握手确认的 action；helper 缺失、协议不匹配或能力不完整时
 明确返回 unavailable。MPS 当前只公开带 active-thread percentage 读回校验的
 `set_share`；通用 `resize` 不作为 MPS 能力公开。MIG `rebind/recreate` helper 还必须显式
 声明 safe-point、checkpoint、stop、restore、readiness、durable receipt、generation fence 和
 idempotency，才会公开对应 L4 action。仓库当前没有真实 NVIDIA/CUDA 验证证据。
+
+使用 `make build-nvidia-binding` 构建 helper。Scheduler 的 `-nvidia-binding-helper` 指定
+可执行文件，`-nvidia-binding-state` 指定状态文件（默认在 `-state-dir` 下），
+`-nvidia-mps-pid-dir` 指向 Runtime 提供的 `<sandbox>.pid` 目录。helper 只在 PID 可验证存活时
+声明 `mps_profile_pid`；receipt 的 `committed=false` 表示步骤已执行但 Provider 尚未完成事务
+提交，重启时由 PlanExecutor 依据 durable plan 和 action digest 调和后续步骤。
+binding 状态必须由实际启动进程或容器的执行层消费；仅写入 helper 状态不等于已经完成
+CUDA/container 级设备隔离。
+
+使用 `make build-nvidia-runtime` 构建 runtime helper。Scheduler 的
+`-nvidia-runtime-helper` 指定可执行文件，`-nvidia-runtime-state` 指定持久化 worker/receipt
+文件。worker 需要先通过 helper 的 `register` 命令登记 PID；未配置 managed-worker socket
+时 offload 会 fail closed，不会把暂停进程误报为显存已释放。
+`make build-nvidia-mig` 构建 MIG helper，`-nvidia-mig-helper` 指定其路径；该 helper 通过
+`nvidia-smi -L` 验证目标 UUID、父 GPU 与 profile，并继续使用同一 runtime state 文件。
 
 ## 持久化与恢复
 

@@ -14,12 +14,29 @@
       "compatibility_profile": "cpu-mock-v1"
     }
   },
+  "workload_runner": {
+    "argv": [
+      "{python}",
+      "scripts/verl-reference-workload.py"
+    ],
+    "items_per_run": 64,
+    "timeout_seconds": 120,
+    "variants": {
+      "baseline": {
+        "control_mode": "static"
+      },
+      "variant": {
+        "control_mode": "tgsrl"
+      }
+    }
+  },
   "environment_fingerprint": {
     "required_fields": [
       "host_hash",
       "platform",
       "python_version",
       "git_commit",
+      "git_dirty",
       "execution_mode"
     ]
   },
@@ -33,8 +50,22 @@
     "required_metrics": [
       "latency_ms_p50",
       "latency_ms_p95",
+      "latency_ms_p99",
       "throughput_items_per_s",
-      "decision_count"
+      "decision_count",
+      "end_to_end_iteration_ms_p50",
+      "scheduling_latency_ms_p95",
+      "gpu_active_time_ms",
+      "queue_depth_max",
+      "policy_lag_p95",
+      "sample_staleness_ratio",
+      "effective_sample_size_mean",
+      "pause_latency_ms",
+      "checkpoint_latency_ms",
+      "reload_latency_ms",
+      "action_success_rate",
+      "rollback_rate",
+      "transaction_recovery_time_ms"
     ]
   },
   "comparisons": {

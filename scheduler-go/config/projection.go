@@ -11,6 +11,7 @@ func (p PolicyBundle) SchedulerPolicy() SchedulerPolicyConfig {
 		PolicyVersion: p.PolicyVersion,
 		Strategy:      normalizeStrategy(p.Selection.Strategy),
 		TopK:          p.Selection.TopK,
+		Actions:       p.Actions,
 		Protection:    p.Protection,
 		Preemption:    p.Preemption,
 	}

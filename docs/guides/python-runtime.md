@@ -93,7 +93,7 @@ trainer 和 rollout engine。`fake`（以及其 `mock` 别名）用于本地可�
 
 | 类型 | Adapter | Python 依赖 |
 |---|---|---|
-| Framework | veRL、OpenRLHF | `verl`、`openrlhf` |
+| Framework | veRL、OpenRLHF | veRL 使用仓库内 bridge；真实 worker 环境需 `verl`。OpenRLHF 需 `openrlhf` |
 | Execution backend | Ray | `ray` |
 | Trainer | PyTorch | `torch` |
 | Rollout engine | vLLM、SGLang | `vllm`、`sglang` |
@@ -108,9 +108,21 @@ unit 推进到 requested/starting、持久化 generation/幂等信息并发布�
 `ValidateRuntime` 会把任一所选 adapter 的 `UNAVAILABLE` 或 `UNSUPPORTED` 结果判为无效，
 且不会持久化该 manifest；`CompileRuntime` 会重复执行同一结构化能力检查，不能绕过准入。
 
-仅安装对应 Python 模块不足以启动训练。使用这些 Adapter 时必须同时提供可用的 provider
-hook、分布式执行环境、镜像/命令和 GPU 资源控制；缺少依赖或 hook 时 Adapter 返回
-unavailable。详细要求见[支持范围与限制](../reference/current-capabilities.md)。
+仅安装对应 Python 模块不足以启动训练。使用这些 Adapter 时必须同时提供可用的执行
+bridge、分布式环境、镜像/命令和 GPU 资源控制；veRL 使用仓库内 bridge，但 worker 必须提供
+control socket 和实际训练 callback。缺少依赖或执行条件时请求明确失败。详细要求见
+[支持范围与限制](../reference/current-capabilities.md)。
+
+veRL 的第一方 bridge 位于 `adapters.frameworks.verl_bridge`。训练 worker 嵌入
+`VerlWorkerBridge` 并提供 checkpoint/offload/reload/stop/resume callback 后，可通过 Unix
+socket 接收 generation-fenced、幂等的生命周期请求；bridge 同时写出 policy version、buffer
+level、policy lag、staleness、ESS、sample coverage、safe-point 和 action latency 的原始事件。
+`TGSRL_VERL_CONTROL_SOCKET` 指定 worker socket；Runtime 会向 bridge 传递实际 generation 和
+调用幂等键。worker state/receipt 默认持久化在 trace 文件旁，重启后不会重复执行已确认动作，
+未确认动作会保持 fail-closed。可通过 `trace_sink` 将 typed `TraceEvent` 直接接入 Runtime
+ingestion。
+`scripts/verl-reference-workload.py` 使用同一 bridge 执行无 GPU 的进程级 conformance workload；
+它只证明协议和执行链，不代表真实 veRL 训练或 GPU 性能。
 
 ## 生成与规范化 Trace
 

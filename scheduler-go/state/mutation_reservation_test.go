@@ -155,6 +155,100 @@ func TestReservePlanLifecycleMutationRollbackRestoresBeforeImage(t *testing.T) {
 	}
 }
 
+func TestReservePlanAllowsCompatibleMultiActionMutation(t *testing.T) {
+	store, _, intent, snapshot, allocation := setupActiveAllocationStore(t)
+	plan := &tgsrlv1.PlacementPlan{
+		PlanId: "multi-lifecycle-plan", ExecutionId: intent.GetExecutionId(), StageId: intent.GetStageId(),
+		IntentVersion: intent.GetVersion(), SnapshotRevision: snapshot.GetRevision(), Purpose: tgsrlv1.PlanPurpose_PLAN_PURPOSE_RECONCILIATION,
+		AffectedAllocationIds: []string{allocation.GetAllocationId()},
+		Actions: []*tgsrlv1.Action{
+			{ActionId: "share-action", ActionType: tgsrlv1.ActionType_ACTION_TYPE_SET_SHARE, TargetId: allocation.GetAllocationId()},
+			{ActionId: "priority-action", ActionType: tgsrlv1.ActionType_ACTION_TYPE_SET_PRIORITY, TargetId: allocation.GetAllocationId()},
+		},
+	}
+	reserved, err := store.ReservePlan(plan)
+	if err != nil {
+		t.Fatalf("ReservePlan(multi lifecycle) error = %v", err)
+	}
+	if !proto.Equal(reserved, snapshot) {
+		t.Fatalf("lifecycle reservation changed snapshot: before=%+v after=%+v", snapshot, reserved)
+	}
+	results := []*tgsrlv1.ActionResult{
+		{ActionId: "share-action", Status: tgsrlv1.ActionResultStatus_ACTION_RESULT_STATUS_SUCCEEDED},
+		{ActionId: "priority-action", Status: tgsrlv1.ActionResultStatus_ACTION_RESULT_STATUS_SUCCEEDED},
+	}
+	final, err := store.FinalizePlanResults(plan, true, results)
+	if err != nil {
+		t.Fatalf("FinalizePlanResults(multi lifecycle) error = %v", err)
+	}
+	if len(final.GetAllocations()) != 1 || final.GetAllocations()[0].GetState() != tgsrlv1.AllocationState_ALLOCATION_STATE_ACTIVE {
+		t.Fatalf("final allocations = %+v", final.GetAllocations())
+	}
+}
+
+func TestMultiActionMutationCompensationRestoresReservation(t *testing.T) {
+	store, _, intent, snapshot, allocation := setupActiveAllocationStore(t)
+	plan := &tgsrlv1.PlacementPlan{
+		PlanId: "multi-lifecycle-rollback", ExecutionId: intent.GetExecutionId(), StageId: intent.GetStageId(),
+		IntentVersion: intent.GetVersion(), SnapshotRevision: snapshot.GetRevision(), Purpose: tgsrlv1.PlanPurpose_PLAN_PURPOSE_RECONCILIATION,
+		AffectedAllocationIds: []string{allocation.GetAllocationId()},
+		Actions: []*tgsrlv1.Action{
+			{ActionId: "share-action", ActionType: tgsrlv1.ActionType_ACTION_TYPE_SET_SHARE, TargetId: allocation.GetAllocationId()},
+			{ActionId: "priority-action", ActionType: tgsrlv1.ActionType_ACTION_TYPE_SET_PRIORITY, TargetId: allocation.GetAllocationId()},
+		},
+	}
+	if _, err := store.ReservePlan(plan); err != nil {
+		t.Fatalf("ReservePlan(multi lifecycle) error = %v", err)
+	}
+	results := []*tgsrlv1.ActionResult{
+		{ActionId: "share-action", Status: tgsrlv1.ActionResultStatus_ACTION_RESULT_STATUS_SUCCEEDED, RollbackAttempted: true, RollbackStatus: tgsrlv1.ActionResultStatus_ACTION_RESULT_STATUS_ROLLED_BACK},
+		{ActionId: "priority-action", Status: tgsrlv1.ActionResultStatus_ACTION_RESULT_STATUS_FAILED},
+	}
+	final, err := store.FinalizePlanResults(plan, false, results)
+	if err != nil {
+		t.Fatalf("FinalizePlanResults(multi lifecycle rollback) error = %v", err)
+	}
+	if !proto.Equal(final, snapshot) {
+		t.Fatalf("rollback changed snapshot: before=%+v after=%+v", snapshot, final)
+	}
+}
+
+func TestReservePlanRejectsConflictingMultiActionMutation(t *testing.T) {
+	store, _, intent, snapshot, allocation := setupActiveAllocationStore(t)
+	plan := &tgsrlv1.PlacementPlan{
+		PlanId: "conflicting-lifecycle-plan", ExecutionId: intent.GetExecutionId(), StageId: intent.GetStageId(),
+		IntentVersion: intent.GetVersion(), SnapshotRevision: snapshot.GetRevision(), Purpose: tgsrlv1.PlanPurpose_PLAN_PURPOSE_RECONCILIATION,
+		AffectedAllocationIds: []string{allocation.GetAllocationId()},
+		Actions: []*tgsrlv1.Action{
+			{ActionId: "pause-action", ActionType: tgsrlv1.ActionType_ACTION_TYPE_PAUSE, TargetId: allocation.GetAllocationId()},
+			{ActionId: "resume-action", ActionType: tgsrlv1.ActionType_ACTION_TYPE_RESUME, TargetId: allocation.GetAllocationId()},
+		},
+	}
+	if _, err := store.ReservePlan(plan); !errors.Is(err, ErrInvalidIntent) {
+		t.Fatalf("ReservePlan(conflicting lifecycle) error = %v, want ErrInvalidIntent", err)
+	}
+}
+
+func TestReservePlanRejectsMutationOfNonActiveAllocation(t *testing.T) {
+	store, _, intent, snapshot, allocation := setupActiveAllocationStore(t)
+	if _, err := store.MutateResources(snapshot.GetRevision(), func(working *tgsrlv1.ClusterSnapshot) error {
+		working.Allocations[0].State = tgsrlv1.AllocationState_ALLOCATION_STATE_RELEASING
+		return nil
+	}); err != nil {
+		t.Fatalf("MutateResources() error = %v", err)
+	}
+	snapshot, _ = store.GetSnapshot(context.Background(), 0, true)
+	plan := &tgsrlv1.PlacementPlan{
+		PlanId: "non-active-mutation", ExecutionId: intent.GetExecutionId(), StageId: intent.GetStageId(),
+		IntentVersion: intent.GetVersion(), SnapshotRevision: snapshot.GetRevision(), Purpose: tgsrlv1.PlanPurpose_PLAN_PURPOSE_RECONCILIATION,
+		AffectedAllocationIds: []string{allocation.GetAllocationId()},
+		Actions:               []*tgsrlv1.Action{{ActionId: "share-action", ActionType: tgsrlv1.ActionType_ACTION_TYPE_SET_SHARE, TargetId: allocation.GetAllocationId()}},
+	}
+	if _, err := store.ReservePlan(plan); !errors.Is(err, ErrInvalidIntent) {
+		t.Fatalf("ReservePlan(non-active mutation) error = %v, want ErrInvalidIntent", err)
+	}
+}
+
 func TestReservePlanResizeMutationGrowAndRollback(t *testing.T) {
 	store, _, intent, snapshot, allocation := setupActiveAllocationStore(t)
 	targetResources := &tgsrlv1.ResourceVector{

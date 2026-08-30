@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -297,6 +298,16 @@ func TestResumeApplyingUnknownEffectBecomesDegradedWithoutReplay(t *testing.T) {
 	providerFake := &fakeTransactionalProvider{executeErrAt: map[int]error{}, stepReceipts: map[int]*provider.TransactionReceipt{}, reconcileReceipt: receiptFor(plan.GetPlanId(), 1, provider.TransactionPhaseExecuting, provider.TransactionEffect{StepIndex: 0, ActionID: "action-1", Status: provider.EffectStatusUnknown})}
 	outcome, err := newTestExecutor(t, store, providerFake, nil).Resume(context.Background(), record.TransactionID)
 	if err != nil || !outcome.Degraded() || len(providerFake.executeStepCalls) != 0 {
+		t.Fatalf("outcome=%+v error=%v execute_calls=%v", outcome, err, providerFake.executeStepCalls)
+	}
+}
+
+func TestResumeApplyingRejectsReceiptForDifferentAction(t *testing.T) {
+	store, plan := testStoreAndPlan(t, "plan-mismatched-receipt", "action-1")
+	record := advanceToApplying(t, store, plan)
+	providerFake := &fakeTransactionalProvider{executeErrAt: map[int]error{}, stepReceipts: map[int]*provider.TransactionReceipt{}, reconcileReceipt: receiptFor(plan.GetPlanId(), 1, provider.TransactionPhaseReconciled, provider.TransactionEffect{StepIndex: 0, ActionID: "other-action", IdempotencyKey: "action-1-key", Status: provider.EffectStatusApplied})}
+	outcome, err := newTestExecutor(t, store, providerFake, nil).Resume(context.Background(), record.TransactionID)
+	if err != nil || !outcome.Degraded() || !strings.Contains(outcome.Transaction.FailureReason, "does not match plan") || len(providerFake.executeStepCalls) != 0 {
 		t.Fatalf("outcome=%+v error=%v execute_calls=%v", outcome, err, providerFake.executeStepCalls)
 	}
 }

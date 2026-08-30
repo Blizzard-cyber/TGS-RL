@@ -22,8 +22,8 @@
 | Web Console | **支持** | 概览、任务详情、时间线、拓扑、Sandbox、Decision、实验比较，以及 Job/Run 准入和生命周期操作 | 静态 `mock` adapter 不访问 Gateway；静态部署需自行提供同源 API 代理 |
 | CPU Mock Provider | **支持** | 能力匹配、逻辑资源绑定、L1–L4 逻辑模拟动作、故障注入、generation fence 和逐动作 rollback | Adaptive Planner 会在满足观测、能力与安全条件时生成 L1–L4 动作；这些结果只验证控制逻辑，不代表真实硬件行为或性能 |
 | NVIDIA Provider（默认） | **有条件（Conditional）** | `LocalDriver` 可通过 `nvidia-smi` 形成设备快照 | 需要 NVIDIA 驱动和 `nvidia-smi`；默认不声明资源动作 |
-| NVIDIA Driver v2 | **有条件（Conditional）** | 已实现 inventory、MPS `set_share` 写入与读回、MIG、binding、runtime command、事务、幂等、超时、回滚、重启发现、dry-run 与审计的 Go 编排及 fake conformance 测试 | 实际动作依赖仓库外 `tgsrl-nvidia-binding`、`tgsrl-nvidia-runtime`、`tgsrl-nvidia-mig` helper；MPS 不公开通用 `resize`，MIG L4 需 helper 声明完整 lifecycle transaction；仓库尚未提供这些 helper，也没有真实 NVIDIA/CUDA 证据，因此不能标记为“已实现，待硬件验证”或“支持” |
-| 外部 Runtime Adapter | **有条件支持** | veRL、OpenRLHF、Ray、PyTorch、vLLM、SGLang 的依赖检查、manifest 校验和 typed lifecycle bridge | 必须安装对应 Python 包，并提供可用的 provider hook、执行后端、分布式环境和资源控制 |
+| NVIDIA Driver v2 | **有条件（Conditional）** | 已实现 inventory、MPS `set_share` 写入与读回，以及仓库内 binding/runtime/MIG helper 的 generation fence、幂等 durable receipt、原子落盘、重启发现、PID 信号控制和 managed-worker lifecycle | binding helper 不改变已运行进程的 GPU 可见性；offload/reload 需要训练 worker 实现 Unix socket 协议；MIG 仅在已存在、已发现的实例间切换，不自动改变节点 MIG 拓扑；现有测试为真实本地进程 + fake-command/CPU conformance，尚无真实 NVIDIA/CUDA 证据 |
+| 外部 Runtime Adapter | **有条件支持** | veRL 已有第一方 lifecycle/observation bridge、durable worker receipt、typed TraceEvent 和 CPU reference workload；其余 adapter 提供依赖检查、manifest 校验和 typed bridge 边界 | 真实 veRL worker、Ray/PyTorch/vLLM/SGLang、分布式环境和 GPU 资源控制仍需目标环境验证 |
 | Kubernetes Operator | **有条件支持** | 编译和调和 `JobRunBundle`、Kueue `Workload`、Kubernetes `Job`、可选 `ResourceClaim`/`RuntimeClass`，并观察状态；Kubernetes 1.35.1 + Kueue 0.19.2 的本地 CPU API/RBAC/重启验证通过 | 用户必须提供其余 TGS-RL 服务和所选 GPU/DRA 组件；本地 CPU 证据不代表生产集群或 GPU 验证，随附工件只部署 Operator |
 
 ## 单机方案
@@ -46,15 +46,16 @@ Runtime 可以选择以下 Adapter：
 
 | 类型 | 名称 | 必要 Python 依赖 |
 |---|---|---|
-| Framework | veRL、OpenRLHF | `verl`、`openrlhf` |
+| Framework | veRL、OpenRLHF | veRL 使用仓库内 bridge，真实 worker 环境需 `verl`；OpenRLHF 需 `openrlhf` |
 | Execution backend | Ray | `ray` |
 | Trainer | PyTorch | `torch` |
 | Rollout engine | vLLM、SGLang | `vllm`、`sglang` |
 
 Adapter 将 manifest 转换为结构化 `LaunchSpec`，并支持 direct command、Python module
-hook 或 API hook。安装 Python 包只是必要条件；要运行训练，还必须提供与所选组合匹配的
-镜像、命令、provider hook、资源后端、网络和分布式配置。缺少依赖或 hook 时请求会返回
-unavailable，不会回退为成功。
+hook 或 API hook。veRL 默认使用仓库内 `adapters.frameworks.verl_bridge`，worker 仍必须嵌入
+bridge callback 并提供 control socket；其余 adapter 需要显式 bridge。要运行训练，还必须提供
+与所选组合匹配的镜像、命令、资源后端、网络和分布式配置。缺少执行条件时请求会明确失败，
+不会回退为成功。
 
 ## Kubernetes 方案要求
 
@@ -85,12 +86,41 @@ MPS `set_share` 必须在写入后读回实际 active-thread percentage，事务
 Sandbox observation；通用 `resize` 当前不由 MPS 暴露。MIG `rebind/recreate` 只有在 helper
 同时声明 safe-point、checkpoint、stop、restore 和 readiness 时才可用。
 
+仓库内 helper 可用 `make build-nvidia-binding` 构建到 `bin/tgsrl-nvidia-binding`。Scheduler
+通过 `-nvidia-binding-helper` 指定二进制，通过 `-nvidia-binding-state` 指定持久化文件；
+未指定时状态文件位于 `-state-dir` 下。`-nvidia-mps-pid-dir` 指向由 Runtime/容器集成维护的
+`<sandbox>.pid` 目录。只有 PID 仍存活时 helper 才声明 `mps_profile_pid`，从而允许 MPS
+`set_share`；binding receipt 只表示该步骤已落盘，Provider commit 仍由事务执行器完成。
+helper 的持久化 binding 需要由创建进程或容器的执行层消费，不能用它替代 CUDA/container
+级设备隔离验证。
+
+`make build-nvidia-runtime` 构建 `bin/tgsrl-nvidia-runtime`。Runtime 或进程管理器先用
+`register --sandbox ... --generation ... --pid ...` 注册 worker；无 control socket 时仅支持在
+safe-point 标记为真后使用 SIGSTOP/SIGCONT 完成 pause/resume/sleep。offload 必须由 Unix
+socket worker 显式确认 `prepare_pause → checkpoint → offload`，resume 会执行
+`reload → resume` 并等待 readiness。状态文件由 `-nvidia-runtime-state` 指定，所有成功和
+不确定结果都保留用于重启调和。
+
+`make build-nvidia-mig` 构建 `bin/tgsrl-nvidia-mig`。该 helper 与 runtime helper 共享 worker
+注册和 receipt 状态，并执行 `prepare_pause → checkpoint → stop → 目标 MIG UUID 回读 →
+reload → readiness`。`rebind` 必须指定不同的 source/target MIG UUID，`recreate` 必须保持
+同一 MIG UUID；当前不执行 `nvidia-smi mig -dci/-dgi/-cgi/-cci`，因为这种拓扑变更会生成
+新设备身份，必须先由 Scheduler 的资源拓扑事务显式表达后才能安全开放。
+
+Gate G/I runner 从同一个锁定 manifest 自动运行 baseline 和 variant，执行 warmup 与多次
+measurement，并从原始 NDJSON 事件重新计算吞吐、P50/P95/P99 延迟、iteration time、GPU active
+time、queue depth、policy lag、staleness、ESS、lifecycle latency、action/rollback rate 和 recovery
+time。CPU runner 只生成 `CPU_INTEGRATION/NOT_RUN` 证据；self-hosted CUDA runner 生成
+`GPU_SINGLE_NODE` 证据。`GPU_MULTI_NODE` 仅接受原始 trace 中至少有两个真实节点身份且
+baseline/variant 节点集合一致的外部运行证据。证据包包含原始 stdout/stderr、trace、锁定配置、
+环境指纹、digest 和汇总报告，报告指标必须与原始 trace 重算一致。
+
 ## 明确不支持
 
 - 直接把 Gateway、gRPC 或 Prometheus 端点暴露到公网或不可信共享网络；
 - 内置 TLS、身份认证、授权、多租户隔离、CORS 策略、限流或密钥管理；
-- 在未安装并验证外部 helper 时使用 NVIDIA Driver v2 执行 GPU 分配、MIG/MPS 管理或
-  Runtime lifecycle；
+- 在未验证仓库内 binding/runtime/MIG helper 与目标环境时执行 GPU 分配、
+  MIG/MPS 管理或 Runtime lifecycle；
 - 把 `nvidia-smi` 设备发现、Mock 行为或单元测试解释为真实 GPU 调度与执行验证；
 - 依靠 fake backend 在进程重启后恢复 workload 对象；
 - 跨服务原子事务、自动故障转移、HA 或灾备；

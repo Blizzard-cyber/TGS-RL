@@ -42,6 +42,12 @@ type LocalDriverV2Options struct {
 	MPSPipeDirectory      string
 	MPSLogDirectory       string
 	EnableRuntimeCommands bool
+	BindingHelperBinary   string
+	BindingStatePath      string
+	MPSPIDDirectory       string
+	RuntimeHelperBinary   string
+	RuntimeStatePath      string
+	MIGHelperBinary       string
 }
 
 // LocalDriverV2 composes independent inventory, partition, runtime, and binding backends.
@@ -123,7 +129,7 @@ func NewLocalDriverV2(options LocalDriverV2Options) (*LocalDriverV2, error) {
 		case PartitionModeMPS:
 			options.Partition = NewMPSBackend(options.Executor, options.CommandTimeout, options.MPSPipeDirectory, options.MPSLogDirectory)
 		case PartitionModeMIG:
-			options.Partition = NewMIGBackend(options.Executor, options.CommandTimeout)
+			options.Partition = NewMIGBackendWithConfig(options.Executor, options.CommandTimeout, options.MIGHelperBinary, options.RuntimeStatePath, options.BindingStatePath)
 		}
 	}
 	if options.Partition == nil {
@@ -136,14 +142,18 @@ func NewLocalDriverV2(options LocalDriverV2Options) (*LocalDriverV2, error) {
 		dryRunAware.SetDryRun(options.DryRun)
 	}
 	if options.Runtime == nil {
-		if options.EnableRuntimeCommands {
-			options.Runtime = NewCommandRuntimeBackend(options.Executor, options.CommandTimeout)
+		if options.EnableRuntimeCommands || options.RuntimeHelperBinary != "" || options.RuntimeStatePath != "" {
+			options.Runtime = NewCommandRuntimeBackendWithConfig(options.Executor, options.CommandTimeout, options.RuntimeHelperBinary, options.RuntimeStatePath)
 		} else {
 			options.Runtime = NewUnavailableRuntimeBackend("nvidia runtime control backend is not configured")
 		}
 	}
 	if options.Binding == nil {
-		options.Binding = noOpBindingBackend{}
+		if options.BindingStatePath != "" || options.BindingHelperBinary != "" {
+			options.Binding = NewCommandBindingBackendWithConfig(options.Executor, options.CommandTimeout, options.BindingHelperBinary, options.BindingStatePath, options.MPSPIDDirectory)
+		} else {
+			options.Binding = noOpBindingBackend{}
+		}
 	}
 	if options.Audit == nil {
 		options.Audit = NewInMemoryAuditSink(256)
@@ -208,12 +218,13 @@ func (d *LocalDriverV2) Probe(ctx context.Context) (*ProbeResult, error) {
 		_ = d.recordAudit(auditContext, AuditRecord{Operation: "discover", PartitionMode: d.partition.Mode(), Status: AuditStatusFailed, ErrorCode: ErrorCodeUnavailable, ErrorMessage: reason})
 		return &ProbeResult{Available: false, Reason: reason, Capabilities: v2UnavailableCapabilities(reason, d.partition.Mode(), inventory)}, nil
 	}
+	recoveredReceipts := make([]RecoveredAction, 0)
 	if receiptBackend, ok := d.binding.(ReceiptBackend); ok {
 		receipts, receiptErr := receiptBackend.DiscoverReceipts(ctx)
 		if receiptErr != nil {
 			inventory.Warnings = append(inventory.Warnings, "action receipt discovery unavailable: "+boundedDiagnostic([]byte(receiptErr.Error())))
 		} else {
-			d.rememberReceipts(receipts)
+			recoveredReceipts = append(recoveredReceipts, receipts...)
 		}
 	}
 	runtimeStatus, err := d.runtime.Discover(ctx)
@@ -224,6 +235,26 @@ func (d *LocalDriverV2) Probe(ctx context.Context) (*ProbeResult, error) {
 	var runtimeActions []tgsrlv1.ActionType
 	if runtimeStatus != nil && runtimeStatus.Available {
 		runtimeActions = append(runtimeActions, runtimeStatus.SupportedActions...)
+	}
+	if receiptBackend, ok := d.runtime.(ReceiptBackend); ok {
+		receipts, receiptErr := receiptBackend.DiscoverReceipts(ctx)
+		if receiptErr != nil {
+			inventory.Warnings = append(inventory.Warnings, "runtime receipt discovery unavailable: "+boundedDiagnostic([]byte(receiptErr.Error())))
+		} else {
+			recoveredReceipts = append(recoveredReceipts, receipts...)
+		}
+	}
+	if receiptBackend, ok := d.partition.(ReceiptBackend); ok {
+		receipts, receiptErr := receiptBackend.DiscoverReceipts(ctx)
+		if receiptErr != nil {
+			inventory.Warnings = append(inventory.Warnings, "partition receipt discovery unavailable: "+boundedDiagnostic([]byte(receiptErr.Error())))
+		} else {
+			recoveredReceipts = append(recoveredReceipts, receipts...)
+		}
+	}
+	if err := d.rememberReceipts(recoveredReceipts); err != nil {
+		inventory.Warnings = append(inventory.Warnings, "action receipt discovery rejected: "+err.Error())
+		d.rememberReceipts(nil) //nolint:errcheck
 	}
 	d.rememberBackends(bindingSnapshot, runtimeStatus)
 	capabilities := d.versionCapabilities(v2Capabilities(inventory, partitions, bindingSnapshot.SupportedActions, runtimeActions, d.dryRun))
@@ -242,10 +273,10 @@ func (d *LocalDriverV2) Probe(ctx context.Context) (*ProbeResult, error) {
 
 // ExecuteAction dispatches an action to exactly one backend and records a sanitized audit.
 func (d *LocalDriverV2) ExecuteAction(ctx context.Context, state *DriverState, action *tgsrlv1.Action) (*ActionExecution, error) {
-	return d.executeAction(ctx, state, action, d.dryRun, true, true)
+	return d.executeAction(ctx, state, action, d.dryRun, true, true, nil)
 }
 
-func (d *LocalDriverV2) executeAction(ctx context.Context, state *DriverState, action *tgsrlv1.Action, dryRun, cache, checkGeneration bool) (*ActionExecution, error) {
+func (d *LocalDriverV2) executeAction(ctx context.Context, state *DriverState, action *tgsrlv1.Action, dryRun, cache, checkGeneration bool, receipt *HelperReceiptContext) (*ActionExecution, error) {
 	if err := validateDriverAction(action); err != nil {
 		return nil, err
 	}
@@ -275,7 +306,11 @@ func (d *LocalDriverV2) executeAction(ctx context.Context, state *DriverState, a
 			if digestErr != nil {
 				return nil, digestErr
 			}
-			if recovered.ActionID != action.GetActionId() || recovered.PlanID != action.GetPlanId() || recovered.SandboxID != actionSandboxID(action) || recovered.Generation != action.GetExpectedGeneration() || recovered.CommandDigest == "" || recovered.CommandDigest != digest {
+			actionGeneration := recovered.ActionGeneration
+			if actionGeneration == 0 {
+				actionGeneration = recovered.Generation
+			}
+			if recovered.ActionID != action.GetActionId() || recovered.PlanID != action.GetPlanId() || recovered.SandboxID != actionSandboxID(action) || actionGeneration != receiptActionGeneration(action) || recovered.CommandDigest == "" || recovered.CommandDigest != digest {
 				return nil, v2ActionError(action, base.ErrorCodeIdempotencyConflict, "recovered idempotency receipt does not match NVIDIA action identity", base.ErrIdempotencyConflict)
 			}
 			if recovered.Succeeded {
@@ -301,7 +336,7 @@ func (d *LocalDriverV2) executeAction(ctx context.Context, state *DriverState, a
 			return nil, v2ActionError(action, base.ErrorCodeGenerationConflict, "nvidia backend generation changed before command dispatch", base.ErrFailedPrecondition)
 		}
 	}
-	request := BackendActionRequest{State: cloneDriverState(state), Action: cloneAction(action), Partitions: d.partitions(), Binding: d.bindingFor(actionSandboxID(action)), DryRun: dryRun}
+	request := BackendActionRequest{State: cloneDriverState(state), Action: cloneAction(action), Partitions: d.partitions(), Binding: d.bindingFor(actionSandboxID(action)), DryRun: dryRun, Receipt: cloneHelperReceiptContext(receipt)}
 	if !d.supportsAction(action.GetActionType()) {
 		return nil, v2ActionError(action, ErrorCodeUnavailable, "nvidia backend did not advertise the requested mutation", base.ErrFailedPrecondition)
 	}
@@ -341,6 +376,9 @@ func (d *LocalDriverV2) executeAction(ctx context.Context, state *DriverState, a
 			return nil, err
 		}
 	}
+	if !dryRun && result.Binding != nil {
+		d.rememberBindingMutation(action.GetActionType(), result.Binding)
+	}
 	execution := &ActionExecution{Detail: result.Detail, Commands: cloneCommands(result.Commands), DryRun: dryRun, Binding: cloneDiscoveredBinding(result.Binding), ObservedShare: cloneFloat64(result.ObservedShare), MutationMayHaveApplied: result.MutationMayHaveApplied}
 	if cache && key != "" {
 		d.mu.Lock()
@@ -349,6 +387,29 @@ func (d *LocalDriverV2) executeAction(ctx context.Context, state *DriverState, a
 		d.mu.Unlock()
 	}
 	return execution, nil
+}
+
+func (d *LocalDriverV2) rememberBindingMutation(actionType tgsrlv1.ActionType, binding *DiscoveredBinding) {
+	if binding == nil {
+		return
+	}
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if d.lastBindings == nil {
+		d.lastBindings = &BindingSnapshot{Available: true}
+	}
+	bindings := d.lastBindings.Bindings[:0]
+	for _, current := range d.lastBindings.Bindings {
+		if current.SandboxID != binding.SandboxID {
+			bindings = append(bindings, current)
+		}
+	}
+	if actionType != tgsrlv1.ActionType_ACTION_TYPE_RELEASE {
+		bindings = append(bindings, *cloneDiscoveredBinding(binding))
+	}
+	sort.Slice(bindings, func(i, j int) bool { return bindings[i].SandboxID < bindings[j].SandboxID })
+	d.lastBindings.Bindings = bindings
+	d.observedGenerations[binding.SandboxID] = binding.Generation
 }
 
 func actionDigest(action *tgsrlv1.Action) (string, error) {
@@ -376,7 +437,7 @@ func (d *LocalDriverV2) refreshAfterMIGMutation(ctx context.Context, action *tgs
 		return v2ActionError(action, ErrorCodeUnavailable, partitionUnavailableReason(PartitionModeMIG, partitions, err), base.ErrFailedPrecondition)
 	}
 	requested := action.GetBinding().GetResources()
-	previous, err := migTargetPartition(previousPartitions, action)
+	target, err := migTargetPartition(previousPartitions, action)
 	if err != nil {
 		return err
 	}
@@ -386,10 +447,10 @@ func (d *LocalDriverV2) refreshAfterMIGMutation(ctx context.Context, action *tgs
 	receiptDeviceID := result.Binding.DeviceIDs[0]
 	var candidates []Partition
 	for _, partition := range partitions.Partitions {
-		if partition.ID != receiptDeviceID || partition.ParentUUID != previous.ParentUUID || partition.ID == previous.ID {
+		if partition.ID != receiptDeviceID || partition.ParentUUID != target.ParentUUID {
 			continue
 		}
-		if previous.Profile != "" && partition.Profile != previous.Profile {
+		if target.Profile != "" && partition.Profile != target.Profile {
 			continue
 		}
 		if requested != nil && requested.GetMemoryBytes() > 0 && partition.MemoryBytes < requested.GetMemoryBytes() {
@@ -479,7 +540,7 @@ func (d *LocalDriverV2) Reconcile(ctx context.Context, state *DriverState, _ *tg
 
 // PlanAction validates and returns the exact argv-only commands without side effects.
 func (d *LocalDriverV2) PlanAction(ctx context.Context, state *DriverState, action *tgsrlv1.Action) (*ActionExecution, error) {
-	return d.executeAction(ctx, state, action, true, false, true)
+	return d.executeAction(ctx, state, action, true, false, true, nil)
 }
 
 // Inventory returns the last detached inventory snapshot.
@@ -523,7 +584,11 @@ func (d *LocalDriverV2) RecoveredActions() []RecoveredAction {
 // RollbackAction executes provider-authorized compensation against its captured
 // before-image without applying the forward action's generation fence again.
 func (d *LocalDriverV2) RollbackAction(ctx context.Context, state *DriverState, action *tgsrlv1.Action) (*ActionExecution, error) {
-	return d.executeAction(ctx, state, action, false, true, false)
+	return d.executeAction(ctx, state, action, false, true, false, nil)
+}
+
+func (d *LocalDriverV2) executeTransactionAction(ctx context.Context, state *DriverState, action *tgsrlv1.Action, receipt *HelperReceiptContext) (*ActionExecution, error) {
+	return d.executeAction(ctx, state, action, d.dryRun, true, true, receipt)
 }
 
 type actionBackend interface {
@@ -605,16 +670,20 @@ func (d *LocalDriverV2) rememberBackends(bindings *BindingSnapshot, runtimeStatu
 	}
 }
 
-func (d *LocalDriverV2) rememberReceipts(receipts []RecoveredAction) {
+func (d *LocalDriverV2) rememberReceipts(receipts []RecoveredAction) error {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	next := make(map[string]RecoveredAction, len(receipts))
 	for _, receipt := range receipts {
 		if receipt.IdempotencyKey != "" {
+			if _, exists := next[receipt.IdempotencyKey]; exists {
+				return fmt.Errorf("duplicate recovered idempotency key %q", receipt.IdempotencyKey)
+			}
 			next[receipt.IdempotencyKey] = receipt
 		}
 	}
 	d.recoveredActions = next
+	return nil
 }
 
 func (d *LocalDriverV2) bindingFor(sandboxID string) *DiscoveredBinding {
@@ -645,6 +714,13 @@ func resultingGeneration(action *tgsrlv1.Action) uint64 {
 		if generation := action.GetBinding().GetGeneration(); generation != 0 {
 			return generation
 		}
+	}
+	return action.GetExpectedGeneration()
+}
+
+func receiptActionGeneration(action *tgsrlv1.Action) uint64 {
+	if action != nil && action.GetActionType() == tgsrlv1.ActionType_ACTION_TYPE_BIND && action.GetBinding().GetGeneration() != 0 {
+		return action.GetBinding().GetGeneration()
 	}
 	return action.GetExpectedGeneration()
 }
@@ -715,6 +791,14 @@ func cloneFloat64(value *float64) *float64 {
 	}
 	cloned := *value
 	return &cloned
+}
+
+func cloneHelperReceiptContext(value *HelperReceiptContext) *HelperReceiptContext {
+	if value == nil {
+		return nil
+	}
+	result := *value
+	return &result
 }
 
 func partitionUnavailableReason(mode PartitionMode, snapshot *PartitionSnapshot, err error) string {

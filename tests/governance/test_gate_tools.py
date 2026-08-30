@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import subprocess
 import sys
@@ -88,6 +89,13 @@ def test_invalid_manifest_rules_are_rejected(tmp_path: Path) -> None:
     assert "measurement_runs must be a positive integer" in result.stderr
 
 
+def test_runner_rejects_repository_root_as_output_directory() -> None:
+    result = run_tool(ROOT, "cpu-smoke")
+
+    assert result.returncode == 1
+    assert "output directory is too broad" in result.stderr
+
+
 def test_cpu_smoke_executes_command_and_records_only_digests(tmp_path: Path) -> None:
     result = run_tool(
         tmp_path,
@@ -104,6 +112,17 @@ def test_cpu_smoke_executes_command_and_records_only_digests(tmp_path: Path) -> 
     assert smoke["executed"] is True
     assert smoke["exit_code"] == 0
     assert "command" not in smoke
+    assert len(report["executions"]) == 8
+    assert report["metrics"]["baseline"]["decision_count"] == 0
+    assert report["metrics"]["variant"]["decision_count"] == 15
+    baseline = json.loads((tmp_path / report["baseline_trace"]).read_text())
+    variant = json.loads((tmp_path / report["variant_trace"]).read_text())
+    assert baseline["events"]
+    assert variant["events"]
+    assert all(event["phase"] in {"warmup", "measurement"} for event in variant["events"])
+    assert (tmp_path / "artifacts/config/gate-manifest.json").is_file()
+    assert (tmp_path / "artifacts/config/gate-gi.yaml").is_file()
+    assert (tmp_path / report["executions"][0]["stdout_artifact"]).is_file()
 
 
 def test_cpu_smoke_failure_is_blocked_and_returns_failure(tmp_path: Path) -> None:
@@ -117,14 +136,92 @@ def test_cpu_smoke_failure_is_blocked_and_returns_failure(tmp_path: Path) -> Non
     report = read_report(tmp_path)
     assert report["status"] == "BLOCKED"
     assert report["smoke"]["exit_code"] == 7
+    rendered = run_tool(tmp_path, "report")
+    assert rendered.returncode == 0, rendered.stderr
+    assert json.loads(rendered.stdout)["summary"]["status"] == "BLOCKED"
 
 
 def test_gpu_ingest_copies_external_artifacts_and_preserves_not_run(tmp_path: Path) -> None:
     source_dir = tmp_path / "source"
     output_dir = tmp_path / "output"
     source_dir.mkdir()
-    (source_dir / "baseline.json").write_text('{"trace": "baseline"}', encoding="utf-8")
-    (source_dir / "variant.json").write_text('{"trace": "variant"}', encoding="utf-8")
+    manifest = json.loads(MANIFEST.read_text())
+
+    def trace(label: str) -> dict[str, Any]:
+        events = [
+            {
+                "label": label,
+                "phase": "measurement",
+                "iteration": 1,
+                "event_type": "sample_consumed",
+                "duration_ms": 1.0,
+                "gpu_active_ms": 2.0,
+                "buffer_level": 1,
+                "node_id": "gpu-node-1",
+                "contract_observation": {
+                    "policy_lag": 0,
+                    "sample_stale": False,
+                    "effective_sample_size": 1.0,
+                },
+            },
+            *[
+                {
+                    "label": label,
+                    "phase": "measurement",
+                    "iteration": 1,
+                    "event_type": "decision_applied",
+                    "action": action,
+                    "duration_ms": 1.0,
+                    "succeeded": True,
+                    "rolled_back": False,
+                    "recovery_time_ms": 0.0,
+                    "node_id": "gpu-node-1",
+                }
+                for action in ("prepare_pause", "checkpoint", "reload")
+            ],
+            {
+                "label": label,
+                "phase": "measurement",
+                "iteration": 1,
+                "event_type": "workload_completed",
+                "elapsed_ms": 10.0,
+                "item_count": 1,
+                "node_id": "gpu-node-1",
+            },
+        ]
+        metrics = {
+            "latency_ms_p50": 1.0,
+            "latency_ms_p95": 1.0,
+            "latency_ms_p99": 1.0,
+            "throughput_items_per_s": 100.0,
+            "decision_count": 3.0,
+            "end_to_end_iteration_ms_p50": 10.0,
+            "scheduling_latency_ms_p95": 1.0,
+            "gpu_active_time_ms": 2.0,
+            "queue_depth_max": 1.0,
+            "policy_lag_p95": 0.0,
+            "sample_staleness_ratio": 0.0,
+            "effective_sample_size_mean": 1.0,
+            "pause_latency_ms": 1.0,
+            "checkpoint_latency_ms": 1.0,
+            "reload_latency_ms": 1.0,
+            "action_success_rate": 1.0,
+            "rollback_rate": 0.0,
+            "transaction_recovery_time_ms": 0.0,
+        }
+        return {
+            "schema_version": "tgsrl.io/gate-trace/v1alpha1",
+            "suite_id": "gate-g-i",
+            "label": label,
+            "seed": manifest["workload_lock"]["seed"],
+            "events": events,
+            "metrics": metrics,
+        }
+
+    baseline, variant = trace("baseline"), trace("variant")
+    baseline_path, variant_path = source_dir / "baseline.json", source_dir / "variant.json"
+    baseline_path.write_text(json.dumps(baseline), encoding="utf-8")
+    variant_path.write_text(json.dumps(variant), encoding="utf-8")
     report = {
         "schema_version": "tgsrl.io/gate-run-record/v1alpha1",
         "suite_id": "gate-g-i",
@@ -138,17 +235,35 @@ def test_gpu_ingest_copies_external_artifacts_and_preserves_not_run(tmp_path: Pa
             "platform": "linux",
             "python_version": "3.12",
             "git_commit": "abc123",
+            "git_dirty": False,
             "execution_mode": "gpu-manual",
+            "accelerator_count": 1,
+            "accelerator_inventory_digest": "gpu-inventory-digest",
         },
+        "workload_lock": manifest["workload_lock"],
+        "warmup_runs": manifest["comparisons"]["warmup_runs"],
+        "measurement_runs": manifest["comparisons"]["measurement_runs"],
         "metrics": {
-            side: {
-                "latency_ms_p50": 1.0,
-                "latency_ms_p95": 2.0,
-                "throughput_items_per_s": 3.0,
-                "decision_count": 1.0,
-            }
-            for side in ("baseline", "variant")
+            "baseline": baseline["metrics"],
+            "variant": variant["metrics"],
         },
+        "trace_capture": {
+            "baseline_digest": hashlib.sha256(baseline_path.read_bytes()).hexdigest(),
+            "variant_digest": hashlib.sha256(variant_path.read_bytes()).hexdigest(),
+        },
+        "executions": [
+            {
+                "executed": True,
+                "exit_code": 0,
+                "timed_out": False,
+                "label": label,
+                "phase": phase,
+                "iteration": iteration,
+            }
+            for label in ("baseline", "variant")
+            for phase, count in (("warmup", 1), ("measurement", 3))
+            for iteration in range(1, count + 1)
+        ],
     }
     report_path = source_dir / "report.json"
     report_path.write_text(json.dumps(report), encoding="utf-8")
@@ -161,3 +276,58 @@ def test_gpu_ingest_copies_external_artifacts_and_preserves_not_run(tmp_path: Pa
     stored = read_report(output_dir)
     assert stored["baseline_trace"] == "artifacts/traces/baseline-trace.json"
     assert (output_dir / stored["baseline_trace"]).is_file()
+
+
+def test_gpu_ingest_rejects_tampered_trace_digest(tmp_path: Path) -> None:
+    source_dir = tmp_path / "source"
+    source_dir.mkdir()
+    baseline = source_dir / "baseline.json"
+    variant = source_dir / "variant.json"
+    baseline.write_text("{}", encoding="utf-8")
+    variant.write_text("{}", encoding="utf-8")
+    manifest = json.loads(MANIFEST.read_text())
+    report = {
+        "schema_version": "tgsrl.io/gate-run-record/v1alpha1",
+        "suite_id": "gate-g-i",
+        "evidence": "GPU_SINGLE_NODE",
+        "status": "NOT_RUN",
+        "simulated": False,
+        "baseline_trace": baseline.name,
+        "variant_trace": variant.name,
+        "environment_fingerprint": {
+            "host_hash": "host",
+            "platform": "linux",
+            "python_version": "3.12",
+            "git_commit": "commit",
+            "git_dirty": False,
+            "execution_mode": "gpu-manual",
+        },
+        "workload_lock": manifest["workload_lock"],
+        "warmup_runs": manifest["comparisons"]["warmup_runs"],
+        "measurement_runs": manifest["comparisons"]["measurement_runs"],
+        "metrics": {"baseline": {}, "variant": {}},
+        "trace_capture": {"baseline_digest": "tampered", "variant_digest": "tampered"},
+    }
+    report_path = source_dir / "report.json"
+    report_path.write_text(json.dumps(report), encoding="utf-8")
+
+    result = run_tool(tmp_path / "output", "ingest", "--report", str(report_path))
+
+    assert result.returncode == 1
+    assert "trace digest does not match" in result.stderr
+
+
+def test_ingest_can_replace_report_in_its_output_directory(tmp_path: Path) -> None:
+    output = tmp_path / "output"
+    initial = run_tool(output, "cpu-smoke", "--smoke-command", f"{sys.executable} -c 'print(1)'")
+    assert initial.returncode == 0, initial.stderr
+    report = read_report(output)
+    report["baseline_trace"] = str((output / report["baseline_trace"]).resolve())
+    report["variant_trace"] = str((output / report["variant_trace"]).resolve())
+    source_report = output / "report.json"
+    source_report.write_text(json.dumps(report), encoding="utf-8")
+
+    ingested = run_tool(output, "ingest", "--report", str(source_report))
+
+    assert ingested.returncode == 0, ingested.stderr
+    assert read_report(output)["evidence"] == "CPU_INTEGRATION"

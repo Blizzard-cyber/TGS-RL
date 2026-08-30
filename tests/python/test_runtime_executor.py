@@ -70,6 +70,9 @@ def test_executor_fake_lifecycle_and_idempotency() -> None:
     assert prepared.ok
     assert prepared.runtime_units
     assert all(unit.state == runtime_pb2.RUNTIME_STATE_REQUESTED for unit in prepared.runtime_units)
+    prepared_env = dict(command_driver.calls[0][1])
+    assert prepared_env["TGSRL_GENERATION"] == "0"
+    assert prepared_env["TGSRL_IDEMPOTENCY_KEY"] == "prepare-1"
 
     started = executor.start("run-1", idempotency_key="start-1")
     assert started.ok
@@ -199,6 +202,31 @@ def test_executor_rejects_action_without_an_implementing_adapter() -> None:
         match="no selected runtime adapter supports lifecycle action sleep",
     ):
         executor.offload("run-1", idempotency_key="offload-unsupported")
+
+
+def test_executor_routes_offload_to_first_party_verl_bridge_and_passes_checkpoint() -> None:
+    command_driver = FakeCommandDriver()
+    executor = RuntimeExecutor(command_driver=command_driver)
+    manifest = _manifest(framework="verl")
+    manifest.environment["TGSRL_VERL_CONTROL_SOCKET"] = "/tmp/verl.sock"
+    executor.register_runtime(manifest)
+
+    checkpointed = executor.checkpoint(
+        "run-1", checkpoint_ref="/tmp/checkpoint-1", idempotency_key="checkpoint-1"
+    )
+    offloaded = executor.offload("run-1", idempotency_key="offload-1")
+
+    assert checkpointed.ok and offloaded.ok
+    checkpoint_calls = [
+        call for call in command_driver.calls if dict(call[1]).get("TGSRL_ACTION") == "checkpoint"
+    ]
+    assert checkpoint_calls
+    assert dict(checkpoint_calls[0][1])["TGSRL_CHECKPOINT_REF"] == "/tmp/checkpoint-1"
+    offload_calls = [
+        call for call in command_driver.calls if dict(call[1]).get("TGSRL_ACTION") == "sleep"
+    ]
+    assert len(offload_calls) == 1
+    assert dict(offload_calls[0][1])["TGSRL_COMPONENT"] == "framework"
 
 
 def test_executor_generation_advances_and_can_restore_durable_watermark() -> None:

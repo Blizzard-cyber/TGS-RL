@@ -140,7 +140,7 @@ func TestBackendHandshakeRequiresIdentityVersionAndSafetyFeatures(t *testing.T) 
 
 func TestCommandRuntimeBackendDiscoversAuthoritativeSandboxState(t *testing.T) {
 	executor := NewFakeCommandExecutor(
-		FakeCommandResponse{Result: CommandResult{Stdout: []byte("tgsrl-nvidia-runtime,1,pause,resume,generation_fence,idempotency")}},
+		FakeCommandResponse{Result: CommandResult{Stdout: []byte("tgsrl-nvidia-runtime,1,pause,resume,generation_fence,idempotency,durable_receipts,safe_point,checkpoint,reload,readiness")}},
 		FakeCommandResponse{Result: CommandResult{Stdout: []byte("sandbox-a,4,paused,true,false,7\n")}},
 	)
 	status, err := NewCommandRuntimeBackend(executor, time.Second).Discover(context.Background())
@@ -150,6 +150,50 @@ func TestCommandRuntimeBackendDiscoversAuthoritativeSandboxState(t *testing.T) {
 	sandbox := status.Sandboxes[0]
 	if sandbox.State != base.SandboxStatePaused || sandbox.Generation != 4 || !sandbox.SafePoint || sandbox.Offloaded || sandbox.Priority != 7 {
 		t.Fatalf("runtime sandbox = %+v", sandbox)
+	}
+}
+
+func TestCommandRuntimeBackendPassesReceiptAndStateEnvironment(t *testing.T) {
+	executor := NewFakeCommandExecutor(FakeCommandResponse{Result: CommandResult{}})
+	backend := NewCommandRuntimeBackendWithConfig(executor, time.Second, "runtime-helper", "/state/runtime.json")
+	action := v2Action(tgsrlv1.ActionType_ACTION_TYPE_PAUSE)
+	receipt := &HelperReceiptContext{StepIndex: 1, ExpectedActions: 3, TransactionGeneration: 7, PlanDigest: "sha256:plan", CommandDigest: "sha256:action"}
+	result, err := backend.Apply(context.Background(), BackendActionRequest{Action: action, Receipt: receipt})
+	if err != nil || result == nil {
+		t.Fatalf("Apply() = (%+v, %v)", result, err)
+	}
+	commands := executor.Commands()
+	if len(commands) != 1 {
+		t.Fatalf("commands = %+v", commands)
+	}
+	joined := strings.Join(commands[0].Argv, " ")
+	for _, expected := range []string{"runtime-helper pause", "--recoverable", "--step-index 1", "--expected-actions 3", "--transaction-generation 7", "--plan-digest sha256:plan", "--command-digest sha256:action", "--action-id action-a", "--plan-id plan-a"} {
+		if !strings.Contains(joined, expected) {
+			t.Fatalf("argv %q missing %q", joined, expected)
+		}
+	}
+	if commands[0].Env["TGSRL_NVIDIA_RUNTIME_STATE"] != "/state/runtime.json" {
+		t.Fatalf("environment = %+v", commands[0].Env)
+	}
+}
+
+func TestCommandRuntimeBackendRecoversDurableReceipts(t *testing.T) {
+	executor := NewFakeCommandExecutor(
+		FakeCommandResponse{Result: CommandResult{Stdout: []byte("tgsrl-nvidia-runtime,1,pause,resume,sleep,offload,durable_receipts,generation_fence,idempotency,safe_point,checkpoint,reload,readiness\n")}},
+		FakeCommandResponse{Result: CommandResult{Stdout: []byte("0,1,false,plan-digest,action-a,plan-a,key-a,sandbox-a,7,4,true,,,digest-a\n")}},
+	)
+	receipts, err := NewCommandRuntimeBackend(executor, time.Second).DiscoverReceipts(context.Background())
+	if err != nil || len(receipts) != 1 || receipts[0].Generation != 7 || receipts[0].ActionGeneration != 4 || !receipts[0].Succeeded {
+		t.Fatalf("DiscoverReceipts() = (%+v, %v)", receipts, err)
+	}
+}
+
+func TestCommandRuntimeBackendMarksTimeoutAmbiguous(t *testing.T) {
+	executor := NewFakeCommandExecutor(FakeCommandResponse{Err: &CommandError{Kind: CommandFailureTimeout, ExitCode: -1, Cause: context.DeadlineExceeded}})
+	action := v2Action(tgsrlv1.ActionType_ACTION_TYPE_PAUSE)
+	result, err := NewCommandRuntimeBackend(executor, time.Second).Apply(context.Background(), BackendActionRequest{Action: action})
+	if err == nil || result == nil || !result.MutationMayHaveApplied {
+		t.Fatalf("Apply() = (%+v, %v)", result, err)
 	}
 }
 
@@ -368,16 +412,16 @@ func TestMIGBackendUsesDiscoveredParentProfileAndRediscoveryResult(t *testing.T)
 		FakeCommandResponse{Result: CommandResult{Stdout: []byte("MIG-new/2/0, 1g.10gb, 10240\n")}},
 		FakeCommandResponse{Result: CommandResult{Stdout: []byte("tgsrl-nvidia-mig,1,rebind,recreate,durable_receipts,generation_fence,idempotency,safe_point,checkpoint,stop,restore,readiness")}},
 	)
-	backend := NewMIGBackend(executor, time.Second)
-	initial := &PartitionSnapshot{Mode: PartitionModeMIG, Available: true, SupportedActions: []tgsrlv1.ActionType{tgsrlv1.ActionType_ACTION_TYPE_REBIND}, Partitions: []Partition{{ID: "MIG-old/1/0", ParentUUID: "GPU-aaaa", Profile: "1g.10gb", MemoryBytes: 10 << 30}}}
+	backend := NewMIGBackendWithConfig(executor, time.Second, "/opt/tgsrl-nvidia-mig", "/state/runtime.json", "/state/binding.json")
+	initial := &PartitionSnapshot{Mode: PartitionModeMIG, Available: true, SupportedActions: []tgsrlv1.ActionType{tgsrlv1.ActionType_ACTION_TYPE_REBIND}, Partitions: []Partition{{ID: "MIG-old/1/0", ParentUUID: "GPU-aaaa", Profile: "1g.10gb", MemoryBytes: 10 << 30}, {ID: "MIG-new/2/0", ParentUUID: "GPU-aaaa", Profile: "1g.10gb", MemoryBytes: 10 << 30}}}
 	driver, err := NewLocalDriverV2(LocalDriverV2Options{Inventory: &FakeInventoryBackend{Snapshots: []*InventorySnapshot{v2Inventory(true)}}, PartitionMode: PartitionModeMIG, Partition: backend, Binding: &FakeBindingBackend{Snapshot: &BindingSnapshot{Available: true}}, Now: func() time.Time { return v2Now }})
 	if err != nil {
 		t.Fatal(err)
 	}
 	driver.rememberDiscovery(v2Inventory(true), initial)
-	driver.rememberBackends(&BindingSnapshot{Available: true}, &RuntimeBackendStatus{})
+	driver.rememberBackends(&BindingSnapshot{Available: true, Bindings: []DiscoveredBinding{{SandboxID: "sandbox-a", BindingID: "binding-old", Generation: 1, DeviceIDs: []string{"MIG-old/1/0"}, Share: 1}}}, &RuntimeBackendStatus{})
 	action := v2Action(tgsrlv1.ActionType_ACTION_TYPE_REBIND)
-	action.Binding.DeviceIds = []string{"MIG-old/1/0"}
+	action.Binding.DeviceIds = []string{"MIG-new/2/0"}
 	action.Binding.Resources.MemoryBytes = 10 << 30
 	execution, err := driver.ExecuteAction(context.Background(), &DriverState{Revision: 1, Sandboxes: map[string]base.Sandbox{"sandbox-a": {SandboxID: "sandbox-a", Generation: 1}}}, action)
 	if err != nil {
@@ -387,8 +431,14 @@ func TestMIGBackendUsesDiscoveredParentProfileAndRediscoveryResult(t *testing.T)
 		t.Fatalf("rediscovered binding = %+v", execution.Binding)
 	}
 	commands := executor.Commands()
-	if len(commands) != 4 || commands[0].Argv[0] != "tgsrl-nvidia-mig" || !containsStringValue(commands[0].Argv, "GPU-aaaa") || !containsStringValue(commands[0].Argv, "1g.10gb") || containsStringValue(commands[0].Argv, "memory-10240MiB") {
+	if len(commands) != 4 || commands[0].Argv[0] != "/opt/tgsrl-nvidia-mig" || flagValue(commands[0].Argv, "--sandbox") != "sandbox-a" || flagValue(commands[0].Argv, "--parent-uuid") != "GPU-aaaa" || flagValue(commands[0].Argv, "--source-binding") != "binding-old" || flagValue(commands[0].Argv, "--source-uuid") != "MIG-old/1/0" || flagValue(commands[0].Argv, "--target-uuid") != "MIG-new/2/0" || flagValue(commands[0].Argv, "--profile") != "1g.10gb" || flagValue(commands[0].Argv, "--binding") != "binding-a" || flagValue(commands[0].Argv, "--generation") != "1" || flagValue(commands[0].Argv, "--target-generation") != "2" || commands[0].Env["TGSRL_NVIDIA_RUNTIME_STATE"] != "/state/runtime.json" || commands[0].Env["TGSRL_NVIDIA_BINDING_STATE"] != "/state/binding.json" || containsStringValue(commands[0].Argv, "memory-10240MiB") {
 		t.Fatalf("MIG mutation commands = %+v", commands)
+	}
+}
+
+func TestMIGBackendDoesNotDuplicateRuntimeReceipts(t *testing.T) {
+	if _, ok := any(NewMIGBackend(NewFakeCommandExecutor(), time.Second)).(ReceiptBackend); ok {
+		t.Fatal("MIG backend must not rediscover receipts already owned by the runtime backend")
 	}
 }
 
@@ -762,7 +812,10 @@ func TestProviderRediscoverEmitsNoTombstoneWithoutRuntimeAuthority(t *testing.T)
 }
 
 func TestCommandBindingBackendRecoversDurableActionReceipts(t *testing.T) {
-	executor := NewFakeCommandExecutor(FakeCommandResponse{Result: CommandResult{Stdout: []byte("0,1,true,plan-digest,action-a,plan-a,key-a,sandbox-a,4,true,,,digest-a\n")}})
+	executor := NewFakeCommandExecutor(
+		FakeCommandResponse{Result: CommandResult{Stdout: []byte("tgsrl-nvidia-binding,1,bind,release,durable_receipts,generation_fence,idempotency\n")}},
+		FakeCommandResponse{Result: CommandResult{Stdout: []byte("0,1,true,plan-digest,action-a,plan-a,key-a,sandbox-a,4,true,,,digest-a\n")}},
+	)
 	backend := NewCommandBindingBackend(executor, time.Second)
 	receipts, err := backend.DiscoverReceipts(context.Background())
 	if err != nil || len(receipts) != 1 || !receipts[0].Succeeded || receipts[0].Generation != 4 || receipts[0].CommandDigest != "digest-a" {
@@ -770,21 +823,114 @@ func TestCommandBindingBackendRecoversDurableActionReceipts(t *testing.T) {
 	}
 }
 
+func TestCommandBindingBackendParsesSeparateTransactionAndActionGenerations(t *testing.T) {
+	executor := NewFakeCommandExecutor(
+		FakeCommandResponse{Result: CommandResult{Stdout: []byte("tgsrl-nvidia-binding,1,bind,release,durable_receipts,generation_fence,idempotency\n")}},
+		FakeCommandResponse{Result: CommandResult{Stdout: []byte("0,1,false,plan-digest,action-a,plan-a,key-a,sandbox-a,7,4,true,,,digest-a\n")}},
+	)
+	backend := NewCommandBindingBackend(executor, time.Second)
+	receipts, err := backend.DiscoverReceipts(context.Background())
+	if err != nil || len(receipts) != 1 || receipts[0].Committed || receipts[0].Generation != 7 || receipts[0].ActionGeneration != 4 {
+		t.Fatalf("DiscoverReceipts() = (%+v, %v)", receipts, err)
+	}
+}
+
+func TestCommandBindingBackendRejectsDuplicateReceiptRows(t *testing.T) {
+	row := "0,1,false,plan-digest,action-a,plan-a,key-a,sandbox-a,7,4,true,,,digest-a\n"
+	executor := NewFakeCommandExecutor(
+		FakeCommandResponse{Result: CommandResult{Stdout: []byte("tgsrl-nvidia-binding,1,bind,release,durable_receipts,generation_fence,idempotency\n")}},
+		FakeCommandResponse{Result: CommandResult{Stdout: []byte(row + row)}},
+	)
+	if _, err := NewCommandBindingBackend(executor, time.Second).DiscoverReceipts(context.Background()); err == nil || !strings.Contains(err.Error(), "duplicates") {
+		t.Fatalf("duplicate receipt error = %v", err)
+	}
+}
+
+func TestCommandBindingBackendRejectsUnsafeHandshake(t *testing.T) {
+	executor := NewFakeCommandExecutor(FakeCommandResponse{Result: CommandResult{Stdout: []byte("tgsrl-nvidia-binding,1,bind,release,durable_receipts,generation_fence")}})
+	snapshot, err := NewCommandBindingBackend(executor, time.Second).Discover(context.Background(), nil, nil)
+	if err != nil || snapshot.Available || !strings.Contains(snapshot.Reason, "idempotency") {
+		t.Fatalf("Discover() = (%+v, %v)", snapshot, err)
+	}
+}
+
+func TestCommandBindingBackendPassesReceiptAndEnvironment(t *testing.T) {
+	executor := NewFakeCommandExecutor(FakeCommandResponse{Result: CommandResult{Stdout: []byte("sandbox-a,binding-a,2,GPU-aaaa,0.5,key-a,4242\n")}})
+	backend := NewCommandBindingBackendWithConfig(executor, time.Second, "binding-helper", "/state/bindings.json", "/run/tgsrl/mps")
+	action := v2Action(tgsrlv1.ActionType_ACTION_TYPE_BIND)
+	action.Share = 0.5
+	receipt := &HelperReceiptContext{StepIndex: 1, ExpectedActions: 3, TransactionGeneration: 7, PlanDigest: "sha256:plan", CommandDigest: "sha256:action"}
+	result, err := backend.Apply(context.Background(), BackendActionRequest{Action: action, Receipt: receipt})
+	if err != nil || result.Binding == nil || result.Binding.Generation != 2 || result.Binding.ServerPID != 4242 {
+		t.Fatalf("Apply() = (%+v, %v)", result, err)
+	}
+	commands := executor.Commands()
+	if len(commands) != 1 {
+		t.Fatalf("commands = %+v", commands)
+	}
+	joined := strings.Join(commands[0].Argv, " ")
+	for _, expected := range []string{"binding-helper bind", "--share 0.5", "--step-index 1", "--expected-actions 3", "--transaction-generation 7", "--plan-digest sha256:plan", "--command-digest sha256:action", "--action-id action-a", "--plan-id plan-a"} {
+		if !strings.Contains(joined, expected) {
+			t.Fatalf("argv %q missing %q", joined, expected)
+		}
+	}
+	if commands[0].Env["TGSRL_NVIDIA_BINDING_STATE"] != "/state/bindings.json" || commands[0].Env["TGSRL_NVIDIA_MPS_PID_DIR"] != "/run/tgsrl/mps" {
+		t.Fatalf("environment = %+v", commands[0].Env)
+	}
+}
+
+func TestCommandBindingBackendMarksAmbiguousFailure(t *testing.T) {
+	action := v2Action(tgsrlv1.ActionType_ACTION_TYPE_BIND)
+	action.Share = 0.5
+	receipt := &HelperReceiptContext{StepIndex: 0, ExpectedActions: 1, TransactionGeneration: 1, PlanDigest: "sha256:plan", CommandDigest: "sha256:action"}
+	tests := []struct {
+		name     string
+		kind     CommandFailureKind
+		mayApply bool
+	}{
+		{name: "timeout", kind: CommandFailureTimeout, mayApply: true},
+		{name: "unavailable", kind: CommandFailureUnavailable, mayApply: false},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			executor := NewFakeCommandExecutor(FakeCommandResponse{Err: &CommandError{Kind: test.kind, ExitCode: -1, Cause: errors.New(test.name)}})
+			result, err := NewCommandBindingBackend(executor, time.Second).Apply(context.Background(), BackendActionRequest{Action: action, Receipt: receipt})
+			if err == nil || result == nil || result.MutationMayHaveApplied != test.mayApply {
+				t.Fatalf("Apply() = (%+v, %v), may_apply=%v", result, err, test.mayApply)
+			}
+		})
+	}
+}
+
+func TestCommandRuntimeBackendRecognizesExplicitUnknownOutcomeExit(t *testing.T) {
+	executor := NewFakeCommandExecutor(FakeCommandResponse{Result: CommandResult{ExitCode: 75}, Err: errors.New("exit status 75")})
+	action := v2Action(tgsrlv1.ActionType_ACTION_TYPE_PAUSE)
+	result, err := NewCommandRuntimeBackend(executor, time.Second).Apply(context.Background(), BackendActionRequest{Action: action})
+	if err == nil || result == nil || !result.MutationMayHaveApplied {
+		t.Fatalf("Apply() = (%+v, %v)", result, err)
+	}
+}
+
 func TestProviderRejectsIncompleteRecoveredTransactionReceiptSet(t *testing.T) {
-	p := &Provider{driver: &LocalDriverV2{recoveredActions: map[string]RecoveredAction{"key-a": {StepIndex: 0, ExpectedActions: 2, PlanDigest: "plan-digest", ActionID: "action-a", PlanID: "plan-a", IdempotencyKey: "key-a", SandboxID: "sandbox-a", Generation: 7, Succeeded: true}}}, now: func() time.Time { return v2Now }, txPlans: map[string]*tgsrlv1.PlacementPlan{}, txReceipts: map[string]*base.TransactionReceipt{}}
-	if _, err := p.ReconcilePlanTransaction(context.Background(), "plan-a", 7); !errors.Is(err, base.ErrFailedPrecondition) {
-		t.Fatalf("ReconcilePlanTransaction() error = %v, want incomplete receipt failure", err)
+	action := v2Action(tgsrlv1.ActionType_ACTION_TYPE_BIND)
+	plan := nvidiaPlan("plan-a", 1, action)
+	digest, err := placementPlanDigest(plan)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := &Provider{driver: &LocalDriverV2{recoveredActions: map[string]RecoveredAction{"key-a": {StepIndex: 0, ExpectedActions: 2, PlanDigest: digest, ActionID: action.GetActionId(), PlanID: plan.GetPlanId(), IdempotencyKey: action.GetIdempotencyKey(), SandboxID: actionSandboxID(action), Generation: 7, ActionGeneration: receiptActionGeneration(action), Succeeded: true, CommandDigest: "digest"}}}, now: func() time.Time { return v2Now }}
+	if _, err := p.recoveredTransactionReceipt(plan.GetPlanId(), 7, plan, orderedPlanActions(plan)); !errors.Is(err, base.ErrFailedPrecondition) {
+		t.Fatalf("recoveredTransactionReceipt() error = %v, want incomplete receipt failure", err)
 	}
 }
 
 func TestLocalDriverV2RecoveredReceiptPreventsReplay(t *testing.T) {
 	action := v2Action(tgsrlv1.ActionType_ACTION_TYPE_BIND)
-	action.Binding.Generation = 1
 	digest, err := actionDigest(action)
 	if err != nil {
 		t.Fatal(err)
 	}
-	receiptBackend := &fakeReceiptBindingBackend{FakeBindingBackend: FakeBindingBackend{Snapshot: &BindingSnapshot{Available: true, SupportsMPSProfiles: true, SupportedActions: []tgsrlv1.ActionType{tgsrlv1.ActionType_ACTION_TYPE_BIND}}}, receipts: []RecoveredAction{{StepIndex: 0, ExpectedActions: 1, PlanDigest: "plan-digest", ActionID: "action-a", PlanID: "plan-a", IdempotencyKey: "key-a", SandboxID: "sandbox-a", Generation: 1, Succeeded: true, CommandDigest: digest}}}
+	receiptBackend := &fakeReceiptBindingBackend{FakeBindingBackend: FakeBindingBackend{Snapshot: &BindingSnapshot{Available: true, SupportsMPSProfiles: true, SupportedActions: []tgsrlv1.ActionType{tgsrlv1.ActionType_ACTION_TYPE_BIND}}}, receipts: []RecoveredAction{{StepIndex: 0, ExpectedActions: 1, PlanDigest: "plan-digest", ActionID: "action-a", PlanID: "plan-a", IdempotencyKey: "key-a", SandboxID: "sandbox-a", Generation: 7, ActionGeneration: 2, Succeeded: true, CommandDigest: digest}}}
 	driver, err := NewLocalDriverV2(LocalDriverV2Options{Inventory: &FakeInventoryBackend{Snapshots: []*InventorySnapshot{v2Inventory(false)}}, Partition: v2MPSPartition(), Binding: receiptBackend, Now: func() time.Time { return v2Now }})
 	if err != nil {
 		t.Fatal(err)
@@ -803,12 +949,73 @@ func TestLocalDriverV2RecoveredReceiptPreventsReplay(t *testing.T) {
 	}
 }
 
+func TestProviderPrepareRestoresAppliedBindingStepFromDurableReceipt(t *testing.T) {
+	action := v2Action(tgsrlv1.ActionType_ACTION_TYPE_BIND)
+	action.Share = 0.5
+	action.Rollback = &tgsrlv1.Rollback{ActionType: tgsrlv1.ActionType_ACTION_TYPE_RELEASE, TargetId: action.GetBinding().GetBindingId()}
+	plan := nvidiaPlan("plan-a", 1, action)
+	planDigest, err := placementPlanDigest(plan)
+	if err != nil {
+		t.Fatal(err)
+	}
+	commandDigest, err := actionDigest(action)
+	if err != nil {
+		t.Fatal(err)
+	}
+	binding := &fakeReceiptBindingBackend{FakeBindingBackend: FakeBindingBackend{Snapshot: &BindingSnapshot{Available: true, SupportsMPSProfiles: true, SupportedActions: []tgsrlv1.ActionType{tgsrlv1.ActionType_ACTION_TYPE_BIND, tgsrlv1.ActionType_ACTION_TYPE_RELEASE}}}, receipts: []RecoveredAction{{StepIndex: 0, ExpectedActions: 1, PlanDigest: planDigest, ActionID: action.GetActionId(), PlanID: plan.GetPlanId(), IdempotencyKey: action.GetIdempotencyKey(), SandboxID: actionSandboxID(action), Generation: 7, ActionGeneration: action.GetBinding().GetGeneration(), Succeeded: true, CommandDigest: commandDigest}}}
+	driver, err := NewLocalDriverV2(LocalDriverV2Options{Inventory: &FakeInventoryBackend{Snapshots: []*InventorySnapshot{v2Inventory(false)}}, Partition: v2MPSPartition(), Binding: binding, Now: func() time.Time { return v2Now }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	p, err := New(WithNow(func() time.Time { return v2Now }), WithDriver(driver))
+	if err != nil {
+		t.Fatal(err)
+	}
+	prepared, err := p.PreparePlan(context.Background(), plan.GetPlanId(), 7, plan)
+	if err != nil || prepared.Phase != base.TransactionPhaseExecuting || len(prepared.Effects) != 1 || prepared.Effects[0].Status != base.EffectStatusApplied {
+		t.Fatalf("PreparePlan(recovered) = (%+v, %v)", prepared, err)
+	}
+	committed, err := p.CommitPlan(context.Background(), plan.GetPlanId(), 7)
+	if err != nil || committed.Phase != base.TransactionPhaseCommitted || binding.applyCalls != 0 {
+		t.Fatalf("CommitPlan(recovered) = (%+v, %v), apply_calls=%d", committed, err, binding.applyCalls)
+	}
+}
+
+func TestProviderPrepareRejectsRecoveredReceiptForDifferentAction(t *testing.T) {
+	action := v2Action(tgsrlv1.ActionType_ACTION_TYPE_BIND)
+	action.Share = 0.5
+	action.Rollback = &tgsrlv1.Rollback{ActionType: tgsrlv1.ActionType_ACTION_TYPE_RELEASE, TargetId: action.GetBinding().GetBindingId()}
+	plan := nvidiaPlan("plan-a", 1, action)
+	planDigest, err := placementPlanDigest(plan)
+	if err != nil {
+		t.Fatal(err)
+	}
+	driver, err := NewLocalDriverV2(LocalDriverV2Options{
+		Inventory: &FakeInventoryBackend{Snapshots: []*InventorySnapshot{v2Inventory(false)}},
+		Partition: v2MPSPartition(),
+		Binding:   &fakeReceiptBindingBackend{FakeBindingBackend: FakeBindingBackend{Snapshot: &BindingSnapshot{Available: true, SupportsMPSProfiles: true, SupportedActions: []tgsrlv1.ActionType{tgsrlv1.ActionType_ACTION_TYPE_BIND, tgsrlv1.ActionType_ACTION_TYPE_RELEASE}}}, receipts: []RecoveredAction{{StepIndex: 0, ExpectedActions: 1, PlanDigest: planDigest, ActionID: action.GetActionId(), PlanID: plan.GetPlanId(), IdempotencyKey: action.GetIdempotencyKey(), SandboxID: actionSandboxID(action), Generation: 7, ActionGeneration: action.GetBinding().GetGeneration(), Succeeded: true, CommandDigest: "sha256:different-action"}}},
+		Now:       func() time.Time { return v2Now },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	p, err := New(WithNow(func() time.Time { return v2Now }), WithDriver(driver))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := p.PreparePlan(context.Background(), plan.GetPlanId(), 7, plan); !errors.Is(err, base.ErrIdempotencyConflict) {
+		t.Fatalf("PreparePlan() error = %v", err)
+	}
+}
+
 func TestLocalDriverV2ReceiptDiscoveryIsAuthoritative(t *testing.T) {
 	driver, err := NewLocalDriverV2(LocalDriverV2Options{Inventory: &FakeInventoryBackend{Snapshots: []*InventorySnapshot{v2Inventory(false)}}, Partition: v2MPSPartition(), Binding: &fakeReceiptBindingBackend{FakeBindingBackend: FakeBindingBackend{Snapshot: &BindingSnapshot{Available: true, SupportsMPSProfiles: true}}, receipts: []RecoveredAction{{StepIndex: 0, ExpectedActions: 1, PlanDigest: "plan-digest", IdempotencyKey: "stale"}}}, Now: func() time.Time { return v2Now }})
 	if err != nil {
 		t.Fatal(err)
 	}
-	driver.rememberReceipts([]RecoveredAction{{IdempotencyKey: "old"}})
+	if err := driver.rememberReceipts([]RecoveredAction{{IdempotencyKey: "old"}}); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := driver.Probe(context.Background()); err != nil {
 		t.Fatal(err)
 	}
@@ -928,11 +1135,27 @@ func TestProviderV2TransactionalLifecycle(t *testing.T) {
 	}
 }
 
-func TestProviderReconcilesTransactionFromDurableReceipts(t *testing.T) {
-	p := &Provider{driver: &LocalDriverV2{recoveredActions: map[string]RecoveredAction{"key-a": {StepIndex: 0, ExpectedActions: 1, PlanDigest: "plan-digest", ActionID: "action-a", PlanID: "plan-a", IdempotencyKey: "key-a", SandboxID: "sandbox-a", Generation: 7, Succeeded: true}}}, now: func() time.Time { return v2Now }, txPlans: map[string]*tgsrlv1.PlacementPlan{}, txReceipts: map[string]*base.TransactionReceipt{}}
-	receipt, err := p.ReconcilePlanTransaction(context.Background(), "plan-a", 7)
-	if err != nil || receipt.Phase != base.TransactionPhaseReconciled || len(receipt.Effects) != 1 || receipt.Effects[0].Status != base.EffectStatusApplied {
-		t.Fatalf("ReconcilePlanTransaction() = (%+v, %v)", receipt, err)
+func TestProviderRejectsDuplicateRecoveredTransactionSteps(t *testing.T) {
+	first := v2Action(tgsrlv1.ActionType_ACTION_TYPE_BIND)
+	second := cloneAction(first)
+	second.ActionId, second.IdempotencyKey, second.SandboxId = "action-b", "key-b", "sandbox-b"
+	second.Binding.SandboxId, second.Binding.BindingId = "sandbox-b", "binding-b"
+	plan := nvidiaPlan("plan-a", 1, first, second)
+	digest, err := placementPlanDigest(plan)
+	if err != nil {
+		t.Fatal(err)
+	}
+	firstDigest, err := actionDigest(first)
+	if err != nil {
+		t.Fatal(err)
+	}
+	driver := &LocalDriverV2{recoveredActions: map[string]RecoveredAction{
+		"key-a": {StepIndex: 0, ExpectedActions: 2, PlanDigest: digest, ActionID: first.GetActionId(), PlanID: plan.GetPlanId(), IdempotencyKey: first.GetIdempotencyKey(), SandboxID: actionSandboxID(first), Generation: 7, ActionGeneration: receiptActionGeneration(first), Succeeded: true, CommandDigest: firstDigest},
+		"key-b": {StepIndex: 0, ExpectedActions: 2, PlanDigest: digest, ActionID: second.GetActionId(), PlanID: plan.GetPlanId(), IdempotencyKey: second.GetIdempotencyKey(), SandboxID: actionSandboxID(second), Generation: 7, ActionGeneration: receiptActionGeneration(second), Succeeded: true, CommandDigest: "action-b-digest"},
+	}}
+	p := &Provider{driver: driver, now: func() time.Time { return v2Now }}
+	if _, err := p.recoveredTransactionReceipt(plan.GetPlanId(), 7, plan, orderedPlanActions(plan)); !errors.Is(err, base.ErrFailedPrecondition) || !strings.Contains(err.Error(), "duplicates step") {
+		t.Fatalf("recoveredTransactionReceipt() error = %v", err)
 	}
 }
 
@@ -1061,6 +1284,15 @@ func containsStringValue(values []string, expected string) bool {
 		}
 	}
 	return false
+}
+
+func flagValue(values []string, flag string) string {
+	for index := 0; index+1 < len(values); index++ {
+		if values[index] == flag {
+			return values[index+1]
+		}
+	}
+	return ""
 }
 
 func (b *fakeReceiptBindingBackend) DiscoverReceipts(context.Context) ([]RecoveredAction, error) {

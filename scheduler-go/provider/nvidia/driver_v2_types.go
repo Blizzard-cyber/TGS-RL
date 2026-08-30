@@ -117,19 +117,20 @@ type RuntimeBackendStatus struct {
 
 // RecoveredAction is one durable helper receipt used after provider restart.
 type RecoveredAction struct {
-	StepIndex       int
-	ExpectedActions int
-	Committed       bool
-	PlanDigest      string
-	ActionID        string
-	PlanID          string
-	IdempotencyKey  string
-	SandboxID       string
-	Generation      uint64
-	Succeeded       bool
-	ErrorCode       string
-	ErrorMessage    string
-	CommandDigest   string
+	StepIndex        int
+	ExpectedActions  int
+	Committed        bool
+	PlanDigest       string
+	ActionID         string
+	PlanID           string
+	IdempotencyKey   string
+	SandboxID        string
+	Generation       uint64
+	ActionGeneration uint64
+	Succeeded        bool
+	ErrorCode        string
+	ErrorMessage     string
+	CommandDigest    string
 }
 
 // BackendActionRequest contains the fenced state passed to one action backend.
@@ -139,6 +140,17 @@ type BackendActionRequest struct {
 	Partitions *PartitionSnapshot
 	Binding    *DiscoveredBinding
 	DryRun     bool
+	Receipt    *HelperReceiptContext
+}
+
+// HelperReceiptContext carries transaction identity to command helpers so a
+// completed host mutation can be recovered after the Scheduler process exits.
+type HelperReceiptContext struct {
+	StepIndex             int
+	ExpectedActions       int
+	TransactionGeneration uint64
+	PlanDigest            string
+	CommandDigest         string
 }
 
 // BackendActionResult contains the commands and recovered binding produced by a backend.

@@ -152,6 +152,9 @@ type FallbackPolicy struct {
 type ActionPolicy struct {
 	UnsupportedAction                                                           string
 	RequireIdempotencyKey, RequireExplicitRollback, RequireGenerationFenceForL4 bool
+	MaxActionsPerTick, MaxAffectedSandboxes, MaxGPUReconfigurations             int
+	MaxRecoveryCostNanos                                                        int64
+	DisableL4                                                                   bool
 }
 type ConstraintPolicy struct {
 	RequireCapacity              bool
@@ -286,6 +289,7 @@ type SchedulerPolicyConfig struct {
 	PolicyVersion string
 	Strategy      string
 	TopK          int
+	Actions       ActionPolicy
 	Protection    ProtectionPolicy
 	Preemption    PreemptionPolicy
 }

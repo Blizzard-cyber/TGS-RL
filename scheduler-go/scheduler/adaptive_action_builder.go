@@ -390,19 +390,6 @@ func semanticDoubleField(key string, value float64) *tgsrlv1.SemanticField {
 	return &tgsrlv1.SemanticField{Key: key, Value: &tgsrlv1.SemanticValue{Kind: &tgsrlv1.SemanticValue_DoubleValue{DoubleValue: value}}}
 }
 
-func multiplyUtility(value int64, count int) int64 {
-	if count <= 0 || value == 0 {
-		return 0
-	}
-	if value > 0 && int64(count) > (int64(^uint64(0)>>1)/value) {
-		return int64(^uint64(0) >> 1)
-	}
-	if value < 0 && value < (-int64(^uint64(0)>>1)-1)/int64(count) {
-		return -int64(^uint64(0)>>1) - 1
-	}
-	return value * int64(count)
-}
-
 func formatResourceVector(value *tgsrlv1.ResourceVector) string {
 	if value == nil {
 		return ""

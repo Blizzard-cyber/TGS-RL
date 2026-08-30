@@ -68,6 +68,24 @@ func normalizePlanningSignals(input *PlanningInput, defaultActionBudget int) err
 	if err != nil {
 		return err
 	}
+	targetCosts, err := collectTargetRecoveryCosts(input.Sandboxes)
+	if err != nil {
+		return err
+	}
+	if signals.RecoveryCostNanosByTarget == nil {
+		signals.RecoveryCostNanosByTarget = targetCosts
+	} else {
+		for target, cost := range targetCosts {
+			if _, explicit := signals.RecoveryCostNanosByTarget[target]; !explicit {
+				signals.RecoveryCostNanosByTarget[target] = cost
+			}
+		}
+	}
+	if !signals.RecoveryCostNanosPresent && len(signals.RecoveryCostNanosByTarget) == 1 {
+		for _, cost := range signals.RecoveryCostNanosByTarget {
+			signals.RecoveryCostNanos, signals.RecoveryCostNanosPresent = cost, true
+		}
+	}
 	if !signals.BufferPressurePresent {
 		if value, ok := factString(facts, factBufferPressure); ok {
 			pressure, valid := parseBufferPressure(value)
@@ -163,6 +181,11 @@ func normalizePlanningSignals(input *PlanningInput, defaultActionBudget int) err
 	if signals.RecoveryCostNanosPresent && signals.RecoveryCostNanos < 0 {
 		return fmt.Errorf("recovery cost must be non-negative")
 	}
+	for target, cost := range signals.RecoveryCostNanosByTarget {
+		if strings.TrimSpace(target) == "" || cost < 0 {
+			return fmt.Errorf("target recovery costs require non-empty targets and non-negative values")
+		}
+	}
 	if signals.MinimumResidencyPresent && signals.MinimumResidency < 0 {
 		return fmt.Errorf("minimum residency must be non-negative")
 	}
@@ -192,7 +215,15 @@ func collectAdaptiveFacts(input *PlanningInput, observation *tgsrlv1.ContractObs
 		}
 		fields := append([]*tgsrlv1.SemanticField(nil), sandbox.GetSemanticContext().GetTypedFields()...)
 		fields = append(fields, sandbox.GetSemanticContext().GetPayload().GetFields()...)
-		groups = append(groups, fields)
+		global := fields[:0]
+		for _, field := range fields {
+			canonical, recognized := canonicalAdaptiveFact(field.GetKey())
+			if recognized && canonical == factRecoveryCostNanos {
+				continue
+			}
+			global = append(global, field)
+		}
+		groups = append(groups, global)
 	}
 	for _, fields := range groups {
 		for _, field := range fields {
@@ -210,6 +241,50 @@ func collectAdaptiveFacts(input *PlanningInput, observation *tgsrlv1.ContractObs
 		}
 	}
 	return facts, nil
+}
+
+func collectTargetRecoveryCosts(sandboxes []*tgsrlv1.Sandbox) (map[string]int64, error) {
+	result := make(map[string]int64)
+	for _, sandbox := range sandboxes {
+		if sandbox == nil || sandbox.GetSemanticContext() == nil || strings.TrimSpace(sandbox.GetSandboxId()) == "" {
+			continue
+		}
+		fields := append([]*tgsrlv1.SemanticField(nil), sandbox.GetSemanticContext().GetTypedFields()...)
+		fields = append(fields, sandbox.GetSemanticContext().GetPayload().GetFields()...)
+		for _, field := range fields {
+			canonical, recognized := canonicalAdaptiveFact(field.GetKey())
+			if !recognized || canonical != factRecoveryCostNanos {
+				continue
+			}
+			cost, ok := semanticInt64(field.GetValue())
+			if !ok || cost < 0 {
+				return nil, fmt.Errorf("%s for sandbox %q must be a non-negative integer", factRecoveryCostNanos, sandbox.GetSandboxId())
+			}
+			if previous, exists := result[sandbox.GetSandboxId()]; exists && previous != cost {
+				return nil, fmt.Errorf("%s conflicts for sandbox %q", factRecoveryCostNanos, sandbox.GetSandboxId())
+			}
+			result[sandbox.GetSandboxId()] = cost
+		}
+	}
+	if len(result) == 0 {
+		return nil, nil
+	}
+	return result, nil
+}
+
+func semanticInt64(value *tgsrlv1.SemanticValue) (int64, bool) {
+	if value == nil {
+		return 0, false
+	}
+	switch typed := value.GetKind().(type) {
+	case *tgsrlv1.SemanticValue_Int64Value:
+		return typed.Int64Value, true
+	case *tgsrlv1.SemanticValue_Uint64Value:
+		if typed.Uint64Value <= math.MaxInt64 {
+			return int64(typed.Uint64Value), true
+		}
+	}
+	return 0, false
 }
 
 func canonicalAdaptiveFact(key string) (string, bool) {
@@ -309,19 +384,7 @@ func factUint64(facts map[string]*tgsrlv1.SemanticValue, key string) (uint64, bo
 }
 
 func factInt64(facts map[string]*tgsrlv1.SemanticValue, key string) (int64, bool) {
-	value := facts[key]
-	if value == nil {
-		return 0, false
-	}
-	switch typed := value.GetKind().(type) {
-	case *tgsrlv1.SemanticValue_Int64Value:
-		return typed.Int64Value, true
-	case *tgsrlv1.SemanticValue_Uint64Value:
-		if typed.Uint64Value <= math.MaxInt64 {
-			return int64(typed.Uint64Value), true
-		}
-	}
-	return 0, false
+	return semanticInt64(facts[key])
 }
 
 func parseBufferPressure(value string) (BufferPressure, bool) {
@@ -370,34 +433,6 @@ func recentActionInFlight(decisions []*tgsrlv1.DecisionRecord) (bool, bool) {
 		return false, true
 	}
 	return false, false
-}
-
-func applyActionBudget(proposals []PlannerProposal, budget int) {
-	if budget < 1 {
-		budget = DefaultPlannerActionBudget
-	}
-	eligible := make([]int, 0, len(proposals))
-	for index := range proposals {
-		if proposals[index].Plan != nil && proposals[index].Evidence.GetDisposition() != tgsrlv1.PlannerDisposition_PLANNER_DISPOSITION_REJECTED {
-			eligible = append(eligible, index)
-		}
-	}
-	sort.SliceStable(eligible, func(i, j int) bool {
-		left, right := proposals[eligible[i]].Evidence, proposals[eligible[j]].Evidence
-		if left.GetUtilityNanos() != right.GetUtilityNanos() {
-			return left.GetUtilityNanos() > right.GetUtilityNanos()
-		}
-		return left.GetProposalId() < right.GetProposalId()
-	})
-	for position, index := range eligible {
-		evidence := proposals[index].Evidence
-		if position < budget {
-			continue
-		}
-		proposals[index].Plan = nil
-		evidence.Disposition = tgsrlv1.PlannerDisposition_PLANNER_DISPOSITION_DEFERRED
-		evidence.Reason = "PER_TICK_ACTION_BUDGET"
-	}
 }
 
 func planningSignalEvidence(signals PlanningSignals) []*tgsrlv1.SemanticField {

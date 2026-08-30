@@ -34,6 +34,11 @@ actions:
   require_idempotency_key: true
   require_explicit_rollback: true
   require_generation_fence_for_l4: true
+  max_actions_per_tick: 8
+  max_affected_sandboxes: 8
+  max_gpu_reconfigurations: 1
+  max_recovery_cost_nanos: 30000000000
+  disable_l4: false
 
 protection:
   enabled: true

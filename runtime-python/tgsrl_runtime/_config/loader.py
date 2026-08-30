@@ -407,6 +407,11 @@ def load_policy(path: str | Path) -> PolicyBundle:
             "require_idempotency_key",
             "require_explicit_rollback",
             "require_generation_fence_for_l4",
+            "max_actions_per_tick",
+            "max_affected_sandboxes",
+            "max_gpu_reconfigurations",
+            "max_recovery_cost_nanos",
+            "disable_l4",
         },
     )
     protection = _mapping(data["protection"], "policy.protection")
@@ -503,6 +508,23 @@ def load_policy(path: str | Path) -> PolicyBundle:
                 actions["require_generation_fence_for_l4"],
                 "policy.actions.require_generation_fence_for_l4",
             ),
+            max_actions_per_tick=_int(
+                actions.get("max_actions_per_tick", 1),
+                "policy.actions.max_actions_per_tick",
+            ),
+            max_affected_sandboxes=_int(
+                actions.get("max_affected_sandboxes", 1),
+                "policy.actions.max_affected_sandboxes",
+            ),
+            max_gpu_reconfigurations=_int(
+                actions.get("max_gpu_reconfigurations", 1),
+                "policy.actions.max_gpu_reconfigurations",
+            ),
+            max_recovery_cost_nanos=_int(
+                actions.get("max_recovery_cost_nanos", 2**63 - 1),
+                "policy.actions.max_recovery_cost_nanos",
+            ),
+            disable_l4=_bool(actions.get("disable_l4", False), "policy.actions.disable_l4"),
         ),
         protection=ProtectionPolicy(
             enabled=_bool(protection["enabled"], "policy.protection.enabled"),

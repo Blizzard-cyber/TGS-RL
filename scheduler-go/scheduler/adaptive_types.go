@@ -12,8 +12,8 @@ import (
 const (
 	// DefaultPlannerEvidenceBudget bounds retained proposal evidence.
 	DefaultPlannerEvidenceBudget = 256
-	// DefaultPlannerActionBudget matches Store's one-mutation transaction
-	// contract.
+	// DefaultPlannerActionBudget is deliberately conservative. Deployments can
+	// raise it after validating their provider transaction capabilities.
 	DefaultPlannerActionBudget = 1
 	// DefaultPlannerIdleSleepAfter is the default idle-to-sleep threshold.
 	DefaultPlannerIdleSleepAfter = 5 * time.Minute
@@ -31,6 +31,14 @@ const (
 	// DefaultPlannerSandboxFutureSkew tolerates ordinary clock skew but rejects
 	// observations farther in the future.
 	DefaultPlannerSandboxFutureSkew = time.Second
+	// Directional controller defaults are intentionally bounded and monotonic.
+	// They generate a target delta only after a material signal crosses a
+	// threshold; small changes remain inside hysteresis.
+	DefaultPlannerShareStep         = 0.10
+	DefaultPlannerShareHysteresis   = 0.02
+	DefaultPlannerPolicyLagLimit    = uint64(2)
+	DefaultPlannerESSRatioFloor     = 0.50
+	DefaultPlannerObservationWindow = 5 * time.Second
 )
 
 // BufferPressure is a stable, ordered pressure classification derived from
@@ -81,6 +89,7 @@ type PlanningSignals struct {
 	BufferBelowWatermarkPresent bool
 	RecoveryCostNanos           int64
 	RecoveryCostNanosPresent    bool
+	RecoveryCostNanosByTarget   map[string]int64
 	MinimumResidency            time.Duration
 	MinimumResidencyPresent     bool
 	ActionInFlight              bool
@@ -117,6 +126,19 @@ type Directives struct {
 	MinimumUtilityNanos int64
 }
 
+// DirectionalTarget is the replayable output of signal-to-target control. It
+// records both the direction and the bounded value applied by a planner.
+type DirectionalTarget struct {
+	ActionType           tgsrlv1.ActionType
+	CurrentValue         float64
+	TargetValue          float64
+	Delta                float64
+	Reason               string
+	ExpectedBenefitNanos int64
+	RecoveryCostNanos    int64
+	ObservationWindow    time.Duration
+}
+
 // PlanningInput is the complete immutable input to adaptive planning. The
 // coordinator never reads a clock, provider, Store, or package-global state.
 type PlanningInput struct {
@@ -132,9 +154,9 @@ type PlanningInput struct {
 	sandboxMaximumAge time.Duration
 	sandboxFutureSkew time.Duration
 
-	// AdmissionPlan is the already-selected legacy admission result. Keeping
-	// candidate selection outside the adaptive coordinator preserves the
-	// existing admission policy and byte-for-byte binding/action behavior.
+	// AdmissionPlan is the admission candidate produced by the placement
+	// engine. The coordinator arbitrates its individual bind actions together
+	// with safety, recovery, and tick-specific runtime proposals.
 	AdmissionPlan *tgsrlv1.PlacementPlan
 	DecisionID    string
 }
@@ -150,14 +172,47 @@ type PlannerProposal struct {
 	Evidence *tgsrlv1.PlannerEvidence
 }
 
-// PlannerResult is the coordinator output. Evidence is a bounded projection;
-// TotalProposalCount always reports the full evaluated proposal count.
+// PlannerResult is the coordinator output. Evidence is a bounded projection
+// that always retains every selected proposal; TotalProposalCount reports the
+// full evaluated proposal count.
 type PlannerResult struct {
 	Plan               *tgsrlv1.PlacementPlan
 	Evidence           []*tgsrlv1.PlannerEvidence
 	TotalProposalCount uint64
 	EvidenceTruncated  bool
 	FallbackReason     string
+}
+
+// PlannerBudgetConfig bounds the final transaction selected by arbitration.
+// Zero values use conservative defaults derived from MaxActions. DisableL4
+// provides an explicit policy gate for disruptive GPU reconfiguration.
+type PlannerBudgetConfig struct {
+	MaxActions             int
+	MaxAffectedSandboxes   int
+	MaxGPUReconfigurations int
+	MaxRecoveryCostNanos   int64
+	DisableL4              bool
+}
+
+func normalizePlannerBudget(value PlannerBudgetConfig, maxActions int) PlannerBudgetConfig {
+	if maxActions <= 0 {
+		maxActions = DefaultPlannerActionBudget
+	}
+	// A typed observation may tighten the configured policy budget, but it must
+	// never grant itself more authority than the deployment policy allows.
+	if value.MaxActions <= 0 || maxActions < value.MaxActions {
+		value.MaxActions = maxActions
+	}
+	if value.MaxAffectedSandboxes <= 0 {
+		value.MaxAffectedSandboxes = maxActions
+	}
+	if value.MaxGPUReconfigurations <= 0 {
+		value.MaxGPUReconfigurations = 1
+	}
+	if value.MaxRecoveryCostNanos <= 0 {
+		value.MaxRecoveryCostNanos = int64(^uint64(0) >> 1)
+	}
+	return value
 }
 
 // Planner is implemented by each deterministic tier.
@@ -230,6 +285,7 @@ func clonePlanningInput(input PlanningInput) PlanningInput {
 	cloned.Sandboxes = cloneMessages(input.Sandboxes)
 	cloned.RecentDecisions = cloneMessages(input.RecentDecisions)
 	cloned.SafePoint.Evidence = cloneMessages(input.SafePoint.Evidence)
+	cloned.Signals.RecoveryCostNanosByTarget = cloneInt64Map(input.Signals.RecoveryCostNanosByTarget)
 	if input.AdmissionPlan != nil {
 		cloned.AdmissionPlan = proto.Clone(input.AdmissionPlan).(*tgsrlv1.PlacementPlan)
 	}
@@ -296,6 +352,17 @@ func cloneStringMap(input map[string]string) map[string]string {
 		return nil
 	}
 	result := make(map[string]string, len(input))
+	for key, value := range input {
+		result[key] = value
+	}
+	return result
+}
+
+func cloneInt64Map(input map[string]int64) map[string]int64 {
+	if input == nil {
+		return nil
+	}
+	result := make(map[string]int64, len(input))
 	for key, value := range input {
 		result[key] = value
 	}

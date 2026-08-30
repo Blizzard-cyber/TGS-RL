@@ -42,6 +42,9 @@ func TestLoadBundleReadsRealConfigGraph(t *testing.T) {
 	if !bundle.Policy.Constraints.RequireCapacity || !bundle.Policy.Constraints.RequireCapability || !bundle.Policy.Constraints.RequireSafePoint {
 		t.Fatalf("constraint policy = %+v", bundle.Policy.Constraints)
 	}
+	if bundle.Policy.Actions.MaxActionsPerTick != 8 || bundle.Policy.Actions.MaxAffectedSandboxes != 8 || bundle.Policy.Actions.MaxGPUReconfigurations != 1 || bundle.Policy.Actions.MaxRecoveryCostNanos != 30_000_000_000 || bundle.Policy.Actions.DisableL4 {
+		t.Fatalf("action policy = %+v", bundle.Policy.Actions)
+	}
 	if !bundle.Policy.Determinism.ExplicitSeedRequired || !bundle.Policy.Determinism.VirtualClockRequiredForReplay || !bundle.Policy.Determinism.DeterministicProtoSerialization || bundle.Policy.Determinism.WallClockInCanonicalOutput {
 		t.Fatalf("determinism policy = %+v", bundle.Policy.Determinism)
 	}
@@ -354,6 +357,38 @@ func TestLoadPolicyAllowsSupportedPreemptionEnablement(t *testing.T) {
 	}
 	if _, ok := projected.Preemption.(preemption.LowPriorityFirst); !ok {
 		t.Fatalf("projected preemption strategy type = %T, want preemption.LowPriorityFirst", projected.Preemption)
+	}
+	if projected.PlannerBudget.MaxActions != 8 || projected.PlannerBudget.MaxAffectedSandboxes != 8 || projected.PlannerBudget.MaxGPUReconfigurations != 1 || projected.PlannerBudget.MaxRecoveryCostNanos != 30_000_000_000 || projected.PlannerBudget.DisableL4 {
+		t.Fatalf("projected planner budget = %+v", projected.PlannerBudget)
+	}
+}
+
+func TestLoadPolicyDefaultsOptionalPlannerBudget(t *testing.T) {
+	repoRoot := repoRootFromTest(t)
+	path := filepath.Join(t.TempDir(), "policy.yaml")
+	policyBytes, err := os.ReadFile(filepath.Join(repoRoot, "configs", "policies", "static.yaml"))
+	if err != nil {
+		t.Fatalf("read source policy: %v", err)
+	}
+	legacy := string(policyBytes)
+	for _, line := range []string{
+		"  max_actions_per_tick: 8\n",
+		"  max_affected_sandboxes: 8\n",
+		"  max_gpu_reconfigurations: 1\n",
+		"  max_recovery_cost_nanos: 30000000000\n",
+		"  disable_l4: false\n",
+	} {
+		legacy = strings.Replace(legacy, line, "", 1)
+	}
+	if err := os.WriteFile(path, []byte(legacy), 0o644); err != nil {
+		t.Fatalf("write legacy policy: %v", err)
+	}
+	policyBundle, err := LoadPolicy(path)
+	if err != nil {
+		t.Fatalf("LoadPolicy(legacy) error = %v", err)
+	}
+	if policyBundle.Actions.MaxActionsPerTick != 1 || policyBundle.Actions.MaxAffectedSandboxes != 1 || policyBundle.Actions.MaxGPUReconfigurations != 1 || policyBundle.Actions.MaxRecoveryCostNanos <= 0 || policyBundle.Actions.DisableL4 {
+		t.Fatalf("legacy planner budget = %+v", policyBundle.Actions)
 	}
 }
 

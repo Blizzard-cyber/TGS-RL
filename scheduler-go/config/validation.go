@@ -154,6 +154,9 @@ func validatePolicy(policy *PolicyBundle) error {
 	if policy.Actions.UnsupportedAction != "reject" {
 		return configError("policy.actions.unsupported_action must be reject", "schema_validation", policy.Path, "policy.actions.unsupported_action", nil)
 	}
+	if policy.Actions.MaxActionsPerTick < 1 || policy.Actions.MaxAffectedSandboxes < 1 || policy.Actions.MaxGPUReconfigurations < 1 || policy.Actions.MaxRecoveryCostNanos < 1 {
+		return configError("policy.actions contains an invalid transaction budget", "schema_validation", policy.Path, "policy.actions", nil)
+	}
 	if !policy.Constraints.RequireCapacity {
 		return configError("policy.constraints.require_capacity=false is not supported by the authoritative scheduler", "schema_validation", policy.Path, "policy.constraints.require_capacity", nil)
 	}

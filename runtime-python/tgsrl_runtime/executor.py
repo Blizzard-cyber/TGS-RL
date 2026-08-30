@@ -55,7 +55,11 @@ def _components_for_action(
         LifecycleAction.WAKE,
         LifecycleAction.WEIGHT_UPDATE,
     }:
-        candidates = (("rollout_engine", bundle.rollout_engine),)
+        candidates = (
+            (("framework", bundle.framework),)
+            if action in bundle.framework.supported_actions
+            else (("rollout_engine", bundle.rollout_engine),)
+        )
     elif action is LifecycleAction.RECREATE:
         candidates = (
             ("framework", bundle.framework),
@@ -289,6 +293,7 @@ class RuntimeExecutor:
             run_id,
             LifecycleAction.CHECKPOINT,
             idempotency_key=idempotency_key,
+            action_env={"TGSRL_CHECKPOINT_REF": checkpoint_ref} if checkpoint_ref else None,
         )
         ref = checkpoint_ref or f"checkpoint:{run_id}:{result.generation}"
         return RuntimeExecutionResult(
@@ -314,6 +319,7 @@ class RuntimeExecutor:
         action: LifecycleAction,
         *,
         idempotency_key: str,
+        action_env: Mapping[str, str] | None = None,
     ) -> RuntimeExecutionResult:
         manifest = self._ensure_run(run_id)
         cached = self._cached(run_id, action, idempotency_key)
@@ -358,6 +364,8 @@ class RuntimeExecutor:
                     adapter=adapter,
                     generation=generation,
                     call=call,
+                    idempotency_key=idempotency_key,
+                    action_env=action_env,
                 )
             )
         result = self._finalize(
@@ -376,14 +384,30 @@ class RuntimeExecutor:
         adapter: ComponentAdapter,
         generation: int,
         call: LifecycleCall,
+        idempotency_key: str,
+        action_env: Mapping[str, str] | None,
     ) -> ComponentActionResult:
+        launch_spec = LaunchSpec(
+            argv=call.launch_spec.argv,
+            env=tuple(
+                sorted(
+                    {
+                        **dict(call.launch_spec.env),
+                        "TGSRL_GENERATION": str(generation),
+                        "TGSRL_IDEMPOTENCY_KEY": idempotency_key,
+                        **dict(action_env or {}),
+                    }.items()
+                )
+            ),
+            working_directory=call.launch_spec.working_directory,
+        )
         try:
             if self.command_driver is None:
                 raise AdapterUnavailableError("command driver is unavailable")
             result = self.command_driver.run(
-                argv=call.launch_spec.argv,
-                env=call.launch_spec.env,
-                working_directory=call.launch_spec.working_directory,
+                argv=launch_spec.argv,
+                env=launch_spec.env,
+                working_directory=launch_spec.working_directory,
                 timeout_seconds=self._timeout_for(call.action),
             )
             if result.exit_code != 0:
@@ -392,7 +416,7 @@ class RuntimeExecutor:
                     action=call.action,
                     generation=generation,
                     error=_command_failure(call.action, result),
-                    launch_spec=call.launch_spec,
+                    launch_spec=launch_spec,
                     exit_code=result.exit_code,
                     command_result=result,
                 )
@@ -400,13 +424,13 @@ class RuntimeExecutor:
             if observed_state == runtime_pb2.RUNTIME_STATE_UNKNOWN:
                 observed_state = call.state_contract.requested_state
             return ComponentActionResult(
-                component=dict(call.launch_spec.env).get("TGSRL_COMPONENT", ""),
+                component=dict(launch_spec.env).get("TGSRL_COMPONENT", ""),
                 action=call.action,
                 runner_kind=RunnerKind.COMMAND,
                 generation=generation,
                 requested_state=call.state_contract.requested_state,
                 observed_state=observed_state,
-                launch_spec=call.launch_spec,
+                launch_spec=launch_spec,
                 command_result=result,
             )
         except Exception as error:
@@ -415,7 +439,7 @@ class RuntimeExecutor:
                 action=call.action,
                 generation=generation,
                 error=error,
-                launch_spec=call.launch_spec,
+                launch_spec=launch_spec,
             )
 
     def _failure_result(

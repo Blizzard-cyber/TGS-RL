@@ -19,6 +19,33 @@ func CloneReceipt(receipt *provider.TransactionReceipt) *provider.TransactionRec
 	return &out
 }
 
+func validateReceiptForPlan(receipt *provider.TransactionReceipt, providerGeneration uint64, plan *tgsrlv1.PlacementPlan) error {
+	if err := ValidateReceipt(receipt, providerGeneration); err != nil {
+		return err
+	}
+	if plan == nil || receipt.TransactionID != plan.GetPlanId() || receipt.PlanID != plan.GetPlanId() {
+		return fmt.Errorf("transaction receipt does not match plan identity")
+	}
+	seen := make(map[int]struct{}, len(receipt.Effects))
+	for _, effect := range receipt.Effects {
+		if effect.StepIndex < 0 || effect.StepIndex >= len(plan.GetActions()) {
+			return fmt.Errorf("transaction receipt step %d is outside plan action range", effect.StepIndex)
+		}
+		action := plan.GetActions()[effect.StepIndex]
+		if action == nil || effect.ActionID != action.GetActionId() {
+			return fmt.Errorf("transaction receipt step %d action %q does not match plan", effect.StepIndex, effect.ActionID)
+		}
+		if _, duplicate := seen[effect.StepIndex]; duplicate {
+			return fmt.Errorf("transaction receipt duplicates step %d", effect.StepIndex)
+		}
+		seen[effect.StepIndex] = struct{}{}
+		if effect.IdempotencyKey != "" && effect.IdempotencyKey != action.GetIdempotencyKey() {
+			return fmt.Errorf("transaction receipt step %d idempotency key does not match plan", effect.StepIndex)
+		}
+	}
+	return nil
+}
+
 func ValidateReceipt(receipt *provider.TransactionReceipt, providerGeneration uint64) error {
 	if receipt == nil {
 		return fmt.Errorf("transaction receipt is required")

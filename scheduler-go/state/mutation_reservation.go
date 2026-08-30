@@ -17,8 +17,11 @@ func (s *Store) reserveMutationPlanLocked(
 	if plan.GetPurpose() == tgsrlv1.PlanPurpose_PLAN_PURPOSE_PREEMPTION {
 		return s.reservePreemptionPlanLocked(plan)
 	}
-	if len(plan.GetActions()) != 1 {
-		return nil, fmt.Errorf("%w: mutation plans require exactly one action", ErrInvalidIntent)
+	if len(plan.GetActions()) == 0 {
+		return nil, fmt.Errorf("%w: mutation plans require at least one action", ErrInvalidIntent)
+	}
+	if len(plan.GetActions()) > 1 {
+		return s.reserveLifecyclePlanLocked(plan)
 	}
 	action := plan.GetActions()[0]
 	if action == nil || action.GetActionId() == "" {
@@ -56,6 +59,60 @@ func (s *Store) reserveMutationPlanLocked(
 	}
 	s.reservations[plan.GetPlanId()] = reservation
 	return cloneSnapshot(s.snapshot), nil
+}
+
+func (s *Store) reserveLifecyclePlanLocked(plan *tgsrlv1.PlacementPlan) (*tgsrlv1.ClusterSnapshot, error) {
+	affected, err := affectedAllocationsByID(s.snapshot.GetAllocations(), plan.GetAffectedAllocationIds())
+	if err != nil {
+		return nil, err
+	}
+	if err := ensureMutationTargetsUnlocked(s.reservations, plan.GetPlanId(), plan.GetAffectedAllocationIds()); err != nil {
+		return nil, err
+	}
+	mutationsByAllocation := make(map[string][]tgsrlv1.ActionType, len(plan.GetActions()))
+	allocationIDs := make(map[string]struct{}, len(plan.GetActions()))
+	for _, action := range plan.GetActions() {
+		if action == nil || !mergeableLifecycleAction(action.GetActionType()) {
+			return nil, fmt.Errorf("%w: multi-action mutation contains exclusive action %s", ErrInvalidIntent, action.GetActionType())
+		}
+		allocation, err := singleAffectedAllocation(action, affected)
+		if err != nil {
+			return nil, err
+		}
+		for _, existing := range mutationsByAllocation[allocation.GetAllocationId()] {
+			if !compatibleLifecycleMutations(existing, action.GetActionType()) {
+				return nil, fmt.Errorf("%w: conflicting mutation for allocation %q", ErrInvalidIntent, allocation.GetAllocationId())
+			}
+		}
+		mutationsByAllocation[allocation.GetAllocationId()] = append(mutationsByAllocation[allocation.GetAllocationId()], action.GetActionType())
+		allocationIDs[allocation.GetAllocationId()] = struct{}{}
+	}
+	reservation := &planReservation{plan: clonePlan(plan), beforeSnapshot: cloneSnapshot(s.snapshot)}
+	for allocationID := range allocationIDs {
+		reservation.allocationIDs = append(reservation.allocationIDs, allocationID)
+	}
+	sort.Strings(reservation.allocationIDs)
+	s.reservations[plan.GetPlanId()] = reservation
+	return cloneSnapshot(s.snapshot), nil
+}
+
+func mergeableLifecycleAction(actionType tgsrlv1.ActionType) bool {
+	switch actionType {
+	case tgsrlv1.ActionType_ACTION_TYPE_SET_SHARE,
+		tgsrlv1.ActionType_ACTION_TYPE_SET_PRIORITY,
+		tgsrlv1.ActionType_ACTION_TYPE_PAUSE,
+		tgsrlv1.ActionType_ACTION_TYPE_RESUME,
+		tgsrlv1.ActionType_ACTION_TYPE_SLEEP,
+		tgsrlv1.ActionType_ACTION_TYPE_OFFLOAD:
+		return true
+	default:
+		return false
+	}
+}
+
+func compatibleLifecycleMutations(left, right tgsrlv1.ActionType) bool {
+	return left == tgsrlv1.ActionType_ACTION_TYPE_SET_SHARE && right == tgsrlv1.ActionType_ACTION_TYPE_SET_PRIORITY ||
+		left == tgsrlv1.ActionType_ACTION_TYPE_SET_PRIORITY && right == tgsrlv1.ActionType_ACTION_TYPE_SET_SHARE
 }
 
 func applyMutationReservation(
@@ -124,6 +181,9 @@ func reserveLifecycleOnlyAction(
 	if err != nil {
 		return err
 	}
+	if allocation.GetState() != tgsrlv1.AllocationState_ALLOCATION_STATE_ACTIVE {
+		return fmt.Errorf("%w: allocation %q is not active", ErrInvalidIntent, allocation.GetAllocationId())
+	}
 	reservation.allocationIDs = append(reservation.allocationIDs, allocation.GetAllocationId())
 	return nil
 }
@@ -138,6 +198,9 @@ func reserveResizeAction(
 	allocation, err := singleAffectedAllocation(action, affected)
 	if err != nil {
 		return err
+	}
+	if allocation.GetState() != tgsrlv1.AllocationState_ALLOCATION_STATE_ACTIVE {
+		return fmt.Errorf("%w: allocation %q is not active", ErrInvalidIntent, allocation.GetAllocationId())
 	}
 	if action.GetBinding() == nil || action.GetBinding().GetResources() == nil {
 		return fmt.Errorf("%w: resize action requires binding resources", ErrInvalidIntent)
@@ -212,6 +275,9 @@ func reserveReplacementAction(
 	allocation, err := singleAffectedAllocation(action, affected)
 	if err != nil {
 		return err
+	}
+	if allocation.GetState() != tgsrlv1.AllocationState_ALLOCATION_STATE_ACTIVE {
+		return fmt.Errorf("%w: allocation %q is not active", ErrInvalidIntent, allocation.GetAllocationId())
 	}
 	binding := action.GetBinding()
 	if binding == nil || binding.GetResources() == nil || len(binding.GetDeviceIds()) == 0 {
@@ -492,6 +558,14 @@ func restoreMutationStateFromBeforeImage(
 	if before == nil {
 		return fmt.Errorf("%w: mutation reservation has no before-image", ErrPlanNotReserved)
 	}
+	if len(plan.GetActions()) > 1 {
+		for _, action := range plan.GetActions() {
+			if action == nil || !mergeableLifecycleAction(action.GetActionType()) {
+				return fmt.Errorf("%w: multi-action mutation contains exclusive action %s", ErrInvalidIntent, action.GetActionType())
+			}
+		}
+		return nil
+	}
 	beforeByID := make(map[string]*tgsrlv1.Allocation, len(before.GetAllocations()))
 	for _, allocation := range before.GetAllocations() {
 		beforeByID[allocation.GetAllocationId()] = allocation
@@ -673,24 +747,39 @@ func mutationResultConfirmsRestoration(
 	plan *tgsrlv1.PlacementPlan,
 	results []*tgsrlv1.ActionResult,
 ) bool {
-	if plan == nil || len(plan.GetActions()) != 1 || len(results) != 1 || results[0] == nil {
+	if plan == nil || len(plan.GetActions()) == 0 || len(results) != len(plan.GetActions()) {
 		return false
 	}
-	result := results[0]
-	if result.GetActionId() != plan.GetActions()[0].GetActionId() {
-		return false
+	byID := make(map[string]*tgsrlv1.ActionResult, len(results))
+	for _, result := range results {
+		if result == nil || result.GetActionId() == "" {
+			return false
+		}
+		if _, duplicate := byID[result.GetActionId()]; duplicate {
+			return false
+		}
+		byID[result.GetActionId()] = result
 	}
-	if result.GetRollbackAttempted() {
-		return result.GetRollbackStatus() == tgsrlv1.ActionResultStatus_ACTION_RESULT_STATUS_ROLLED_BACK
+	for _, action := range plan.GetActions() {
+		result := byID[action.GetActionId()]
+		if result == nil {
+			return false
+		}
+		if result.GetRollbackAttempted() {
+			if result.GetRollbackStatus() != tgsrlv1.ActionResultStatus_ACTION_RESULT_STATUS_ROLLED_BACK {
+				return false
+			}
+			continue
+		}
+		switch result.GetStatus() {
+		case tgsrlv1.ActionResultStatus_ACTION_RESULT_STATUS_FAILED,
+			tgsrlv1.ActionResultStatus_ACTION_RESULT_STATUS_SKIPPED,
+			tgsrlv1.ActionResultStatus_ACTION_RESULT_STATUS_ROLLED_BACK:
+		default:
+			return false
+		}
 	}
-	switch result.GetStatus() {
-	case tgsrlv1.ActionResultStatus_ACTION_RESULT_STATUS_FAILED,
-		tgsrlv1.ActionResultStatus_ACTION_RESULT_STATUS_SKIPPED,
-		tgsrlv1.ActionResultStatus_ACTION_RESULT_STATUS_ROLLED_BACK:
-		return true
-	default:
-		return false
-	}
+	return true
 }
 
 func sortedStrings(items []string) []string {

@@ -354,3 +354,10 @@ def _validate_policy(policy: PolicyBundle) -> None:
         raise ConfigError("policy.actions.require_explicit_rollback must be true")
     if policy.actions.unsupported_action not in {"reject"}:
         raise ConfigError("policy.actions.unsupported_action must be reject")
+    if (
+        policy.actions.max_actions_per_tick < 1
+        or policy.actions.max_affected_sandboxes < 1
+        or policy.actions.max_gpu_reconfigurations < 1
+        or policy.actions.max_recovery_cost_nanos < 1
+    ):
+        raise ConfigError("policy.actions contains an invalid transaction budget")

@@ -21,14 +21,97 @@ func (p AdmissionPlanner) Propose(input PlanningInput) []PlannerProposal {
 	if input.AdmissionPlan == nil {
 		return nil
 	}
+	if input.AdmissionPlan.GetPurpose() != tgsrlv1.PlanPurpose_PLAN_PURPOSE_ADMISSION {
+		return existingPlanProposal(input, p.Utility)
+	}
 	if len(input.AdmissionPlan.GetActions()) == 0 {
 		evidence := plannerEvidence(input, tgsrlv1.PlannerKind_PLANNER_KIND_ADMISSION, tgsrlv1.PlanPurpose_PLAN_PURPOSE_ADMISSION, tgsrlv1.ActionType_ACTION_TYPE_BIND, "", 0, tgsrlv1.PlannerDisposition_PLANNER_DISPOSITION_REJECTED, "ADMISSION_NO_ACTION")
 		return []PlannerProposal{{Evidence: evidence}}
 	}
-	utility := multiplyUtility(normalizePlannerUtilityConfig(p.Utility).Bind, len(input.AdmissionPlan.GetActions()))
-	evidence := plannerEvidence(input, tgsrlv1.PlannerKind_PLANNER_KIND_ADMISSION, tgsrlv1.PlanPurpose_PLAN_PURPOSE_ADMISSION, tgsrlv1.ActionType_ACTION_TYPE_BIND, "", utility, tgsrlv1.PlannerDisposition_PLANNER_DISPOSITION_DEFERRED, "ELIGIBLE",
-		semanticUintField("planner.action_count", uint64(len(input.AdmissionPlan.GetActions()))))
-	return []PlannerProposal{{Plan: proto.Clone(input.AdmissionPlan).(*tgsrlv1.PlacementPlan), Evidence: evidence}}
+	utility := normalizePlannerUtilityConfig(p.Utility).Bind
+	proposals := make([]PlannerProposal, 0, len(input.AdmissionPlan.GetActions()))
+	for index, action := range input.AdmissionPlan.GetActions() {
+		target := action.GetTargetId()
+		if target == "" {
+			target = action.GetBinding().GetPendingUnitId()
+		}
+		reason := "ELIGIBLE"
+		if input.ContractAggregate.Blocking {
+			reason = "CONTRACT_BLOCKED"
+		}
+		evidence := plannerEvidence(input, tgsrlv1.PlannerKind_PLANNER_KIND_ADMISSION, tgsrlv1.PlanPurpose_PLAN_PURPOSE_ADMISSION, action.GetActionType(), target, utility, tgsrlv1.PlannerDisposition_PLANNER_DISPOSITION_DEFERRED, reason,
+			semanticUintField("planner.admission_action_index", uint64(index)),
+			semanticUintField("planner.admission_action_count", uint64(len(input.AdmissionPlan.GetActions()))))
+		plan, planReason := admissionActionPlan(input.AdmissionPlan, action)
+		if reason != "ELIGIBLE" {
+			plan = nil
+		}
+		if plan == nil {
+			evidence.Disposition = tgsrlv1.PlannerDisposition_PLANNER_DISPOSITION_REJECTED
+			if reason == "ELIGIBLE" {
+				evidence.Reason = planReason
+			}
+		}
+		proposals = append(proposals, PlannerProposal{Plan: plan, Evidence: evidence})
+	}
+	return proposals
+}
+
+func admissionActionPlan(source *tgsrlv1.PlacementPlan, sourceAction *tgsrlv1.Action) (*tgsrlv1.PlacementPlan, string) {
+	if source == nil || sourceAction == nil || sourceAction.GetActionType() != tgsrlv1.ActionType_ACTION_TYPE_BIND || sourceAction.GetBinding() == nil {
+		return nil, "INVALID_ADMISSION_ACTION"
+	}
+	bindingID := sourceAction.GetBinding().GetBindingId()
+	var binding *tgsrlv1.Binding
+	for _, candidate := range source.GetBindings() {
+		if candidate != nil && candidate.GetBindingId() == bindingID {
+			binding = proto.Clone(candidate).(*tgsrlv1.Binding)
+			break
+		}
+	}
+	if binding == nil {
+		return nil, "MISSING_ADMISSION_BINDING"
+	}
+	plan := proto.Clone(source).(*tgsrlv1.PlacementPlan)
+	plan.PlanId = stableID("admission-action-plan", source.GetPlanId(), sourceAction.GetActionId())
+	plan.Bindings = []*tgsrlv1.Binding{binding}
+	action := proto.Clone(sourceAction).(*tgsrlv1.Action)
+	action.Order = 1
+	action.PlanId = plan.GetPlanId()
+	action.ActionId = stableID("admission-action", plan.GetPlanId(), sourceAction.GetActionId())
+	action.IdempotencyKey = stableID("admission-action-idempotency", sourceAction.GetIdempotencyKey(), plan.GetPlanId())
+	plan.Actions = []*tgsrlv1.Action{action}
+	plan.RollbackPolicy = tgsrlv1.RollbackPolicy_ROLLBACK_POLICY_NOT_REQUIRED
+	plan.CapabilityRequirements = nil
+	return plan, ""
+}
+
+func existingPlanProposal(input PlanningInput, utilityConfig PlannerUtilityConfig) []PlannerProposal {
+	plan := input.AdmissionPlan
+	if plan == nil || len(plan.GetActions()) == 0 {
+		return nil
+	}
+	utility := int64(0)
+	config := normalizePlannerUtilityConfig(utilityConfig)
+	for _, action := range plan.GetActions() {
+		switch action.GetActionType() {
+		case tgsrlv1.ActionType_ACTION_TYPE_BIND:
+			utility = saturatingUtilityAdd(utility, config.Bind)
+		case tgsrlv1.ActionType_ACTION_TYPE_RELEASE:
+			utility = saturatingUtilityAdd(utility, config.Release)
+		}
+	}
+	first := plan.GetActions()[0]
+	reason := "ELIGIBLE"
+	if input.ContractAggregate.Blocking && plan.GetPurpose() != tgsrlv1.PlanPurpose_PLAN_PURPOSE_RECOVERY {
+		reason = "CONTRACT_BLOCKED"
+	}
+	evidence := plannerEvidence(input, tgsrlv1.PlannerKind_PLANNER_KIND_ADMISSION, plan.GetPurpose(), first.GetActionType(), first.GetTargetId(), utility, tgsrlv1.PlannerDisposition_PLANNER_DISPOSITION_DEFERRED, reason, semanticUintField("planner.action_count", uint64(len(plan.GetActions()))))
+	if reason != "ELIGIBLE" {
+		evidence.Disposition = tgsrlv1.PlannerDisposition_PLANNER_DISPOSITION_REJECTED
+		return []PlannerProposal{{Evidence: evidence}}
+	}
+	return []PlannerProposal{{Plan: proto.Clone(plan).(*tgsrlv1.PlacementPlan), Evidence: evidence}}
 }
 
 func (p FastMutationPlanner) Propose(input PlanningInput) []PlannerProposal {
@@ -36,13 +119,6 @@ func (p FastMutationPlanner) Propose(input PlanningInput) []PlannerProposal {
 		return wrongTickDirectiveEvidence(input, tgsrlv1.PlannerKind_PLANNER_KIND_FAST_MUTATION, requestedFastActions(input))
 	}
 	explicitFast := input.Directives.TargetShare != nil || input.Directives.TargetPriority != nil || input.Directives.AllowResize || input.Directives.AllowScaleIn || input.Directives.TargetResources != nil || len(input.Directives.ResizeResources) > 0
-	targetShare := input.Directives.TargetShare
-	if targetShare == nil && !explicitFast {
-		value := input.Intent.GetResourcesPerUnit().GetAcceleratorUnits()
-		if value >= 0 && value <= 1 && hasShareDrift(input, value) {
-			targetShare = &value
-		}
-	}
 	targetPriority := input.Directives.TargetPriority
 	if targetPriority == nil && !explicitFast && hasPriorityDrift(input, input.Intent.GetPriority()) {
 		value := input.Intent.GetPriority()
@@ -50,26 +126,48 @@ func (p FastMutationPlanner) Propose(input PlanningInput) []PlannerProposal {
 	}
 	autoScaleIn := !explicitFast && hasObservedScaleIn(input)
 	autoResize := !explicitFast && hasResourceDrift(input)
-	if targetShare == nil && targetPriority == nil && !autoResize && !autoScaleIn && !input.Directives.AllowResize && !input.Directives.AllowScaleIn {
+	if input.Directives.TargetShare == nil && targetPriority == nil && !autoResize && !autoScaleIn && !input.Directives.AllowResize && !input.Directives.AllowScaleIn && !directionalShareSignalPresent(input) {
 		return nil
 	}
 	utility := normalizePlannerUtilityConfig(p.Utility)
-	fastAdjustment, fastFields := fastSignalUtility(input.Signals, utility.FastSignalStep)
 	targets, missing, stale := activeAdaptiveTargetsWithFreshness(input)
 	result := missingTargetEvidence(input, tgsrlv1.PlannerKind_PLANNER_KIND_FAST_MUTATION, missing)
 	result = append(result, staleTargetEvidence(input, tgsrlv1.PlannerKind_PLANNER_KIND_FAST_MUTATION, stale)...)
 	for _, target := range targets {
+		targetShare := input.Directives.TargetShare
+		var directional *DirectionalTarget
+		if targetShare == nil && !explicitFast {
+			directional = directionalTargetForAdaptiveTarget(input, target)
+			if directional != nil {
+				value := directional.TargetValue
+				targetShare = &value
+			} else if !directionalShareSignalPresent(input) {
+				value := input.Intent.GetResourcesPerUnit().GetAcceleratorUnits()
+				if value >= 0 && value <= 1 && target.sandbox.GetShare() != value {
+					targetShare = &value
+				}
+			}
+		}
 		if targetShare != nil {
 			desired := *targetShare
 			fields := []*tgsrlv1.SemanticField{semanticDoubleField("planner.current_share", target.sandbox.GetShare()), semanticDoubleField("planner.target_share", desired)}
+			shareUtility := utility.SetShare
+			if directional != nil {
+				adjustment := directionalSignalUtility(input, utility.FastSignalStep)
+				directional.ExpectedBenefitNanos = saturatingUtilityAdd(utility.SetShare, adjustment)
+				if input.Signals.RecoveryCostNanosPresent {
+					directional.RecoveryCostNanos = input.Signals.RecoveryCostNanos
+				}
+				shareUtility = saturatingSubtract(directional.ExpectedBenefitNanos, directional.RecoveryCostNanos)
+			}
 			reason := "ELIGIBLE"
 			if math.IsNaN(desired) || math.IsInf(desired, 0) || desired < 0 || desired > 1 {
 				reason = "INVALID_TARGET_SHARE"
 			} else if target.sandbox.GetShare() == desired {
 				reason = "ALREADY_SATISFIED"
 			}
-			fields = append(fields, fastFields...)
-			result = append(result, actionProposal(input, tgsrlv1.PlannerKind_PLANNER_KIND_FAST_MUTATION, tgsrlv1.PlanPurpose_PLAN_PURPOSE_RECONCILIATION, adaptiveActionSpec{actionType: tgsrlv1.ActionType_ACTION_TYPE_SET_SHARE, target: target, share: desired}, saturatingUtilityAdd(utility.SetShare, fastAdjustment), reason, fields...))
+			fields = append(fields, directionalTargetEvidence(directional)...)
+			result = append(result, actionProposal(input, tgsrlv1.PlannerKind_PLANNER_KIND_FAST_MUTATION, tgsrlv1.PlanPurpose_PLAN_PURPOSE_RECONCILIATION, adaptiveActionSpec{actionType: tgsrlv1.ActionType_ACTION_TYPE_SET_SHARE, target: target, share: desired}, shareUtility, reason, fields...))
 		}
 		if targetPriority != nil {
 			desired := *targetPriority
@@ -77,8 +175,8 @@ func (p FastMutationPlanner) Propose(input PlanningInput) []PlannerProposal {
 			if target.sandbox.GetPriority() == desired {
 				reason = "ALREADY_SATISFIED"
 			}
-			fields := append([]*tgsrlv1.SemanticField{semanticIntField("planner.current_priority", int64(target.sandbox.GetPriority())), semanticIntField("planner.target_priority", int64(desired))}, fastFields...)
-			result = append(result, actionProposal(input, tgsrlv1.PlannerKind_PLANNER_KIND_FAST_MUTATION, tgsrlv1.PlanPurpose_PLAN_PURPOSE_RECONCILIATION, adaptiveActionSpec{actionType: tgsrlv1.ActionType_ACTION_TYPE_SET_PRIORITY, target: target, priority: desired}, saturatingUtilityAdd(utility.SetPriority, fastAdjustment), reason, fields...))
+			fields := []*tgsrlv1.SemanticField{semanticIntField("planner.current_priority", int64(target.sandbox.GetPriority())), semanticIntField("planner.target_priority", int64(desired))}
+			result = append(result, actionProposal(input, tgsrlv1.PlannerKind_PLANNER_KIND_FAST_MUTATION, tgsrlv1.PlanPurpose_PLAN_PURPOSE_RECONCILIATION, adaptiveActionSpec{actionType: tgsrlv1.ActionType_ACTION_TYPE_SET_PRIORITY, target: target, priority: desired}, utility.SetPriority, reason, fields...))
 		}
 		if input.Directives.AllowResize || autoResize {
 			desired := input.Directives.ResizeResources[target.allocation.GetAllocationId()]
@@ -97,8 +195,8 @@ func (p FastMutationPlanner) Propose(input PlanningInput) []PlannerProposal {
 				reason = resizeGrowthEligibility(input, target, desired)
 			}
 			binding := cloneAdaptiveBinding(target.sandbox.GetBinding(), desired, target.sandbox.GetGeneration())
-			fields := append([]*tgsrlv1.SemanticField{semanticStringField("planner.target_resources", formatResourceVector(desired))}, fastFields...)
-			result = append(result, actionProposal(input, tgsrlv1.PlannerKind_PLANNER_KIND_FAST_MUTATION, tgsrlv1.PlanPurpose_PLAN_PURPOSE_REBALANCE, adaptiveActionSpec{actionType: tgsrlv1.ActionType_ACTION_TYPE_RESIZE, target: target, binding: binding}, saturatingUtilityAdd(utility.Resize, fastAdjustment), reason, fields...))
+			fields := []*tgsrlv1.SemanticField{semanticStringField("planner.target_resources", formatResourceVector(desired))}
+			result = append(result, actionProposal(input, tgsrlv1.PlannerKind_PLANNER_KIND_FAST_MUTATION, tgsrlv1.PlanPurpose_PLAN_PURPOSE_REBALANCE, adaptiveActionSpec{actionType: tgsrlv1.ActionType_ACTION_TYPE_RESIZE, target: target, binding: binding}, utility.Resize, reason, fields...))
 		}
 	}
 	if (input.Directives.AllowScaleIn || autoScaleIn) && uint32(len(targets)) > input.Intent.GetUnitCount() {
@@ -111,12 +209,11 @@ func (p FastMutationPlanner) Propose(input PlanningInput) []PlannerProposal {
 			tgsrlv1.PlannerKind_PLANNER_KIND_FAST_MUTATION,
 			tgsrlv1.PlanPurpose_PLAN_PURPOSE_RECONCILIATION,
 			adaptiveActionSpec{actionType: tgsrlv1.ActionType_ACTION_TYPE_RELEASE, target: target, requiresSafePoint: true},
-			saturatingUtilityAdd(utility.Release, fastAdjustment),
+			utility.Release,
 			"ELIGIBLE",
 			semanticUintField("planner.desired_units", uint64(input.Intent.GetUnitCount())),
 			semanticUintField("planner.active_units", uint64(len(targets))),
 			semanticUintField("planner.remaining_release_count", uint64(releaseCount)),
-			semanticIntField("planner.fast_signal_adjustment_nanos", fastAdjustment),
 		))
 	}
 	return result
@@ -183,7 +280,7 @@ func (p SlowReconfigurationPlanner) Propose(input PlanningInput) []PlannerPropos
 			score   int64
 			purpose tgsrlv1.PlanPurpose
 		}{
-			{targetHasUnhealthyDevice(input, target) || input.Directives.AllowRebind, tgsrlv1.ActionType_ACTION_TYPE_REBIND, utility.Rebind, tgsrlv1.PlanPurpose_PLAN_PURPOSE_REBALANCE},
+			{targetHasUnhealthyDevice(input, target) || input.Directives.AllowRebind, tgsrlv1.ActionType_ACTION_TYPE_REBIND, utility.Rebind, rebindPurpose(input, target)},
 			{(autoRecreate && target.sandbox.GetState() == tgsrlv1.RuntimeState_RUNTIME_STATE_FAILED) || input.Directives.AllowRecreate, tgsrlv1.ActionType_ACTION_TYPE_RECREATE, utility.Recreate, tgsrlv1.PlanPurpose_PLAN_PURPOSE_RECOVERY},
 		} {
 			if !option.enabled {
@@ -219,6 +316,13 @@ func (p SlowReconfigurationPlanner) Propose(input PlanningInput) []PlannerPropos
 		}
 	}
 	return result
+}
+
+func rebindPurpose(input PlanningInput, target adaptiveTarget) tgsrlv1.PlanPurpose {
+	if targetHasUnhealthyDevice(input, target) {
+		return tgsrlv1.PlanPurpose_PLAN_PURPOSE_RECOVERY
+	}
+	return tgsrlv1.PlanPurpose_PLAN_PURPOSE_REBALANCE
 }
 
 func actionProposal(input PlanningInput, kind tgsrlv1.PlannerKind, purpose tgsrlv1.PlanPurpose, spec adaptiveActionSpec, utility int64, reason string, fields ...*tgsrlv1.SemanticField) PlannerProposal {
@@ -445,23 +549,21 @@ func mediumSignalEligibility(input PlanningInput, sandbox *tgsrlv1.Sandbox, acti
 	return "ELIGIBLE"
 }
 
-func fastSignalUtility(signals PlanningSignals, step int64) (int64, []*tgsrlv1.SemanticField) {
+func directionalSignalUtility(input PlanningInput, step int64) int64 {
+	signals := input.Signals
 	var adjustment int64
-	var triggerCount int64
 	add := func(condition bool) {
 		if condition {
-			triggerCount++
 			adjustment = saturatingUtilityAdd(adjustment, step)
 		}
 	}
 	add(signals.BufferPressurePresent && signals.BufferPressure >= BufferPressureHigh)
 	add(signals.PolicyLagPresent && signals.PolicyLag > 0)
-	add(signals.SampleStalenessPresent && signals.SampleStaleness)
-	add(signals.ESSRatioPresent && signals.ESSRatio < 1)
-	return adjustment, []*tgsrlv1.SemanticField{
-		semanticIntField("planner.fast_signal_adjustment_nanos", adjustment),
-		semanticIntField("planner.fast_signal_trigger_count", triggerCount),
+	if producerPhase(input.Intent.GetPhaseKind()) {
+		add(signals.SampleStalenessPresent && signals.SampleStaleness)
+		add(signals.ESSRatioPresent && signals.ESSRatio < DefaultPlannerESSRatioFloor)
 	}
+	return adjustment
 }
 
 func slowUtility(input PlanningInput, target adaptiveTarget, action tgsrlv1.ActionType, base int64, config PlannerUtilityConfig) (int64, int64, int64, int64) {
@@ -472,15 +574,24 @@ func slowUtility(input PlanningInput, target adaptiveTarget, action tgsrlv1.Acti
 	if action == tgsrlv1.ActionType_ACTION_TYPE_REBIND && targetHasUnhealthyDevice(input, target) {
 		benefit = saturatingUtilityAdd(benefit, config.SlowBenefit)
 	}
-	cost := int64(0)
-	if input.Signals.RecoveryCostNanosPresent {
-		cost = input.Signals.RecoveryCostNanos
-	}
+	cost := recoveryCostForTarget(input.Signals, target)
 	risk := config.SlowRisk
 	if input.Signals.CheckpointCapablePresent && input.Signals.CheckpointCapable {
 		risk = 0
 	}
 	return benefit, cost, risk, saturatingSubtract(saturatingSubtract(benefit, cost), risk)
+}
+
+func recoveryCostForTarget(signals PlanningSignals, target adaptiveTarget) int64 {
+	for _, key := range []string{target.allocation.GetAllocationId(), target.sandbox.GetSandboxId()} {
+		if value, ok := signals.RecoveryCostNanosByTarget[key]; ok {
+			return value
+		}
+	}
+	if signals.RecoveryCostNanosPresent {
+		return signals.RecoveryCostNanos
+	}
+	return 0
 }
 
 func saturatingUtilityAdd(left, right int64) int64 {
@@ -560,16 +671,6 @@ func hasResourceDrift(input PlanningInput) bool {
 	targets, _ := activeAdaptiveTargets(input)
 	for _, target := range targets {
 		if !proto.Equal(target.allocation.GetResources(), desired) {
-			return true
-		}
-	}
-	return false
-}
-
-func hasShareDrift(input PlanningInput, desired float64) bool {
-	targets, _ := activeAdaptiveTargets(input)
-	for _, target := range targets {
-		if target.sandbox.GetShare() != desired {
 			return true
 		}
 	}
@@ -809,23 +910,4 @@ func equalStringSlices(left, right []string) bool {
 		}
 	}
 	return true
-}
-
-func sortProposals(proposals []PlannerProposal) {
-	sort.SliceStable(proposals, func(i, j int) bool {
-		left, right := proposals[i].Evidence, proposals[j].Evidence
-		if left.GetUtilityNanos() != right.GetUtilityNanos() {
-			return left.GetUtilityNanos() > right.GetUtilityNanos()
-		}
-		if left.GetPlanner() != right.GetPlanner() {
-			return left.GetPlanner() < right.GetPlanner()
-		}
-		if left.GetActionType() != right.GetActionType() {
-			return left.GetActionType() < right.GetActionType()
-		}
-		if left.GetTargetId() != right.GetTargetId() {
-			return left.GetTargetId() < right.GetTargetId()
-		}
-		return left.GetProposalId() < right.GetProposalId()
-	})
 }

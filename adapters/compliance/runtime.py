@@ -451,6 +451,7 @@ class BaseComponentAdapter:
     component_name = ""
     dependency_name: str | None = None
     binary = "python"
+    default_bridge_module = ""
     launch_metadata: ComponentLaunchMetadata
     _supported_actions: tuple[LifecycleAction, ...]
 
@@ -524,7 +525,9 @@ class BaseComponentAdapter:
             adapter=self.component_name,
             action=action,
             default_module_name=(
-                "adapters.fake_bridge" if self.component_name.casefold() == "fake" else ""
+                "adapters.fake_bridge"
+                if self.component_name.casefold() == "fake"
+                else self.default_bridge_module
             ),
             preferred_kind=self.launch_metadata.preferred_bridge_kind,
         )

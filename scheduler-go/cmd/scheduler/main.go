@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strings"
 	"syscall"
 	"time"
@@ -160,30 +161,42 @@ func buildSchedulerConfig(startup *runtimeConfig) (scheduler.Config, error) {
 }
 
 type cliArgs struct {
-	ListenAddress        string
-	ConfigRoot           string
-	ManifestPath         string
-	FallbackFlag         string
-	StateDirectory       string
-	MetricsAddress       string
-	NVIDIADriverV2       bool
-	NVIDIAPartitionMode  string
-	NVIDIADryRun         bool
-	NVIDIACommandTimeout time.Duration
+	ListenAddress         string
+	ConfigRoot            string
+	ManifestPath          string
+	FallbackFlag          string
+	StateDirectory        string
+	MetricsAddress        string
+	NVIDIADriverV2        bool
+	NVIDIAPartitionMode   string
+	NVIDIADryRun          bool
+	NVIDIACommandTimeout  time.Duration
+	NVIDIABindingHelper   string
+	NVIDIABindingState    string
+	NVIDIAMPSPIDDirectory string
+	NVIDIARuntimeHelper   string
+	NVIDIARuntimeState    string
+	NVIDIAMIGHelper       string
 }
 
 type runtimeConfig struct {
-	ListenAddress        string
-	StartupConfig        *configpkg.StartupConfig
-	ProviderCaps         *tgsrlv1.CapabilitySet
-	FallbackMode         scheduler.FallbackMode
-	Provider             provider.CompleteResourceProvider
-	RuntimeConfig        eventloop.RuntimeConfig
-	ResolvedConfigRoot   string
-	NVIDIADriverV2       bool
-	NVIDIAPartitionMode  nvidiaprovider.PartitionMode
-	NVIDIADryRun         bool
-	NVIDIACommandTimeout time.Duration
+	ListenAddress         string
+	StartupConfig         *configpkg.StartupConfig
+	ProviderCaps          *tgsrlv1.CapabilitySet
+	FallbackMode          scheduler.FallbackMode
+	Provider              provider.CompleteResourceProvider
+	RuntimeConfig         eventloop.RuntimeConfig
+	ResolvedConfigRoot    string
+	NVIDIADriverV2        bool
+	NVIDIAPartitionMode   nvidiaprovider.PartitionMode
+	NVIDIADryRun          bool
+	NVIDIACommandTimeout  time.Duration
+	NVIDIABindingHelper   string
+	NVIDIABindingState    string
+	NVIDIAMPSPIDDirectory string
+	NVIDIARuntimeHelper   string
+	NVIDIARuntimeState    string
+	NVIDIAMIGHelper       string
 }
 
 func parseArgs(argv []string) (*cliArgs, error) {
@@ -198,6 +211,12 @@ func parseArgs(argv []string) (*cliArgs, error) {
 	nvidiaPartitionMode := fs.String("nvidia-partition-mode", string(nvidiaprovider.PartitionModeMPS), "NVIDIA Driver v2 partition mode: mps or mig")
 	nvidiaDryRun := fs.Bool("nvidia-dry-run", false, "plan NVIDIA Driver v2 mutations without applying them")
 	nvidiaCommandTimeout := fs.Duration("nvidia-command-timeout", 15*time.Second, "NVIDIA Driver v2 command timeout")
+	nvidiaBindingHelper := fs.String("nvidia-binding-helper", "tgsrl-nvidia-binding", "NVIDIA binding helper executable")
+	nvidiaBindingState := fs.String("nvidia-binding-state", "", "durable NVIDIA binding state file; defaults under state-dir")
+	nvidiaMPSPIDDirectory := fs.String("nvidia-mps-pid-dir", "", "directory containing <sandbox>.pid MPS server identities")
+	nvidiaRuntimeHelper := fs.String("nvidia-runtime-helper", "tgsrl-nvidia-runtime", "NVIDIA runtime helper executable")
+	nvidiaRuntimeState := fs.String("nvidia-runtime-state", "", "durable NVIDIA runtime state file; defaults under state-dir")
+	nvidiaMIGHelper := fs.String("nvidia-mig-helper", "tgsrl-nvidia-mig", "NVIDIA MIG lifecycle helper executable")
 	if err := fs.Parse(argv); err != nil {
 		return nil, err
 	}
@@ -209,18 +228,41 @@ func parseArgs(argv []string) (*cliArgs, error) {
 		if *nvidiaCommandTimeout <= 0 {
 			return nil, fmt.Errorf("NVIDIA command timeout must be positive")
 		}
+		if strings.TrimSpace(*nvidiaBindingHelper) == "" {
+			return nil, fmt.Errorf("NVIDIA binding helper must not be empty")
+		}
+		if strings.TrimSpace(*nvidiaRuntimeHelper) == "" {
+			return nil, fmt.Errorf("NVIDIA runtime helper must not be empty")
+		}
+		if mode == nvidiaprovider.PartitionModeMIG && strings.TrimSpace(*nvidiaMIGHelper) == "" {
+			return nil, fmt.Errorf("NVIDIA MIG helper must not be empty")
+		}
+	}
+	bindingState := strings.TrimSpace(*nvidiaBindingState)
+	if bindingState == "" {
+		bindingState = filepath.Join(*stateDirectory, "nvidia-binding.json")
+	}
+	runtimeState := strings.TrimSpace(*nvidiaRuntimeState)
+	if runtimeState == "" {
+		runtimeState = filepath.Join(*stateDirectory, "nvidia-runtime.json")
 	}
 	return &cliArgs{
-		ListenAddress:        *listenAddress,
-		ConfigRoot:           *configRoot,
-		ManifestPath:         *manifestPath,
-		FallbackFlag:         *fallbackFlag,
-		StateDirectory:       *stateDirectory,
-		MetricsAddress:       *metricsAddress,
-		NVIDIADriverV2:       *nvidiaDriverV2,
-		NVIDIAPartitionMode:  *nvidiaPartitionMode,
-		NVIDIADryRun:         *nvidiaDryRun,
-		NVIDIACommandTimeout: *nvidiaCommandTimeout,
+		ListenAddress:         *listenAddress,
+		ConfigRoot:            *configRoot,
+		ManifestPath:          *manifestPath,
+		FallbackFlag:          *fallbackFlag,
+		StateDirectory:        *stateDirectory,
+		MetricsAddress:        *metricsAddress,
+		NVIDIADriverV2:        *nvidiaDriverV2,
+		NVIDIAPartitionMode:   *nvidiaPartitionMode,
+		NVIDIADryRun:          *nvidiaDryRun,
+		NVIDIACommandTimeout:  *nvidiaCommandTimeout,
+		NVIDIABindingHelper:   strings.TrimSpace(*nvidiaBindingHelper),
+		NVIDIABindingState:    bindingState,
+		NVIDIAMPSPIDDirectory: strings.TrimSpace(*nvidiaMPSPIDDirectory),
+		NVIDIARuntimeHelper:   strings.TrimSpace(*nvidiaRuntimeHelper),
+		NVIDIARuntimeState:    runtimeState,
+		NVIDIAMIGHelper:       strings.TrimSpace(*nvidiaMIGHelper),
 	}, nil
 }
 
@@ -250,16 +292,22 @@ func loadStartupConfig(args *cliArgs) (*runtimeConfig, error) {
 		return nil, fmt.Errorf("project startup capabilities: %w", err)
 	}
 	return &runtimeConfig{
-		ListenAddress:        args.ListenAddress,
-		StartupConfig:        startupConfig,
-		ProviderCaps:         providerCaps,
-		FallbackMode:         fallbackMode,
-		RuntimeConfig:        eventloop.RuntimeConfig{FastInterval: startupConfig.RuntimeIntervals.Fast, MediumInterval: startupConfig.RuntimeIntervals.Medium, SlowInterval: startupConfig.RuntimeIntervals.Slow},
-		ResolvedConfigRoot:   startupConfig.Root,
-		NVIDIADriverV2:       args.NVIDIADriverV2,
-		NVIDIAPartitionMode:  nvidiaprovider.PartitionMode(args.NVIDIAPartitionMode),
-		NVIDIADryRun:         args.NVIDIADryRun,
-		NVIDIACommandTimeout: args.NVIDIACommandTimeout,
+		ListenAddress:         args.ListenAddress,
+		StartupConfig:         startupConfig,
+		ProviderCaps:          providerCaps,
+		FallbackMode:          fallbackMode,
+		RuntimeConfig:         eventloop.RuntimeConfig{FastInterval: startupConfig.RuntimeIntervals.Fast, MediumInterval: startupConfig.RuntimeIntervals.Medium, SlowInterval: startupConfig.RuntimeIntervals.Slow},
+		ResolvedConfigRoot:    startupConfig.Root,
+		NVIDIADriverV2:        args.NVIDIADriverV2,
+		NVIDIAPartitionMode:   nvidiaprovider.PartitionMode(args.NVIDIAPartitionMode),
+		NVIDIADryRun:          args.NVIDIADryRun,
+		NVIDIACommandTimeout:  args.NVIDIACommandTimeout,
+		NVIDIABindingHelper:   args.NVIDIABindingHelper,
+		NVIDIABindingState:    args.NVIDIABindingState,
+		NVIDIAMPSPIDDirectory: args.NVIDIAMPSPIDDirectory,
+		NVIDIARuntimeHelper:   args.NVIDIARuntimeHelper,
+		NVIDIARuntimeState:    args.NVIDIARuntimeState,
+		NVIDIAMIGHelper:       args.NVIDIAMIGHelper,
 	}, nil
 }
 
@@ -285,9 +333,15 @@ func buildProvider(cfg *runtimeConfig) (provider.CompleteResourceProvider, error
 		options := []nvidiaprovider.Option{}
 		if cfg.NVIDIADriverV2 {
 			options = append(options, nvidiaprovider.WithDriverV2(nvidiaprovider.LocalDriverV2Options{
-				PartitionMode:  cfg.NVIDIAPartitionMode,
-				CommandTimeout: cfg.NVIDIACommandTimeout,
-				DryRun:         cfg.NVIDIADryRun,
+				PartitionMode:       cfg.NVIDIAPartitionMode,
+				CommandTimeout:      cfg.NVIDIACommandTimeout,
+				DryRun:              cfg.NVIDIADryRun,
+				BindingHelperBinary: cfg.NVIDIABindingHelper,
+				BindingStatePath:    cfg.NVIDIABindingState,
+				MPSPIDDirectory:     cfg.NVIDIAMPSPIDDirectory,
+				RuntimeHelperBinary: cfg.NVIDIARuntimeHelper,
+				RuntimeStatePath:    cfg.NVIDIARuntimeState,
+				MIGHelperBinary:     cfg.NVIDIAMIGHelper,
 			}))
 		}
 		instance, err := nvidiaprovider.New(options...)

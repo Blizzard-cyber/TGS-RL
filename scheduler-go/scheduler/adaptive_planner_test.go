@@ -97,7 +97,7 @@ func TestCoordinatorEvidenceIsDeterministicAndSelectedSurvivesBudget(t *testing.
 	priority := int32(11)
 	input := adaptiveFixture(tgsrlv1.TickKind_TICK_KIND_FAST, tgsrlv1.RuntimeState_RUNTIME_STATE_RUNNING)
 	input.Directives = Directives{TargetShare: &share, TargetPriority: &priority}
-	coordinator := NewCoordinator(Config{PlannerEvidenceBudget: 1})
+	coordinator := NewCoordinator(Config{PlannerEvidenceBudget: 1, PlannerPerTickActionBudget: 1})
 	first, err := coordinator.Plan(input)
 	if err != nil {
 		t.Fatalf("first Plan() error = %v", err)
@@ -137,7 +137,7 @@ func TestCoordinatorRecordsTypedRejectionEvidence(t *testing.T) {
 	}
 }
 
-func TestEvaluateAdaptivePreservesAdmissionPlan(t *testing.T) {
+func TestEvaluateAdaptiveBudgetsAdmissionActions(t *testing.T) {
 	snapshot, intent := validFixture()
 	context := &tgsrlv1.EvaluationContext{TickKind: tgsrlv1.TickKind_TICK_KIND_FAST, EvaluationTime: timestamppb.New(fixtureTime), DecisionSequence: 41, Cause: "test"}
 	legacyPlan, legacyRecord, err := testScheduler(t, FallbackNoOp).EvaluateWithContext(snapshot, intent, context)
@@ -148,11 +148,38 @@ func TestEvaluateAdaptivePreservesAdmissionPlan(t *testing.T) {
 	if err != nil {
 		t.Fatalf("EvaluateAdaptive() error = %v", err)
 	}
-	if !proto.Equal(legacyPlan, adaptivePlan) {
-		t.Fatalf("adaptive admission changed plan\nlegacy=%v\nadaptive=%v", legacyPlan, adaptivePlan)
+	if len(legacyPlan.GetActions()) != 2 || len(adaptivePlan.GetActions()) != DefaultPlannerActionBudget {
+		t.Fatalf("admission action counts legacy=%d adaptive=%d", len(legacyPlan.GetActions()), len(adaptivePlan.GetActions()))
+	}
+	if adaptivePlan.GetActions()[0].GetBinding().GetBindingId() != legacyPlan.GetActions()[0].GetBinding().GetBindingId() {
+		t.Fatalf("adaptive admission changed the selected binding: legacy=%v adaptive=%v", legacyPlan, adaptivePlan)
 	}
 	if adaptiveRecord.GetScore() != legacyRecord.GetScore() || len(adaptiveRecord.GetCandidates()) != len(legacyRecord.GetCandidates()) || selectedPlannerEvidence(t, adaptiveRecord.GetPlannerEvidence()).GetPlanner() != tgsrlv1.PlannerKind_PLANNER_KIND_ADMISSION {
 		t.Fatalf("adaptive admission record changed authoritative outcome: legacy=%v adaptive=%v", legacyRecord, adaptiveRecord)
+	}
+}
+
+func TestEvaluateAdaptiveSelectsContractPauseOverAdmission(t *testing.T) {
+	input := adaptiveFixture(tgsrlv1.TickKind_TICK_KIND_MEDIUM, tgsrlv1.RuntimeState_RUNTIME_STATE_RUNNING)
+	input.Snapshot.PendingUnits = []*tgsrlv1.PendingUnit{{
+		PendingUnitId: "unit-b", ExecutionId: input.Intent.GetExecutionId(), StageId: input.Intent.GetStageId(),
+		IntentVersion: input.Intent.GetVersion(), JobId: input.Intent.GetJobId(),
+		RequestedResources: cloneResources(input.Intent.GetResourcesPerUnit()), RequiredCapabilities: cloneCapabilities(input.Intent.GetRequiredCapabilities()),
+	}}
+	input.Intent.UnitCount = 2
+	input.ContractAggregate = semantics.AggregateResult{Blocking: true, Action: tgsrlv1.ContractDecisionAction_CONTRACT_DECISION_ACTION_PAUSE_REQUIRED}
+	plan, record, err := testScheduler(t, FallbackNoOp).EvaluateAdaptive(&input)
+	if err != nil {
+		t.Fatalf("EvaluateAdaptive() error = %v", err)
+	}
+	if plan == nil || plan.GetPurpose() != tgsrlv1.PlanPurpose_PLAN_PURPOSE_RECONCILIATION || len(plan.GetActions()) != 1 || plan.GetActions()[0].GetActionType() != tgsrlv1.ActionType_ACTION_TYPE_PAUSE {
+		t.Fatalf("selected plan = %+v", plan)
+	}
+	if record.GetSelectedPlan() == nil || !proto.Equal(plan, record.GetSelectedPlan()) || record.GetFallback() {
+		t.Fatalf("decision record = %+v", record)
+	}
+	if record.GetScore() != 0 {
+		t.Fatalf("runtime mutation retained admission score %v", record.GetScore())
 	}
 }
 
@@ -518,6 +545,9 @@ func TestSlowPlannerAutoTriggersRebindAndRecreate(t *testing.T) {
 		if err != nil || result.Plan == nil || result.Plan.GetActions()[0].GetActionType() != tgsrlv1.ActionType_ACTION_TYPE_REBIND {
 			t.Fatalf("rebind result=%+v err=%v", result, err)
 		}
+		if result.Plan.GetPurpose() != tgsrlv1.PlanPurpose_PLAN_PURPOSE_RECOVERY {
+			t.Fatalf("unhealthy-device rebind purpose = %s, want recovery", result.Plan.GetPurpose())
+		}
 	})
 	t.Run("failed recreate", func(t *testing.T) {
 		input := adaptiveFixture(tgsrlv1.TickKind_TICK_KIND_SLOW, tgsrlv1.RuntimeState_RUNTIME_STATE_FAILED)
@@ -553,7 +583,7 @@ func TestPlanningSignalsDeriveOnlyFromStructuredEvidence(t *testing.T) {
 	if !got.BufferLevelPresent || got.BufferLevel != 9 || !got.BufferPressurePresent || got.BufferPressure != BufferPressureHigh || !got.PolicyLagPresent || got.PolicyLag != 3 || !got.SampleStalenessPresent || !got.SampleStaleness || !got.ESSRatioPresent || got.ESSRatio != .5 {
 		t.Fatalf("observation signals = %+v", got)
 	}
-	if !got.CheckpointCapablePresent || !got.CheckpointCapable || !got.BufferBelowWatermarkPresent || got.BufferBelowWatermark || !got.RecoveryCostNanosPresent || got.RecoveryCostNanos != 25 || !got.MinimumResidencyPresent || got.MinimumResidency != 30*time.Second || !got.ActionInFlightPresent || got.ActionInFlight || got.PerTickActionBudget != 1 {
+	if !got.CheckpointCapablePresent || !got.CheckpointCapable || !got.BufferBelowWatermarkPresent || got.BufferBelowWatermark || !got.RecoveryCostNanosPresent || got.RecoveryCostNanos != 25 || !got.MinimumResidencyPresent || got.MinimumResidency != 30*time.Second || !got.ActionInFlightPresent || got.ActionInFlight || got.PerTickActionBudget != DefaultPlannerActionBudget {
 		t.Fatalf("derived signals = %+v", got)
 	}
 }
@@ -562,7 +592,7 @@ func TestFastSignalsAdjustUtilityWithoutReward(t *testing.T) {
 	input := adaptiveFixture(tgsrlv1.TickKind_TICK_KIND_FAST, tgsrlv1.RuntimeState_RUNTIME_STATE_RUNNING)
 	input.EvaluationContext.ContractObservation = &tgsrlv1.ContractObservation{PolicyLag: proto.Uint64(2), SampleStale: proto.Bool(true), EffectiveSampleSizeRatio: proto.Float64(.25)}
 	input.Intent.SemanticContext = &tgsrlv1.SemanticEnvelope{TypedFields: []*tgsrlv1.SemanticField{semanticDoubleField("reward", 1e12)}}
-	result, err := NewCoordinator(Config{}).Plan(input)
+	result, err := NewCoordinator(Config{PlannerPerTickActionBudget: 1}).Plan(input)
 	if err != nil || result.Plan == nil {
 		t.Fatalf("Plan() result=%+v err=%v", result, err)
 	}
@@ -571,8 +601,153 @@ func TestFastSignalsAdjustUtilityWithoutReward(t *testing.T) {
 	if evidence.GetUtilityNanos() != want {
 		t.Fatalf("utility=%d, want %d; reward must not participate", evidence.GetUtilityNanos(), want)
 	}
-	if got, ok := semanticIntInput(evidence, "planner.fast_signal_trigger_count"); !ok || got != 3 {
-		t.Fatalf("fast trigger evidence=%+v", evidence.GetInputs())
+	if !hasSemanticInput(evidence, "planner.directional.reason") || !hasSemanticInput(evidence, "planner.directional.delta") {
+		t.Fatalf("directional target evidence=%+v", evidence.GetInputs())
+	}
+}
+
+func TestDirectionalTargetsRespectProducerConsumerSemantics(t *testing.T) {
+	tests := []struct {
+		name       string
+		phase      tgsrlv1.PhaseKind
+		signals    PlanningSignals
+		wantTarget float64
+		wantReason string
+	}{
+		{name: "producer pressure reduces share", phase: tgsrlv1.PhaseKind_PHASE_KIND_DECODE, signals: PlanningSignals{BufferPressure: BufferPressureHigh, BufferPressurePresent: true}, wantTarget: .4, wantReason: "BUFFER_PRESSURE_REDUCE_PRODUCTION"},
+		{name: "consumer pressure increases share", phase: tgsrlv1.PhaseKind_PHASE_KIND_OPTIMIZER, signals: PlanningSignals{BufferPressure: BufferPressureHigh, BufferPressurePresent: true}, wantTarget: .6, wantReason: "BUFFER_PRESSURE_INCREASE_CONSUMPTION"},
+		{name: "producer policy lag reduces share", phase: tgsrlv1.PhaseKind_PHASE_KIND_DECODE, signals: PlanningSignals{PolicyLag: DefaultPlannerPolicyLagLimit + 1, PolicyLagPresent: true}, wantTarget: .4, wantReason: "POLICY_LAG_REDUCE_PRODUCTION"},
+		{name: "consumer policy lag increases share", phase: tgsrlv1.PhaseKind_PHASE_KIND_ACTOR, signals: PlanningSignals{PolicyLag: DefaultPlannerPolicyLagLimit + 1, PolicyLagPresent: true}, wantTarget: .6, wantReason: "POLICY_LAG_INCREASE_CONSUMPTION"},
+		{name: "staleness only reduces producer", phase: tgsrlv1.PhaseKind_PHASE_KIND_DECODE, signals: PlanningSignals{SampleStaleness: true, SampleStalenessPresent: true}, wantTarget: .4, wantReason: "SAMPLE_STALENESS_REDUCE_PRODUCTION"},
+		{name: "low ESS only reduces producer", phase: tgsrlv1.PhaseKind_PHASE_KIND_DECODE, signals: PlanningSignals{ESSRatio: .25, ESSRatioPresent: true}, wantTarget: .4, wantReason: "LOW_ESS_REDUCE_PRODUCTION"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			input := adaptiveFixture(tgsrlv1.TickKind_TICK_KIND_FAST, tgsrlv1.RuntimeState_RUNTIME_STATE_RUNNING)
+			input.Intent.PhaseKind = test.phase
+			input.Signals = test.signals
+			target := generateDirectionalShareTarget(input, .5, "allocation-a")
+			if target == nil || math.Abs(target.TargetValue-test.wantTarget) > 1e-9 || target.Reason != test.wantReason {
+				t.Fatalf("target = %+v, want value=%v reason=%s", target, test.wantTarget, test.wantReason)
+			}
+		})
+	}
+}
+
+func TestDirectionalTargetsAreBoundedAndMonotonic(t *testing.T) {
+	producer := adaptiveFixture(tgsrlv1.TickKind_TICK_KIND_FAST, tgsrlv1.RuntimeState_RUNTIME_STATE_RUNNING)
+	producer.Intent.PhaseKind = tgsrlv1.PhaseKind_PHASE_KIND_DECODE
+	producer.Signals = PlanningSignals{BufferPressure: BufferPressureCritical, BufferPressurePresent: true}
+	for _, current := range []float64{0, .01, .5, 1} {
+		target := generateDirectionalShareTarget(producer, current, "allocation-a")
+		if current <= DefaultPlannerShareHysteresis {
+			if target != nil {
+				t.Fatalf("boundary target = %+v for current=%v", target, current)
+			}
+			continue
+		}
+		if target == nil || target.TargetValue < 0 || target.TargetValue > 1 || target.TargetValue >= current {
+			t.Fatalf("producer target = %+v for current=%v", target, current)
+		}
+	}
+	consumer := producer
+	consumer.Intent = proto.Clone(producer.Intent).(*tgsrlv1.SchedulingIntent)
+	consumer.Intent.PhaseKind = tgsrlv1.PhaseKind_PHASE_KIND_OPTIMIZER
+	for _, current := range []float64{0, .5, .99, 1} {
+		target := generateDirectionalShareTarget(consumer, current, "allocation-a")
+		if current >= 1-DefaultPlannerShareHysteresis {
+			if target != nil {
+				t.Fatalf("boundary target = %+v for current=%v", target, current)
+			}
+			continue
+		}
+		if target == nil || target.TargetValue < current || target.TargetValue > 1 {
+			t.Fatalf("consumer target = %+v for current=%v", target, current)
+		}
+	}
+}
+
+func TestESSDoesNotIncreaseUnrelatedActionUtility(t *testing.T) {
+	priority := int32(17)
+	input := adaptiveFixture(tgsrlv1.TickKind_TICK_KIND_FAST, tgsrlv1.RuntimeState_RUNTIME_STATE_RUNNING)
+	input.Directives.TargetPriority = &priority
+	input.Signals = PlanningSignals{ESSRatio: .1, ESSRatioPresent: true}
+	result, err := NewCoordinator(Config{}).Plan(input)
+	if err != nil {
+		t.Fatalf("Plan() error = %v", err)
+	}
+	evidence := selectedPlannerEvidence(t, result.Evidence)
+	if evidence.GetActionType() != tgsrlv1.ActionType_ACTION_TYPE_SET_PRIORITY || evidence.GetUtilityNanos() != DefaultPlannerUtilityConfig().SetPriority {
+		t.Fatalf("priority evidence = %+v", evidence)
+	}
+}
+
+func TestDirectionalTargetIsDeterministic(t *testing.T) {
+	input := adaptiveFixture(tgsrlv1.TickKind_TICK_KIND_FAST, tgsrlv1.RuntimeState_RUNTIME_STATE_RUNNING)
+	input.Intent.PhaseKind = tgsrlv1.PhaseKind_PHASE_KIND_DECODE
+	input.Signals = PlanningSignals{PolicyLag: 7, PolicyLagPresent: true, SampleStaleness: true, SampleStalenessPresent: true}
+	first, err := NewCoordinator(Config{}).Plan(input)
+	if err != nil {
+		t.Fatalf("first Plan() error = %v", err)
+	}
+	second, err := NewCoordinator(Config{}).Plan(input)
+	if err != nil {
+		t.Fatalf("second Plan() error = %v", err)
+	}
+	marshal := proto.MarshalOptions{Deterministic: true}
+	left, _ := marshal.Marshal(first.Plan)
+	right, _ := marshal.Marshal(second.Plan)
+	if !bytes.Equal(left, right) {
+		t.Fatalf("directional plan changed for identical input\n%x\n%x", left, right)
+	}
+}
+
+func TestDirectionalTargetWaitsForObservationWindow(t *testing.T) {
+	input := adaptiveFixture(tgsrlv1.TickKind_TICK_KIND_FAST, tgsrlv1.RuntimeState_RUNTIME_STATE_RUNNING)
+	input.Intent.PhaseKind = tgsrlv1.PhaseKind_PHASE_KIND_DECODE
+	input.Signals = PlanningSignals{BufferPressure: BufferPressureHigh, BufferPressurePresent: true}
+	input.Sandboxes[0].Priority = input.Intent.GetPriority()
+	input.Snapshot.Allocations[0].Resources = cloneResources(input.Intent.GetResourcesPerUnit())
+	input.RecentDecisions = []*tgsrlv1.DecisionRecord{{
+		DecidedAt: timestamppb.New(fixtureTime.Add(-time.Second)),
+		PlannerEvidence: []*tgsrlv1.PlannerEvidence{{
+			ActionType:  tgsrlv1.ActionType_ACTION_TYPE_SET_SHARE,
+			TargetId:    "allocation-a",
+			Disposition: tgsrlv1.PlannerDisposition_PLANNER_DISPOSITION_SELECTED,
+			Inputs:      []*tgsrlv1.SemanticField{semanticStringField("planner.directional.reason", "BUFFER_PRESSURE_REDUCE_PRODUCTION")},
+		}},
+	}}
+	if target := generateDirectionalShareTarget(input, .5, "allocation-a"); target != nil {
+		t.Fatalf("target escaped observation window: %+v", target)
+	}
+	result, err := NewCoordinator(Config{}).Plan(input)
+	if err != nil {
+		t.Fatalf("Plan() error = %v", err)
+	}
+	if result.Plan != nil {
+		t.Fatalf("intent reconciliation bypassed observation window: %+v", result.Plan)
+	}
+	input.RecentDecisions[0].DecidedAt = timestamppb.New(fixtureTime.Add(-DefaultPlannerObservationWindow))
+	if target := generateDirectionalShareTarget(input, .5, "allocation-a"); target == nil {
+		t.Fatal("target remained blocked after observation window")
+	}
+}
+
+func TestConsumerQualitySignalsDoNotGenerateOrRewardUnrelatedActions(t *testing.T) {
+	priority := int32(17)
+	input := adaptiveFixture(tgsrlv1.TickKind_TICK_KIND_FAST, tgsrlv1.RuntimeState_RUNTIME_STATE_RUNNING)
+	input.Intent.PhaseKind = tgsrlv1.PhaseKind_PHASE_KIND_OPTIMIZER
+	input.Directives.TargetPriority = &priority
+	input.Signals = PlanningSignals{ESSRatio: .1, ESSRatioPresent: true, SampleStaleness: true, SampleStalenessPresent: true}
+	result, err := NewCoordinator(Config{}).Plan(input)
+	if err != nil {
+		t.Fatalf("Plan() error = %v", err)
+	}
+	if result.Plan == nil || len(result.Plan.GetActions()) != 1 || result.Plan.GetActions()[0].GetActionType() != tgsrlv1.ActionType_ACTION_TYPE_SET_PRIORITY {
+		t.Fatalf("consumer quality signal generated unrelated action: %+v", result.Plan)
+	}
+	if selectedPlannerEvidence(t, result.Evidence).GetUtilityNanos() != DefaultPlannerUtilityConfig().SetPriority {
+		t.Fatalf("consumer quality signal changed priority utility: %+v", result.Evidence)
 	}
 }
 
@@ -727,12 +902,29 @@ func TestSlowPlannerUsesBenefitCostRiskFixedPointUtility(t *testing.T) {
 	}
 }
 
+func TestSlowPlannerUsesTargetSpecificRecoveryCost(t *testing.T) {
+	input := adaptiveFixture(tgsrlv1.TickKind_TICK_KIND_SLOW, tgsrlv1.RuntimeState_RUNTIME_STATE_FAILED)
+	input.Signals = PlanningSignals{
+		CheckpointCapable: true, CheckpointCapablePresent: true,
+		RecoveryCostNanos: 900_000_000, RecoveryCostNanosPresent: true,
+		RecoveryCostNanosByTarget: map[string]int64{"allocation-a": 100_000_000},
+	}
+	result, err := NewCoordinator(Config{}).Plan(input)
+	if err != nil || result.Plan == nil {
+		t.Fatalf("Plan() result=%+v err=%v", result, err)
+	}
+	evidence := selectedPlannerEvidence(t, result.Evidence)
+	if got, ok := semanticIntInput(evidence, "planner.cost_recovery_nanos"); !ok || got != 100_000_000 {
+		t.Fatalf("target recovery cost=%d present=%v evidence=%+v", got, ok, evidence.GetInputs())
+	}
+}
+
 func TestPerTickActionBudgetDefersLowerUtilityProposals(t *testing.T) {
 	share := .75
 	priority := int32(17)
 	input := adaptiveFixture(tgsrlv1.TickKind_TICK_KIND_FAST, tgsrlv1.RuntimeState_RUNTIME_STATE_RUNNING)
 	input.Directives = Directives{TargetShare: &share, TargetPriority: &priority}
-	result, err := NewCoordinator(Config{}).Plan(input)
+	result, err := NewCoordinator(Config{PlannerPerTickActionBudget: 1}).Plan(input)
 	if err != nil || result.Plan == nil || len(result.Plan.GetActions()) != 1 || result.TotalProposalCount != 2 {
 		t.Fatalf("Plan() result=%+v err=%v", result, err)
 	}
@@ -744,6 +936,206 @@ func TestPerTickActionBudgetDefersLowerUtilityProposals(t *testing.T) {
 	}
 	if !budgetDeferred {
 		t.Fatalf("missing action-budget evidence: %+v", result.Evidence)
+	}
+}
+
+func TestObservedActionBudgetCannotExceedPolicyLimit(t *testing.T) {
+	share := .75
+	priority := int32(17)
+	input := adaptiveFixture(tgsrlv1.TickKind_TICK_KIND_FAST, tgsrlv1.RuntimeState_RUNTIME_STATE_RUNNING)
+	input.Directives = Directives{TargetShare: &share, TargetPriority: &priority}
+	input.Signals.PerTickActionBudget = 20
+	input.Signals.PerTickActionBudgetPresent = true
+	result, err := NewCoordinator(Config{PlannerBudget: PlannerBudgetConfig{MaxActions: 1}}).Plan(input)
+	if err != nil {
+		t.Fatalf("Plan() error = %v", err)
+	}
+	if result.Plan == nil || len(result.Plan.GetActions()) != 1 {
+		t.Fatalf("policy action budget was exceeded: %+v", result.Plan)
+	}
+}
+
+func TestCoordinatorSelectsCompatibleActionsWithinFinalBudget(t *testing.T) {
+	share := .75
+	priority := int32(17)
+	input := adaptiveFixture(tgsrlv1.TickKind_TICK_KIND_FAST, tgsrlv1.RuntimeState_RUNTIME_STATE_RUNNING)
+	input.Directives = Directives{TargetShare: &share, TargetPriority: &priority}
+	result, err := NewCoordinator(Config{PlannerBudget: PlannerBudgetConfig{MaxActions: 2, MaxAffectedSandboxes: 1}}).Plan(input)
+	if err != nil {
+		t.Fatalf("Plan() error = %v", err)
+	}
+	if result.Plan == nil || len(result.Plan.GetActions()) != 2 {
+		t.Fatalf("Plan() = %+v, want two compatible actions", result.Plan)
+	}
+	if got := []tgsrlv1.ActionType{result.Plan.GetActions()[0].GetActionType(), result.Plan.GetActions()[1].GetActionType()}; got[0] != tgsrlv1.ActionType_ACTION_TYPE_SET_SHARE || got[1] != tgsrlv1.ActionType_ACTION_TYPE_SET_PRIORITY {
+		t.Fatalf("selected actions = %v", got)
+	}
+	if result.Plan.GetRollbackPolicy() != tgsrlv1.RollbackPolicy_ROLLBACK_POLICY_REQUIRED_COMPENSATION {
+		t.Fatalf("rollback policy = %s", result.Plan.GetRollbackPolicy())
+	}
+	selectedCount := 0
+	for _, evidence := range result.Evidence {
+		if evidence.GetDisposition() == tgsrlv1.PlannerDisposition_PLANNER_DISPOSITION_SELECTED {
+			selectedCount++
+		}
+	}
+	if selectedCount != 2 {
+		t.Fatalf("selected evidence count = %d, want 2", selectedCount)
+	}
+	for _, evidence := range result.Evidence {
+		for _, key := range []string{"planner.budget.max_actions", "planner.budget.max_affected_sandboxes", "planner.budget.max_gpu_reconfigurations", "planner.budget.max_recovery_cost_nanos", "planner.budget.l4_disabled"} {
+			if !hasSemanticInput(evidence, key) {
+				t.Fatalf("missing budget field %s: %+v", key, evidence.GetInputs())
+			}
+		}
+	}
+	if err := validateActionPlan(result.Plan, input.EvaluationContext); err != nil {
+		t.Fatalf("arbitrated plan invalid: %v", err)
+	}
+}
+
+func TestAdmissionActionBudgetAppliesToFinalActionCount(t *testing.T) {
+	snapshot, intent := validFixture()
+	ctx := &tgsrlv1.EvaluationContext{TickKind: tgsrlv1.TickKind_TICK_KIND_FAST, EvaluationTime: timestamppb.New(fixtureTime), DecisionSequence: 41, Cause: "test"}
+	admission, _, err := testScheduler(t, FallbackNoOp).EvaluateWithContext(snapshot, intent, ctx)
+	if err != nil {
+		t.Fatalf("EvaluateWithContext() error = %v", err)
+	}
+	result, err := NewCoordinator(Config{PlannerPerTickActionBudget: 1}).Plan(PlanningInput{
+		Snapshot: snapshot, Intent: intent, EvaluationContext: ctx, AdmissionPlan: admission, DecisionID: admission.GetDecisionId(),
+	})
+	if err != nil {
+		t.Fatalf("Plan() error = %v", err)
+	}
+	if result.Plan == nil || len(result.Plan.GetActions()) != 1 || len(result.Plan.GetBindings()) != 1 {
+		t.Fatalf("budgeted admission plan = %+v", result.Plan)
+	}
+	if result.TotalProposalCount != 2 {
+		t.Fatalf("proposal count = %d, want 2", result.TotalProposalCount)
+	}
+	deferred := 0
+	for _, evidence := range result.Evidence {
+		if evidence.GetReason() == "PER_TICK_ACTION_BUDGET" {
+			deferred++
+		}
+	}
+	if deferred != 1 {
+		t.Fatalf("budget-deferred evidence = %d, want 1; evidence=%+v", deferred, result.Evidence)
+	}
+}
+
+func TestContractPausePreemptsAdmission(t *testing.T) {
+	input := adaptiveFixture(tgsrlv1.TickKind_TICK_KIND_MEDIUM, tgsrlv1.RuntimeState_RUNTIME_STATE_RUNNING)
+	input.ContractAggregate = semantics.AggregateResult{Blocking: true, Action: tgsrlv1.ContractDecisionAction_CONTRACT_DECISION_ACTION_PAUSE_REQUIRED}
+	binding := &tgsrlv1.Binding{BindingId: "admission-binding", PendingUnitId: "pending-b", RuntimeUnitId: "runtime-b", DeviceIds: []string{"device-b"}, Resources: cloneResources(input.Intent.GetResourcesPerUnit()), SandboxId: "sandbox-b", Generation: 1}
+	input.AdmissionPlan = makePlan(input.DecisionID, "admission-plan", input.Snapshot, input.Intent, fixtureTime, []*tgsrlv1.Binding{binding}, false, input.EvaluationContext.GetTickKind())
+	result, err := NewCoordinator(Config{}).Plan(input)
+	if err != nil {
+		t.Fatalf("Plan() error = %v", err)
+	}
+	if result.Plan == nil || result.Plan.GetPurpose() != tgsrlv1.PlanPurpose_PLAN_PURPOSE_RECONCILIATION || len(result.Plan.GetActions()) != 1 || result.Plan.GetActions()[0].GetActionType() != tgsrlv1.ActionType_ACTION_TYPE_PAUSE {
+		t.Fatalf("contract arbitration plan = %+v", result.Plan)
+	}
+	for _, evidence := range result.Evidence {
+		if evidence.GetPlanner() == tgsrlv1.PlannerKind_PLANNER_KIND_ADMISSION && evidence.GetDisposition() != tgsrlv1.PlannerDisposition_PLANNER_DISPOSITION_REJECTED {
+			t.Fatalf("admission was not rejected by blocking contract: %+v", evidence)
+		}
+	}
+}
+
+func TestContractPauseFailsClosedWhenBudgetCannotCoverEveryTarget(t *testing.T) {
+	input := adaptiveFixture(tgsrlv1.TickKind_TICK_KIND_MEDIUM, tgsrlv1.RuntimeState_RUNTIME_STATE_RUNNING)
+	secondAllocation := proto.Clone(input.Snapshot.Allocations[0]).(*tgsrlv1.Allocation)
+	secondAllocation.AllocationId = "allocation-b"
+	secondAllocation.PendingUnitId = "unit-b"
+	secondAllocation.RuntimeUnitId = "runtime-b"
+	secondSandbox := proto.Clone(input.Sandboxes[0]).(*tgsrlv1.Sandbox)
+	secondSandbox.SandboxId = "sandbox-b"
+	secondSandbox.Binding.BindingId = "binding-b"
+	secondSandbox.Binding.PendingUnitId = secondAllocation.GetPendingUnitId()
+	secondSandbox.Binding.RuntimeUnitId = secondAllocation.GetRuntimeUnitId()
+	secondSandbox.Binding.SandboxId = secondSandbox.GetSandboxId()
+	input.Snapshot.Allocations = append(input.Snapshot.Allocations, secondAllocation)
+	input.Sandboxes = append(input.Sandboxes, secondSandbox)
+	input.Intent.UnitCount = 2
+	input.ContractAggregate = semantics.AggregateResult{Blocking: true, Action: tgsrlv1.ContractDecisionAction_CONTRACT_DECISION_ACTION_PAUSE_REQUIRED}
+	result, err := NewCoordinator(Config{PlannerPerTickActionBudget: 1}).Plan(input)
+	if err != nil {
+		t.Fatalf("Plan() error = %v", err)
+	}
+	if result.Plan != nil || result.FallbackReason != "NO_ELIGIBLE_PLANNER_PROPOSAL" {
+		t.Fatalf("partial contract action set escaped: %+v", result)
+	}
+	for _, evidence := range result.Evidence {
+		if evidence.GetDisposition() == tgsrlv1.PlannerDisposition_PLANNER_DISPOSITION_SELECTED {
+			t.Fatalf("partial contract proposal remained selected: %+v", evidence)
+		}
+	}
+}
+
+func TestRecoveryPreemptsAdmission(t *testing.T) {
+	input := adaptiveFixture(tgsrlv1.TickKind_TICK_KIND_SLOW, tgsrlv1.RuntimeState_RUNTIME_STATE_FAILED)
+	binding := &tgsrlv1.Binding{BindingId: "admission-binding", PendingUnitId: "pending-b", RuntimeUnitId: "runtime-b", DeviceIds: []string{"device-b"}, Resources: cloneResources(input.Intent.GetResourcesPerUnit()), SandboxId: "sandbox-b", Generation: 1}
+	input.AdmissionPlan = makePlan(input.DecisionID, "admission-plan", input.Snapshot, input.Intent, fixtureTime, []*tgsrlv1.Binding{binding}, false, input.EvaluationContext.GetTickKind())
+	result, err := NewCoordinator(Config{}).Plan(input)
+	if err != nil {
+		t.Fatalf("Plan() error = %v", err)
+	}
+	if result.Plan == nil || result.Plan.GetPurpose() != tgsrlv1.PlanPurpose_PLAN_PURPOSE_RECOVERY || result.Plan.GetActions()[0].GetActionType() != tgsrlv1.ActionType_ACTION_TYPE_RECREATE {
+		t.Fatalf("recovery arbitration plan = %+v", result.Plan)
+	}
+}
+
+func TestPlannerBudgetConstrainsL4AndRecoveryCost(t *testing.T) {
+	for _, test := range []struct {
+		name   string
+		budget PlannerBudgetConfig
+		reason string
+	}{
+		{name: "L4 disabled", budget: PlannerBudgetConfig{MaxActions: 1, MaxAffectedSandboxes: 1, MaxGPUReconfigurations: 1, MaxRecoveryCostNanos: math.MaxInt64, DisableL4: true}, reason: "L4_DISABLED_BY_BUDGET"},
+		{name: "recovery cost budget", budget: PlannerBudgetConfig{MaxActions: 1, MaxAffectedSandboxes: 1, MaxGPUReconfigurations: 1, MaxRecoveryCostNanos: 10}, reason: "RECOVERY_COST_BUDGET"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			input := adaptiveFixture(tgsrlv1.TickKind_TICK_KIND_SLOW, tgsrlv1.RuntimeState_RUNTIME_STATE_FAILED)
+			input.Signals.RecoveryCostNanos = 20
+			input.Signals.RecoveryCostNanosPresent = true
+			coordinator := NewCoordinator(Config{PlannerBudget: test.budget})
+			result, err := coordinator.Plan(input)
+			if err != nil {
+				t.Fatalf("Plan() error = %v", err)
+			}
+			if result.Plan != nil {
+				t.Fatalf("budget allowed L4 plan: %+v", result.Plan)
+			}
+			found := false
+			for _, evidence := range result.Evidence {
+				if evidence.GetReason() == test.reason {
+					found = true
+				}
+			}
+			if !found {
+				t.Fatalf("missing %s evidence: %+v", test.reason, result.Evidence)
+			}
+		})
+	}
+}
+
+func TestArbitrationEnforcesGPUReconfigurationBudget(t *testing.T) {
+	input := adaptiveFixture(tgsrlv1.TickKind_TICK_KIND_SLOW, tgsrlv1.RuntimeState_RUNTIME_STATE_RUNNING)
+	proposal := func(id, target string) PlannerProposal {
+		plan := &tgsrlv1.PlacementPlan{
+			PlanId: id, Purpose: tgsrlv1.PlanPurpose_PLAN_PURPOSE_RECOVERY,
+			Actions: []*tgsrlv1.Action{{ActionId: id + "-action", ActionType: tgsrlv1.ActionType_ACTION_TYPE_RECREATE, TargetId: target, SandboxId: target}},
+		}
+		return PlannerProposal{Plan: plan, Evidence: plannerEvidence(input, tgsrlv1.PlannerKind_PLANNER_KIND_SLOW_RECONFIGURATION, plan.GetPurpose(), tgsrlv1.ActionType_ACTION_TYPE_RECREATE, target, 100, tgsrlv1.PlannerDisposition_PLANNER_DISPOSITION_DEFERRED, "ELIGIBLE")}
+	}
+	proposals := []PlannerProposal{proposal("plan-a", "sandbox-a"), proposal("plan-b", "sandbox-b")}
+	selected, _ := arbitrateProposals(input, proposals, PlannerBudgetConfig{MaxActions: 2, MaxAffectedSandboxes: 2, MaxGPUReconfigurations: 1, MaxRecoveryCostNanos: math.MaxInt64})
+	if len(selected) != 1 {
+		t.Fatalf("selected proposals = %v, want one", selected)
+	}
+	if proposals[1].Evidence.GetReason() != "GPU_RECONFIGURATION_BUDGET" {
+		t.Fatalf("deferred reason = %q", proposals[1].Evidence.GetReason())
 	}
 }
 

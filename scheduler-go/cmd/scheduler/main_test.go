@@ -197,12 +197,37 @@ func TestBuildProviderFailsFastForUnsupportedKind(t *testing.T) {
 }
 
 func TestParseArgsReadsConfigFlags(t *testing.T) {
-	args, err := parseArgs([]string{"-listen", "127.0.0.1:6000", "-config-root", "/tmp/repo", "-manifest", "configs/manifest.yaml", "-fallback", "noop", "-state-dir", "/tmp/state", "-metrics-listen", "127.0.0.1:0"})
+	args, err := parseArgs([]string{"-listen", "127.0.0.1:6000", "-config-root", "/tmp/repo", "-manifest", "configs/manifest.yaml", "-fallback", "noop", "-state-dir", "/tmp/state", "-metrics-listen", "127.0.0.1:0", "-nvidia-driver-v2", "-nvidia-binding-helper", "/opt/tgsrl/bin/tgsrl-nvidia-binding", "-nvidia-binding-state", "/var/lib/tgsrl/bindings.json", "-nvidia-mps-pid-dir", "/run/tgsrl/mps", "-nvidia-runtime-helper", "/opt/tgsrl/bin/tgsrl-nvidia-runtime", "-nvidia-runtime-state", "/var/lib/tgsrl/runtime.json", "-nvidia-mig-helper", "/opt/tgsrl/bin/tgsrl-nvidia-mig"})
 	if err != nil {
 		t.Fatalf("parseArgs() error = %v", err)
 	}
-	if args.ListenAddress != "127.0.0.1:6000" || args.ConfigRoot != "/tmp/repo" || args.ManifestPath != "configs/manifest.yaml" || args.FallbackFlag != "noop" || args.StateDirectory != "/tmp/state" || args.MetricsAddress != "127.0.0.1:0" {
+	if args.ListenAddress != "127.0.0.1:6000" || args.ConfigRoot != "/tmp/repo" || args.ManifestPath != "configs/manifest.yaml" || args.FallbackFlag != "noop" || args.StateDirectory != "/tmp/state" || args.MetricsAddress != "127.0.0.1:0" || !args.NVIDIADriverV2 || args.NVIDIABindingHelper != "/opt/tgsrl/bin/tgsrl-nvidia-binding" || args.NVIDIABindingState != "/var/lib/tgsrl/bindings.json" || args.NVIDIAMPSPIDDirectory != "/run/tgsrl/mps" || args.NVIDIARuntimeHelper != "/opt/tgsrl/bin/tgsrl-nvidia-runtime" || args.NVIDIARuntimeState != "/var/lib/tgsrl/runtime.json" || args.NVIDIAMIGHelper != "/opt/tgsrl/bin/tgsrl-nvidia-mig" {
 		t.Fatalf("parseArgs() = %#v", args)
+	}
+}
+
+func TestParseArgsDefaultsNVIDIABindingStateUnderSchedulerState(t *testing.T) {
+	args, err := parseArgs([]string{"-state-dir", "relative-state"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if args.NVIDIABindingState != filepath.Join("relative-state", "nvidia-binding.json") {
+		t.Fatalf("NVIDIABindingState = %q", args.NVIDIABindingState)
+	}
+	if args.NVIDIARuntimeState != filepath.Join("relative-state", "nvidia-runtime.json") {
+		t.Fatalf("NVIDIARuntimeState = %q", args.NVIDIARuntimeState)
+	}
+}
+
+func TestParseArgsRejectsIncompleteNVIDIADriverV2Configuration(t *testing.T) {
+	if _, err := parseArgs([]string{"-nvidia-driver-v2", "-nvidia-binding-helper="}); err == nil || !strings.Contains(err.Error(), "binding helper") {
+		t.Fatalf("empty binding helper error = %v", err)
+	}
+	if _, err := parseArgs([]string{"-nvidia-driver-v2", "-nvidia-runtime-helper="}); err == nil || !strings.Contains(err.Error(), "runtime helper") {
+		t.Fatalf("empty runtime helper error = %v", err)
+	}
+	if _, err := parseArgs([]string{"-nvidia-driver-v2", "-nvidia-partition-mode=mig", "-nvidia-mig-helper="}); err == nil || !strings.Contains(err.Error(), "MIG helper") {
+		t.Fatalf("empty MIG helper error = %v", err)
 	}
 }
 

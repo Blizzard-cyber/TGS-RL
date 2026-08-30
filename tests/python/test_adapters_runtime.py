@@ -2,13 +2,19 @@
 
 from __future__ import annotations
 
+import json
+import threading
+import time
 from collections.abc import Callable
 from datetime import UTC, datetime
+from pathlib import Path
+from tempfile import TemporaryDirectory
 from types import ModuleType
 from typing import cast
 
 import pytest
 from tgsrl.v1 import execution_pb2, job_pb2, runtime_pb2, trace_pb2
+from tgsrl_runtime.trace_ingest import TraceIngestor
 
 from adapters import (
     AdapterErrorKind,
@@ -28,6 +34,11 @@ from adapters.compliance.runtime import ComponentAdapter
 from adapters.control import CommandResult, ControlRequest
 from adapters.execution import RayExecutionBackendAdapter
 from adapters.frameworks import OpenRLHFFrameworkAdapter, VerlFrameworkAdapter
+from adapters.frameworks.verl_bridge import (
+    ReferenceCallbacks,
+    VerlWorkerBridge,
+    WorkerIdentity,
+)
 from adapters.rollout_engines import SGLangRolloutEngineAdapter, VLLMRolloutEngineAdapter
 from adapters.runtime_registry import runtime_manifest_from_job
 from adapters.trainers import PyTorchTrainerAdapter
@@ -332,7 +343,7 @@ def test_manifest_component_version_trust_boundary(
         RuntimeAdapterRegistry().validate(manifest)
 
 
-def test_real_boundary_skeletons_report_unavailable_without_dependencies() -> None:
+def test_first_party_verl_bridge_is_degraded_without_runtime_socket() -> None:
     manifest = _manifest(
         framework="verl",
         execution_backend="ray",
@@ -342,7 +353,7 @@ def test_real_boundary_skeletons_report_unavailable_without_dependencies() -> No
 
     _, diagnostics = RuntimeAdapterRegistry().validate(manifest)
 
-    assert any("framework:UNAVAILABLE" in diagnostic for diagnostic in diagnostics)
+    assert any("framework:DEGRADED" in diagnostic for diagnostic in diagnostics)
     assert any("execution:UNAVAILABLE" in diagnostic for diagnostic in diagnostics)
     assert any("trainer:UNAVAILABLE" in diagnostic for diagnostic in diagnostics)
     assert any("rollout_engine:UNAVAILABLE" in diagnostic for diagnostic in diagnostics)
@@ -390,37 +401,274 @@ def test_verl_support_diagnostics_surface_explicit_lifecycle_matrix() -> None:
     _, diagnostics = RuntimeAdapterRegistry().validate(manifest)
     expected_actions = (
         "framework:executable_actions="
-        "validate,compile,prepare,launch,status,prepare_pause,checkpoint"
+        "validate,compile,prepare,launch,status,prepare_pause,pause,resume,checkpoint,"
+        "stop,terminate,weight_update,sleep,wake"
     )
     assert expected_actions in diagnostics
-    unsupported = next(
-        diagnostic
-        for diagnostic in diagnostics
-        if diagnostic.startswith("framework:unavailable_actions=")
-    )
-    assert unsupported == (
-        "framework:unavailable_actions="
-        "pause,resume,stop,terminate,weight_update,sleep,wake,recreate"
-    )
+    assert "framework:unavailable_actions=recreate" in diagnostics
 
 
-@pytest.mark.parametrize(
-    "action",
-    [
-        LifecycleAction.PAUSE,
-        LifecycleAction.RESUME,
-        LifecycleAction.STOP,
-        LifecycleAction.TERMINATE,
-        LifecycleAction.RECREATE,
-    ],
-)
-def test_verl_rejects_unsupported_framework_lifecycle_actions(action: LifecycleAction) -> None:
+def test_verl_uses_repository_bridge_without_manifest_override() -> None:
     adapter = VerlFrameworkAdapter()
     _force_dependency_available(cast(ComponentAdapter, adapter))
-    manifest = _provider_manifest(framework="verl", module_name="provider.verl")
+    manifest = _manifest(framework="verl")
+    report = adapter.describe_support(manifest)
 
-    with pytest.raises(Exception, match=rf"verl does not support lifecycle action {action.value}"):
-        adapter.lifecycle_call(manifest, action=action)
+    call = adapter.lifecycle_call(manifest, action=LifecycleAction.CHECKPOINT)
+
+    assert report.status is AdapterSupport.DEGRADED
+    assert "adapters.frameworks.verl_bridge" in call.launch_spec.argv
+    assert call.runner_kind is RunnerKind.COMMAND
+
+
+def test_verl_worker_bridge_controls_lifecycle_and_emits_quality_observations(
+    tmp_path: Path,
+) -> None:
+    typed_events: list[trace_pb2.TraceEvent] = []
+    bridge = VerlWorkerBridge(
+        socket_path=tmp_path / "worker.sock",
+        trace_path=tmp_path / "trace.ndjson",
+        identity=WorkerIdentity(
+            run_id="run-1",
+            job_id="job-1",
+            trace_id="trace-1",
+            sandbox_id="sandbox-1",
+            role="rollout",
+            generation=1,
+            policy_version="policy-1",
+            binding_id="binding-1",
+            device_id="MIG-a",
+            share=1.0,
+        ),
+        callbacks=ReferenceCallbacks(tmp_path / "checkpoints"),
+        trace_sink=typed_events.append,
+    )
+    requests = [
+        {"action": "prepare_pause", "idempotency_key": "prepare"},
+        {"action": "checkpoint", "idempotency_key": "checkpoint"},
+        {"action": "offload", "idempotency_key": "offload"},
+        {"action": "reload", "idempotency_key": "reload"},
+        {"action": "resume", "idempotency_key": "resume"},
+        {
+            "action": "weight_update",
+            "idempotency_key": "weight-update",
+            "policy_version": "policy-2",
+        },
+    ]
+    for request in requests:
+        response = bridge.handle({"sandbox_id": "sandbox-1", "generation": 1, **request})
+        assert response["accepted"], response
+    replay = bridge.handle(
+        {
+            "action": "weight_update",
+            "sandbox_id": "sandbox-1",
+            "generation": 1,
+            "idempotency_key": "weight-update",
+            "policy_version": "policy-2",
+        }
+    )
+    assert replay["accepted"]
+    bridge.observe(
+        event_type="sample_consumed",
+        buffer_level=3,
+        policy_lag=1,
+        sample_stale=False,
+        effective_sample_size=7.5,
+        accepted_samples=8,
+        expected_samples=8,
+        duration_ms=4.0,
+    )
+
+    events = [json.loads(line) for line in bridge.trace_path.read_text().splitlines()]
+    assert bridge.state == "running"
+    assert bridge.identity.policy_version == "policy-2"
+    assert events[-1]["contract_observation"] == {
+        "accepted_samples": 8,
+        "buffer_level": 3,
+        "effective_sample_size": 7.5,
+        "expected_samples": 8,
+        "policy_lag": 1,
+        "policy_version": "policy-2",
+        "safe_point": False,
+        "sample_stale": False,
+    }
+    assert typed_events[-1].policy_version == "policy-2"
+    assert typed_events[-1].contract_observation.policy_lag == 1
+    assert typed_events[-1].contract_observation.effective_sample_size == 7.5
+    assert typed_events[-1].contract_observation.sample_count == 8
+    assert typed_events[-1].contract_observation.effective_sample_size_ratio == 0.9375
+    assert typed_events[-1].contract_observation.HasField("observed_at")
+    ingested = TraceIngestor().ingest("run-1", typed_events)
+    assert ingested[-1].event_id == typed_events[-1].event_id
+    assert ingested[-1].phase_kind == execution_pb2.PHASE_KIND_DECODE
+
+
+def test_verl_control_module_reaches_worker_over_unix_socket(tmp_path: Path) -> None:
+    with TemporaryDirectory(prefix="verl-bridge-", dir="/tmp") as directory:
+        root = Path(directory)
+        bridge = VerlWorkerBridge(
+            socket_path=root / "worker.sock",
+            trace_path=root / "trace.ndjson",
+            identity=WorkerIdentity(
+                run_id="run-1",
+                job_id="job-1",
+                trace_id="trace-1",
+                sandbox_id="sandbox-1",
+                role="rollout",
+                generation=1,
+                policy_version="policy-1",
+            ),
+            callbacks=ReferenceCallbacks(root / "checkpoints"),
+        )
+        server = threading.Thread(target=bridge.serve_forever)
+        server.start()
+        try:
+            deadline = time.monotonic() + 2
+            while not bridge.socket_path.exists() and time.monotonic() < deadline:
+                time.sleep(0.01)
+            result = execute_control_argv(
+                [
+                    "--component",
+                    "framework",
+                    "--adapter",
+                    "verl",
+                    "--action",
+                    "status",
+                    "--run-id",
+                    "run-1",
+                    "--job-id",
+                    "job-1",
+                    "--trace-id",
+                    "trace-1",
+                    "--bridge-kind",
+                    "python_module",
+                    "--bridge-module",
+                    "adapters.frameworks.verl_bridge",
+                    "--target-env",
+                    f"TGSRL_VERL_CONTROL_SOCKET={bridge.socket_path}",
+                    "--target-env",
+                    "TGSRL_SANDBOX_ID=sandbox-1",
+                    "--target-env",
+                    "TGSRL_GENERATION=1",
+                ]
+            )
+            assert result.exit_code == 0
+            assert json.loads(result.stdout)["ready"] is True
+        finally:
+            bridge.shutdown()
+            server.join(timeout=2)
+        assert not server.is_alive()
+
+
+def test_verl_control_module_composes_pause_safe_point_sequence(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    with TemporaryDirectory(prefix="verl-bridge-", dir="/tmp") as directory:
+        root = Path(directory)
+        bridge = VerlWorkerBridge(
+            socket_path=root / "worker.sock",
+            trace_path=root / "trace.ndjson",
+            identity=WorkerIdentity(
+                run_id="run-1",
+                job_id="job-1",
+                trace_id="trace-1",
+                sandbox_id="sandbox-1",
+                role="rollout",
+                generation=1,
+                policy_version="policy-1",
+            ),
+            callbacks=ReferenceCallbacks(root / "checkpoints"),
+        )
+        server = threading.Thread(target=bridge.serve_forever)
+        server.start()
+        try:
+            deadline = time.monotonic() + 2
+            while not bridge.socket_path.exists() and time.monotonic() < deadline:
+                time.sleep(0.01)
+            monkeypatch.setenv("TGSRL_VERL_CONTROL_SOCKET", str(bridge.socket_path))
+            monkeypatch.setenv("TGSRL_SANDBOX_ID", "sandbox-1")
+            monkeypatch.setenv("TGSRL_GENERATION", "1")
+            monkeypatch.setenv("TGSRL_IDEMPOTENCY_KEY", "pause-command")
+            result = execute_control_argv(
+                [
+                    "--component",
+                    "framework",
+                    "--adapter",
+                    "verl",
+                    "--action",
+                    "pause",
+                    "--run-id",
+                    "run-1",
+                    "--job-id",
+                    "job-1",
+                    "--trace-id",
+                    "trace-1",
+                    "--bridge-kind",
+                    "python_module",
+                    "--bridge-module",
+                    "adapters.frameworks.verl_bridge",
+                ]
+            )
+            assert result.exit_code == 0
+            assert bridge.state == "paused"
+            assert bridge.safe_point
+            assert [
+                json.loads(line)["event_type"]
+                for line in bridge.trace_path.read_text().splitlines()
+            ] == ["prepare_pause", "pause"]
+        finally:
+            bridge.shutdown()
+            server.join(timeout=2)
+
+
+def test_verl_worker_bridge_recovers_completed_idempotency_state(tmp_path: Path) -> None:
+    identity = WorkerIdentity(
+        run_id="run-1",
+        job_id="job-1",
+        trace_id="trace-1",
+        sandbox_id="sandbox-1",
+        role="rollout",
+        generation=1,
+        policy_version="policy-1",
+    )
+    state_path = tmp_path / "worker-state.json"
+    first = VerlWorkerBridge(
+        socket_path=tmp_path / "worker.sock",
+        trace_path=tmp_path / "trace.ndjson",
+        state_path=state_path,
+        identity=identity,
+        callbacks=ReferenceCallbacks(tmp_path / "checkpoints"),
+    )
+    request = {
+        "action": "prepare_pause",
+        "sandbox_id": "sandbox-1",
+        "generation": 1,
+        "idempotency_key": "prepare-key",
+    }
+    assert first.handle(request)["accepted"]
+    event_count = len(first.trace_path.read_text().splitlines())
+
+    restarted = VerlWorkerBridge(
+        socket_path=tmp_path / "worker.sock",
+        trace_path=tmp_path / "trace.ndjson",
+        state_path=state_path,
+        identity=WorkerIdentity(
+            run_id="run-1",
+            job_id="job-1",
+            trace_id="trace-1",
+            sandbox_id="sandbox-1",
+            role="rollout",
+            generation=1,
+            policy_version="policy-1",
+        ),
+        callbacks=ReferenceCallbacks(tmp_path / "checkpoints"),
+    )
+    replay = restarted.handle(request)
+
+    assert replay["accepted"]
+    assert restarted.safe_point
+    assert len(restarted.trace_path.read_text().splitlines()) == event_count
+    assert state_path.stat().st_mode & 0o777 == 0o600
 
 
 def test_fake_framework_exposes_executable_lifecycle_contract() -> None:

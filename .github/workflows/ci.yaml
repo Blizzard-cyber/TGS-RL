@@ -65,6 +65,12 @@ jobs:
         run: make race
       - name: Build scheduler
         run: go build -trimpath -o /tmp/tgsrl-scheduler ./scheduler-go/cmd/scheduler
+      - name: Build NVIDIA binding helper
+        run: go build -trimpath -o /tmp/tgsrl-nvidia-binding ./cmd/tgsrl-nvidia-binding
+      - name: Build NVIDIA runtime helper
+        run: go build -trimpath -o /tmp/tgsrl-nvidia-runtime ./cmd/tgsrl-nvidia-runtime
+      - name: Build NVIDIA MIG helper
+        run: go build -trimpath -o /tmp/tgsrl-nvidia-mig ./cmd/tgsrl-nvidia-mig
       - name: Build job controller
         run: go build -trimpath -o /tmp/tgsrl-job-controller ./job-controller-go/cmd/job-controller
       - name: Build operator

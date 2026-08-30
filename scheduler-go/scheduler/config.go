@@ -74,10 +74,12 @@ type Config struct {
 	// PlannerEvidenceBudget independently bounds adaptive-planner evidence.
 	// A zero value uses DefaultPlannerEvidenceBudget.
 	PlannerEvidenceBudget int
-	// PlannerPerTickActionBudget bounds adaptive mutations proposed in one
-	// evaluation. Store currently accepts one mutation action, so zero defaults
-	// to DefaultPlannerActionBudget.
+	// PlannerPerTickActionBudget is the compatibility form of
+	// PlannerBudget.MaxActions. A zero value uses DefaultPlannerActionBudget.
 	PlannerPerTickActionBudget int
+	// PlannerBudget bounds the transaction selected after all planners have
+	// contributed to one shared arbitration pool.
+	PlannerBudget PlannerBudgetConfig
 	// PlannerUtility holds fixed-point utility weights. An all-zero value uses
 	// DefaultPlannerUtilityConfig.
 	PlannerUtility PlannerUtilityConfig
