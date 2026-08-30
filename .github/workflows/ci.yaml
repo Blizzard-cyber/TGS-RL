@@ -95,8 +95,8 @@ jobs:
         run: uv sync --frozen
       - name: Lint and type-check
         run: |
-          uv run --frozen ruff format --check adapters runtime-python gateway-python tests/python tests/api tests/storage tests/e2e
-          uv run --frozen ruff check adapters runtime-python gateway-python tests/python tests/api tests/storage tests/e2e
+          uv run --frozen ruff format --check adapters runtime-python gateway-python tests/python tests/api tests/storage tests/e2e tests/governance scripts
+          uv run --frozen ruff check adapters runtime-python gateway-python tests/python tests/api tests/storage tests/e2e tests/governance scripts
           uv run --frozen mypy adapters runtime-python/tgsrl_runtime gateway-python/tgsrl_gateway tests/python tests/api tests/storage tests/e2e
       - name: Test
         run: uv run --frozen pytest tests/python tests/api tests/storage tests/governance
