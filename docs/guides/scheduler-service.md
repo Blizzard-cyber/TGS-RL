@@ -249,3 +249,8 @@ checkpoint 后，Scheduler 按稳定顺序重新送入恢复出的 Intent；已�
 Intent 会被跳过。持久化失败会关闭后续 mutation 入口；损坏、I/O 或 Provider 调和错误会
 使启动失败。完整恢复边界见
 [配置、持久化与恢复](configuration-and-recovery.md)。
+
+阻断性 contract 的 pause 必须覆盖当前 Intent 的全部活跃 allocation。已经被新鲜观测确认为
+paused 的目标无需重复操作；其余目标只要有一个缺少/过期 Sandbox 观测、能力不足、冲突或
+超出预算，整组 pause 就不会部分下发。`TargetSandboxIDs` 只约束普通优化目标，不能缩小
+安全动作范围。

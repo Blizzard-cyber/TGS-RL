@@ -42,6 +42,7 @@ from tgsrl_gateway.contracts import (
     sdk_method_names,
 )
 from tgsrl_gateway.errors import GatewayError
+from tgsrl_gateway.grpc_backend import _grpc_status_to_gateway_error
 from tgsrl_gateway.sdk import GatewayClient
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -93,6 +94,47 @@ class WsgiHarness:
         body_bytes = b"".join(chunks)
         code = int(str(captured["status"]).split()[0])
         return code, cast(JsonObject, json.loads(body_bytes.decode("utf-8")))
+
+
+class _StatusRpcError(grpc.RpcError):
+    def __init__(self, code: grpc.StatusCode, detail: str = "backend detail") -> None:
+        self._code = code
+        self._detail = detail
+
+    def code(self) -> grpc.StatusCode:
+        return self._code
+
+    def details(self) -> str:
+        return self._detail
+
+
+@pytest.mark.parametrize(
+    ("grpc_code", "http_status", "error_code"),
+    [
+        (grpc.StatusCode.UNAUTHENTICATED, 401, "backend_unauthenticated"),
+        (grpc.StatusCode.PERMISSION_DENIED, 403, "backend_forbidden"),
+        (grpc.StatusCode.RESOURCE_EXHAUSTED, 429, "backend_resource_exhausted"),
+        (grpc.StatusCode.UNIMPLEMENTED, 501, "backend_feature_unavailable"),
+        (grpc.StatusCode.DEADLINE_EXCEEDED, 504, "backend_timeout"),
+    ],
+)
+def test_grpc_status_preserves_http_error_semantics(
+    grpc_code: grpc.StatusCode, http_status: int, error_code: str
+) -> None:
+    error = _grpc_status_to_gateway_error(_StatusRpcError(grpc_code))
+
+    assert error.status == http_status
+    assert error.code == error_code
+    assert error.details["grpc_code"] == grpc_code.name
+
+
+def test_gateway_rejects_invalid_numeric_operation_filters() -> None:
+    harness = WsgiHarness()
+
+    for query in ("type=0", "type=999", "state=0", "state=999"):
+        status_code, payload = harness.request("GET", f"/v1/operations?{query}")
+        assert status_code == 400
+        assert payload["error"]["code"] == "bad_request"
 
 
 class _JobControlServicer(control_pb2_grpc.JobControlServiceServicer):

@@ -204,7 +204,6 @@ func (c *Controller) finalizeRetryPhase(request *tgsrlv1.ApplyJobCommandRequest,
 			run.State = tgsrlv1.JobState_JOB_STATE_PENDING
 			operation.State = tgsrlv1.OperationState_OPERATION_STATE_SUCCEEDED
 			operation.CompletedAt = timestamppb.New(now)
-			run.Operations = appendOperation(run.GetOperations(), operation)
 			if request.GetIdempotencyKey() != "" {
 				store.PutIdempotency("command", request.GetIdempotencyKey(), &state.IdempotencyRecord{
 					Scope:       "command",

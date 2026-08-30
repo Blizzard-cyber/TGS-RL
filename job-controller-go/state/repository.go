@@ -74,9 +74,9 @@ func (wallClock) Now() time.Time { return time.Now() }
 // Query exposes immutable repository reads.
 type Query interface {
 	GetJob(jobID string) (*tgsrlv1.RLTrainingJob, bool)
-	ListJobs(kind tgsrlv1.DataKind, limit uint64, pageToken string) ([]*tgsrlv1.RLTrainingJob, string, error)
+	ListJobs(kind tgsrlv1.DataKind, limit uint64, pageToken, afterJobID string) ([]*tgsrlv1.RLTrainingJob, string, error)
 	GetRun(jobID, runID string) (*tgsrlv1.JobRun, bool)
-	ListRuns(jobID string, limit uint64, pageToken string) ([]*tgsrlv1.JobRun, string, error)
+	ListRuns(jobID string, limit uint64, pageToken, afterRunID string) ([]*tgsrlv1.JobRun, string, error)
 	GetLatestRun(jobID string) (*tgsrlv1.JobRun, bool)
 	GetOperation(operationID string) (*tgsrlv1.Operation, bool)
 	ListOperations(jobID, runID string, opType tgsrlv1.OperationType, opState tgsrlv1.OperationState, limit uint64, pageToken string) ([]*tgsrlv1.Operation, string, error)
@@ -201,13 +201,47 @@ func (r *MemoryRepository) Update(fn func(Store) error) error {
 		return errors.New("state: nil update callback")
 	}
 	r.mu.Lock()
-	store := &memoryStore{memoryQuery: memoryQuery{repository: r}}
-	err := fn(store)
-	if err == nil {
-		for _, item := range store.deliveries {
-			r.deliverLocked(item)
-		}
+	defer r.mu.Unlock()
+
+	// Run the callback against an isolated copy. Store mutation methods do not
+	// return errors, so applying them directly to the live maps would leak
+	// partial writes whenever a later query or validation returned an error.
+	working := r.cloneStateLocked()
+	working.watchers = r.watchers
+	store := &memoryStore{memoryQuery: memoryQuery{repository: working}}
+	if err := fn(store); err != nil {
+		return err
 	}
-	r.mu.Unlock()
-	return err
+	r.replaceStateLocked(working)
+	for _, item := range store.deliveries {
+		r.deliverLocked(item)
+	}
+	return nil
+}
+
+// cloneStateLocked returns detached mutable state without copying live watch
+// registrations. The caller must hold at least r.mu.RLock.
+func (r *MemoryRepository) cloneStateLocked() *MemoryRepository {
+	return &MemoryRepository{
+		clock:         r.clock,
+		jobs:          cloneJobMap(r.jobs),
+		runs:          cloneRunMap(r.runs),
+		operations:    cloneOperationMap(r.operations),
+		idempotency:   cloneIdempotencyMap(r.idempotency),
+		events:        cloneEventEntries(r.events),
+		watchers:      make(map[uint64]*watcher),
+		nextSequence:  r.nextSequence,
+		nextWatcherID: r.nextWatcherID,
+	}
+}
+
+// replaceStateLocked commits detached repository data while retaining live
+// watch registrations. The caller must hold r.mu.Lock.
+func (r *MemoryRepository) replaceStateLocked(working *MemoryRepository) {
+	r.jobs = working.jobs
+	r.runs = working.runs
+	r.operations = working.operations
+	r.idempotency = working.idempotency
+	r.events = working.events
+	r.nextSequence = working.nextSequence
 }

@@ -44,6 +44,18 @@ func paginate[T any](items []T, start, limit int) ([]T, string) {
 	return items[start:end], next
 }
 
+func offsetAfter[T any](items []T, afterID string, id func(T) string) int {
+	if afterID == "" {
+		return 0
+	}
+	for index, item := range items {
+		if id(item) == afterID {
+			return index + 1
+		}
+	}
+	return len(items)
+}
+
 func cloneJob(job *tgsrlv1.RLTrainingJob) *tgsrlv1.RLTrainingJob {
 	if job == nil {
 		return nil

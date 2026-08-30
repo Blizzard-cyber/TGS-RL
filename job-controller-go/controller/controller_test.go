@@ -835,6 +835,59 @@ func TestCreateJobIdempotencyIgnoresRequestIDButRejectsPayloadChange(t *testing.
 	}
 }
 
+func TestCreateJobIdempotencyIgnoresServerGeneratedTimestamp(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 8, 28, 11, 1, 0, 0, time.UTC)
+	repository, err := state.NewMemoryRepository()
+	if err != nil {
+		t.Fatalf("NewMemoryRepository() error = %v", err)
+	}
+	engine, err := New(Config{
+		Repository: repository,
+		Runtime:    runtimeclient.NewFakeDriver(),
+		Clock:      state.ClockFunc(func() time.Time { return now }),
+	})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	job := validJob(now)
+	job.CreatedAt = nil
+	first, err := engine.CreateJob(context.Background(), &tgsrlv1.CreateJobRequest{
+		Job: job, IdempotencyKey: "idem-generated-time",
+	})
+	if err != nil {
+		t.Fatalf("CreateJob(first) error = %v", err)
+	}
+	now = now.Add(time.Hour)
+	second, err := engine.CreateJob(context.Background(), &tgsrlv1.CreateJobRequest{
+		Job: job, IdempotencyKey: "idem-generated-time",
+	})
+	if err != nil {
+		t.Fatalf("CreateJob(retry) error = %v", err)
+	}
+	if first.GetOperation().GetOperationId() != second.GetOperation().GetOperationId() {
+		t.Fatalf("operation replay mismatch: first=%q second=%q", first.GetOperation().GetOperationId(), second.GetOperation().GetOperationId())
+	}
+}
+
+func TestOperationIdentityIsStableOnlyWithIdempotencyKey(t *testing.T) {
+	t.Parallel()
+
+	firstTime := time.Date(2026, 8, 28, 11, 2, 0, 0, time.UTC)
+	engine := testController(t, firstTime)
+	withoutKey := engine.newOperation(tgsrlv1.OperationType_OPERATION_TYPE_START, "job", "run", "actor", "reason", "request", "", tgsrlv1.DataKind_DATA_KIND_LIVE, nil, firstTime)
+	withoutKeyLater := engine.newOperation(tgsrlv1.OperationType_OPERATION_TYPE_START, "job", "run", "actor", "reason", "request", "", tgsrlv1.DataKind_DATA_KIND_LIVE, nil, firstTime)
+	if withoutKey.GetOperationId() == withoutKeyLater.GetOperationId() {
+		t.Fatal("non-idempotent lifecycle calls reused an operation identity")
+	}
+	withKey := engine.newOperation(tgsrlv1.OperationType_OPERATION_TYPE_START, "job", "run", "actor", "reason", "request-a", "stable-key", tgsrlv1.DataKind_DATA_KIND_LIVE, nil, firstTime)
+	withKeyLater := engine.newOperation(tgsrlv1.OperationType_OPERATION_TYPE_START, "job", "run", "actor", "reason", "request-a", "stable-key", tgsrlv1.DataKind_DATA_KIND_LIVE, nil, firstTime.Add(time.Second))
+	if withKey.GetOperationId() != withKeyLater.GetOperationId() {
+		t.Fatal("idempotent lifecycle calls changed operation identity")
+	}
+}
+
 func TestCreateRunByStoredJobIDAndListOperations(t *testing.T) {
 	t.Parallel()
 	now := time.Date(2026, 8, 27, 11, 0, 0, 0, time.UTC)
@@ -852,6 +905,23 @@ func TestCreateRunByStoredJobIDAndListOperations(t *testing.T) {
 	}
 	if runResponse.GetRun().GetJobId() != created.GetJob().GetJobId() {
 		t.Fatalf("run job_id = %q", runResponse.GetRun().GetJobId())
+	}
+	if err := engine.repository.Update(func(store state.Store) error {
+		job, _ := store.GetJob(created.GetJob().GetJobId())
+		job.State = tgsrlv1.JobState_JOB_STATE_RUNNING
+		store.PutJob(job)
+		return nil
+	}); err != nil {
+		t.Fatalf("update job state: %v", err)
+	}
+	replayed, err := engine.CreateJobRun(ctx, &tgsrlv1.CreateJobRunRequest{
+		JobId: created.GetJob().GetJobId(), IdempotencyKey: "create-run-by-id",
+	})
+	if err != nil {
+		t.Fatalf("CreateJobRun(replay after job state change) error = %v", err)
+	}
+	if replayed.GetRun().GetRunId() != runResponse.GetRun().GetRunId() {
+		t.Fatalf("CreateJobRun(replay) run_id = %q, want %q", replayed.GetRun().GetRunId(), runResponse.GetRun().GetRunId())
 	}
 	listed, err := engine.ListOperations(ctx, &tgsrlv1.ListOperationsRequest{
 		JobId: created.GetJob().GetJobId(), Limit: 1,
@@ -916,6 +986,84 @@ func TestCreateJobRunIdempotencyIgnoresRequestIDButRejectsPayloadChange(t *testi
 		IdempotencyKey: "idem-create-run-semantic",
 	}); status.Code(err) != codes.AlreadyExists {
 		t.Fatalf("CreateJobRun(payload change) code = %s, want AlreadyExists", status.Code(err))
+	}
+}
+
+func TestCreateJobRunAttemptUsesLatestRunBeyondDefaultPage(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 8, 27, 16, 30, 0, 0, time.UTC)
+	repository, err := state.NewMemoryRepository()
+	if err != nil {
+		t.Fatalf("NewMemoryRepository() error = %v", err)
+	}
+	job := validJob(now)
+	job.JobId = "job-many-runs"
+	if err := repository.Update(func(store state.Store) error {
+		store.PutJob(job)
+		for attempt := uint64(1); attempt <= 101; attempt++ {
+			store.PutRun(compiler.NewRun(job, attempt, tgsrlv1.JobRunState_JOB_RUN_STATE_VALIDATING, now))
+		}
+		return nil
+	}); err != nil {
+		t.Fatalf("seed repository: %v", err)
+	}
+	engine, err := New(Config{
+		Repository: repository,
+		Runtime:    runtimeclient.NewFakeDriver(),
+		Clock:      state.ClockFunc(func() time.Time { return now }),
+	})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	response, err := engine.CreateJobRun(context.Background(), &tgsrlv1.CreateJobRunRequest{
+		JobId: job.GetJobId(),
+	})
+	if err != nil {
+		t.Fatalf("CreateJobRun() error = %v", err)
+	}
+	if response.GetRun().GetAttempt() != 102 {
+		t.Fatalf("CreateJobRun() attempt = %d, want 102", response.GetRun().GetAttempt())
+	}
+}
+
+func TestJobAndRunListsHonorAfterIDs(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 8, 27, 16, 45, 0, 0, time.UTC)
+	engine := testController(t, now)
+	ctx := context.Background()
+	firstJob := validJob(now)
+	firstJob.JobId = "job-after-a"
+	secondJob := validJob(now.Add(time.Second))
+	secondJob.JobId = "job-after-b"
+	for _, job := range []*tgsrlv1.RLTrainingJob{firstJob, secondJob} {
+		if _, err := engine.CreateJob(ctx, &tgsrlv1.CreateJobRequest{Job: job}); err != nil {
+			t.Fatalf("CreateJob(%s) error = %v", job.GetJobId(), err)
+		}
+	}
+	jobs, err := engine.ListJobs(ctx, &tgsrlv1.ListJobsRequest{AfterJobId: firstJob.GetJobId(), Limit: 1})
+	if err != nil {
+		t.Fatalf("ListJobs(after) error = %v", err)
+	}
+	if len(jobs.GetJobs()) != 1 || jobs.GetJobs()[0].GetJobId() != secondJob.GetJobId() {
+		t.Fatalf("ListJobs(after) = %+v", jobs.GetJobs())
+	}
+
+	firstRun, err := engine.CreateJobRun(ctx, &tgsrlv1.CreateJobRunRequest{JobId: firstJob.GetJobId()})
+	if err != nil {
+		t.Fatalf("CreateJobRun(first) error = %v", err)
+	}
+	secondRun, err := engine.CreateJobRun(ctx, &tgsrlv1.CreateJobRunRequest{JobId: firstJob.GetJobId()})
+	if err != nil {
+		t.Fatalf("CreateJobRun(second) error = %v", err)
+	}
+	runs, err := engine.ListJobRuns(ctx, &tgsrlv1.ListJobRunsRequest{JobId: firstJob.GetJobId(), AfterRunId: secondRun.GetRun().GetRunId(), Limit: 1})
+	if err != nil {
+		t.Fatalf("ListJobRuns(after) error = %v", err)
+	}
+	if len(runs.GetRuns()) != 1 || runs.GetRuns()[0].GetRunId() != firstRun.GetRun().GetRunId() {
+		t.Fatalf("ListJobRuns(after) = %+v", runs.GetRuns())
 	}
 }
 

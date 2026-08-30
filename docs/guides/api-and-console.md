@@ -178,7 +178,7 @@ uv run --frozen tgsrl sandboxes "$JOB_ID" --run-id "$RUN_ID"
 uv run --frozen tgsrl list-decisions "$JOB_ID" --run-id "$RUN_ID" --limit 20
 ```
 
-如需在准入前显式创建一个不可变 Run generation，可以先执行
+如需在准入前显式创建一个执行规格不可变、状态可演进的 Run generation，可以先执行
 `tgsrl create-run "$JOB_ID" --idempotency-key KEY`，再调用 `admit-job`；后者会准备
 这个最新的非终态 Run。
 
@@ -344,6 +344,7 @@ X-Request-Id: caller-request-id
 `request-anonymous`。重试同一写操作时，应保持请求内容和幂等键不变；后端可以拒绝
 同一个幂等键对应的不同请求内容。Replay/Experiment 创建接收这些 Header，但其
 服务端创建逻辑不提供同等级别的幂等保证，不应依赖 Header 对它们去重。
+Gateway 的 JSON 请求体上限为 1 MiB；负数、非数字或超出上限的 `Content-Length` 会被拒绝。
 
 ### 错误
 
@@ -368,14 +369,18 @@ X-Request-Id: caller-request-id
 | HTTP 状态 | `error.code` | 含义 |
 |---:|---|---|
 | `400` | `bad_request`、`backend_invalid_argument` | JSON、查询参数、命令或后端前置条件无效 |
+| `401` | `backend_unauthenticated` | gRPC 后端要求身份认证 |
+| `403` | `backend_forbidden` | gRPC 后端拒绝当前身份访问 |
 | `404` | `not_found` | Job、Run、Decision 等资源不存在 |
 | `409` | `conflict` | 资源已存在或写入冲突 |
+| `429` | `backend_resource_exhausted` | 后端容量、配额或流控已耗尽 |
 | `501` | `backend_feature_unavailable` | 连接的 gRPC 契约缺少所需 unary RPC |
 | `503` | `backend_unavailable` | gRPC 目标不可用或调用失败 |
+| `504` | `backend_timeout` | 后端 RPC 超时 |
 | `500` | `internal_error` | Gateway 未预期错误 |
 
-未知路由或不匹配的方法返回 `400 bad_request`，而不是 `404` 或 `405`；客户端应按
-该约定处理。
+未知路由返回 `404 not_found`；已知路由上的不匹配方法返回
+`405 method_not_allowed`，并通过 `Allow` Header 给出可用方法。
 
 ### 分页
 
@@ -456,7 +461,8 @@ make run-console
 ```
 
 Job Detail 的 **Control Plane** 区域可提交原始 Job JSON；**Create Run** 调用
-`POST /v1/jobs/{job_id}/runs`，只创建处于 validating 的不可变 Run；**Admit** 调用
+`POST /v1/jobs/{job_id}/runs`，只创建处于 validating 的 Run；其执行规格保持不变，
+但 lifecycle state、component status 和 operations 会继续演进。**Admit** 调用
 `POST /v1/jobs/{job_id}/admit` 完成准入与 Runtime 准备；独立的 **Start**
 按钮则向所选 Run 发送 `start` command。该区域也提供 `pause`、`resume`、`stop`、`retry`、
 `terminate` Run 命令，以及 Replay 创建和控制。新建 Job/Run 后应先执行 **Admit**，

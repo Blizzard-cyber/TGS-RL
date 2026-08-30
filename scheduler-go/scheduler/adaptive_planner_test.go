@@ -183,6 +183,19 @@ func TestEvaluateAdaptiveSelectsContractPauseOverAdmission(t *testing.T) {
 	}
 }
 
+func TestEvaluateAdaptiveTreatsObservedPausedContractTargetsAsConverged(t *testing.T) {
+	input := adaptiveFixture(tgsrlv1.TickKind_TICK_KIND_MEDIUM, tgsrlv1.RuntimeState_RUNTIME_STATE_PAUSED)
+	input.ContractAggregate = semantics.AggregateResult{Blocking: true, Action: tgsrlv1.ContractDecisionAction_CONTRACT_DECISION_ACTION_PAUSE_REQUIRED}
+
+	plan, record, err := testScheduler(t, FallbackNoOp).EvaluateAdaptive(&input)
+	if err != nil {
+		t.Fatalf("EvaluateAdaptive() error = %v", err)
+	}
+	if plan == nil || len(plan.GetActions()) != 0 || record.GetFallback() {
+		t.Fatalf("already-paused contract target did not converge: plan=%+v record=%+v", plan, record)
+	}
+}
+
 func TestEvaluateAdaptiveNoDirectiveReturnsConvergedNonFallback(t *testing.T) {
 	input := adaptiveFixture(tgsrlv1.TickKind_TICK_KIND_MEDIUM, tgsrlv1.RuntimeState_RUNTIME_STATE_RUNNING)
 	scheduler := testScheduler(t, FallbackNoOp)
@@ -1045,19 +1058,7 @@ func TestContractPausePreemptsAdmission(t *testing.T) {
 
 func TestContractPauseFailsClosedWhenBudgetCannotCoverEveryTarget(t *testing.T) {
 	input := adaptiveFixture(tgsrlv1.TickKind_TICK_KIND_MEDIUM, tgsrlv1.RuntimeState_RUNTIME_STATE_RUNNING)
-	secondAllocation := proto.Clone(input.Snapshot.Allocations[0]).(*tgsrlv1.Allocation)
-	secondAllocation.AllocationId = "allocation-b"
-	secondAllocation.PendingUnitId = "unit-b"
-	secondAllocation.RuntimeUnitId = "runtime-b"
-	secondSandbox := proto.Clone(input.Sandboxes[0]).(*tgsrlv1.Sandbox)
-	secondSandbox.SandboxId = "sandbox-b"
-	secondSandbox.Binding.BindingId = "binding-b"
-	secondSandbox.Binding.PendingUnitId = secondAllocation.GetPendingUnitId()
-	secondSandbox.Binding.RuntimeUnitId = secondAllocation.GetRuntimeUnitId()
-	secondSandbox.Binding.SandboxId = secondSandbox.GetSandboxId()
-	input.Snapshot.Allocations = append(input.Snapshot.Allocations, secondAllocation)
-	input.Sandboxes = append(input.Sandboxes, secondSandbox)
-	input.Intent.UnitCount = 2
+	appendAdaptiveTarget(&input, "b")
 	input.ContractAggregate = semantics.AggregateResult{Blocking: true, Action: tgsrlv1.ContractDecisionAction_CONTRACT_DECISION_ACTION_PAUSE_REQUIRED}
 	result, err := NewCoordinator(Config{PlannerPerTickActionBudget: 1}).Plan(input)
 	if err != nil {
@@ -1070,6 +1071,46 @@ func TestContractPauseFailsClosedWhenBudgetCannotCoverEveryTarget(t *testing.T) 
 		if evidence.GetDisposition() == tgsrlv1.PlannerDisposition_PLANNER_DISPOSITION_SELECTED {
 			t.Fatalf("partial contract proposal remained selected: %+v", evidence)
 		}
+	}
+}
+
+func TestContractPauseFailsClosedWhenAnyActiveTargetIsMissingOrStale(t *testing.T) {
+	for _, test := range []struct {
+		name      string
+		configure func(*tgsrlv1.Sandbox)
+	}{
+		{name: "missing", configure: func(sandbox *tgsrlv1.Sandbox) { sandbox.Generation = 0 }},
+		{name: "stale", configure: func(sandbox *tgsrlv1.Sandbox) {
+			sandbox.LastConfirmedAt = timestamppb.New(fixtureTime.Add(-time.Minute))
+		}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			input := adaptiveFixture(tgsrlv1.TickKind_TICK_KIND_MEDIUM, tgsrlv1.RuntimeState_RUNTIME_STATE_RUNNING)
+			secondSandbox := appendAdaptiveTarget(&input, "b")
+			test.configure(secondSandbox)
+			input.ContractAggregate = semantics.AggregateResult{Blocking: true, Action: tgsrlv1.ContractDecisionAction_CONTRACT_DECISION_ACTION_PAUSE_REQUIRED}
+			result, err := NewCoordinator(Config{PlannerPerTickActionBudget: 2}).Plan(input)
+			if err != nil {
+				t.Fatalf("Plan() error = %v", err)
+			}
+			if result.Plan != nil || result.FallbackReason != "NO_ELIGIBLE_PLANNER_PROPOSAL" {
+				t.Fatalf("partial contract action set escaped: %+v", result)
+			}
+		})
+	}
+}
+
+func TestContractPauseIgnoresOptimizationTargetFilter(t *testing.T) {
+	input := adaptiveFixture(tgsrlv1.TickKind_TICK_KIND_MEDIUM, tgsrlv1.RuntimeState_RUNTIME_STATE_RUNNING)
+	appendAdaptiveTarget(&input, "b")
+	input.Directives.TargetSandboxIDs = []string{input.Sandboxes[0].GetSandboxId()}
+	input.ContractAggregate = semantics.AggregateResult{Blocking: true, Action: tgsrlv1.ContractDecisionAction_CONTRACT_DECISION_ACTION_PAUSE_REQUIRED}
+	result, err := NewCoordinator(Config{PlannerPerTickActionBudget: 2, PlannerBudget: PlannerBudgetConfig{MaxActions: 2, MaxAffectedSandboxes: 2}}).Plan(input)
+	if err != nil {
+		t.Fatalf("Plan() error = %v", err)
+	}
+	if result.Plan == nil || len(result.Plan.GetActions()) != 2 {
+		t.Fatalf("contract pause was narrowed by target filter: %+v", result)
 	}
 }
 
@@ -1247,6 +1288,23 @@ func adaptiveFixture(tick tgsrlv1.TickKind, state tgsrlv1.RuntimeState) Planning
 		}
 	}
 	return PlanningInput{Snapshot: snapshot, Intent: intent, EvaluationContext: &tgsrlv1.EvaluationContext{TickKind: tick, EvaluationTime: timestamppb.New(fixtureTime), DecisionSequence: 9, Cause: "adaptive-test"}, Sandboxes: []*tgsrlv1.Sandbox{sandbox}, SafePoint: semanticsSafePoint(true), Signals: signals, DecisionID: "decision-adaptive"}
+}
+
+func appendAdaptiveTarget(input *PlanningInput, suffix string) *tgsrlv1.Sandbox {
+	allocation := proto.Clone(input.Snapshot.Allocations[0]).(*tgsrlv1.Allocation)
+	allocation.AllocationId = "allocation-" + suffix
+	allocation.PendingUnitId = "unit-" + suffix
+	allocation.RuntimeUnitId = "runtime-" + suffix
+	sandbox := proto.Clone(input.Sandboxes[0]).(*tgsrlv1.Sandbox)
+	sandbox.SandboxId = "sandbox-" + suffix
+	sandbox.Binding.BindingId = "binding-" + suffix
+	sandbox.Binding.PendingUnitId = allocation.GetPendingUnitId()
+	sandbox.Binding.RuntimeUnitId = allocation.GetRuntimeUnitId()
+	sandbox.Binding.SandboxId = sandbox.GetSandboxId()
+	input.Snapshot.Allocations = append(input.Snapshot.Allocations, allocation)
+	input.Sandboxes = append(input.Sandboxes, sandbox)
+	input.Intent.UnitCount = uint32(len(input.Snapshot.Allocations))
+	return sandbox
 }
 
 func semanticsSafePoint(value bool) semantics.SafePointResolution {

@@ -18,7 +18,7 @@ func (q memoryQuery) GetJob(jobID string) (*tgsrlv1.RLTrainingJob, bool) {
 	return cloneJob(job), true
 }
 
-func (q memoryQuery) ListJobs(kind tgsrlv1.DataKind, limit uint64, pageToken string) ([]*tgsrlv1.RLTrainingJob, string, error) {
+func (q memoryQuery) ListJobs(kind tgsrlv1.DataKind, limit uint64, pageToken, afterJobID string) ([]*tgsrlv1.RLTrainingJob, string, error) {
 	jobs := make([]*tgsrlv1.RLTrainingJob, 0, len(q.repository.jobs))
 	for _, job := range q.repository.jobs {
 		if kind != tgsrlv1.DataKind_DATA_KIND_UNKNOWN && job.GetDataKind() != kind {
@@ -38,6 +38,9 @@ func (q memoryQuery) ListJobs(kind tgsrlv1.DataKind, limit uint64, pageToken str
 	if err != nil {
 		return nil, "", err
 	}
+	if pageToken == "" {
+		start = offsetAfter(jobs, afterJobID, func(job *tgsrlv1.RLTrainingJob) string { return job.GetJobId() })
+	}
 	items, next := paginate(jobs, start, normalizeLimit(limit))
 	return items, next, nil
 }
@@ -54,7 +57,7 @@ func (q memoryQuery) GetRun(jobID, runID string) (*tgsrlv1.JobRun, bool) {
 	return cloneRun(run), true
 }
 
-func (q memoryQuery) ListRuns(jobID string, limit uint64, pageToken string) ([]*tgsrlv1.JobRun, string, error) {
+func (q memoryQuery) ListRuns(jobID string, limit uint64, pageToken, afterRunID string) ([]*tgsrlv1.JobRun, string, error) {
 	jobRuns := q.repository.runs[jobID]
 	runs := make([]*tgsrlv1.JobRun, 0, len(jobRuns))
 	for _, run := range jobRuns {
@@ -69,6 +72,9 @@ func (q memoryQuery) ListRuns(jobID string, limit uint64, pageToken string) ([]*
 	start, err := decodePageToken(pageToken)
 	if err != nil {
 		return nil, "", err
+	}
+	if pageToken == "" {
+		start = offsetAfter(runs, afterRunID, func(run *tgsrlv1.JobRun) string { return run.GetRunId() })
 	}
 	items, next := paginate(runs, start, normalizeLimit(limit))
 	return items, next, nil
@@ -143,9 +149,9 @@ func (q memoryQuery) GetLatestOperation(jobID, runID string, opType tgsrlv1.Oper
 			latest = operation
 			continue
 		}
-		currentCompleted := operation.GetCompletedAt().AsTime()
-		latestCompleted := latest.GetCompletedAt().AsTime()
-		if currentCompleted.After(latestCompleted) || (currentCompleted.Equal(latestCompleted) && operation.GetOperationId() > latest.GetOperationId()) {
+		currentCreated := operation.GetCreatedAt().AsTime()
+		latestCreated := latest.GetCreatedAt().AsTime()
+		if currentCreated.After(latestCreated) || (currentCreated.Equal(latestCreated) && operation.GetOperationId() > latest.GetOperationId()) {
 			latest = operation
 		}
 	}

@@ -145,7 +145,6 @@ func (c *Controller) finalizeAdmitPhase(request *tgsrlv1.AdmitJobRequest, reques
 			job.State = tgsrlv1.JobState_JOB_STATE_PENDING
 			operation.State = tgsrlv1.OperationState_OPERATION_STATE_SUCCEEDED
 			operation.CompletedAt = timestamppb.New(now)
-			run.Operations = appendOperation(run.GetOperations(), operation)
 			if request.GetIdempotencyKey() != "" {
 				store.PutIdempotency("admit", request.GetIdempotencyKey(), &state.IdempotencyRecord{
 					Scope:       "admit",

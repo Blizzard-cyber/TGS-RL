@@ -1,6 +1,7 @@
 package state
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -9,6 +10,39 @@ import (
 	tgsrlv1 "github.com/Blizzard-cyber/TGS-RL/gen/go/tgsrl/v1"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
+
+func TestMemoryRepositoryUpdateRollsBackFailedCallback(t *testing.T) {
+	t.Parallel()
+
+	repository, err := NewMemoryRepository()
+	if err != nil {
+		t.Fatalf("NewMemoryRepository() error = %v", err)
+	}
+	wantErr := errors.New("reject update")
+	err = repository.Update(func(store Store) error {
+		store.PutJob(&tgsrlv1.RLTrainingJob{JobId: "job-rolled-back"})
+		store.AppendEvent(&tgsrlv1.JobEvent{EventId: "event-rolled-back", JobId: "job-rolled-back"})
+		return wantErr
+	})
+	if !errors.Is(err, wantErr) {
+		t.Fatalf("Update() error = %v, want %v", err, wantErr)
+	}
+	if err := repository.View(func(query Query) error {
+		if job, ok := query.GetJob("job-rolled-back"); ok || job != nil {
+			t.Fatalf("GetJob() = %+v, %v, want nil, false", job, ok)
+		}
+		events, _, listErr := query.ListEvents("job-rolled-back", "", "", 0, 10, "")
+		if listErr != nil {
+			return listErr
+		}
+		if len(events) != 0 {
+			t.Fatalf("ListEvents() = %+v, want empty", events)
+		}
+		return nil
+	}); err != nil {
+		t.Fatalf("View() error = %v", err)
+	}
+}
 
 func TestAtomicWriteGobWritesCommittedFile(t *testing.T) {
 	t.Parallel()
@@ -187,6 +221,41 @@ func TestMemoryRepositoryListEventsConsumesPageToken(t *testing.T) {
 		}
 		if next2 == "" {
 			t.Fatal("ListEvents(second) next token = empty, want third page token")
+		}
+		return nil
+	}); err != nil {
+		t.Fatalf("View() error = %v", err)
+	}
+}
+
+func TestMemoryRepositoryLatestOperationUsesCreationOrder(t *testing.T) {
+	t.Parallel()
+
+	repository, err := NewMemoryRepository()
+	if err != nil {
+		t.Fatalf("NewMemoryRepository() error = %v", err)
+	}
+	earlier := time.Date(2026, 8, 27, 15, 0, 0, 0, time.UTC)
+	later := earlier.Add(time.Minute)
+	if err := repository.Update(func(store Store) error {
+		store.PutOperation(&tgsrlv1.Operation{
+			OperationId: "completed-old", JobId: "job-1", RunId: "run-1",
+			Type: tgsrlv1.OperationType_OPERATION_TYPE_START, CreatedAt: timestamppb.New(earlier),
+			CompletedAt: timestamppb.New(later.Add(time.Hour)), State: tgsrlv1.OperationState_OPERATION_STATE_SUCCEEDED,
+		})
+		store.PutOperation(&tgsrlv1.Operation{
+			OperationId: "running-new", JobId: "job-1", RunId: "run-1",
+			Type: tgsrlv1.OperationType_OPERATION_TYPE_START, CreatedAt: timestamppb.New(later),
+			State: tgsrlv1.OperationState_OPERATION_STATE_RUNNING,
+		})
+		return nil
+	}); err != nil {
+		t.Fatalf("Update() error = %v", err)
+	}
+	if err := repository.View(func(query Query) error {
+		latest, ok := query.GetLatestOperation("job-1", "run-1", tgsrlv1.OperationType_OPERATION_TYPE_START)
+		if !ok || latest.GetOperationId() != "running-new" {
+			t.Fatalf("GetLatestOperation() = %+v, %v", latest, ok)
 		}
 		return nil
 	}); err != nil {

@@ -23,8 +23,12 @@ func (c *Controller) newRun(job *tgsrlv1.RLTrainingJob, attempt uint64, runState
 }
 
 func (c *Controller) newOperation(opType tgsrlv1.OperationType, jobID, runID, actor, reason, requestID, idempotencyKey string, kind tgsrlv1.DataKind, semantic *tgsrlv1.SemanticEnvelope, now time.Time) *tgsrlv1.Operation {
+	identityParts := []string{opType.String(), jobID, runID, requestID, idempotencyKey, actor, reason}
+	if strings.TrimSpace(idempotencyKey) == "" {
+		identityParts = append(identityParts, now.UTC().Format(time.RFC3339Nano), fmt.Sprint(c.operationSequence.Add(1)))
+	}
 	return &tgsrlv1.Operation{
-		OperationId:     deterministicID("op", opType.String(), jobID, runID, requestID, idempotencyKey, actor, reason),
+		OperationId:     deterministicID("op", identityParts...),
 		Type:            opType,
 		State:           tgsrlv1.OperationState_OPERATION_STATE_SUCCEEDED,
 		Actor:           strings.TrimSpace(actor),
@@ -122,6 +126,25 @@ func isTerminalRunState(runState tgsrlv1.JobRunState) bool {
 
 func hashRequest(namespace string, message proto.Message) string {
 	return hashStrings(namespace, deterministicProtoHash(message))
+}
+
+func hashNormalizedJobRequest(namespace string, normalized, submitted *tgsrlv1.RLTrainingJob) string {
+	fingerprint := cloneJob(normalized)
+	if fingerprint == nil {
+		return hashRequest(namespace, fingerprint)
+	}
+	// State is controller-owned. A missing/invalid created_at and job_id are
+	// also normalized by the controller, so their generated values must not make
+	// a delayed retry look like different caller content. Explicit caller values
+	// remain part of the fingerprint.
+	fingerprint.State = tgsrlv1.JobState_JOB_STATE_UNKNOWN
+	if submitted != nil && !submitted.GetCreatedAt().IsValid() {
+		fingerprint.CreatedAt = nil
+	}
+	if submitted != nil && strings.TrimSpace(submitted.GetJobId()) == "" {
+		fingerprint.JobId = ""
+	}
+	return hashRequest(namespace, fingerprint)
 }
 
 func hashAdmitRequest(jobID, reason string) string {

@@ -48,6 +48,7 @@ node_modules/
 *.tsbuildinfo
 
 # Local runtime state
+/WORKLOG.local.md
 .cache/
 .tmp/
 tmp/

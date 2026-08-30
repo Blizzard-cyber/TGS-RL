@@ -57,7 +57,7 @@ function toErrorResult<T>(
   return {
     state: 'error',
     message: apiError.message,
-    retryable: response.status >= 500,
+    retryable: response.status === 429 || response.status >= 500,
     apiError,
   };
 }

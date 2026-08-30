@@ -84,6 +84,22 @@ def load_manifest(path: Path) -> LoadedManifest:
         raise GateToolError("manifest schema_version must be tgsrl.io/gate-suite/v1alpha1")
     if not isinstance(data.get("rules"), list) or not data["rules"]:
         raise GateToolError("manifest rules must be a non-empty list")
+    rule_ids: set[str] = set()
+    for index, rule in enumerate(data["rules"]):
+        if not isinstance(rule, dict):
+            raise GateToolError(f"manifest rule {index} must be an object")
+        rule_id = rule.get("rule_id")
+        if not isinstance(rule_id, str) or not rule_id or rule_id in rule_ids:
+            raise GateToolError(f"manifest rule {index} must have a unique non-empty rule_id")
+        rule_ids.add(rule_id)
+        if rule.get("gate") not in {"G", "I"}:
+            raise GateToolError(f"manifest rule {index} must target gate G or I")
+        if rule.get("operator") != ">=":
+            raise GateToolError(f"manifest rule {index} must use the supported >= operator")
+        if rule.get("comparison") not in {None, "variant_over_baseline_ratio"}:
+            raise GateToolError(f"manifest rule {index} uses an unsupported comparison")
+        if not _is_finite_number(rule.get("threshold")):
+            raise GateToolError(f"manifest rule {index} threshold must be a finite number")
     if sorted(data.get("status_values", [])) != sorted(STATUS_VALUES):
         raise GateToolError("manifest status_values must exactly match supported statuses")
     if sorted(data.get("evidence_values", [])) != sorted(EVIDENCE_VALUES):
@@ -102,6 +118,16 @@ def load_manifest(path: Path) -> LoadedManifest:
         metrics_schema.get("required_metrics"), list
     ):
         raise GateToolError("manifest metrics_schema.required_metrics must be a list")
+    required_metrics = metrics_schema["required_metrics"]
+    if (
+        not required_metrics
+        or not all(isinstance(metric, str) and metric for metric in required_metrics)
+        or len(set(required_metrics)) != len(required_metrics)
+    ):
+        raise GateToolError("manifest required metrics must be unique non-empty strings")
+    for index, rule in enumerate(data["rules"]):
+        if rule.get("metric") not in required_metrics:
+            raise GateToolError(f"manifest rule {index} references an undeclared metric")
     runner = data.get("workload_runner")
     if not isinstance(runner, dict):
         raise GateToolError("manifest workload_runner must be an object")
@@ -375,6 +401,14 @@ def _percentile(values: list[float], quantile: float) -> float:
     return float(ordered[rank])
 
 
+def _is_finite_number(value: object) -> bool:
+    return (
+        not isinstance(value, bool)
+        and isinstance(value, (int, float))
+        and math.isfinite(float(value))
+    )
+
+
 def _parse_workload_events(
     payload: bytes, *, label: str, phase: str, iteration: int
 ) -> list[dict[str, Any]]:
@@ -413,7 +447,7 @@ def _metrics_from_events(events: list[dict[str, Any]]) -> dict[str, float]:
     item_count = sum(int(event.get("item_count", 0)) for event in completed)
     observations = [event.get("contract_observation", {}) for event in consumed]
     action_count = len(actions)
-    return {
+    metrics = {
         "latency_ms_p50": _percentile(latencies, 0.50),
         "latency_ms_p95": _percentile(latencies, 0.95),
         "latency_ms_p99": _percentile(latencies, 0.99),
@@ -471,6 +505,9 @@ def _metrics_from_events(events: list[dict[str, Any]]) -> dict[str, float]:
             float(event.get("recovery_time_ms", 0.0)) for event in actions
         ),
     }
+    if any(not _is_finite_number(value) for value in metrics.values()):
+        raise GateToolError("measurement trace produced a non-finite metric")
+    return metrics
 
 
 def _workload_argv(
@@ -748,6 +785,10 @@ def _validate_report(
     errors: list[str] = []
     evidence = report.get("evidence")
     status = report.get("status")
+    if report.get("schema_version") != "tgsrl.io/gate-run-record/v1alpha1":
+        errors.append("report schema_version is invalid")
+    if report.get("suite_id") != manifest.data["suite_id"]:
+        errors.append("report suite_id does not match the gate manifest")
     if evidence not in EVIDENCE_VALUES:
         errors.append(f"unsupported evidence value: {evidence!r}")
     if status not in STATUS_VALUES:
@@ -763,8 +804,9 @@ def _validate_report(
                 errors.append(f"report metrics.{side} must be an object")
                 continue
             for metric in required_metrics:
-                if not isinstance(values.get(metric), (int, float)):
-                    errors.append(f"report metrics.{side}.{metric} must be numeric")
+                value = values.get(metric)
+                if not _is_finite_number(value):
+                    errors.append(f"report metrics.{side}.{metric} must be a finite number")
     trace_payloads: dict[str, dict[str, Any]] = {}
     for field_name in ("baseline_trace", "variant_trace"):
         try:
@@ -834,7 +876,7 @@ def _validate_report(
                 continue
             reported = metrics.get(side, {}) if isinstance(metrics, dict) else {}
             for metric in required_metrics:
-                if metric in reported and not math.isclose(
+                if _is_finite_number(reported.get(metric)) and not math.isclose(
                     float(reported[metric]), float(derived[metric]), rel_tol=1e-9, abs_tol=1e-9
                 ):
                     errors.append(f"report metrics.{side}.{metric} does not match raw trace")
@@ -895,7 +937,11 @@ def _validate_report(
                 if event.get("phase") == "measurement" and event.get("node_id")
             }
             side_metrics = metrics.get(side, {}) if isinstance(metrics, dict) else {}
-            if status == "PASSED" and float(side_metrics.get("gpu_active_time_ms", 0.0)) <= 0:
+            if (
+                status == "PASSED"
+                and _is_finite_number(side_metrics.get("gpu_active_time_ms"))
+                and float(side_metrics["gpu_active_time_ms"]) <= 0
+            ):
                 errors.append(f"GPU evidence requires positive {side} gpu_active_time_ms")
             if status == "PASSED" and any(
                 event.get("phase") == "measurement" and event.get("device") != "cuda"
@@ -911,6 +957,8 @@ def _validate_report(
                     )
             if node_sets.get("baseline") != node_sets.get("variant"):
                 errors.append("baseline and variant GPU node identities must match")
+    if not errors and status == "PASSED" and evaluate_gate(manifest, report)["status"] != "PASSED":
+        errors.append("report status PASSED does not satisfy the configured gate rules")
     return errors
 
 

@@ -26,6 +26,8 @@ from tgsrl_gateway.factory import build_backend
 from tgsrl_gateway.openapi import build_openapi_spec
 from tgsrl_gateway.protojson import message_to_dict, parse_message
 
+MAX_REQUEST_BODY_BYTES = 1 << 20
+
 
 def _json_response(
     start_response: StartResponse,
@@ -50,6 +52,10 @@ def _read_json(environ: dict[str, Any]) -> dict[str, object]:
         length = int(environ.get("CONTENT_LENGTH") or "0")
     except ValueError as error:
         raise BadRequestError("invalid Content-Length") from error
+    if length < 0:
+        raise BadRequestError("Content-Length must not be negative")
+    if length > MAX_REQUEST_BODY_BYTES:
+        raise BadRequestError("request body exceeds 1 MiB limit")
     raw = environ["wsgi.input"].read(length) if length > 0 else b"{}"
     if not raw.strip():
         return {}
@@ -83,14 +89,17 @@ def _optional_operation_type(name: str | None) -> int | None:
     if not name:
         return None
     try:
-        return int(name)
+        numeric = int(name)
     except ValueError:
-        pass
+        numeric = None
+    descriptor = job_pb2.DESCRIPTOR.pool.FindEnumTypeByName("tgsrl.v1.OperationType")
+    if numeric is not None:
+        if numeric == 0 or descriptor.values_by_number.get(numeric) is None:
+            raise BadRequestError("unsupported operation type", details={"type": name})
+        return numeric
     enum_name = f"OPERATION_TYPE_{name.strip().upper().replace('-', '_')}"
-    value = job_pb2.DESCRIPTOR.pool.FindEnumTypeByName("tgsrl.v1.OperationType").values_by_name.get(
-        enum_name
-    )
-    if value is None:
+    value = descriptor.values_by_name.get(enum_name)
+    if value is None or value.number == 0:
         raise BadRequestError("unsupported operation type", details={"type": name})
     return int(value.number)
 
@@ -99,14 +108,17 @@ def _optional_operation_state(name: str | None) -> int | None:
     if not name:
         return None
     try:
-        return int(name)
+        numeric = int(name)
     except ValueError:
-        pass
+        numeric = None
+    descriptor = job_pb2.DESCRIPTOR.pool.FindEnumTypeByName("tgsrl.v1.OperationState")
+    if numeric is not None:
+        if numeric == 0 or descriptor.values_by_number.get(numeric) is None:
+            raise BadRequestError("unsupported operation state", details={"state": name})
+        return numeric
     enum_name = f"OPERATION_STATE_{name.strip().upper().replace('-', '_')}"
-    value = job_pb2.DESCRIPTOR.pool.FindEnumTypeByName(
-        "tgsrl.v1.OperationState"
-    ).values_by_name.get(enum_name)
-    if value is None:
+    value = descriptor.values_by_name.get(enum_name)
+    if value is None or value.number == 0:
         raise BadRequestError("unsupported operation state", details={"state": name})
     return int(value.number)
 

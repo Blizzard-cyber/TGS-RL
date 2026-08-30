@@ -36,22 +36,39 @@ except ImportError:  # pragma: no cover - optional dependency
 
 
 def _grpc_status_to_gateway_error(error: grpc.RpcError) -> GatewayError:
-    if error.code() == grpc.StatusCode.NOT_FOUND:
+    code = error.code()
+    detail = error.details() or "backend request failed"
+    if code == grpc.StatusCode.NOT_FOUND:
         return NotFoundError("backend_resource", error.details() or "unknown")
-    if error.code() == grpc.StatusCode.ALREADY_EXISTS:
+    if code == grpc.StatusCode.ALREADY_EXISTS:
         return ConflictError(error.details() or "resource already exists")
-    if error.code() in {grpc.StatusCode.INVALID_ARGUMENT, grpc.StatusCode.FAILED_PRECONDITION}:
+    if code in {grpc.StatusCode.INVALID_ARGUMENT, grpc.StatusCode.FAILED_PRECONDITION}:
         return GatewayError(
             code="backend_invalid_argument",
             message=error.details() or "backend rejected request",
             status=400,
-            details={"grpc_code": error.code().name},
+            details={"grpc_code": code.name},
+        )
+    mapped = {
+        grpc.StatusCode.UNAUTHENTICATED: ("backend_unauthenticated", 401),
+        grpc.StatusCode.PERMISSION_DENIED: ("backend_forbidden", 403),
+        grpc.StatusCode.RESOURCE_EXHAUSTED: ("backend_resource_exhausted", 429),
+        grpc.StatusCode.UNIMPLEMENTED: ("backend_feature_unavailable", 501),
+        grpc.StatusCode.DEADLINE_EXCEEDED: ("backend_timeout", 504),
+    }.get(code)
+    if mapped is not None:
+        error_code, http_status = mapped
+        return GatewayError(
+            code=error_code,
+            message=detail,
+            status=http_status,
+            details={"grpc_code": code.name},
         )
     return GatewayError(
         code="backend_unavailable",
-        message=error.details() or "backend request failed",
+        message=detail,
         status=503,
-        details={"grpc_code": error.code().name},
+        details={"grpc_code": code.name},
     )
 
 

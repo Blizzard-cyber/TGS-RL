@@ -62,7 +62,7 @@ func NewFileRepository(dir string, options ...Option) (*FileRepository, error) {
 	if dir == "" {
 		return nil, errors.New("state: repository dir is required")
 	}
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return nil, err
 	}
 	memory, err := NewMemoryRepository(options...)
@@ -103,17 +103,7 @@ func (r *FileRepository) Update(fn func(Store) error) error {
 	// Mutate an isolated copy first. Readers keep observing the last durable
 	// state while the next state is encoded and flushed to disk.
 	r.memory.mu.RLock()
-	working := &MemoryRepository{
-		clock:         r.memory.clock,
-		jobs:          cloneJobMap(r.memory.jobs),
-		runs:          cloneRunMap(r.memory.runs),
-		operations:    cloneOperationMap(r.memory.operations),
-		idempotency:   cloneIdempotencyMap(r.memory.idempotency),
-		events:        cloneEventEntries(r.memory.events),
-		watchers:      make(map[uint64]*watcher),
-		nextSequence:  r.memory.nextSequence,
-		nextWatcherID: r.memory.nextWatcherID,
-	}
+	working := r.memory.cloneStateLocked()
 	previousSequence := r.memory.nextSequence
 	r.memory.mu.RUnlock()
 
@@ -129,12 +119,7 @@ func (r *FileRepository) Update(fn func(Store) error) error {
 	// Swap only after durable persistence succeeds. Watch subscriptions remain
 	// attached to the live repository and receive newly committed events.
 	r.memory.mu.Lock()
-	r.memory.jobs = working.jobs
-	r.memory.runs = working.runs
-	r.memory.operations = working.operations
-	r.memory.idempotency = working.idempotency
-	r.memory.events = working.events
-	r.memory.nextSequence = working.nextSequence
+	r.memory.replaceStateLocked(working)
 	deliveries := make([]delivery, 0)
 	for _, entry := range working.events {
 		if entry.sequence <= previousSequence {
@@ -190,10 +175,6 @@ func (r *FileRepository) loadLatestState() (*persistedState, error) {
 	return readSnapshotFile(r.snapshotPath)
 }
 
-func (r *FileRepository) captureLocked() *persistedState {
-	return captureRepository(r.memory)
-}
-
 func captureRepository(repository *MemoryRepository) *persistedState {
 	stateValue := &persistedState{
 		Jobs:         cloneJobMap(repository.jobs),
@@ -226,11 +207,11 @@ func (r *FileRepository) persist(stateValue *persistedState) error {
 }
 
 func writeSnapshotFile(path string, stateValue *persistedState) error {
-	return atomicWriteGob(path, stateValue, 0o644)
+	return atomicWriteGob(path, stateValue, 0o600)
 }
 
 func writeJournalFile(path string, record *journalRecord) error {
-	return atomicWriteGob(path, record, 0o644)
+	return atomicWriteGob(path, record, 0o600)
 }
 
 func atomicWriteGob(path string, value any, mode os.FileMode) error {
@@ -275,7 +256,7 @@ func atomicWriteGob(path string, value any, mode os.FileMode) error {
 
 func ensureParentDir(path string) error {
 	dir := filepath.Dir(path)
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return fmt.Errorf("state: create dir %s: %w", dir, err)
 	}
 	return syncDir(dir)

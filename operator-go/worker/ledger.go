@@ -170,7 +170,7 @@ func (r *FileDeliveryRepository) writeStateLocked(state deliveryLedgerState) err
 		}
 		return r.syncParentDirectory()
 	}
-	if err := os.MkdirAll(filepath.Dir(r.path), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(r.path), 0o700); err != nil {
 		return err
 	}
 	persisted, err := encodeDeliveryLedgerState(state)
@@ -182,8 +182,12 @@ func (r *FileDeliveryRepository) writeStateLocked(state deliveryLedgerState) err
 		return err
 	}
 	tmp := r.path + ".tmp"
-	file, err := os.OpenFile(tmp, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o644)
+	file, err := os.OpenFile(tmp, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o600)
 	if err != nil {
+		return err
+	}
+	if err := file.Chmod(0o600); err != nil {
+		_ = file.Close()
 		return err
 	}
 	if _, err := file.Write(payload); err != nil {

@@ -48,19 +48,46 @@ func (r *FileRepository) Load() (Cursor, error) {
 func (r *FileRepository) Save(cursor Cursor) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if err := os.MkdirAll(filepath.Dir(r.path), 0o755); err != nil {
+	directoryPath := filepath.Dir(r.path)
+	if err := os.MkdirAll(directoryPath, 0o700); err != nil {
 		return err
 	}
 	payload, err := json.Marshal(cursor)
 	if err != nil {
 		return err
 	}
-	tmp := r.path + ".tmp"
-	if err := os.WriteFile(tmp, payload, 0o644); err != nil {
+	temporary, err := os.CreateTemp(directoryPath, filepath.Base(r.path)+".tmp-*")
+	if err != nil {
 		return err
 	}
-	if err := os.Rename(tmp, r.path); err != nil {
+	temporaryPath := temporary.Name()
+	committed := false
+	defer func() {
+		_ = temporary.Close()
+		if !committed {
+			_ = os.Remove(temporaryPath)
+		}
+	}()
+	if err := temporary.Chmod(0o600); err != nil {
+		return err
+	}
+	if _, err := temporary.Write(payload); err != nil {
+		return err
+	}
+	if err := temporary.Sync(); err != nil {
+		return err
+	}
+	if err := temporary.Close(); err != nil {
+		return err
+	}
+	if err := os.Rename(temporaryPath, r.path); err != nil {
 		return fmt.Errorf("rename cursor file: %w", err)
 	}
-	return nil
+	committed = true
+	directory, err := os.Open(directoryPath)
+	if err != nil {
+		return err
+	}
+	defer directory.Close()
+	return directory.Sync()
 }

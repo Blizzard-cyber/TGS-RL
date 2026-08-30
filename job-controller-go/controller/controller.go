@@ -3,6 +3,7 @@ package controller
 import (
 	"errors"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	tgsrlv1 "github.com/Blizzard-cyber/TGS-RL/gen/go/tgsrl/v1"
@@ -23,8 +24,9 @@ type Controller struct {
 	runtime    runtimeclient.Driver
 	clock      state.Clock
 
-	inflightMu sync.Mutex
-	inflight   map[string]*inflightCall
+	inflightMu        sync.Mutex
+	inflight          map[string]*inflightCall
+	operationSequence atomic.Uint64
 }
 
 type inflightCall struct {

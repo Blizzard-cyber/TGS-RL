@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import sqlite3
 from datetime import datetime
 from pathlib import Path
@@ -28,7 +29,8 @@ class SQLiteStoreBase:
 
     def __init__(self, path: str | Path) -> None:
         self.path = Path(path)
-        self.path.parent.mkdir(parents=True, exist_ok=True)
+        if str(self.path) != ":memory:":
+            self.path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
         self._connection = sqlite3.connect(self.path)
         self._connection.row_factory = sqlite3.Row
         self._connection.execute("PRAGMA journal_mode=WAL")
@@ -37,6 +39,10 @@ class SQLiteStoreBase:
         self._connection.execute("PRAGMA temp_store=MEMORY")
         self._connection.execute("PRAGMA busy_timeout=5000")
         self._migrate()
+        if str(self.path) != ":memory:":
+            for database_file in (self.path, Path(f"{self.path}-wal"), Path(f"{self.path}-shm")):
+                if database_file.exists():
+                    os.chmod(database_file, 0o600)
 
     def close(self) -> None:
         self._connection.close()

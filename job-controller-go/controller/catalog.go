@@ -25,7 +25,7 @@ func (c *Controller) CreateJob(_ context.Context, request *tgsrlv1.CreateJobRequ
 	if len(diagnostics) > 0 {
 		return nil, status.Error(codes.InvalidArgument, strings.Join(diagnostics, "; "))
 	}
-	requestHash := hashRequest("create-job", normalized)
+	requestHash := hashNormalizedJobRequest("create-job", normalized, request.Job)
 	if response, ok, err := c.loadCreateJobIdempotency(request.GetIdempotencyKey(), requestHash); ok || err != nil {
 		return response, err
 	}
@@ -125,9 +125,12 @@ func (c *Controller) ListJobs(_ context.Context, request *tgsrlv1.ListJobsReques
 	if request == nil {
 		request = &tgsrlv1.ListJobsRequest{}
 	}
+	if request.GetPageToken() != "" && request.GetAfterJobId() != "" {
+		return nil, status.Error(codes.InvalidArgument, "page_token is mutually exclusive with after_job_id")
+	}
 	var response *tgsrlv1.ListJobsResponse
 	err := c.repository.View(func(query state.Query) error {
-		jobs, next, err := query.ListJobs(request.GetDataKind(), request.GetLimit(), request.GetPageToken())
+		jobs, next, err := query.ListJobs(request.GetDataKind(), request.GetLimit(), request.GetPageToken(), request.GetAfterJobId())
 		if err != nil {
 			return status.Error(codes.InvalidArgument, err.Error())
 		}
@@ -154,7 +157,7 @@ func (c *Controller) GetJob(_ context.Context, request *tgsrlv1.GetJobRequest) (
 	return response, err
 }
 
-// CreateJobRun compiles an immutable run for the supplied or stored job.
+// CreateJobRun compiles an immutable execution specification with mutable lifecycle status.
 func (c *Controller) CreateJobRun(_ context.Context, request *tgsrlv1.CreateJobRunRequest) (*tgsrlv1.CreateJobRunResponse, error) {
 	if request == nil || (request.Job == nil && strings.TrimSpace(request.GetJobId()) == "") {
 		return nil, status.Error(codes.InvalidArgument, "job or job_id is required")
@@ -184,7 +187,10 @@ func (c *Controller) CreateJobRun(_ context.Context, request *tgsrlv1.CreateJobR
 			return nil, err
 		}
 	}
-	requestHash := hashRequest("create-run", normalized)
+	requestHash := hashStrings("create-run", requestJobID)
+	if request.Job != nil {
+		requestHash = hashNormalizedJobRequest("create-run", normalized, request.Job)
+	}
 	if response, ok, err := c.loadCreateRunIdempotency(request.GetIdempotencyKey(), requestHash); ok || err != nil {
 		return response, err
 	}
@@ -195,11 +201,13 @@ func (c *Controller) CreateJobRun(_ context.Context, request *tgsrlv1.CreateJobR
 			job = cloneJob(normalized)
 			store.PutJob(job)
 		}
-		runs, _, err := store.ListRuns(job.GetJobId(), 100, "")
-		if err != nil {
-			return status.Error(codes.Internal, err.Error())
+		attempt := uint64(1)
+		if latest, exists := store.GetLatestRun(job.GetJobId()); exists {
+			attempt = latest.GetAttempt() + 1
+			if attempt == 0 {
+				return status.Error(codes.ResourceExhausted, "run attempt counter is exhausted")
+			}
 		}
-		attempt := uint64(len(runs) + 1)
 		run := c.newRun(job, attempt, tgsrlv1.JobRunState_JOB_RUN_STATE_VALIDATING, now)
 		store.PutRun(run)
 		if request.GetIdempotencyKey() != "" {
@@ -222,12 +230,15 @@ func (c *Controller) ListJobRuns(_ context.Context, request *tgsrlv1.ListJobRuns
 	if request == nil || strings.TrimSpace(request.GetJobId()) == "" {
 		return nil, status.Error(codes.InvalidArgument, "job_id is required")
 	}
+	if request.GetPageToken() != "" && request.GetAfterRunId() != "" {
+		return nil, status.Error(codes.InvalidArgument, "page_token is mutually exclusive with after_run_id")
+	}
 	var response *tgsrlv1.ListJobRunsResponse
 	err := c.repository.View(func(query state.Query) error {
 		if _, ok := query.GetJob(request.GetJobId()); !ok {
 			return status.Errorf(codes.NotFound, "job %q not found", request.GetJobId())
 		}
-		runs, next, err := query.ListRuns(request.GetJobId(), request.GetLimit(), request.GetPageToken())
+		runs, next, err := query.ListRuns(request.GetJobId(), request.GetLimit(), request.GetPageToken(), request.GetAfterRunId())
 		if err != nil {
 			return status.Error(codes.InvalidArgument, err.Error())
 		}
@@ -237,7 +248,7 @@ func (c *Controller) ListJobRuns(_ context.Context, request *tgsrlv1.ListJobRuns
 	return response, err
 }
 
-// GetJobRun returns one immutable run generation.
+// GetJobRun returns one run generation and its current lifecycle projection.
 func (c *Controller) GetJobRun(_ context.Context, request *tgsrlv1.GetJobRunRequest) (*tgsrlv1.GetJobRunResponse, error) {
 	if request == nil || strings.TrimSpace(request.GetJobId()) == "" || strings.TrimSpace(request.GetRunId()) == "" {
 		return nil, status.Error(codes.InvalidArgument, "job_id and run_id are required")

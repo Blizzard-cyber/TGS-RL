@@ -57,7 +57,7 @@ Operator 订阅 Scheduler 的 Decision stream，并在 `50081` 提供
 
 | 系统 | 组件 | 负责 | 不负责 |
 |---|---|---|---|
-| **Job & Product Control** | Console、Gateway、Job Controller | 提供用户界面与 HTTP API；校验并保存 Job；创建不可变 Run；记录 Operation 和生命周期事件 | 选择资源、执行 Sandbox、实现训练算法 |
+| **Job & Product Control** | Console、Gateway、Job Controller | 提供用户界面与 HTTP API；校验并保存 Job；创建执行规格不可变、状态可演进的 Run generation；记录 Operation 和生命周期事件 | 选择资源、执行 Sandbox、实现训练算法 |
 | **Runtime, Trace & Experiments** | Runtime、Adapters、Trace/DAG/Intent、Replay、Experiment | 将 Run 编译为 RuntimeManifest/RuntimeUnit；管理 desired/observed lifecycle；生成 Intent；提供调度预览 Replay | 维护集群资源权威、直接选择物理设备 |
 | **Scheduling & Infrastructure Control** | Scheduler、ResourceProvider、Operator | 维护资源快照；生成和执行放置计划；发布 Decision；将成功决策编译为 backend 对象并观察 Sandbox | 管理 Job 产品生命周期、解释 Reward 或训练算法 |
 
@@ -127,6 +127,10 @@ Scheduler 使用不可变 Snapshot 副本执行以下过程：
 5. 预留资源、调用 ResourceProvider，并按 ActionResult 确认或释放 binding；
 6. 发布包含候选、拒绝原因、计划、动作结果或 fallback 原因的 DecisionRecord。
 
+阻断性合同要求的 pause 按完整活跃 allocation 集合执行：已经被新鲜观测确认为 paused
+的目标可视为满足，其余目标必须全部进入同一安全计划。缺少或过期 Sandbox 观测、能力不足、
+目标冲突或预算不足都会使整组动作 fail closed；普通优化使用的 target filter 不得缩小安全范围。
+
 Scheduler 不使用 reward 数值选择设备。相同输入、配置、时间和 seed 可用于重复比较
 决策语义。`noop` fallback 不授权新的资源 mutation；`static` 只保留兼容的已有 allocation。
 
@@ -175,6 +179,10 @@ driver/pool/device 或精确物理 GPU 落点。随附部署工件不会安装�
 各组件的持久化彼此独立，不构成分布式事务。部署和恢复流程必须保留每个组件的状态
 目录，并在重启后核对 Job、Operation、Decision、reservation、Sandbox 与实际 backend
 对象。详细步骤见[配置、持久化与恢复](../guides/configuration-and-recovery.md)。
+
+Job Controller 的内存与文件 Repository 使用相同的 copy-on-write 更新语义：回调成功后
+才一次性发布新状态；回调失败不会留下部分 Job、Run、Operation 或 Event 写入。文件实现
+在交换 live state 前还必须先完成持久化。
 
 ## 配置来源
 

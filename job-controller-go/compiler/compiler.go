@@ -130,7 +130,7 @@ func ValidateJob(job *tgsrlv1.RLTrainingJob) []string {
 	return diagnostics
 }
 
-// NewRun deterministically compiles an immutable run generation from one job.
+// NewRun deterministically compiles one run's immutable execution specification.
 func NewRun(job *tgsrlv1.RLTrainingJob, attempt uint64, runState tgsrlv1.JobRunState, now time.Time) *tgsrlv1.JobRun {
 	runID := deterministicID("run", job.GetJobId(), fmt.Sprintf("%d", attempt), deterministicProtoHash(job))
 	return &tgsrlv1.JobRun{

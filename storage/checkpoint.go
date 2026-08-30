@@ -30,7 +30,7 @@ func (s *CheckpointStore) Save(payload []byte) error {
 	if len(payload) == 0 {
 		return errors.New("storage: empty checkpoint payload")
 	}
-	return atomicWriteFile(s.path, payload, 0o644)
+	return atomicWriteFile(s.path, payload, 0o600)
 }
 
 func (s *CheckpointStore) Load() ([]byte, error) {

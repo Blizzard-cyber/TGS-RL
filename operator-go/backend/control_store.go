@@ -112,12 +112,16 @@ func (b *KubernetesBackend) persistControlStateLocked() error {
 	if err != nil {
 		return err
 	}
-	if err := os.MkdirAll(filepath.Dir(b.controlStatePath), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(b.controlStatePath), 0o700); err != nil {
 		return err
 	}
 	tmp := b.controlStatePath + ".tmp"
-	file, err := os.OpenFile(tmp, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o644)
+	file, err := os.OpenFile(tmp, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o600)
 	if err != nil {
+		return err
+	}
+	if err := file.Chmod(0o600); err != nil {
+		_ = file.Close()
 		return err
 	}
 	if _, err := file.Write(payload); err != nil {

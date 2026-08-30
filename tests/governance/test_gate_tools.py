@@ -88,6 +88,32 @@ def test_invalid_manifest_rules_are_rejected(tmp_path: Path) -> None:
     assert result.returncode == 1
     assert "measurement_runs must be a positive integer" in result.stderr
 
+    bad_manifest["comparisons"]["measurement_runs"] = 1
+    bad_manifest["rules"][0]["operator"] = "<="
+    path.write_text(json.dumps(bad_manifest), encoding="utf-8")
+    result = subprocess.run(
+        [sys.executable, str(SCRIPT), "--manifest", str(path), "simulate"],
+        cwd=ROOT,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    assert result.returncode == 1
+    assert "must use the supported >= operator" in result.stderr
+
+    bad_manifest["rules"][0]["operator"] = ">="
+    bad_manifest["rules"][0]["metric"] = "undeclared_metric"
+    path.write_text(json.dumps(bad_manifest), encoding="utf-8")
+    result = subprocess.run(
+        [sys.executable, str(SCRIPT), "--manifest", str(path), "simulate"],
+        cwd=ROOT,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    assert result.returncode == 1
+    assert "references an undeclared metric" in result.stderr
+
 
 def test_runner_rejects_repository_root_as_output_directory() -> None:
     result = run_tool(ROOT, "cpu-smoke")
@@ -331,3 +357,24 @@ def test_ingest_can_replace_report_in_its_output_directory(tmp_path: Path) -> No
 
     assert ingested.returncode == 0, ingested.stderr
     assert read_report(output)["evidence"] == "CPU_INTEGRATION"
+
+
+def test_report_rejects_non_finite_and_boolean_metrics(tmp_path: Path) -> None:
+    generated = run_tool(
+        tmp_path,
+        "cpu-smoke",
+        "--smoke-command",
+        f"{sys.executable} -c 'print(1)'",
+    )
+    assert generated.returncode == 0, generated.stderr
+
+    report = read_report(tmp_path)
+    report["metrics"]["baseline"]["latency_ms_p50"] = float("nan")
+    report["metrics"]["variant"]["latency_ms_p50"] = True
+    (tmp_path / "report.json").write_text(json.dumps(report), encoding="utf-8")
+
+    result = run_tool(tmp_path, "report")
+
+    assert result.returncode == 1
+    assert "metrics.baseline.latency_ms_p50 must be a finite number" in result.stderr
+    assert "metrics.variant.latency_ms_p50 must be a finite number" in result.stderr

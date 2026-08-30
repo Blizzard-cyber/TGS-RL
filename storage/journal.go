@@ -42,9 +42,13 @@ func OpenJournal(root, name string) (*Journal, error) {
 	if err := ensureDir(path); err != nil {
 		return nil, err
 	}
-	file, err := os.OpenFile(path, os.O_CREATE, 0o644)
+	file, err := os.OpenFile(path, os.O_CREATE, 0o600)
 	if err != nil {
 		return nil, fmt.Errorf("storage: create journal %s: %w", path, err)
+	}
+	if err := file.Chmod(0o600); err != nil {
+		_ = file.Close()
+		return nil, fmt.Errorf("storage: restrict journal %s: %w", path, err)
 	}
 	if err := file.Close(); err != nil {
 		return nil, fmt.Errorf("storage: close journal %s: %w", path, err)
@@ -65,7 +69,7 @@ func (j *Journal) Append(record JournalRecord) error {
 	if err != nil {
 		return err
 	}
-	file, err := os.OpenFile(j.path, os.O_WRONLY|os.O_APPEND, 0o644)
+	file, err := os.OpenFile(j.path, os.O_WRONLY|os.O_APPEND, 0o600)
 	if err != nil {
 		return fmt.Errorf("storage: open journal %s: %w", j.path, err)
 	}
@@ -104,7 +108,7 @@ func (j *Journal) Replay(visitor func(JournalRecord) error) error {
 }
 
 func (j *Journal) Replace(records []JournalRecord) error {
-	return writeJournalRecordsAtomically(j.path, records, 0o644)
+	return writeJournalRecordsAtomically(j.path, records, 0o600)
 }
 
 func ValidateJournalReplacement(records []JournalRecord) error {

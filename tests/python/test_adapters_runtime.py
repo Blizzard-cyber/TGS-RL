@@ -498,6 +498,9 @@ def test_verl_worker_bridge_controls_lifecycle_and_emits_quality_observations(
     assert typed_events[-1].contract_observation.sample_count == 8
     assert typed_events[-1].contract_observation.effective_sample_size_ratio == 0.9375
     assert typed_events[-1].contract_observation.HasField("observed_at")
+    raw_event = json.loads(bridge.trace_path.read_text(encoding="utf-8").splitlines()[-1])
+    assert typed_events[-1].event_id == raw_event["event_id"]
+    assert typed_events[-1].sequence == raw_event["sequence"]
     ingested = TraceIngestor().ingest("run-1", typed_events)
     assert ingested[-1].event_id == typed_events[-1].event_id
     assert ingested[-1].phase_kind == execution_pb2.PHASE_KIND_DECODE

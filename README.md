@@ -12,7 +12,7 @@ Kubernetes，适合体验完整控制链、集成客户端以及评估调度语�
 
 ## 主要功能
 
-- 校验并保存 Job，创建不可变 Run，并执行 `start`、`pause`、`resume`、`stop`、
+- 校验并保存 Job，创建执行规格不可变、状态可演进的 Run generation，并执行 `start`、`pause`、`resume`、`stop`、
   `retry` 和 `terminate` 生命周期命令。
 - 用统一 `ExecutionContract` 表达 PPO、GRPO，以及同步、部分异步和完全异步 Rollout。
 - 管理 Runtime unit、Sandbox、Trace、增量 DAG、等待分类、Checkpoint、Replay 和 Experiment。
@@ -215,4 +215,5 @@ RBAC；Node、RuntimeClass、DeviceClass 的能力发现使用只读集群权限
 - [Operator](docs/guides/operator.md)
 - [配置、持久化与恢复](docs/guides/configuration-and-recovery.md)
 - [系统架构](docs/design/system-design.md)
+- [源码导读与维护边界](docs/maintainers/code-walkthrough.md)
 - [支持范围与限制](docs/reference/current-capabilities.md)

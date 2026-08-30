@@ -229,7 +229,13 @@ func (p MediumLifecyclePlanner) Propose(input PlanningInput) []PlannerProposal {
 		return nil
 	}
 	utility := normalizePlannerUtilityConfig(p.Utility)
-	targets, missing, stale := activeAdaptiveTargetsWithFreshness(input)
+	targetInput := input
+	if contractPause {
+		// Safety actions apply to the complete active allocation set even when a
+		// caller supplied a narrower optimization target filter.
+		targetInput.Directives.TargetSandboxIDs = nil
+	}
+	targets, missing, stale := activeAdaptiveTargetsWithFreshness(targetInput)
 	result := missingTargetEvidence(input, tgsrlv1.PlannerKind_PLANNER_KIND_MEDIUM_LIFECYCLE, missing)
 	result = append(result, staleTargetEvidence(input, tgsrlv1.PlannerKind_PLANNER_KIND_MEDIUM_LIFECYCLE, stale)...)
 	for _, target := range targets {

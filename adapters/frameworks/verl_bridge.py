@@ -308,26 +308,37 @@ class VerlWorkerBridge:
         gpu_active_ms: float = 0.0,
     ) -> None:
         """Append one raw, scheduler-consumable quality observation."""
-        contract_observation = {
-            "policy_lag": policy_lag,
-            "sample_stale": sample_stale,
-            "buffer_level": buffer_level,
-            "effective_sample_size": effective_sample_size,
-            "accepted_samples": accepted_samples,
-            "expected_samples": expected_samples,
-            "safe_point": self.safe_point,
-            "policy_version": self.identity.policy_version,
-        }
-        self._emit(
-            event_type,
-            buffer_level=buffer_level,
-            duration_ms=duration_ms,
-            items=items,
-            gpu_active_ms=gpu_active_ms,
-            contract_observation=contract_observation,
-        )
+        with self._lock:
+            contract_observation = {
+                "policy_lag": policy_lag,
+                "sample_stale": sample_stale,
+                "buffer_level": buffer_level,
+                "effective_sample_size": effective_sample_size,
+                "accepted_samples": accepted_samples,
+                "expected_samples": expected_samples,
+                "safe_point": self.safe_point,
+                "policy_version": self.identity.policy_version,
+            }
+            emitted = self._emit(
+                event_type,
+                buffer_level=buffer_level,
+                duration_ms=duration_ms,
+                items=items,
+                gpu_active_ms=gpu_active_ms,
+                contract_observation=contract_observation,
+            )
+            role = self.identity.role
+            phase_id = self.identity.phase_id
+            phase_kind = self.identity.phase_kind
+            algorithm = self.identity.algorithm
+            rollout_mode = self.identity.rollout_mode
+            data_kind = self.identity.data_kind
         if self.trace_sink is not None:
-            observed_at = datetime.now(tz=UTC)
+            observed_at = datetime.fromisoformat(str(emitted["occurred_at"]))
+            event_id = str(emitted["event_id"])
+            sequence = int(emitted["sequence"])
+            policy_version = str(emitted["policy_version"])
+            safe_point = bool(emitted["safe_point"])
             observation = execution_pb2.ContractObservation(
                 policy_lag=policy_lag,
                 sample_stale=sample_stale,
@@ -335,11 +346,11 @@ class VerlWorkerBridge:
                 effective_sample_size=effective_sample_size,
                 accepted_samples=accepted_samples,
                 expected_samples=expected_samples,
-                safe_point=self.safe_point,
+                safe_point=safe_point,
                 source="verl-worker-bridge",
-                event_id=f"{self.identity.sandbox_id}:{self._sequence}",
-                phase_id=self.identity.role,
-                policy_version=self.identity.policy_version,
+                event_id=event_id,
+                phase_id=role,
+                policy_version=policy_version,
                 sample_count=expected_samples,
                 effective_sample_size_ratio=(
                     0.0 if expected_samples == 0 else effective_sample_size / expected_samples
@@ -347,26 +358,26 @@ class VerlWorkerBridge:
             )
             observation.observed_at.FromDatetime(observed_at)
             trace_event = trace_pb2.TraceEvent(
-                event_id=f"{self.identity.sandbox_id}:{self._sequence}",
-                job_id=self.identity.job_id,
-                execution_id=self.identity.run_id,
-                phase_id=self.identity.phase_id,
+                event_id=event_id,
+                job_id=str(emitted["job_id"]),
+                execution_id=str(emitted["run_id"]),
+                phase_id=phase_id,
                 event_type=_trace_event_type(event_type),
-                algorithm=self.identity.algorithm,
-                rollout_mode=self.identity.rollout_mode,
-                policy_version=self.identity.policy_version,
-                decision_id=f"verl-observation:{self.identity.sandbox_id}",
+                algorithm=algorithm,
+                rollout_mode=rollout_mode,
+                policy_version=policy_version,
+                decision_id=f"verl-observation:{emitted['sandbox_id']}",
                 buffer_level=buffer_level,
-                safe_point=self.safe_point,
-                sequence=self._sequence,
-                phase_kind=self.identity.phase_kind,
-                raw_phase_label=self.identity.phase_id,
-                sandbox_id=self.identity.sandbox_id,
-                stage_id=self.identity.phase_id,
-                run_id=self.identity.run_id,
-                data_kind=self.identity.data_kind,
-                trace_id=self.identity.trace_id,
-                generation=self.identity.generation,
+                safe_point=safe_point,
+                sequence=sequence,
+                phase_kind=phase_kind,
+                raw_phase_label=phase_id,
+                sandbox_id=str(emitted["sandbox_id"]),
+                stage_id=phase_id,
+                run_id=str(emitted["run_id"]),
+                data_kind=data_kind,
+                trace_id=str(emitted["trace_id"]),
+                generation=int(emitted["generation"]),
                 contract_observation=observation,
             )
             trace_event.occurred_at.FromDatetime(observed_at)
@@ -402,7 +413,7 @@ class VerlWorkerBridge:
             queue_depth=queue_depth,
         )
 
-    def _emit(self, event_type: str, **extra: Any) -> None:
+    def _emit(self, event_type: str, **extra: Any) -> dict[str, Any]:
         with self._lock:
             self._sequence += 1
             event = {
@@ -425,6 +436,7 @@ class VerlWorkerBridge:
             self.trace_path.parent.mkdir(parents=True, exist_ok=True)
             with self.trace_path.open("a", encoding="utf-8") as handle:
                 handle.write(json.dumps(event, sort_keys=True, separators=(",", ":")) + "\n")
+            return event
 
     def _state_payload(self) -> dict[str, Any]:
         return {

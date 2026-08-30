@@ -1,7 +1,8 @@
 # 维护者开发指南
 
 本页面向修改源码、协议或构建流程的维护者。运行产品栈请先阅读
-[快速上手](../getting-started.md)。
+[快速上手](../getting-started.md)。第一次修改核心调用链前，先阅读
+[源码导读与维护边界](code-walkthrough.md)。
 
 ## 常用检查
 
@@ -107,3 +108,13 @@ CI 分别验证：
 - 架构、状态权威和恢复边界写入 `docs/design/`；
 - 可用性与验证级别以 `docs/reference/current-capabilities.md` 为准；
 - 公开文档不得包含内部链接、内部文档 ID、访问凭据、个人信息或私有环境数据。
+
+## 提交边界
+
+- 逐文件暂存实现、长期回归测试和对应文档，不使用 `git add .`；
+- 测试应保护原子性、幂等、状态机、安全、恢复或协议等长期契约；只服务于一次调试、
+  已被现有门禁覆盖或仅观察输出的临时测试不提交；
+- `WORKLOG.local.md`、`.cache/`、`.tmp/`、`bin/`、虚拟环境、依赖目录、构建目录、
+  coverage、trace、数据库、journal 和日志属于本地产物；
+- 提交前同时查看 `git status --short`、`git diff --stat`、`git diff --check` 和
+  `git status --short --ignored`，确认没有漏掉源码，也没有带入本地产物。

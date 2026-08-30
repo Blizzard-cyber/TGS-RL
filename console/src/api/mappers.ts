@@ -264,6 +264,8 @@ export function mapSandbox(inputValue: unknown, jobId: string): SandboxResponse[
   const binding = ensureObject(input.binding);
   const resources = ensureObject(binding.resources);
   const deviceIds = collectBindingDeviceIds(binding);
+  const acceleratorUnits =
+    typeof resources.acceleratorUnits === 'number' ? resources.acceleratorUnits : 0;
   const state = String(input.state ?? 'RUNTIME_STATE_UNKNOWN').replace(/^RUNTIME_STATE_/, '').toLowerCase();
   const sandboxState: SandboxResponse['sandboxes'][number]['state'] =
     state === 'requested' ||
@@ -282,7 +284,9 @@ export function mapSandbox(inputValue: unknown, jobId: string): SandboxResponse[
     state: sandboxState,
     generation: typeof input.generation === 'number' ? input.generation : 0,
     nodeLabel: deviceIds[0] ?? 'unbound',
-    gpuAttached: deviceIds.some((id) => id.toLowerCase().includes('gpu') || id.toLowerCase().includes('a100')),
+    gpuAttached:
+      acceleratorUnits > 0 ||
+      deviceIds.some((id) => /(^mig-)|gpu|nvidia|cuda|a100|h100/i.test(id)),
     share: typeof input.share === 'number' ? input.share : 0,
     priority: typeof input.priority === 'number' ? input.priority : 0,
     safePoint: Boolean(input.safePoint),

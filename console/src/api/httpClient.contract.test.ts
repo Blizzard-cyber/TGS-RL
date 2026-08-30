@@ -466,7 +466,7 @@ describe('HttpApiClient contract', () => {
         expect(url.searchParams.get('limit')).toBe('25');
         return jsonResponse({
           sandboxes: [
-            { sandboxId: 'sbx-1', runId: 'run-live-017-a', state: 'RUNTIME_STATE_RUNNING', generation: 1, binding: { deviceIds: ['gpu-0'], resources: { cpuMillis: 2000 } }, share: 0.5, priority: 10, safePoint: true, observedAt: '2026-08-27T08:20:00Z' },
+            { sandboxId: 'sbx-1', runId: 'run-live-017-a', state: 'RUNTIME_STATE_RUNNING', generation: 1, binding: { deviceIds: ['MIG-device-0'], resources: { cpuMillis: 2000, acceleratorUnits: 1 } }, share: 0.5, priority: 10, safePoint: true, observedAt: '2026-08-27T08:20:00Z' },
             { sandboxId: 'sbx-2', runId: 'run-live-017-a', state: 'RUNTIME_STATE_FAILED', generation: 2, binding: { deviceIds: ['gpu-1'], resources: { cpuMillis: 1800 } }, share: 0.5, priority: 11, safePoint: false, observedAt: '2026-08-27T08:21:00Z' },
             { sandboxId: 'sbx-3', runId: 'run-live-017-a', state: 'RUNTIME_STATE_MYSTERY', generation: 3, binding: { deviceIds: ['gpu-2'], resources: { cpuMillis: 1600 } }, share: 0.5, priority: 12, safePoint: false, observedAt: '2026-08-27T08:22:00Z' },
           ],
@@ -494,6 +494,7 @@ describe('HttpApiClient contract', () => {
     expect(topology.data?.nodes.find((node) => node.id === 'sbx-3')?.status).toBe('degraded');
     expect(sandboxes.state).toBe('ready');
     expect(sandboxes.data?.sandboxes[0]?.id).toBe('sbx-1');
+    expect(sandboxes.data?.sandboxes[0]?.gpuAttached).toBe(true);
     expect(sandboxes.data?.sandboxes[1]?.state).toBe('failed');
     expect(sandboxes.data?.sandboxes[2]?.state).toBe('unknown');
     expect(sandboxes.pageInfo?.nextPageToken).toBe('sandbox-page-3');
@@ -644,6 +645,27 @@ describe('HttpApiClient contract', () => {
       details: { jobId: 'job-console-1', runId: 'run-console-1' },
       requestId: 'req-conflict-1',
     });
+  });
+
+  it('marks backend resource exhaustion as retryable', async () => {
+    globalThis.fetch = vi.fn(async () =>
+      jsonResponse(
+        {
+          error: {
+            code: 'backend_resource_exhausted',
+            message: 'backend is throttling requests',
+            details: { grpc_code: 'RESOURCE_EXHAUSTED' },
+          },
+        },
+        429,
+      ),
+    ) as typeof fetch;
+
+    const result = await new HttpApiClient('').listJobs();
+
+    expect(result.state).toBe('error');
+    expect(result.retryable).toBe(true);
+    expect(result.apiError?.status).toBe(429);
   });
 
   it('falls back safely when gateway error response is empty or invalid json', async () => {

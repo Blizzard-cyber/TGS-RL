@@ -8,7 +8,7 @@ import (
 
 func ensureDir(path string) error {
 	dir := filepath.Dir(path)
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return fmt.Errorf("storage: create dir %s: %w", dir, err)
 	}
 	return syncDir(dir)

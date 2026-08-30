@@ -145,22 +145,49 @@ func contractActionSetComplete(input PlanningInput, proposals []PlannerProposal,
 	if !input.ContractAggregate.Blocking || input.ContractAggregate.Action != tgsrlv1.ContractDecisionAction_CONTRACT_DECISION_ACTION_PAUSE_REQUIRED {
 		return true
 	}
-	selectedSet := make(map[int]struct{}, len(selected))
+	actions := make([]*tgsrlv1.Action, 0, len(selected))
 	for _, index := range selected {
-		selectedSet[index] = struct{}{}
+		actions = append(actions, proposals[index].Plan.GetActions()...)
 	}
-	eligiblePauseCount := 0
-	selectedPauseCount := 0
-	for index, proposal := range proposals {
-		if proposal.Evidence.GetActionType() != tgsrlv1.ActionType_ACTION_TYPE_PAUSE || proposal.Evidence.GetDisposition() == tgsrlv1.PlannerDisposition_PLANNER_DISPOSITION_REJECTED {
-			continue
-		}
-		eligiblePauseCount++
-		if _, ok := selectedSet[index]; ok {
-			selectedPauseCount++
+	return contractPauseActionsComplete(input, actions)
+}
+
+func contractPauseActionsComplete(input PlanningInput, actions []*tgsrlv1.Action) bool {
+	required := make(map[string]struct{})
+	for _, allocation := range input.Snapshot.GetAllocations() {
+		if allocation != nil && allocation.GetState() == tgsrlv1.AllocationState_ALLOCATION_STATE_ACTIVE &&
+			allocation.GetExecutionId() == input.Intent.GetExecutionId() && allocation.GetStageId() == input.Intent.GetStageId() && allocation.GetIntentVersion() == input.Intent.GetVersion() {
+			required[allocation.GetAllocationId()] = struct{}{}
 		}
 	}
-	return eligiblePauseCount > 0 && selectedPauseCount == eligiblePauseCount
+	if len(required) == 0 {
+		return false
+	}
+
+	// A caller-owned target filter may narrow an optimization request, but it
+	// must never narrow a blocking contract action. Fresh observations that
+	// already report PAUSED count as satisfied; every other active allocation
+	// must have a selected pause action.
+	contractInput := input
+	contractInput.Directives.TargetSandboxIDs = nil
+	freshTargets, _, _ := activeAdaptiveTargetsWithFreshness(contractInput)
+	satisfied := make(map[string]struct{}, len(required))
+	for _, target := range freshTargets {
+		if target.sandbox.GetState() == tgsrlv1.RuntimeState_RUNTIME_STATE_PAUSED {
+			satisfied[target.allocation.GetAllocationId()] = struct{}{}
+		}
+	}
+	for _, action := range actions {
+		if action.GetActionType() == tgsrlv1.ActionType_ACTION_TYPE_PAUSE {
+			satisfied[action.GetTargetId()] = struct{}{}
+		}
+	}
+	for allocationID := range required {
+		if _, ok := satisfied[allocationID]; !ok {
+			return false
+		}
+	}
+	return true
 }
 
 type proposalBudgetCost struct {

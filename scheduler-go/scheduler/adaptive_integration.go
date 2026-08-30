@@ -89,7 +89,7 @@ func (s *Scheduler) EvaluateAdaptive(input *AdaptiveEvaluationInput) (*tgsrlv1.P
 			}
 			return plan, record, nil
 		}
-		if aggregate.Blocking && !plannerResultSatisfiesPause(coordinated) {
+		if aggregate.Blocking && !plannerResultSatisfiesPause(*input, coordinated) {
 			appendBlockingContractRejections(record, evaluations)
 			return s.fallbackResult(input.Snapshot, input.Intent, ctx.GetEvaluationTime().AsTime(), record, contractFallbackReason(aggregate))
 		}
@@ -141,7 +141,7 @@ func (s *Scheduler) EvaluateAdaptive(input *AdaptiveEvaluationInput) (*tgsrlv1.P
 		return nil, nil, err
 	}
 	applyPlannerResult(record, coordinated)
-	if aggregate.Blocking && !plannerResultSatisfiesPause(coordinated) {
+	if aggregate.Blocking && !plannerResultSatisfiesPause(*input, coordinated) {
 		appendBlockingContractRejections(record, evaluations)
 		return s.fallbackResult(snapshot, intent, now, record, contractFallbackReason(aggregate))
 	}
@@ -172,16 +172,16 @@ func (s *Scheduler) EvaluateAdaptive(input *AdaptiveEvaluationInput) (*tgsrlv1.P
 	return proto.Clone(coordinated.Plan).(*tgsrlv1.PlacementPlan), proto.Clone(record).(*tgsrlv1.DecisionRecord), nil
 }
 
-func plannerResultSatisfiesPause(result PlannerResult) bool {
+func plannerResultSatisfiesPause(input PlanningInput, result PlannerResult) bool {
 	if result.Plan == nil || len(result.Plan.GetActions()) == 0 {
-		return false
+		return contractPauseActionsComplete(input, nil)
 	}
 	for _, action := range result.Plan.GetActions() {
 		if action == nil || action.GetActionType() != tgsrlv1.ActionType_ACTION_TYPE_PAUSE {
 			return false
 		}
 	}
-	return true
+	return contractPauseActionsComplete(input, result.Plan.GetActions())
 }
 
 func makeConvergedPlan(decisionID string, snapshot *tgsrlv1.ClusterSnapshot, intent *tgsrlv1.SchedulingIntent, ctx *tgsrlv1.EvaluationContext) *tgsrlv1.PlacementPlan {
