@@ -531,16 +531,6 @@ func (p *MockResourceProvider) resultForError(action *tgsrlv1.Action, startedAt 
 	return result
 }
 
-func (p *MockResourceProvider) failedResult(action *tgsrlv1.Action, code, message string) *tgsrlv1.ActionResult {
-	now := p.now()
-	return &tgsrlv1.ActionResult{ActionId: action.GetActionId(), Status: tgsrlv1.ActionResultStatus_ACTION_RESULT_STATUS_FAILED, StartedAt: timestamppb.New(now), CompletedAt: timestamppb.New(now), ErrorCode: code, ErrorMessage: message, ObservedRevision: p.revision, PlanId: action.GetPlanId(), IdempotencyKey: action.GetIdempotencyKey()}
-}
-
-func (p *MockResourceProvider) skippedResult(action *tgsrlv1.Action, message string) *tgsrlv1.ActionResult {
-	now := p.now()
-	return &tgsrlv1.ActionResult{ActionId: action.GetActionId(), Status: tgsrlv1.ActionResultStatus_ACTION_RESULT_STATUS_SKIPPED, StartedAt: timestamppb.New(now), CompletedAt: timestamppb.New(now), ErrorCode: ErrorCodeFailedPrecondition, ErrorMessage: message, ObservedRevision: p.revision, PlanId: action.GetPlanId(), IdempotencyKey: action.GetIdempotencyKey()}
-}
-
 func validateActionPolicy(action *tgsrlv1.Action) error {
 	err := actionpolicy.ValidateAction(action, tgsrlv1.TickKind_TICK_KIND_UNKNOWN, actionpolicy.ValidationOptions{
 		AllowLegacyUnknownTickL1: true,
@@ -688,15 +678,6 @@ func (p *MockResourceProvider) hasDeviceLocked(deviceID string) bool {
 		}
 	}
 	return false
-}
-
-func validSandboxState(state SandboxState) bool {
-	switch state {
-	case SandboxStateRequested, SandboxStateBound, SandboxStateRunning, SandboxStatePaused, SandboxStateSleeping, SandboxStateFailed, SandboxStateTerminated:
-		return true
-	default:
-		return false
-	}
 }
 
 func eventWouldRegress(current, next SandboxState) bool {

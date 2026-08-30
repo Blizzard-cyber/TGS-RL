@@ -2,7 +2,6 @@ package controller
 
 import (
 	"context"
-	"fmt"
 	"strings"
 	"time"
 
@@ -248,47 +247,4 @@ func mergeAggregatedStatus(existing []*tgsrlv1.ComponentStatus, incoming *tgsrlv
 
 func upsertAggregatedStatus(existing []*tgsrlv1.ComponentStatus, aggregated *tgsrlv1.ComponentStatus) []*tgsrlv1.ComponentStatus {
 	return jobstatus.UpsertAggregatedStatus(existing, aggregated)
-}
-
-func parseObservationAnnotations(statusValue *tgsrlv1.ComponentStatus) map[string]*tgsrlv1.ComponentStatus {
-	observations := map[string]*tgsrlv1.ComponentStatus{}
-	for key, value := range statusValue.GetAnnotations() {
-		if !strings.HasPrefix(key, "observation.") {
-			continue
-		}
-		parts := strings.Split(key, ".")
-		if len(parts) != 3 {
-			continue
-		}
-		source := parts[1]
-		field := parts[2]
-		if observations[source] == nil {
-			observations[source] = &tgsrlv1.ComponentStatus{
-				Component:       statusValue.GetComponent(),
-				Source:          source,
-				JobId:           statusValue.GetJobId(),
-				RunId:           statusValue.GetRunId(),
-				TraceId:         statusValue.GetTraceId(),
-				DataKind:        statusValue.GetDataKind(),
-				SemanticContext: statusValue.GetSemanticContext(),
-			}
-		}
-		switch field {
-		case "health":
-			if enumValue, ok := tgsrlv1.ComponentHealth_value[value]; ok {
-				observations[source].Health = tgsrlv1.ComponentHealth(enumValue)
-			}
-		case "detail":
-			observations[source].Detail = value
-		case "revision":
-			var revision uint64
-			fmt.Sscanf(value, "%d", &revision)
-			observations[source].Revision = revision
-		case "observed_at":
-			if timestamp, err := time.Parse(time.RFC3339Nano, value); err == nil {
-				observations[source].ObservedAt = timestamppb.New(timestamp)
-			}
-		}
-	}
-	return observations
 }

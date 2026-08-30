@@ -285,30 +285,27 @@ func genericFactFloat64(observation *tgsrlv1.ContractObservation, key string) (f
 }
 
 func factString(facts map[string]*tgsrlv1.SemanticValue, key string) (string, bool) {
-	value := facts[key]
-	if value == nil {
+	typed, ok := facts[key].GetKind().(*tgsrlv1.SemanticValue_StringValue)
+	if !ok {
 		return "", false
 	}
-	typed, ok := value.GetKind().(*tgsrlv1.SemanticValue_StringValue)
-	return typed.StringValue, ok
+	return typed.StringValue, true
 }
 
 func factBool(facts map[string]*tgsrlv1.SemanticValue, key string) (bool, bool) {
-	value := facts[key]
-	if value == nil {
+	typed, ok := facts[key].GetKind().(*tgsrlv1.SemanticValue_BoolValue)
+	if !ok {
 		return false, false
 	}
-	typed, ok := value.GetKind().(*tgsrlv1.SemanticValue_BoolValue)
-	return typed.BoolValue, ok
+	return typed.BoolValue, true
 }
 
 func factUint64(facts map[string]*tgsrlv1.SemanticValue, key string) (uint64, bool) {
-	value := facts[key]
-	if value == nil {
+	typed, ok := facts[key].GetKind().(*tgsrlv1.SemanticValue_Uint64Value)
+	if !ok {
 		return 0, false
 	}
-	typed, ok := value.GetKind().(*tgsrlv1.SemanticValue_Uint64Value)
-	return typed.Uint64Value, ok
+	return typed.Uint64Value, true
 }
 
 func factInt64(facts map[string]*tgsrlv1.SemanticValue, key string) (int64, bool) {
