@@ -26,13 +26,12 @@ from adapters.compliance.runtime import LifecycleAction
 from tgsrl_runtime.aggregation import TraceAggregator
 from tgsrl_runtime.checkpoints import CheckpointStore
 from tgsrl_runtime.duration import to_timestamp
-from tgsrl_runtime.executor import (
+from tgsrl_runtime.execution_drivers import (
     FakeCommandDriver,
-    FakeProcessDriver,
-    RuntimeExecutionResult,
-    RuntimeExecutor,
-    SubprocessDriver,
+    SubprocessCommandDriver,
 )
+from tgsrl_runtime.execution_types import RuntimeExecutionResult
+from tgsrl_runtime.executor import RuntimeExecutor
 from tgsrl_runtime.experiments import ExperimentCoordinator, ReplayExperimentStore
 from tgsrl_runtime.intent_coordinator import IntentCoordinator
 from tgsrl_runtime.oracle import RuntimeOracle
@@ -355,31 +354,27 @@ class RuntimeSupervisor:
         )
     )
     persistence: PersistenceHook = field(default_factory=NullPersistenceHook)
-    clock: Callable[[], datetime] = field(
-        default=lambda: datetime.now(tz=UTC), repr=False
-    )
+    clock: Callable[[], datetime] = field(default=lambda: datetime.now(tz=UTC), repr=False)
     published_intents: list[scheduling_pb2.SchedulingIntent] = field(default_factory=list)
     component_statuses: dict[tuple[str, str], control_pb2.ComponentStatus] = field(
         default_factory=dict
     )
-    fake_process_driver: FakeProcessDriver = field(default_factory=FakeProcessDriver)
-    real_process_driver: SubprocessDriver = field(default_factory=SubprocessDriver)
-    fake_command_driver: FakeCommandDriver = field(init=False)
+    fake_command_driver: FakeCommandDriver = field(default_factory=FakeCommandDriver)
+    subprocess_command_driver: SubprocessCommandDriver = field(
+        default_factory=SubprocessCommandDriver
+    )
     fake_executor: RuntimeExecutor = field(init=False)
     real_executor: RuntimeExecutor = field(init=False)
     lifecycle: RuntimeLifecycleCoordinator = field(init=False)
 
     def __post_init__(self) -> None:
-        self.fake_command_driver = FakeCommandDriver(process_driver=self.fake_process_driver)
         self.fake_executor = RuntimeExecutor(
             registry=self.registry,
             command_driver=self.fake_command_driver,
-            process_driver=self.fake_process_driver,
         )
         self.real_executor = RuntimeExecutor(
             registry=self.registry,
-            command_driver=self.real_process_driver,
-            process_driver=self.real_process_driver,
+            command_driver=self.subprocess_command_driver,
         )
         self.lifecycle = RuntimeLifecycleCoordinator(self)
         self.experiments.trace_ingestor = self.trace_ingestor
@@ -758,7 +753,17 @@ class RuntimeSupervisor:
         self, manifest: runtime_pb2.RuntimeManifest
     ) -> tuple[runtime_pb2.RuntimeManifest, list[runtime_pb2.RuntimeUnit]]:
         projected_manifest = self._apply_config_projection(manifest)
-        normalized, runtime_units, _diagnostics = self.registry.compile(projected_manifest)
+        normalized_support, reports, _diagnostics = self.registry.evaluate(projected_manifest)
+        unavailable = {
+            component: report for component, report in reports.items() if not report.available
+        }
+        if unavailable:
+            detail = "; ".join(
+                f"{component}:{report.status}:{report.summary}"
+                for component, report in unavailable.items()
+            )
+            raise RuntimeLifecycleError(f"runtime adapters are not executable: {detail}")
+        normalized, runtime_units, _diagnostics = self.registry.compile(normalized_support)
         for unit in runtime_units:
             unit.generation = 0
             unit.observed_at.CopyFrom(to_timestamp(datetime.now(tz=UTC)))
@@ -777,8 +782,8 @@ class RuntimeSupervisor:
         self, request: runtime_pb2.ValidateRuntimeRequest
     ) -> runtime_pb2.ValidateRuntimeResponse:
         normalized_input = self._apply_config_projection(request.manifest)
-        normalized, diagnostics = self.registry.validate(normalized_input)
-        valid = not any(":UNSUPPORTED:" in item for item in diagnostics)
+        normalized, reports, diagnostics = self.registry.evaluate(normalized_input)
+        valid = all(report.available for report in reports.values())
         if not valid:
             return runtime_pb2.ValidateRuntimeResponse(
                 valid=False,
@@ -824,6 +829,11 @@ class RuntimeSupervisor:
     ) -> runtime_pb2.PauseRuntimeResponse:
         return self.lifecycle.pause(request)
 
+    def prepare_pause_runtime(
+        self, request: runtime_pb2.PreparePauseRuntimeRequest
+    ) -> runtime_pb2.PreparePauseRuntimeResponse:
+        return self.lifecycle.prepare_pause(request)
+
     def resume_runtime(
         self, request: runtime_pb2.ResumeRuntimeRequest
     ) -> runtime_pb2.ResumeRuntimeResponse:
@@ -833,6 +843,16 @@ class RuntimeSupervisor:
         self, request: runtime_pb2.CheckpointRuntimeRequest
     ) -> runtime_pb2.CheckpointRuntimeResponse:
         return self.lifecycle.checkpoint(request)
+
+    def offload_runtime(
+        self, request: runtime_pb2.OffloadRuntimeRequest
+    ) -> runtime_pb2.OffloadRuntimeResponse:
+        return self.lifecycle.offload(request)
+
+    def reload_runtime(
+        self, request: runtime_pb2.ReloadRuntimeRequest
+    ) -> runtime_pb2.ReloadRuntimeResponse:
+        return self.lifecycle.reload(request)
 
     def stop_runtime(
         self, request: runtime_pb2.StopRuntimeRequest
@@ -1040,12 +1060,42 @@ class RuntimeSupervisor:
     def get_runtime_status(
         self, request: runtime_pb2.GetRuntimeStatusRequest
     ) -> runtime_pb2.GetRuntimeStatusResponse:
+        runtime_status = self._runtime_status_summary(request.run_id)
+        current_generation = max(
+            max((unit.generation for unit in self.runtime_units.list(request.run_id)), default=0),
+            max((sandbox.generation for sandbox in self.sandboxes.list(request.run_id)), default=0),
+        )
         return runtime_pb2.GetRuntimeStatusResponse(
             manifest=self._ensure_run(request.run_id),
             runtime_units=self.runtime_units.list(request.run_id),
             sandboxes=self.sandboxes.list(request.run_id),
             cursor=_cursor("status", request.run_id),
+            current_generation=current_generation,
+            runtime_status=runtime_status,
         )
+
+    def _runtime_status_summary(self, run_id: str) -> runtime_pb2.RuntimeStatusSummary:
+        status = self.component_statuses.get((run_id, "runtime"))
+        if status is None:
+            status = self.project_runtime_status(run_id)
+        summary = runtime_pb2.RuntimeStatusSummary(
+            health={
+                control_pb2.COMPONENT_HEALTH_UNKNOWN: runtime_pb2.RUNTIME_HEALTH_UNKNOWN,
+                control_pb2.COMPONENT_HEALTH_HEALTHY: runtime_pb2.RUNTIME_HEALTH_HEALTHY,
+                control_pb2.COMPONENT_HEALTH_DEGRADED: runtime_pb2.RUNTIME_HEALTH_DEGRADED,
+                control_pb2.COMPONENT_HEALTH_FAILED: runtime_pb2.RUNTIME_HEALTH_FAILED,
+                control_pb2.COMPONENT_HEALTH_PROGRESSING: runtime_pb2.RUNTIME_HEALTH_PROGRESSING,
+            }.get(status.health, runtime_pb2.RUNTIME_HEALTH_UNKNOWN),
+            detail=status.detail,
+            source=status.source,
+            revision=status.revision,
+            annotations=dict(status.annotations),
+            observed_runtime_state=status.observed_runtime_state,
+            converged=status.converged,
+        )
+        if status.HasField("observed_at"):
+            summary.observed_at.CopyFrom(status.observed_at)
+        return summary
 
     def watch_runtime_events(
         self, request: runtime_pb2.WatchRuntimeEventsRequest

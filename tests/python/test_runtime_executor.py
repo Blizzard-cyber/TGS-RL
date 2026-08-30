@@ -2,15 +2,16 @@
 
 from __future__ import annotations
 
+from typing import Any, cast
+
+import pytest
 from tgsrl.v1 import resource_pb2, runtime_pb2, trace_pb2
-from tgsrl_runtime.executor import (
-    FakeCommandDriver,
-    FakeProcessDriver,
-    RuntimeExecutor,
-)
+from tgsrl_runtime.execution_drivers import FakeCommandDriver
+from tgsrl_runtime.executor import RuntimeExecutor
 
 from adapters import (
     AdapterErrorKind,
+    AdapterUnavailableError,
     CommandResult,
     GRPOAdapter,
     LifecycleAction,
@@ -54,11 +55,9 @@ def _manifest(
 
 
 def test_executor_fake_lifecycle_and_idempotency() -> None:
-    process_driver = FakeProcessDriver()
-    command_driver = FakeCommandDriver(process_driver=process_driver)
+    command_driver = FakeCommandDriver()
     executor = RuntimeExecutor(
         registry=RuntimeAdapterRegistry(),
-        process_driver=process_driver,
         command_driver=command_driver,
         default_timeout_seconds=5.0,
     )
@@ -74,7 +73,6 @@ def test_executor_fake_lifecycle_and_idempotency() -> None:
 
     started = executor.start("run-1", idempotency_key="start-1")
     assert started.ok
-    assert not started.reconciled
     assert started.action is LifecycleAction.LAUNCH
     assert started.generation == 1
     assert all(unit.generation == 1 for unit in started.runtime_units)
@@ -84,14 +82,6 @@ def test_executor_fake_lifecycle_and_idempotency() -> None:
     started_again = executor.start("run-1", idempotency_key="start-1")
     assert started_again.idempotent
     assert started_again.cursor == started.cursor
-    assert len(process_driver.start_calls) == 0
-
-    status = executor.status("run-1", idempotency_key="status-1")
-    assert status.ok
-    assert not status.reconciled
-    assert status.action is LifecycleAction.STATUS
-    assert all(unit.state == runtime_pb2.RUNTIME_STATE_REQUESTED for unit in status.runtime_units)
-    assert all(unit.status_reason == "unknown" for unit in status.runtime_units)
 
     checkpointed = executor.checkpoint(
         "run-1",
@@ -128,70 +118,92 @@ def test_executor_normalizes_unavailable_dependencies_without_real_processes() -
     assert all(unit.status_reason == "preparing" for unit in prepared.runtime_units)
 
 
-def test_executor_normalizes_status_timeout_failures() -> None:
-    process_driver = FakeProcessDriver()
-    command_driver = FakeCommandDriver(process_driver=process_driver)
-    executor = RuntimeExecutor(process_driver=process_driver, command_driver=command_driver)
+def test_executor_normalizes_prepare_timeout_failures() -> None:
+    command_driver = FakeCommandDriver()
+    executor = RuntimeExecutor(command_driver=command_driver)
     executor.register_runtime(_manifest())
-    executor.start("run-1", idempotency_key="start-1")
 
     command_driver.set_behavior(
-        action=LifecycleAction.STATUS,
+        action=LifecycleAction.PREPARE,
         component="framework",
         run_id="run-1",
-        exception=TimeoutError("pause timed out"),
+        exception=TimeoutError("prepare timed out"),
     )
-    status = executor.status("run-1", idempotency_key="status-timeout")
+    prepared = executor.prepare("run-1", idempotency_key="prepare-timeout")
     framework_result = next(
-        item for item in status.component_results if item.component == "framework"
+        item for item in prepared.component_results if item.component == "framework"
     )
     assert framework_result.error is not None
     assert framework_result.error.kind is AdapterErrorKind.TRANSIENT
     assert framework_result.error.retryable
-    assert framework_result.observed_state == runtime_pb2.RUNTIME_STATE_UNKNOWN
-    assert all(unit.status_reason == "unknown" for unit in status.runtime_units)
+    assert framework_result.observed_state == runtime_pb2.RUNTIME_STATE_PREPARING
+    assert all(unit.status_reason == "preparing" for unit in prepared.runtime_units)
 
 
-def test_executor_normalizes_status_exit_code_failures() -> None:
-    process_driver = FakeProcessDriver()
-    command_driver = FakeCommandDriver(process_driver=process_driver)
-    executor = RuntimeExecutor(process_driver=process_driver, command_driver=command_driver)
+def test_executor_normalizes_checkpoint_exit_code_failures() -> None:
+    command_driver = FakeCommandDriver()
+    executor = RuntimeExecutor(command_driver=command_driver)
     executor.register_runtime(_manifest())
-    executor.start("run-1", idempotency_key="start-1")
 
     command_driver.set_behavior(
-        action=LifecycleAction.STATUS,
+        action=LifecycleAction.CHECKPOINT,
         component="execution",
         run_id="run-1",
-        result=CommandResult(exit_code=7, stderr="resume failed"),
+        result=CommandResult(exit_code=7, stderr="checkpoint failed"),
     )
-    resumed = executor.status("run-1", idempotency_key="status-exit")
+    checkpointed = executor.checkpoint("run-1", idempotency_key="checkpoint-exit")
     execution_result = next(
-        item for item in resumed.component_results if item.component == "execution"
+        item for item in checkpointed.component_results if item.component == "execution"
     )
     assert execution_result.error is not None
     assert execution_result.error.kind is AdapterErrorKind.BACKEND_FAILURE
     assert execution_result.error.exit_code == 7
     assert execution_result.command_result is not None
     assert execution_result.command_result.exit_code == 7
-    assert all(unit.state == runtime_pb2.RUNTIME_STATE_REQUESTED for unit in resumed.runtime_units)
     assert all(
-        unit.error_code == AdapterErrorKind.BACKEND_FAILURE for unit in resumed.runtime_units
+        unit.state == runtime_pb2.RUNTIME_STATE_REQUESTED for unit in checkpointed.runtime_units
     )
-    assert all(unit.status_reason == "unknown" for unit in resumed.runtime_units)
+    assert all(
+        unit.error_code == AdapterErrorKind.BACKEND_FAILURE for unit in checkpointed.runtime_units
+    )
+    assert all(unit.status_reason == "checkpointing" for unit in checkpointed.runtime_units)
 
 
-def test_executor_does_not_expose_backend_lifecycle_mutators() -> None:
+def test_executor_exposes_only_internal_offload_reload_mutators() -> None:
     executor = RuntimeExecutor()
 
-    for name in ("pause", "resume", "stop", "terminate"):
+    for name in ("pause", "resume", "stop", "terminate", "recreate"):
         assert not hasattr(executor, name)
+    for name in ("offload", "reload"):
+        assert hasattr(executor, name)
 
 
-def test_executor_generation_advances_and_survives_restore() -> None:
-    process_driver = FakeProcessDriver()
-    command_driver = FakeCommandDriver(process_driver=process_driver)
-    executor = RuntimeExecutor(process_driver=process_driver, command_driver=command_driver)
+def test_executor_rejects_action_without_an_implementing_adapter() -> None:
+    executor = RuntimeExecutor(command_driver=FakeCommandDriver())
+    executor.register_runtime(_manifest())
+    bundle = executor.registry.bundle_for(executor._manifests["run-1"])
+    for adapter in (
+        bundle.framework,
+        bundle.execution,
+        bundle.trainer,
+        bundle.rollout_engine,
+    ):
+        cast(Any, adapter)._supported_actions = tuple(
+            candidate
+            for candidate in adapter.supported_actions
+            if candidate is not LifecycleAction.SLEEP
+        )
+
+    with pytest.raises(
+        AdapterUnavailableError,
+        match="no selected runtime adapter supports lifecycle action sleep",
+    ):
+        executor.offload("run-1", idempotency_key="offload-unsupported")
+
+
+def test_executor_generation_advances_and_can_restore_durable_watermark() -> None:
+    command_driver = FakeCommandDriver()
+    executor = RuntimeExecutor(command_driver=command_driver)
     executor.register_runtime(_manifest())
 
     first = executor.start("run-1", idempotency_key="start-1")
@@ -202,22 +214,18 @@ def test_executor_generation_advances_and_survives_restore() -> None:
     assert second.generation == 2
     assert all(unit.generation == 2 for unit in second.runtime_units)
 
-    restarted = RuntimeExecutor(process_driver=process_driver, command_driver=command_driver)
-    restarted.restore(executor.snapshot())
-    reconciled = restarted.reconcile("run-1")
-    assert reconciled.ok
-    assert reconciled.reconciled
-    assert reconciled.generation == 2
-    assert all(unit.generation == 2 for unit in reconciled.runtime_units)
-    assert all(
-        unit.state == runtime_pb2.RUNTIME_STATE_REQUESTED for unit in reconciled.runtime_units
-    )
+    restarted = RuntimeExecutor(command_driver=command_driver)
+    manifest, units = restarted.register_runtime(_manifest())
+    assert manifest.run_id == "run-1"
+    restarted.restore_runtime_generation("run-1", 2)
+    restarted.register_runtime(manifest, units)
+    next_start = restarted.start("run-1", idempotency_key="start-3")
+    assert next_start.generation == 3
 
 
 def test_executor_restores_durable_start_idempotency_from_runtime_units() -> None:
-    process_driver = FakeProcessDriver()
-    command_driver = FakeCommandDriver(process_driver=process_driver)
-    executor = RuntimeExecutor(process_driver=process_driver, command_driver=command_driver)
+    command_driver = FakeCommandDriver()
+    executor = RuntimeExecutor(command_driver=command_driver)
     manifest, _runtime_units = executor.register_runtime(_manifest())
 
     started = executor.start("run-1", idempotency_key="start-1")
@@ -228,7 +236,7 @@ def test_executor_restores_durable_start_idempotency_from_runtime_units() -> Non
         persisted.annotations["tgsrl.start_idempotency_key"] = "start-1"
         persisted_units.append(persisted)
 
-    restarted = RuntimeExecutor(process_driver=process_driver, command_driver=command_driver)
+    restarted = RuntimeExecutor(command_driver=command_driver)
     restarted.register_runtime(manifest, persisted_units)
 
     started_again = restarted.start("run-1", idempotency_key="start-1")

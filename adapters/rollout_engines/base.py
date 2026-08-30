@@ -12,6 +12,7 @@ from adapters.compliance.runtime import (
     clone_manifest,
     dependency_available,
     ensure_nonblank,
+    manifest_has_explicit_bridge_target,
 )
 from adapters.control import BridgeKind
 
@@ -24,15 +25,15 @@ class BaseRolloutEngineAdapter(BaseComponentAdapter, RolloutEngineAdapter):
     launch_metadata = ComponentLaunchMetadata(
         component_kind="rollout_engine",
         module_name="adapters.control",
-        bridge_module_name="adapters.providers.rollout_engine",
         preferred_bridge_kind=BridgeKind.API_HOOK,
     )
-    _supported_actions = (
+    _supported_actions: tuple[LifecycleAction, ...] = (
         LifecycleAction.VALIDATE,
         LifecycleAction.COMPILE,
         LifecycleAction.PREPARE,
         LifecycleAction.LAUNCH,
         LifecycleAction.STATUS,
+        LifecycleAction.PREPARE_PAUSE,
         LifecycleAction.PAUSE,
         LifecycleAction.RESUME,
         LifecycleAction.CHECKPOINT,
@@ -44,9 +45,15 @@ class BaseRolloutEngineAdapter(BaseComponentAdapter, RolloutEngineAdapter):
         LifecycleAction.RECREATE,
     )
 
+    def _supported_component_names(self) -> set[str]:
+        names = {self.component_name.casefold()}
+        if self.component_name.casefold() == "fake":
+            names.add("mock")
+        return names
+
     def describe_support(self, manifest: runtime_pb2.RuntimeManifest) -> SupportReport:
         normalized = self.validate_manifest(manifest)
-        if normalized.rollout_engine.casefold() != self.component_name.casefold():
+        if normalized.rollout_engine.casefold() not in self._supported_component_names():
             return SupportReport(
                 status=AdapterSupport.UNSUPPORTED,
                 summary=(
@@ -54,7 +61,15 @@ class BaseRolloutEngineAdapter(BaseComponentAdapter, RolloutEngineAdapter):
                     f"not {self.component_name}"
                 ),
             )
-        if not dependency_available(self.dependency_name):
+        explicit_bridge = manifest_has_explicit_bridge_target(
+            normalized, component="rollout_engine", adapter=self.component_name
+        )
+        if self.component_name != "fake" and not explicit_bridge:
+            return SupportReport(
+                status=AdapterSupport.UNAVAILABLE,
+                summary=f"{self.component_name} requires an explicit rollout-engine bridge",
+            )
+        if not dependency_available(self.dependency_name) and not explicit_bridge:
             return SupportReport(
                 status=AdapterSupport.UNAVAILABLE,
                 summary=f"{self.component_name} dependency is unavailable",

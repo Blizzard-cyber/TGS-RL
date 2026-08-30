@@ -178,6 +178,20 @@ class RuntimeControlServicer(runtime_pb2_grpc.RuntimeControlServiceServicer):
             await context.abort(grpc.StatusCode.FAILED_PRECONDITION, str(error))
             raise AssertionError("context.abort returned unexpectedly") from error
 
+    async def PreparePauseRuntime(
+        self,
+        request: runtime_pb2.PreparePauseRuntimeRequest,
+        context: grpc.aio.ServicerContext[
+            runtime_pb2.PreparePauseRuntimeRequest, runtime_pb2.PreparePauseRuntimeResponse
+        ],
+    ) -> runtime_pb2.PreparePauseRuntimeResponse:
+        try:
+            async with self._supervisor.lifecycle.lock_for_run(request.run_id):
+                return self._supervisor.prepare_pause_runtime(request)
+        except (grpc.aio.AioRpcError, KeyError, RuntimeError, ValueError) as error:
+            await _abort_mutation(context, error)
+            raise AssertionError("context.abort returned unexpectedly") from error
+
     async def ResumeRuntime(
         self,
         request: runtime_pb2.ResumeRuntimeRequest,
@@ -208,6 +222,34 @@ class RuntimeControlServicer(runtime_pb2_grpc.RuntimeControlServiceServicer):
         try:
             async with self._supervisor.lifecycle.lock_for_run(request.run_id):
                 return self._supervisor.checkpoint_runtime(request)
+        except (grpc.aio.AioRpcError, KeyError, RuntimeError, ValueError) as error:
+            await _abort_mutation(context, error)
+            raise AssertionError("context.abort returned unexpectedly") from error
+
+    async def OffloadRuntime(
+        self,
+        request: runtime_pb2.OffloadRuntimeRequest,
+        context: grpc.aio.ServicerContext[
+            runtime_pb2.OffloadRuntimeRequest, runtime_pb2.OffloadRuntimeResponse
+        ],
+    ) -> runtime_pb2.OffloadRuntimeResponse:
+        try:
+            async with self._supervisor.lifecycle.lock_for_run(request.run_id):
+                return self._supervisor.offload_runtime(request)
+        except (grpc.aio.AioRpcError, KeyError, RuntimeError, ValueError) as error:
+            await _abort_mutation(context, error)
+            raise AssertionError("context.abort returned unexpectedly") from error
+
+    async def ReloadRuntime(
+        self,
+        request: runtime_pb2.ReloadRuntimeRequest,
+        context: grpc.aio.ServicerContext[
+            runtime_pb2.ReloadRuntimeRequest, runtime_pb2.ReloadRuntimeResponse
+        ],
+    ) -> runtime_pb2.ReloadRuntimeResponse:
+        try:
+            async with self._supervisor.lifecycle.lock_for_run(request.run_id):
+                return self._supervisor.reload_runtime(request)
         except (grpc.aio.AioRpcError, KeyError, RuntimeError, ValueError) as error:
             await _abort_mutation(context, error)
             raise AssertionError("context.abort returned unexpectedly") from error

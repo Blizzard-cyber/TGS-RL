@@ -1,10 +1,10 @@
-"""Fake provider hooks used by adapter contract tests."""
+"""Deterministic lifecycle bridge for the local fake runtime."""
 
 from adapters.control import CommandResult, ControlRequest
 
 
 def handle_lifecycle(request: ControlRequest) -> CommandResult:
-    """Return a deterministic success for local fake adapters only."""
+    """Return a stable success record without external side effects."""
     return CommandResult(
         exit_code=0,
         stdout=(

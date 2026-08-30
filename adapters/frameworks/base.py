@@ -12,6 +12,7 @@ from adapters.compliance.runtime import (
     clone_manifest,
     dependency_available,
     ensure_nonblank,
+    manifest_has_explicit_bridge_target,
 )
 from adapters.control import BridgeKind
 
@@ -24,15 +25,15 @@ class BaseFrameworkAdapter(BaseComponentAdapter, FrameworkAdapter):
     launch_metadata = ComponentLaunchMetadata(
         component_kind="framework",
         module_name="adapters.control",
-        bridge_module_name="adapters.providers.framework",
         preferred_bridge_kind=BridgeKind.PYTHON_MODULE,
     )
-    _supported_actions = (
+    _supported_actions: tuple[LifecycleAction, ...] = (
         LifecycleAction.VALIDATE,
         LifecycleAction.COMPILE,
         LifecycleAction.PREPARE,
         LifecycleAction.LAUNCH,
         LifecycleAction.STATUS,
+        LifecycleAction.PREPARE_PAUSE,
         LifecycleAction.PAUSE,
         LifecycleAction.RESUME,
         LifecycleAction.CHECKPOINT,
@@ -59,7 +60,15 @@ class BaseFrameworkAdapter(BaseComponentAdapter, FrameworkAdapter):
                     f"received framework={normalized.framework}",
                 ),
             )
-        if not dependency_available(self.dependency_name):
+        explicit_bridge = manifest_has_explicit_bridge_target(
+            normalized, component="framework", adapter=self.component_name
+        )
+        if self.component_name != "fake" and not explicit_bridge:
+            return SupportReport(
+                status=AdapterSupport.UNAVAILABLE,
+                summary=f"{self.component_name} requires an explicit framework bridge",
+            )
+        if not dependency_available(self.dependency_name) and not explicit_bridge:
             return SupportReport(
                 status=AdapterSupport.UNAVAILABLE,
                 summary=f"{self.component_name} dependency is unavailable",

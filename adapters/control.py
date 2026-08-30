@@ -7,7 +7,7 @@ import importlib
 import os
 import subprocess
 import sys
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from enum import StrEnum
 from typing import Any, Protocol, runtime_checkable
 
@@ -16,8 +16,6 @@ from tgsrl.v1 import runtime_pb2
 from adapters.compliance.runtime import (
     AdapterUnavailableError,
     LifecycleAction,
-    LifecycleCall,
-    RunnerKind,
 )
 
 
@@ -28,16 +26,6 @@ class CommandResult:
     exit_code: int
     stdout: str = ""
     stderr: str = ""
-
-
-@dataclass(frozen=True)
-class ProcessHandle:
-    """Result from a process-style adapter action."""
-
-    pid: int
-    argv: tuple[str, ...]
-    env: tuple[tuple[str, str], ...] = ()
-    working_directory: str = ""
 
 
 class BridgeKind(StrEnum):
@@ -92,109 +80,11 @@ class CommandRunner(Protocol):
 
 
 @runtime_checkable
-class ProcessRunner(Protocol):
-    """Runner for long-lived process launches."""
-
-    def start(
-        self,
-        *,
-        argv: tuple[str, ...],
-        env: tuple[tuple[str, str], ...],
-        working_directory: str,
-    ) -> ProcessHandle:
-        """Start one process and return its handle."""
-
-
-@dataclass(frozen=True)
-class ExecutedAction:
-    """Observed outcome for one adapter lifecycle action."""
-
-    call: LifecycleCall
-    command_result: CommandResult | None = None
-    process_handle: ProcessHandle | None = None
-
-
-@runtime_checkable
 class LifecycleHook(Protocol):
     """Provider bridge hook contract."""
 
-    def handle_lifecycle(
-        self, request: ControlRequest
-    ) -> int | bool | CommandResult | ProcessHandle | None:
+    def handle_lifecycle(self, request: ControlRequest) -> int | bool | CommandResult | None:
         """Handle one lifecycle request."""
-
-
-@dataclass
-class AdapterExecutor:
-    """Execute adapter lifecycle calls through injectable runners."""
-
-    command_runner: CommandRunner | None = None
-    process_runner: ProcessRunner | None = None
-
-    def execute(self, call: LifecycleCall) -> ExecutedAction:
-        """Run one lifecycle call with the appropriate injected runner."""
-        if call.runner_kind is RunnerKind.PROCESS:
-            if self.process_runner is None:
-                raise AdapterUnavailableError("process runner is unavailable")
-            handle = self.process_runner.start(
-                argv=call.launch_spec.argv,
-                env=call.launch_spec.env,
-                working_directory=call.launch_spec.working_directory,
-            )
-            return ExecutedAction(call=call, process_handle=handle)
-        if self.command_runner is None:
-            raise AdapterUnavailableError("command runner is unavailable")
-        result = self.command_runner.run(
-            argv=call.launch_spec.argv,
-            env=call.launch_spec.env,
-            working_directory=call.launch_spec.working_directory,
-        )
-        return ExecutedAction(call=call, command_result=result)
-
-
-@dataclass
-class RecordingCommandRunner:
-    """Test helper that records command invocations."""
-
-    calls: list[tuple[tuple[str, ...], tuple[tuple[str, str], ...], str]] = field(
-        default_factory=list
-    )
-    next_result: CommandResult = field(default_factory=lambda: CommandResult(exit_code=0))
-
-    def run(
-        self,
-        *,
-        argv: tuple[str, ...],
-        env: tuple[tuple[str, str], ...],
-        working_directory: str,
-    ) -> CommandResult:
-        self.calls.append((argv, env, working_directory))
-        return self.next_result
-
-
-@dataclass
-class RecordingProcessRunner:
-    """Test helper that records process launches."""
-
-    calls: list[tuple[tuple[str, ...], tuple[tuple[str, str], ...], str]] = field(
-        default_factory=list
-    )
-    next_pid: int = 1001
-
-    def start(
-        self,
-        *,
-        argv: tuple[str, ...],
-        env: tuple[tuple[str, str], ...],
-        working_directory: str,
-    ) -> ProcessHandle:
-        self.calls.append((argv, env, working_directory))
-        return ProcessHandle(
-            pid=self.next_pid,
-            argv=argv,
-            env=env,
-            working_directory=working_directory,
-        )
 
 
 def _artifact_matches(
@@ -254,7 +144,11 @@ def resolve_bridge_target(
     preferred_kind: BridgeKind,
 ) -> BridgeTarget:
     """Resolve command/API/module target from typed manifest fields."""
-    command_argv = tuple(token for token in (*manifest.command, *manifest.args) if token.strip())
+    command_argv = (
+        tuple(token for token in (*manifest.command, *manifest.args) if token.strip())
+        if component.casefold() == "execution" and action is LifecycleAction.LAUNCH
+        else ()
+    )
     target_env = manifest_typed_environment(manifest)
     working_directory = manifest.working_directory.strip()
     module_name = _artifact_value(
@@ -397,9 +291,28 @@ def execute_control_request(
         if not target.command_argv:
             raise AdapterUnavailableError("command bridge target is missing command argv")
         runner = command_runner.run if command_runner is not None else _default_command_runner
+        merged_env = tuple(
+            sorted(
+                {
+                    **{
+                        "TGSRL_COMPONENT": request.component,
+                        "TGSRL_ADAPTER": request.adapter,
+                        "TGSRL_ACTION": request.action.value,
+                        "TGSRL_RUN_ID": request.run_id,
+                        "TGSRL_JOB_ID": request.job_id,
+                        "TGSRL_TRACE_ID": request.trace_id,
+                        "TGSRL_POLICY_VERSION": request.policy_version,
+                        "TGSRL_DESIRED_UNITS": str(request.desired_units),
+                        "TGSRL_QUEUE": request.queue,
+                        "TGSRL_DETERMINISTIC_SEED": str(request.deterministic_seed),
+                    },
+                    **dict(target.env),
+                }.items()
+            )
+        )
         return runner(
             argv=target.command_argv,
-            env=target.env,
+            env=merged_env,
             working_directory=target.working_directory,
         )
     if not target.module_name:
@@ -416,8 +329,6 @@ def execute_control_request(
     result = hook(request)
     if isinstance(result, CommandResult):
         return result
-    if isinstance(result, ProcessHandle):
-        return CommandResult(exit_code=0, stdout=str(result.pid))
     if isinstance(result, bool):
         return CommandResult(exit_code=0 if result else 1)
     if isinstance(result, int):

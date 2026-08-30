@@ -16,13 +16,12 @@ from tgsrl_runtime.duration import (
     to_timestamp,
     utc_now,
 )
-from tgsrl_runtime.executor import (
+from tgsrl_runtime.execution_drivers import (
     FakeCommandDriver,
-    FakeProcessDriver,
-    RuntimeExecutionResult,
-    RuntimeExecutor,
-    SubprocessDriver,
+    SubprocessCommandDriver,
 )
+from tgsrl_runtime.execution_types import RuntimeExecutionResult
+from tgsrl_runtime.executor import RuntimeExecutor
 from tgsrl_runtime.experiments import ExperimentCoordinator, ReplayExperimentStore
 from tgsrl_runtime.intent import (
     IntentBuilder,
@@ -81,7 +80,6 @@ __all__ = [
     "DecisionStatus",
     "ExperimentCoordinator",
     "FakeCommandDriver",
-    "FakeProcessDriver",
     "GapClassifier",
     "GapKind",
     "IncrementalDAG",
@@ -111,7 +109,7 @@ __all__ = [
     "SchedulerClient",
     "SchedulerReplayRunner",
     "SeedMode",
-    "SubprocessDriver",
+    "SubprocessCommandDriver",
     "SyntheticScenario",
     "SyntheticWorkload",
     "TraceAggregator",

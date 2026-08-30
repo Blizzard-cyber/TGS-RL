@@ -1,4 +1,4 @@
-"""Runtime execution orchestration and compatibility re-exports."""
+"""Runtime execution orchestration."""
 
 from __future__ import annotations
 
@@ -7,10 +7,7 @@ from dataclasses import dataclass, field
 
 from tgsrl.v1 import runtime_pb2
 
-import tgsrl_runtime.execution_drivers as _execution_drivers
-import tgsrl_runtime.execution_types as _execution_types
 from adapters import (
-    AdapterErrorKind,
     AdapterUnavailableError,
     CommandResult,
     LaunchSpec,
@@ -25,21 +22,13 @@ from adapters.compliance.runtime import (
     ErrorContract,
     runtime_state_contract,
 )
+from tgsrl_runtime.execution_types import (
+    CommandDriver,
+    ComponentActionResult,
+    NormalizedActionError,
+    RuntimeExecutionResult,
+)
 from tgsrl_runtime.proto_utils import clone_message, stable_cursor
-
-CommandDriver = _execution_types.CommandDriver
-ProcessDriver = _execution_types.ProcessDriver
-ProcessStatus = _execution_types.ProcessStatus
-NormalizedActionError = _execution_types.NormalizedActionError
-ComponentActionResult = _execution_types.ComponentActionResult
-RuntimeExecutionResult = _execution_types.RuntimeExecutionResult
-ComponentProcessRecord = _execution_types.ComponentProcessRecord
-ExecutorSnapshot = _execution_types.ExecutorSnapshot
-DriverBehavior = _execution_types.DriverBehavior
-
-FakeProcessDriver = _execution_drivers.FakeProcessDriver
-FakeCommandDriver = _execution_drivers.FakeCommandDriver
-SubprocessDriver = _execution_drivers.SubprocessDriver
 
 _START_IDEMPOTENCY_KEY_ANNOTATION = "tgsrl.start_idempotency_key"
 _START_PUBLICATION_STATE_ANNOTATION = "tgsrl.start_publication_state"
@@ -53,6 +42,33 @@ def _component_adapters(bundle: RuntimeAdapterBundle) -> tuple[tuple[str, Compon
         ("execution", bundle.execution),
         ("trainer", bundle.trainer),
         ("rollout_engine", bundle.rollout_engine),
+    )
+
+
+def _components_for_action(
+    bundle: RuntimeAdapterBundle,
+    action: LifecycleAction,
+) -> tuple[tuple[str, ComponentAdapter], ...]:
+    candidates: tuple[tuple[str, ComponentAdapter], ...]
+    if action in {
+        LifecycleAction.SLEEP,
+        LifecycleAction.WAKE,
+        LifecycleAction.WEIGHT_UPDATE,
+    }:
+        candidates = (("rollout_engine", bundle.rollout_engine),)
+    elif action is LifecycleAction.RECREATE:
+        candidates = (
+            ("framework", bundle.framework),
+            ("execution", bundle.execution),
+            ("trainer", bundle.trainer),
+            ("rollout_engine", bundle.rollout_engine),
+        )
+    else:
+        candidates = _component_adapters(bundle)
+    return tuple(
+        (component, adapter)
+        for component, adapter in candidates
+        if action in adapter.supported_actions
     )
 
 
@@ -151,14 +167,11 @@ class RuntimeExecutor:
 
     registry: RuntimeAdapterRegistry = field(default_factory=RuntimeAdapterRegistry)
     command_driver: CommandDriver | None = None
-    process_driver: ProcessDriver | None = None
     default_timeout_seconds: float | None = None
     action_timeouts: Mapping[LifecycleAction, float] = field(default_factory=dict)
     _manifests: dict[str, runtime_pb2.RuntimeManifest] = field(default_factory=dict)
     _runtime_units: dict[str, tuple[runtime_pb2.RuntimeUnit, ...]] = field(default_factory=dict)
     _generations: dict[str, int] = field(default_factory=dict)
-    _desired_states: dict[str, int] = field(default_factory=dict)
-    _processes: dict[str, dict[str, ComponentProcessRecord]] = field(default_factory=dict)
     _idempotency_cache: dict[tuple[str, LifecycleAction, str], RuntimeExecutionResult] = field(
         default_factory=dict
     )
@@ -177,52 +190,10 @@ class RuntimeExecutor:
             clone_message(unit) for unit in selected_units
         )
         self._generations.setdefault(normalized.run_id, 0)
-        self._desired_states.setdefault(normalized.run_id, runtime_pb2.RUNTIME_STATE_REQUESTED)
-        self._processes.setdefault(normalized.run_id, {})
         self._hydrate_start_idempotency_cache(normalized.run_id)
         return clone_message(normalized), tuple(
             clone_message(unit) for unit in self._runtime_units[normalized.run_id]
         )
-
-    def snapshot(self) -> ExecutorSnapshot:
-        return ExecutorSnapshot(
-            manifests=tuple(clone_message(item) for item in self._manifests.values()),
-            runtime_units=tuple(
-                (run_id, tuple(clone_message(unit) for unit in units))
-                for run_id, units in self._runtime_units.items()
-            ),
-            generations=tuple(sorted(self._generations.items())),
-            desired_states=tuple(sorted(self._desired_states.items())),
-            processes=tuple(
-                (
-                    run_id,
-                    tuple(
-                        ComponentProcessRecord(
-                            component=record.component,
-                            generation=record.generation,
-                            handle=record.handle,
-                            requested_state=record.requested_state,
-                            observed_state=record.observed_state,
-                        )
-                        for record in sorted(records.values(), key=lambda item: item.component)
-                    ),
-                )
-                for run_id, records in sorted(self._processes.items())
-            ),
-        )
-
-    def restore(self, snapshot: ExecutorSnapshot) -> None:
-        self._manifests = {
-            manifest.run_id: clone_message(manifest) for manifest in snapshot.manifests
-        }
-        for run_id, units in snapshot.runtime_units:
-            self._runtime_units[run_id] = tuple(clone_message(unit) for unit in units)
-        self._generations = dict(snapshot.generations)
-        self._desired_states = dict(snapshot.desired_states)
-        self._processes = {
-            run_id: {record.component: record for record in records}
-            for run_id, records in snapshot.processes
-        }
 
     def restore_runtime_generation(self, run_id: str, generation: int) -> None:
         """Restore a persisted generation watermark for one registered runtime."""
@@ -260,6 +231,12 @@ class RuntimeExecutor:
         if idempotency_key and not defer_idempotency:
             self._idempotency_cache[(run_id, LifecycleAction.LAUNCH, idempotency_key)] = result
         return result
+
+    def offload(self, run_id: str, *, idempotency_key: str = "") -> RuntimeExecutionResult:
+        return self._apply_action(run_id, LifecycleAction.SLEEP, idempotency_key=idempotency_key)
+
+    def reload(self, run_id: str, *, idempotency_key: str = "") -> RuntimeExecutionResult:
+        return self._apply_action(run_id, LifecycleAction.WAKE, idempotency_key=idempotency_key)
 
     def complete_start(
         self,
@@ -301,9 +278,6 @@ class RuntimeExecutor:
             idempotent=idempotent,
         )
 
-    def status(self, run_id: str, *, idempotency_key: str = "") -> RuntimeExecutionResult:
-        return self._apply_action(run_id, LifecycleAction.STATUS, idempotency_key=idempotency_key)
-
     def checkpoint(
         self,
         run_id: str,
@@ -326,63 +300,12 @@ class RuntimeExecutor:
             component_results=result.component_results,
             idempotent=result.idempotent,
             checkpoint_ref=ref,
-            reconciled=result.reconciled,
         )
 
-    def reconcile(
-        self,
-        run_id: str,
-        *,
-        recovered_processes: Sequence[ComponentProcessRecord] = (),
-        reported_action: LifecycleAction = LifecycleAction.STATUS,
-    ) -> RuntimeExecutionResult:
-        manifest = self._ensure_run(run_id)
-        generation = self._generations.get(run_id, 0)
-        records = list(self._processes.get(run_id, {}).values()) + list(recovered_processes)
-        component_results: list[ComponentActionResult] = []
-        for record in records:
-            if record.generation != generation:
-                continue
-            adapter = self._component_for(manifest, record.component)
-            call = adapter.lifecycle_call(manifest, LifecycleAction.STATUS)
-            try:
-                if self.process_driver is None:
-                    raise AdapterUnavailableError("process driver is unavailable")
-                status = self.process_driver.inspect(
-                    handle=record.handle,
-                    timeout_seconds=self._timeout_for(LifecycleAction.STATUS),
-                )
-                component_results.append(
-                    ComponentActionResult(
-                        component=record.component,
-                        action=reported_action,
-                        runner_kind=RunnerKind.PROCESS,
-                        generation=generation,
-                        requested_state=record.requested_state,
-                        observed_state=status.state,
-                        launch_spec=call.launch_spec,
-                        process_handle=record.handle,
-                        error=self._inspect_error(status),
-                    )
-                )
-            except Exception as error:
-                component_results.append(
-                    self._failure_result(
-                        adapter=adapter,
-                        action=reported_action,
-                        generation=generation,
-                        error=error,
-                        launch_spec=call.launch_spec,
-                    )
-                )
-        return self._finalize(
-            run_id,
-            action=reported_action,
-            generation=generation,
-            desired_state=self._desired_states.get(run_id, runtime_pb2.RUNTIME_STATE_REQUESTED),
-            component_results=component_results,
-            idempotency_key="",
-            reconciled=True,
+    def prepare_pause(self, run_id: str, *, idempotency_key: str = "") -> RuntimeExecutionResult:
+        """Ask worker adapters to reach a safe point without pausing infrastructure."""
+        return self._apply_action(
+            run_id, LifecycleAction.PREPARE_PAUSE, idempotency_key=idempotency_key
         )
 
     def _apply_action(
@@ -398,7 +321,6 @@ class RuntimeExecutor:
             return cached
         generation = self._generations.get(run_id, 0)
         desired_state = runtime_state_contract(action).requested_state
-        self._desired_states[run_id] = desired_state
         if action is LifecycleAction.LAUNCH:
             return self._finalize(
                 run_id,
@@ -407,11 +329,15 @@ class RuntimeExecutor:
                 desired_state=desired_state,
                 component_results=(),
                 idempotency_key=idempotency_key,
-                reconciled=False,
             )
         bundle = self.registry.bundle_for(manifest)
+        components = _components_for_action(bundle, action)
+        if not components:
+            raise AdapterUnavailableError(
+                f"no selected runtime adapter supports lifecycle action {action.value}"
+            )
         component_results: list[ComponentActionResult] = []
-        for component, adapter in _component_adapters(bundle):
+        for component, adapter in components:
             launch_spec = self._placeholder_launch_spec(manifest, component, action)
             try:
                 call = adapter.lifecycle_call(manifest, action)
@@ -441,12 +367,7 @@ class RuntimeExecutor:
             desired_state=desired_state,
             component_results=component_results,
             idempotency_key=idempotency_key,
-            reconciled=False,
         )
-        if result.ok and action is LifecycleAction.STATUS and self._processes.get(run_id):
-            result = self.reconcile(run_id, reported_action=action)
-            if idempotency_key:
-                self._idempotency_cache[(run_id, action, idempotency_key)] = result
         return result
 
     def _run_component_command(
@@ -524,17 +445,6 @@ class RuntimeExecutor:
             error=normalized,
         )
 
-    def _inspect_error(self, status: ProcessStatus) -> NormalizedActionError | None:
-        if status.state != runtime_pb2.RUNTIME_STATE_FAILED:
-            return None
-        return NormalizedActionError(
-            kind=AdapterErrorKind.BACKEND_FAILURE,
-            retryable=False,
-            summary=status.detail or "process failed",
-            resulting_state=runtime_pb2.RUNTIME_STATE_FAILED,
-            exit_code=status.exit_code,
-        )
-
     def _finalize(
         self,
         run_id: str,
@@ -544,21 +454,8 @@ class RuntimeExecutor:
         desired_state: int,
         component_results: Sequence[ComponentActionResult],
         idempotency_key: str,
-        reconciled: bool,
     ) -> RuntimeExecutionResult:
         manifest = self._ensure_run(run_id)
-        records = self._processes.setdefault(run_id, {})
-        for item in component_results:
-            record = records.get(item.component)
-            if record is None or record.generation != generation:
-                continue
-            records[item.component] = ComponentProcessRecord(
-                component=record.component,
-                generation=record.generation,
-                handle=record.handle,
-                requested_state=item.requested_state,
-                observed_state=item.observed_state,
-            )
         units = self._apply_unit_state(
             run_id,
             action=action,
@@ -571,11 +468,10 @@ class RuntimeExecutor:
             runtime_units=units,
             action=action,
             generation=generation,
-            cursor=stable_cursor(action.value, run_id, generation, idempotency_key, reconciled),
+            cursor=stable_cursor(action.value, run_id, generation, idempotency_key),
             component_results=tuple(component_results),
             idempotent=False,
             checkpoint_ref="",
-            reconciled=reconciled,
         )
         if idempotency_key and action is not LifecycleAction.LAUNCH:
             self._idempotency_cache[(run_id, action, idempotency_key)] = result
@@ -634,7 +530,6 @@ class RuntimeExecutor:
             component_results=cached.component_results,
             idempotent=True,
             checkpoint_ref=cached.checkpoint_ref,
-            reconciled=cached.reconciled,
         )
 
     def _hydrate_start_idempotency_cache(self, run_id: str) -> None:
@@ -654,7 +549,6 @@ class RuntimeExecutor:
             component_results=(),
             idempotent=False,
             checkpoint_ref="",
-            reconciled=False,
         )
 
     def _timeout_for(self, action: LifecycleAction) -> float | None:
@@ -664,13 +558,6 @@ class RuntimeExecutor:
         if run_id not in self._manifests:
             raise ValueError(f"unknown run_id: {run_id}")
         return clone_message(self._manifests[run_id])
-
-    def _component_for(
-        self,
-        manifest: runtime_pb2.RuntimeManifest,
-        component: str,
-    ) -> ComponentAdapter:
-        return dict(_component_adapters(self.registry.bundle_for(manifest)))[component]
 
     def _placeholder_launch_spec(
         self,

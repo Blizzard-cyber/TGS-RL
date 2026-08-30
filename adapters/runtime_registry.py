@@ -12,8 +12,10 @@ from tgsrl.v1 import execution_pb2, job_pb2, resource_pb2, runtime_pb2, trace_pb
 from adapters.compliance.runtime import (
     ExecutionBackendAdapter,
     FrameworkAdapter,
+    LifecycleAction,
     ManifestValidationError,
     RolloutEngineAdapter,
+    RuntimeAdapterError,
     SupportReport,
     TrainerAdapter,
 )
@@ -225,39 +227,6 @@ def runtime_manifest_from_job(
     )
 
 
-def _component_capabilities(
-    *,
-    component: str,
-    adapter_name: str,
-    report: SupportReport,
-    algorithm_names: tuple[str, ...] = (),
-    rollout_modes: tuple[str, ...] = (),
-) -> resource_pb2.CapabilitySet:
-    return resource_pb2.CapabilitySet(
-        names=[component, adapter_name, report.status],
-        algorithms=list(algorithm_names),
-        rollout_modes=list(rollout_modes),
-        source="runtime-adapter",
-        revision=1,
-        supported_actions=["bind", "pause", "resume", "checkpoint", "release", "terminate"],
-        attributes={
-            "component": component,
-            "adapter": adapter_name,
-            "support_status": report.status,
-            "summary": report.summary,
-        },
-        evidence=[
-            resource_pb2.CapabilityEvidence(
-                evidence_id=f"{component}-{adapter_name}-support",
-                source="runtime-adapter",
-                revision=1,
-                collector="runtime_registry",
-                detail="; ".join(report.diagnostics) if report.diagnostics else report.summary,
-            )
-        ],
-    )
-
-
 def _unit_kind_for_phase(phase_kind: int) -> int:
     return {
         execution_pb2.PHASE_KIND_PREFILL: runtime_pb2.RUNTIME_UNIT_KIND_ROLLOUT,
@@ -291,8 +260,33 @@ class RuntimeAdapterBundle:
         output: list[str] = []
         for component, report in self.support_reports(manifest).items():
             output.append(f"{component}:{report.status}:{report.summary}")
+            executable = self._executable_action_names(component, manifest)
+            unavailable = tuple(
+                action.value for action in LifecycleAction if action.value not in executable
+            )
+            output.append(f"{component}:executable_actions={','.join(executable)}")
+            output.append(f"{component}:unavailable_actions={','.join(unavailable)}")
             output.extend(f"{component}:{detail}" for detail in report.diagnostics)
         return output
+
+    def _executable_action_names(
+        self, component: str, manifest: runtime_pb2.RuntimeManifest
+    ) -> tuple[str, ...]:
+        mapping = {
+            "framework": self.framework,
+            "execution": self.execution,
+            "trainer": self.trainer,
+            "rollout_engine": self.rollout_engine,
+        }
+        adapter = mapping[component]
+        executable: list[str] = []
+        for action in adapter.supported_actions:
+            try:
+                adapter.lifecycle_call(manifest, action)
+            except RuntimeAdapterError:
+                continue
+            executable.append(action.value)
+        return tuple(executable)
 
     def normalized_manifest(
         self, manifest: runtime_pb2.RuntimeManifest
@@ -448,9 +442,20 @@ class RuntimeAdapterRegistry:
     def validate(
         self, manifest: runtime_pb2.RuntimeManifest
     ) -> tuple[runtime_pb2.RuntimeManifest, list[str]]:
+        normalized, _reports, diagnostics = self.evaluate(manifest)
+        return normalized, diagnostics
+
+    def evaluate(
+        self, manifest: runtime_pb2.RuntimeManifest
+    ) -> tuple[
+        runtime_pb2.RuntimeManifest,
+        dict[str, SupportReport],
+        list[str],
+    ]:
+        """Return normalized input and structured adapter availability evidence."""
         bundle = self.bundle_for(manifest)
         normalized = bundle.normalized_manifest(manifest)
-        return normalized, bundle.diagnostics(normalized)
+        return normalized, bundle.support_reports(normalized), bundle.diagnostics(normalized)
 
     def compile(
         self, manifest: runtime_pb2.RuntimeManifest

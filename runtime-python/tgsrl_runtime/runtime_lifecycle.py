@@ -13,7 +13,7 @@ from adapters.compliance.runtime import LifecycleAction
 from tgsrl_runtime.aggregation import TraceSummary
 from tgsrl_runtime.checkpoints import CheckpointRecord
 from tgsrl_runtime.duration import to_timestamp
-from tgsrl_runtime.executor import RuntimeExecutionResult
+from tgsrl_runtime.execution_types import RuntimeExecutionResult
 from tgsrl_runtime.proto_utils import stable_cursor
 from tgsrl_runtime.runtime_errors import RuntimeLifecycleError
 
@@ -167,6 +167,21 @@ class RuntimeLifecycleCoordinator:
             cursor=result.cursor,
         )
 
+    def prepare_pause(
+        self, request: runtime_pb2.PreparePauseRuntimeRequest
+    ) -> runtime_pb2.PreparePauseRuntimeResponse:
+        executor, _manifest = self.supervisor._sync_executor(
+            request.run_id, compile_if_missing=False
+        )
+        result = self.supervisor._require_executor_success(
+            executor.prepare_pause(request.run_id, idempotency_key=request.idempotency_key),
+            action=LifecycleAction.PREPARE_PAUSE,
+        )
+        return runtime_pb2.PreparePauseRuntimeResponse(
+            runtime_units=self._persist_control_result(result),
+            cursor=result.cursor,
+        )
+
     def resume(
         self, request: runtime_pb2.ResumeRuntimeRequest
     ) -> runtime_pb2.ResumeRuntimeResponse:
@@ -220,6 +235,40 @@ class RuntimeLifecycleCoordinator:
             checkpoint_ref=checkpoint_ref,
             completed_at=to_timestamp(completed_at),
             cursor=result.cursor or checkpoint_cursor,
+        )
+
+    def offload(
+        self, request: runtime_pb2.OffloadRuntimeRequest
+    ) -> runtime_pb2.OffloadRuntimeResponse:
+        run_id = request.run_id
+        executor, _manifest = self.supervisor._sync_executor(run_id, compile_if_missing=False)
+        result = self.supervisor._require_executor_success(
+            executor.offload(
+                run_id,
+                idempotency_key=request.idempotency_key,
+            ),
+            action=LifecycleAction.SLEEP,
+        )
+        return runtime_pb2.OffloadRuntimeResponse(
+            runtime_units=self._persist_control_result(result),
+            cursor=result.cursor,
+        )
+
+    def reload(
+        self, request: runtime_pb2.ReloadRuntimeRequest
+    ) -> runtime_pb2.ReloadRuntimeResponse:
+        run_id = request.run_id
+        executor, _manifest = self.supervisor._sync_executor(run_id, compile_if_missing=False)
+        result = self.supervisor._require_executor_success(
+            executor.reload(
+                run_id,
+                idempotency_key=request.idempotency_key,
+            ),
+            action=LifecycleAction.WAKE,
+        )
+        return runtime_pb2.ReloadRuntimeResponse(
+            runtime_units=self._persist_control_result(result),
+            cursor=result.cursor,
         )
 
     def stop(self, request: runtime_pb2.StopRuntimeRequest) -> runtime_pb2.StopRuntimeResponse:
@@ -348,9 +397,13 @@ class RuntimeLifecycleCoordinator:
             else {
                 LifecycleAction.PREPARE: runtime_pb2.RUNTIME_STATE_PREPARING,
                 LifecycleAction.LAUNCH: runtime_pb2.RUNTIME_STATE_STARTING,
+                LifecycleAction.PREPARE_PAUSE: runtime_pb2.RUNTIME_STATE_PAUSING,
                 LifecycleAction.PAUSE: runtime_pb2.RUNTIME_STATE_PAUSING,
                 LifecycleAction.RESUME: runtime_pb2.RUNTIME_STATE_RESUMING,
                 LifecycleAction.CHECKPOINT: runtime_pb2.RUNTIME_STATE_CHECKPOINTING,
+                LifecycleAction.SLEEP: runtime_pb2.RUNTIME_STATE_STOPPING,
+                LifecycleAction.WAKE: runtime_pb2.RUNTIME_STATE_STARTING,
+                LifecycleAction.RECREATE: runtime_pb2.RUNTIME_STATE_TERMINATING,
                 LifecycleAction.STOP: runtime_pb2.RUNTIME_STATE_STOPPING,
                 LifecycleAction.TERMINATE: runtime_pb2.RUNTIME_STATE_TERMINATING,
                 LifecycleAction.STATUS: runtime_pb2.RUNTIME_STATE_UNKNOWN,

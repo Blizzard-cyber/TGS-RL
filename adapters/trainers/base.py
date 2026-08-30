@@ -13,6 +13,7 @@ from adapters.compliance.runtime import (
     clone_manifest,
     dependency_available,
     ensure_nonblank,
+    manifest_has_explicit_bridge_target,
 )
 from adapters.control import BridgeKind
 
@@ -25,15 +26,15 @@ class BaseTrainerAdapter(BaseComponentAdapter, TrainerAdapter):
     launch_metadata = ComponentLaunchMetadata(
         component_kind="trainer",
         module_name="adapters.control",
-        bridge_module_name="adapters.providers.trainer",
         preferred_bridge_kind=BridgeKind.PYTHON_MODULE,
     )
-    _supported_actions = (
+    _supported_actions: tuple[LifecycleAction, ...] = (
         LifecycleAction.VALIDATE,
         LifecycleAction.COMPILE,
         LifecycleAction.PREPARE,
         LifecycleAction.LAUNCH,
         LifecycleAction.STATUS,
+        LifecycleAction.PREPARE_PAUSE,
         LifecycleAction.PAUSE,
         LifecycleAction.RESUME,
         LifecycleAction.CHECKPOINT,
@@ -41,14 +42,28 @@ class BaseTrainerAdapter(BaseComponentAdapter, TrainerAdapter):
         LifecycleAction.TERMINATE,
     )
 
+    def _supported_component_names(self) -> set[str]:
+        names = {self.component_name.casefold()}
+        if self.component_name.casefold() == "fake":
+            names.add("mock")
+        return names
+
     def describe_support(self, manifest: runtime_pb2.RuntimeManifest) -> SupportReport:
         normalized = self.validate_manifest(manifest)
-        if normalized.trainer.casefold() != self.component_name.casefold():
+        if normalized.trainer.casefold() not in self._supported_component_names():
             return SupportReport(
                 status=AdapterSupport.UNSUPPORTED,
                 summary=f"manifest targets trainer {normalized.trainer}, not {self.component_name}",
             )
-        if not dependency_available(self.dependency_name):
+        explicit_bridge = manifest_has_explicit_bridge_target(
+            normalized, component="trainer", adapter=self.component_name
+        )
+        if self.component_name != "fake" and not explicit_bridge:
+            return SupportReport(
+                status=AdapterSupport.UNAVAILABLE,
+                summary=f"{self.component_name} requires an explicit trainer bridge",
+            )
+        if not dependency_available(self.dependency_name) and not explicit_bridge:
             return SupportReport(
                 status=AdapterSupport.UNAVAILABLE,
                 summary=f"{self.component_name} dependency is unavailable",

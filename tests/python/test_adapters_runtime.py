@@ -12,15 +12,13 @@ from tgsrl.v1 import execution_pb2, job_pb2, runtime_pb2, trace_pb2
 
 from adapters import (
     AdapterErrorKind,
-    AdapterExecutor,
     AdapterSupport,
+    AdapterUnavailableError,
     FakeFrameworkAdapter,
     GRPOAdapter,
     LifecycleAction,
     ManifestValidationError,
     PartialAsyncRolloutAdapter,
-    RecordingCommandRunner,
-    RecordingProcessRunner,
     RunnerKind,
     RuntimeAdapterRegistry,
     build_execution_contract,
@@ -111,13 +109,31 @@ def _provider_manifest(
         trainer=trainer,
         rollout_engine=rollout_engine,
     )
+    selected = next(
+        (
+            (component, adapter)
+            for component, adapter in (
+                ("framework", framework),
+                ("execution", execution_backend),
+                ("trainer", trainer),
+                ("rollout_engine", rollout_engine),
+            )
+            if adapter not in {"fake", "mock"}
+        ),
+        ("framework", framework),
+    )
+    component, adapter = selected
     if module_name:
         manifest.artifacts.append(
             runtime_pb2.RuntimeArtifact(
                 artifact_id=f"artifact:{module_name}",
                 kind="python_module",
                 uri=module_name,
-                attributes={"module": module_name},
+                attributes={
+                    "module": module_name,
+                    "component": component,
+                    "adapter": adapter,
+                },
             )
         )
     if endpoint:
@@ -126,7 +142,11 @@ def _provider_manifest(
                 artifact_id=f"endpoint:{endpoint}",
                 kind="endpoint",
                 uri=endpoint,
-                attributes={"endpoint": endpoint},
+                attributes={
+                    "endpoint": endpoint,
+                    "component": component,
+                    "adapter": adapter,
+                },
             )
         )
     return manifest
@@ -328,12 +348,87 @@ def test_real_boundary_skeletons_report_unavailable_without_dependencies() -> No
     assert any("rollout_engine:UNAVAILABLE" in diagnostic for diagnostic in diagnostics)
 
 
+def test_global_command_is_owned_by_execution_backend() -> None:
+    adapter = RayExecutionBackendAdapter()
+    _force_dependency_available(cast(ComponentAdapter, adapter))
+    manifest = _manifest(execution_backend="ray")
+    manifest.command[:] = ("verlctl", "reference-bridge", "--role", "reference")
+    manifest.args[:] = (
+        "--checkpoint-dir",
+        "/tmp/checkpoints/run-1",
+    )
+    manifest.environment["MODEL"] = "policy-1"
+    manifest.working_directory = "/tmp/verl-runtime"
+
+    call = adapter.lifecycle_call(manifest, action=LifecycleAction.LAUNCH)
+
+    assert call.runner_kind is RunnerKind.PROCESS
+    assert call.launch_spec.argv == (
+        "verlctl",
+        "reference-bridge",
+        "--role",
+        "reference",
+        "--checkpoint-dir",
+        "/tmp/checkpoints/run-1",
+    )
+    assert call.launch_spec.working_directory == "/tmp/verl-runtime"
+    assert dict(call.launch_spec.env)["TGSRL_ACTION"] == "launch"
+    assert dict(call.launch_spec.env)["MODEL"] == "policy-1"
+
+    with pytest.raises(AdapterUnavailableError, match="no executable execution bridge"):
+        adapter.lifecycle_call(manifest, action=LifecycleAction.CHECKPOINT)
+
+
+def test_verl_support_diagnostics_surface_explicit_lifecycle_matrix() -> None:
+    adapter = VerlFrameworkAdapter()
+    _force_dependency_available(cast(ComponentAdapter, adapter))
+    manifest = _provider_manifest(framework="verl", module_name="provider.verl")
+
+    report = adapter.describe_support(manifest)
+    assert report.status is AdapterSupport.SUPPORT
+
+    _, diagnostics = RuntimeAdapterRegistry().validate(manifest)
+    expected_actions = (
+        "framework:executable_actions="
+        "validate,compile,prepare,launch,status,prepare_pause,checkpoint"
+    )
+    assert expected_actions in diagnostics
+    unsupported = next(
+        diagnostic
+        for diagnostic in diagnostics
+        if diagnostic.startswith("framework:unavailable_actions=")
+    )
+    assert unsupported == (
+        "framework:unavailable_actions="
+        "pause,resume,stop,terminate,weight_update,sleep,wake,recreate"
+    )
+
+
+@pytest.mark.parametrize(
+    "action",
+    [
+        LifecycleAction.PAUSE,
+        LifecycleAction.RESUME,
+        LifecycleAction.STOP,
+        LifecycleAction.TERMINATE,
+        LifecycleAction.RECREATE,
+    ],
+)
+def test_verl_rejects_unsupported_framework_lifecycle_actions(action: LifecycleAction) -> None:
+    adapter = VerlFrameworkAdapter()
+    _force_dependency_available(cast(ComponentAdapter, adapter))
+    manifest = _provider_manifest(framework="verl", module_name="provider.verl")
+
+    with pytest.raises(Exception, match=rf"verl does not support lifecycle action {action.value}"):
+        adapter.lifecycle_call(manifest, action=action)
+
+
 def test_fake_framework_exposes_executable_lifecycle_contract() -> None:
     adapter = FakeFrameworkAdapter()
     manifest = _manifest()
 
-    launch_call = adapter.lifecycle_call(manifest, action=adapter._supported_actions[3])
-    status_call = adapter.lifecycle_call(manifest, action=adapter._supported_actions[4])
+    launch_call = adapter.lifecycle_call(manifest, action=adapter.supported_actions[3])
+    status_call = adapter.lifecycle_call(manifest, action=adapter.supported_actions[4])
 
     assert launch_call.action.value == "launch"
     assert launch_call.runner_kind is RunnerKind.PROCESS
@@ -350,7 +445,7 @@ def test_fake_framework_exposes_executable_lifecycle_contract() -> None:
     assert status_call.state_contract.requires_external_event is False
 
 
-def test_rollout_engine_adds_rollout_specific_actions_and_runner_execution() -> None:
+def test_rollout_engine_adds_rollout_specific_actions() -> None:
     manifest = _manifest(rollout_engine="fake")
     fake_rollout = RuntimeAdapterRegistry().bundle_for(manifest).rollout_engine
 
@@ -364,32 +459,15 @@ def test_rollout_engine_adds_rollout_specific_actions_and_runner_execution() -> 
         runtime_pb2.RUNTIME_STATE_FAILED,
     )
 
-    command_runner = RecordingCommandRunner(next_result=CommandResult(exit_code=0, stdout="ok"))
-    process_runner = RecordingProcessRunner(next_pid=4321)
-    executor = AdapterExecutor(command_runner=command_runner, process_runner=process_runner)
-
-    launched = executor.execute(lifecycle["launch"])
-    updated = executor.execute(lifecycle["weight_update"])
-
-    assert launched.process_handle is not None
-    assert launched.process_handle.pid == 4321
-    assert updated.command_result is not None
-    assert updated.command_result.stdout == "ok"
-    assert len(process_runner.calls) == 1
-    assert len(command_runner.calls) == 1
-
 
 def test_adapter_error_mapping_reports_unavailable_runner() -> None:
     adapter = FakeFrameworkAdapter()
     manifest = _manifest()
-    status_call = adapter.lifecycle_call(manifest, action=adapter._supported_actions[4])
+    status_call = adapter.lifecycle_call(manifest, action=adapter.supported_actions[4])
 
-    try:
-        AdapterExecutor().execute(status_call)
-    except Exception as error:  # pragma: no cover - exercised by assertion below
-        mapped = adapter.map_error(status_call.action, error)
-    else:  # pragma: no cover
-        raise AssertionError("expected missing runner to raise")
+    mapped = adapter.map_error(
+        status_call.action, AdapterUnavailableError("command runner is unavailable")
+    )
 
     assert mapped.kind is AdapterErrorKind.UNAVAILABLE
     assert mapped.retryable is False
@@ -409,7 +487,7 @@ def test_adapter_error_mapping_reports_unavailable_runner() -> None:
         (
             OpenRLHFFrameworkAdapter(),
             _provider_manifest(framework="openrlhf", module_name="provider.openrlhf"),
-            "recreate",
+            "checkpoint",
             "provider.openrlhf",
             "python_module",
         ),
@@ -474,13 +552,8 @@ def test_control_bridge_requires_endpoint_for_api_hook() -> None:
     adapter = VLLMRolloutEngineAdapter()
     _force_dependency_available(cast(ComponentAdapter, adapter))
     manifest = _provider_manifest(rollout_engine="vllm", module_name="provider.vllm")
-    call = adapter.lifecycle_call(manifest, action=LifecycleAction.WEIGHT_UPDATE)
-
-    with pytest.raises(Exception) as error_info:
-        execute_control_argv(
-            call.launch_spec.argv[3:],
-            module_loader=_module_loader({"provider.vllm": _module_with_hook("provider.vllm")}),
-        )
+    with pytest.raises(AdapterUnavailableError) as error_info:
+        adapter.lifecycle_call(manifest, action=LifecycleAction.WEIGHT_UPDATE)
 
     assert "missing endpoint" in str(error_info.value)
 

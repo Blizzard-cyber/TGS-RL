@@ -28,7 +28,6 @@ from tgsrl.v1 import (
 )
 from tgsrl_runtime import config as runtime_config
 from tgsrl_runtime.duration import to_timestamp
-from tgsrl_runtime.executor import FakeProcessDriver
 from tgsrl_runtime.job_control_client import JobControlClient
 from tgsrl_runtime.operator_client import OperatorClient
 from tgsrl_runtime.persistence_adapter import NullPersistenceHook, SQLitePersistenceHook
@@ -44,6 +43,7 @@ from tgsrl_runtime.runtime_errors import RuntimeLifecycleError
 from tgsrl_runtime.runtime_transport import ExperimentServicer, RuntimeControlServicer
 from tgsrl_runtime.storage import ReplayScheduleStep
 from tgsrl_runtime.supervisor import RuntimeSupervisor
+from tgsrl_runtime.synthetic import SyntheticScenario, SyntheticWorkload
 
 from adapters import (
     GRPOAdapter,
@@ -340,9 +340,11 @@ def test_sandbox_dual_timestamps_preserve_source_and_state_age() -> None:
     unit = compiled.runtime_units[1]
     source_time = datetime(2020, 1, 1, tzinfo=UTC)
     first = _make_sandbox_event(
-        runtime_unit=unit, event_id="time-first",
+        runtime_unit=unit,
+        event_id="time-first",
         event_type=runtime_pb2.SANDBOX_EVENT_TYPE_RUNNING,
-        state=runtime_pb2.RUNTIME_STATE_RUNNING, sandbox_id="sandbox:time",
+        state=runtime_pb2.RUNTIME_STATE_RUNNING,
+        sandbox_id="sandbox:time",
     )
     first.occurred_at.CopyFrom(to_timestamp(source_time))
     supervisor.publish_sandbox_event(runtime_pb2.PublishSandboxEventRequest(event=first))
@@ -356,9 +358,7 @@ def test_sandbox_dual_timestamps_preserve_source_and_state_age() -> None:
     confirmation.CopyFrom(first)
     confirmation.event_id = "time-confirmation"
     confirmation.occurred_at.CopyFrom(to_timestamp(source_time + timedelta(seconds=1)))
-    supervisor.publish_sandbox_event(
-        runtime_pb2.PublishSandboxEventRequest(event=confirmation)
-    )
+    supervisor.publish_sandbox_event(runtime_pb2.PublishSandboxEventRequest(event=confirmation))
     confirmed = supervisor.sandboxes.get("run-1", "sandbox:time")
     assert confirmed.state_changed_at == initial.state_changed_at
     assert confirmed.last_confirmed_at == to_timestamp(now)
@@ -451,10 +451,12 @@ async def test_supervisor_full_fake_lifecycle_publishes_intents() -> None:
     assert all(intent.resources_per_unit.cpu_millis == 2000 for intent in scheduler.published)
     assert all(intent.resources_per_unit.accelerator_units == 0.5 for intent in scheduler.published)
     assert started.cursor
+
     assert supervisor.sandboxes.list("run-1") == []
-    fake_driver = supervisor.fake_process_driver
-    assert isinstance(fake_driver, FakeProcessDriver)
-    assert len(fake_driver.start_calls) == 0
+    assert all(
+        dict(call[1]).get("TGSRL_ACTION") == LifecycleAction.PREPARE.value
+        for call in supervisor.fake_command_driver.calls
+    )
 
     applied = supervisor.publish_sandbox_event(
         runtime_pb2.PublishSandboxEventRequest(
@@ -559,7 +561,194 @@ async def test_supervisor_full_fake_lifecycle_publishes_intents() -> None:
     assert status.manifest.run_id == "run-1"
     assert status.sandboxes
     assert supervisor.sandbox_events.list("run-1")
+    assert status.current_generation == 1
+    assert status.runtime_status.health == runtime_pb2.RUNTIME_HEALTH_PROGRESSING
     assert status.cursor
+
+
+def test_supervisor_rejects_unavailable_runtime_before_compile() -> None:
+    supervisor = RuntimeSupervisor()
+    manifest = _manifest()
+    manifest.framework = "verl"
+    manifest.execution_backend = "ray"
+    manifest.trainer = "pytorch"
+    manifest.rollout_engine = "vllm"
+
+    validated = supervisor.validate_runtime(
+        runtime_pb2.ValidateRuntimeRequest(manifest=manifest, request_id="validate-real")
+    )
+
+    assert not validated.valid
+    assert any(":UNAVAILABLE:" in item for item in validated.diagnostics)
+    assert not supervisor.manifests.has(manifest.run_id)
+    with pytest.raises(RuntimeLifecycleError, match="runtime adapters are not executable"):
+        supervisor.compile_runtime(runtime_pb2.CompileRuntimeRequest(manifest=manifest))
+    assert not supervisor.manifests.has(manifest.run_id)
+    assert supervisor.runtime_units.list(manifest.run_id) == []
+
+
+@pytest.mark.asyncio
+async def test_supervisor_safe_point_checkpoint_offload_reload_round_trip_persists_across_restart(
+    tmp_path: Path,
+) -> None:
+    state_db = tmp_path / "runtime-offload-reload.sqlite3"
+    scheduler = _SchedulerStub()
+    supervisor = RuntimeSupervisor(
+        scheduler_client=scheduler,
+        persistence=SQLitePersistenceHook(str(state_db)),
+    )
+
+    validate = supervisor.validate_runtime(
+        runtime_pb2.ValidateRuntimeRequest(
+            manifest=_manifest(), request_id="req-offload-1", idempotency_key="offload-v"
+        )
+    )
+    compiled = supervisor.compile_runtime(
+        runtime_pb2.CompileRuntimeRequest(
+            manifest=validate.normalized_manifest,
+            request_id="req-offload-2",
+            idempotency_key="offload-c",
+        )
+    )
+    started = await supervisor.start_runtime(
+        runtime_pb2.StartRuntimeRequest(
+            run_id="run-1", request_id="req-offload-3", idempotency_key="offload-s"
+        )
+    )
+
+    decode_unit = next(unit for unit in compiled.runtime_units if unit.phase_id == "decode")
+    bound = _make_sandbox_event(
+        runtime_unit=decode_unit,
+        event_id="safe-point-bound",
+        event_type=runtime_pb2.SANDBOX_EVENT_TYPE_BOUND,
+        state=runtime_pb2.RUNTIME_STATE_BOUND,
+        sandbox_id="sandbox:run-1:decode",
+    )
+    supervisor.publish_sandbox_event(runtime_pb2.PublishSandboxEventRequest(event=bound))
+    running = runtime_pb2.SandboxEvent()
+    running.CopyFrom(bound)
+    running.event_id = "safe-point-running"
+    running.event_type = runtime_pb2.SANDBOX_EVENT_TYPE_RUNNING
+    running.state = runtime_pb2.RUNTIME_STATE_RUNNING
+    supervisor.publish_sandbox_event(runtime_pb2.PublishSandboxEventRequest(event=running))
+
+    synthetic = SyntheticWorkload(7).generate(SyntheticScenario.TOOL_WAIT)
+    for index, event in enumerate(synthetic, start=1):
+        event.run_id = "run-1"
+        event.trace_id = "trace-1"
+        event.execution_id = started.runtime_units[1].execution_id
+        event.stage_id = "decode"
+        event.phase_id = "decode"
+        event.phase_kind = started.runtime_units[1].phase_kind
+        event.generation = 1
+        event.attributes["runtime_unit_id"] = started.runtime_units[1].runtime_unit_id
+        event.attributes["provider_kind"] = "fake"
+        event.decision_id = f"decision:run-1:decode:{index}"
+    trace_batch = trace_pb2.TraceEventBatch(
+        execution_id="run-1",
+        first_sequence=synthetic[0].sequence,
+        run_id="run-1",
+        trace_id="trace-1",
+        data_kind=trace_pb2.DATA_KIND_SYNTHETIC,
+        events=synthetic,
+    )
+    supervisor.persistence.record_trace_batch(trace_batch)
+    summary = supervisor.aggregator.summarize(supervisor.trace_ingestor.ingest("run-1", synthetic))
+    assert summary.safe_point_count >= 1
+    assert summary.latest_safe_point is True
+
+    prepare_pause = supervisor.prepare_pause_runtime(
+        runtime_pb2.PreparePauseRuntimeRequest(
+            run_id="run-1",
+            request_id="req-offload-4",
+            idempotency_key="offload-prepare",
+        )
+    )
+    assert all(unit.status_reason == "pausing" for unit in prepare_pause.runtime_units)
+    assert any(
+        dict(call[1]).get("TGSRL_ACTION") == LifecycleAction.PREPARE_PAUSE.value
+        for call in supervisor.fake_command_driver.calls
+    )
+
+    checkpoint = supervisor.checkpoint_runtime(
+        runtime_pb2.CheckpointRuntimeRequest(
+            run_id="run-1",
+            request_id="req-offload-5",
+            idempotency_key="offload-checkpoint",
+            checkpoint_ref="checkpoint:run-1:safe-point",
+        )
+    )
+    assert checkpoint.checkpoint_ref == "checkpoint:run-1:safe-point"
+    latest_checkpoint = supervisor.checkpoints.latest("run-1")
+    assert latest_checkpoint is not None
+    assert latest_checkpoint.checkpoint_ref == checkpoint.checkpoint_ref
+    assert latest_checkpoint.state_digest
+
+    offloaded = supervisor.offload_runtime(
+        runtime_pb2.OffloadRuntimeRequest(
+            run_id="run-1",
+            request_id="req-offload-6",
+            idempotency_key="offload-sleep",
+        )
+    )
+    assert all(unit.status_reason == "stopping" for unit in offloaded.runtime_units)
+    sleeping = runtime_pb2.SandboxEvent()
+    sleeping.CopyFrom(bound)
+    sleeping.event_id = "safe-point-sleeping"
+    sleeping.event_type = runtime_pb2.SANDBOX_EVENT_TYPE_SLEEPING
+    sleeping.state = runtime_pb2.RUNTIME_STATE_SLEEPING
+    sleeping.offloaded = True
+    supervisor.publish_sandbox_event(runtime_pb2.PublishSandboxEventRequest(event=sleeping))
+    sandbox = supervisor.sandboxes.get("run-1", "sandbox:run-1:decode")
+    assert sandbox.state == runtime_pb2.RUNTIME_STATE_SLEEPING
+    assert sandbox.offloaded is True
+
+    reloaded = supervisor.reload_runtime(
+        runtime_pb2.ReloadRuntimeRequest(
+            run_id="run-1",
+            request_id="req-offload-7",
+            idempotency_key="offload-reload",
+        )
+    )
+    assert all(unit.status_reason == "starting" for unit in reloaded.runtime_units)
+    rebound = runtime_pb2.SandboxEvent()
+    rebound.CopyFrom(bound)
+    rebound.event_id = "safe-point-rebound"
+    rebound.event_type = runtime_pb2.SANDBOX_EVENT_TYPE_BOUND
+    rebound.state = runtime_pb2.RUNTIME_STATE_BOUND
+    rebound.generation = 2
+    rebound.binding.generation = 2
+    supervisor.publish_sandbox_event(runtime_pb2.PublishSandboxEventRequest(event=rebound))
+    rerunning = runtime_pb2.SandboxEvent()
+    rerunning.CopyFrom(rebound)
+    rerunning.event_id = "safe-point-rerunning"
+    rerunning.event_type = runtime_pb2.SANDBOX_EVENT_TYPE_RUNNING
+    rerunning.state = runtime_pb2.RUNTIME_STATE_RUNNING
+    supervisor.publish_sandbox_event(runtime_pb2.PublishSandboxEventRequest(event=rerunning))
+
+    status = supervisor.get_runtime_status(runtime_pb2.GetRuntimeStatusRequest(run_id="run-1"))
+    assert status.current_generation == 2
+    assert status.runtime_status.health == runtime_pb2.RUNTIME_HEALTH_PROGRESSING
+    assert supervisor.trace_ingestor.list("run-1")
+    assert supervisor.checkpoints.latest("run-1") is not None
+
+    cast(SQLitePersistenceHook, supervisor.persistence).close()
+    restored = RuntimeSupervisor(
+        scheduler_client=_SchedulerStub(),
+        persistence=SQLitePersistenceHook(str(state_db)),
+    )
+    restored_status = restored.get_runtime_status(
+        runtime_pb2.GetRuntimeStatusRequest(run_id="run-1")
+    )
+    restored_sandbox = restored.sandboxes.get("run-1", "sandbox:run-1:decode")
+    restored_summary = restored.aggregator.summarize(restored.trace_ingestor.list("run-1"))
+
+    assert restored_status.current_generation == 2
+    assert restored_sandbox.state == runtime_pb2.RUNTIME_STATE_RUNNING
+    assert restored.checkpoints.latest("run-1") is not None
+    assert restored_summary.safe_point_count >= 1
+    assert restored_summary.latest_safe_point is True
+    cast(SQLitePersistenceHook, restored.persistence).close()
 
 
 def test_publish_sandbox_event_is_idempotent_for_same_event_id_and_payload() -> None:
@@ -2088,6 +2277,7 @@ async def test_runtime_control_servicer_dispatches_typed_operator_actions() -> N
     supervisor.validate_runtime(runtime_pb2.ValidateRuntimeRequest(manifest=manifest))
     supervisor.compile_runtime(runtime_pb2.CompileRuntimeRequest(manifest=manifest))
     _materialize_runtime_units(supervisor)
+    supervisor.fake_command_driver.calls.clear()
     operator = _OperatorStub()
     servicer = RuntimeControlServicer(supervisor, operator_client=operator)
 

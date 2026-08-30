@@ -57,6 +57,7 @@ class LifecycleAction(StrEnum):
     PREPARE = "prepare"
     LAUNCH = "launch"
     STATUS = "status"
+    PREPARE_PAUSE = "prepare_pause"
     PAUSE = "pause"
     RESUME = "resume"
     CHECKPOINT = "checkpoint"
@@ -133,6 +134,10 @@ class AdapterUnavailableError(RuntimeAdapterError):
 
 class AdapterConflictError(RuntimeAdapterError):
     """Raised when a lifecycle action conflicts with runtime state."""
+
+
+class AdapterUnsupportedActionError(RuntimeAdapterError):
+    """Raised when a component does not implement a requested lifecycle action."""
 
 
 def clone_manifest(manifest: runtime_pb2.RuntimeManifest) -> runtime_pb2.RuntimeManifest:
@@ -234,6 +239,21 @@ def runtime_state_contract(action: LifecycleAction) -> LifecycleStateContract:
             ),
             requires_external_event=False,
             notes=("status only observes backend state and must not mutate runtime",),
+        )
+    if action is LifecycleAction.PREPARE_PAUSE:
+        return LifecycleStateContract(
+            action=action,
+            requested_state=runtime_pb2.RUNTIME_STATE_PAUSING,
+            immediate_observed_state=runtime_pb2.RUNTIME_STATE_UNKNOWN,
+            eventual_observed_states=(
+                runtime_pb2.RUNTIME_STATE_RUNNING,
+                runtime_pb2.RUNTIME_STATE_PAUSED,
+                runtime_pb2.RUNTIME_STATE_FAILED,
+            ),
+            requires_external_event=True,
+            notes=(
+                "prepare_pause asks workers to reach a safe point without pausing infrastructure",
+            ),
         )
     if action is LifecycleAction.PAUSE:
         return LifecycleStateContract(
@@ -389,13 +409,37 @@ def runtime_env(
     return tuple(sorted(env.items()))
 
 
+def manifest_has_explicit_bridge_target(
+    manifest: runtime_pb2.RuntimeManifest, *, component: str, adapter: str
+) -> bool:
+    """Return whether a component has an explicit executable bridge."""
+    if component == "execution" and any(token.strip() for token in manifest.command):
+        return True
+    explicit_kinds = {
+        "python_module",
+        "module",
+        "lifecycle_hook",
+        "endpoint",
+        "api_endpoint",
+        "service_endpoint",
+        "control_endpoint",
+    }
+    for artifact in manifest.artifacts:
+        if artifact.kind.casefold() not in explicit_kinds:
+            continue
+        artifact_component = artifact.attributes.get("component", "").strip().casefold()
+        artifact_adapter = artifact.attributes.get("adapter", "").strip().casefold()
+        if artifact_component == component.casefold() and artifact_adapter == adapter.casefold():
+            return True
+    return False
+
+
 @dataclass(frozen=True)
 class ComponentLaunchMetadata:
     """Component-family metadata required to build adapter launch specs."""
 
     component_kind: str
     module_name: str
-    bridge_module_name: str
     preferred_bridge_kind: BridgeKind
     launch_runner_kind: RunnerKind = RunnerKind.PROCESS
     control_runner_kind: RunnerKind = RunnerKind.COMMAND
@@ -409,6 +453,11 @@ class BaseComponentAdapter:
     binary = "python"
     launch_metadata: ComponentLaunchMetadata
     _supported_actions: tuple[LifecycleAction, ...]
+
+    @property
+    def supported_actions(self) -> tuple[LifecycleAction, ...]:
+        """Return the stable lifecycle capability contract."""
+        return self._supported_actions
 
     def _supported_component_names(self) -> set[str]:
         return {self.component_name.casefold()}
@@ -475,10 +524,50 @@ class BaseComponentAdapter:
             adapter=self.component_name,
             action=action,
             default_module_name=(
-                f"{self.launch_metadata.bridge_module_name}.{self.component_name}"
+                "adapters.fake_bridge" if self.component_name.casefold() == "fake" else ""
             ),
             preferred_kind=self.launch_metadata.preferred_bridge_kind,
         )
+        if self.component_name.casefold() != "fake" and not (
+            bridge_target.command_argv or bridge_target.module_name
+        ):
+            raise AdapterUnavailableError(
+                f"{self.component_name} has no executable "
+                f"{self.launch_metadata.component_kind} bridge"
+            )
+        if (
+            self.component_name.casefold() != "fake"
+            and bridge_target.kind.value == "api_hook"
+            and not bridge_target.endpoint
+        ):
+            raise AdapterUnavailableError(
+                f"{self.component_name} {self.launch_metadata.component_kind} API bridge "
+                f"for {action.value} is missing endpoint"
+            )
+        if (
+            action is LifecycleAction.LAUNCH
+            and bridge_target.kind.value == "command"
+            and self.component_name.casefold() != "fake"
+        ):
+            return LaunchSpec(
+                argv=bridge_target.command_argv,
+                env=tuple(
+                    sorted(
+                        {
+                            **dict(
+                                runtime_env(
+                                    normalized,
+                                    component=self.launch_metadata.component_kind,
+                                    adapter_name=self.component_name,
+                                    action=action,
+                                )
+                            ),
+                            **dict(bridge_target.env),
+                        }.items()
+                    )
+                ),
+                working_directory=bridge_target.working_directory,
+            )
         return LaunchSpec(
             argv=self._action_argv(
                 normalized,
@@ -498,12 +587,16 @@ class BaseComponentAdapter:
 
     def lifecycle_calls(self, manifest: runtime_pb2.RuntimeManifest) -> tuple[LifecycleCall, ...]:
         normalized = self.validate_manifest(manifest)
-        return tuple(self.lifecycle_call(normalized, action) for action in self._supported_actions)
+        return tuple(self.lifecycle_call(normalized, action) for action in self.supported_actions)
 
     def lifecycle_call(
         self, manifest: runtime_pb2.RuntimeManifest, action: LifecycleAction
     ) -> LifecycleCall:
         normalized = self.validate_manifest(manifest)
+        if action not in self.supported_actions:
+            raise AdapterUnsupportedActionError(
+                f"{self.component_name} does not support lifecycle action {action.value}"
+            )
         return LifecycleCall(
             action=action,
             launch_spec=self.build_action_launch_spec(normalized, action),
@@ -535,6 +628,14 @@ def map_runtime_error(action: LifecycleAction, error: Exception) -> ErrorContrac
         return ErrorContract(
             action=action,
             kind=AdapterErrorKind.UNAVAILABLE,
+            retryable=False,
+            resulting_state=runtime_pb2.RUNTIME_STATE_UNKNOWN,
+            summary=str(error),
+        )
+    if isinstance(error, AdapterUnsupportedActionError):
+        return ErrorContract(
+            action=action,
+            kind=AdapterErrorKind.INVALID_ARGUMENT,
             retryable=False,
             resulting_state=runtime_pb2.RUNTIME_STATE_UNKNOWN,
             summary=str(error),
@@ -578,6 +679,10 @@ class ComponentAdapter(Protocol):
 
     component_name: str
     dependency_name: str | None
+
+    @property
+    def supported_actions(self) -> tuple[LifecycleAction, ...]:
+        """Return the lifecycle actions implemented by the adapter."""
 
     def describe_support(self, manifest: runtime_pb2.RuntimeManifest) -> SupportReport:
         """Report runtime support for the provided manifest."""
