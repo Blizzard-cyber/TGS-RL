@@ -279,8 +279,8 @@ func TestProviderRejectsFencesBeforeDriverDispatch(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			p, driver := makeProvider(t)
 			safePoint := false
-			if err := p.ApplySandboxEvent(context.Background(), provider.SandboxEvent{SandboxID: "sandbox-a", Generation: 1, State: provider.SandboxStateRunning, SafePoint: &safePoint}); err != nil {
-				t.Fatalf("ApplySandboxEvent() error = %v", err)
+			if _, err := p.ObserveSandbox(context.Background(), observedSandboxEvent("fence-"+test.name, tgsrlv1.RuntimeState_RUNTIME_STATE_RUNNING, safePoint)); err != nil {
+				t.Fatalf("ObserveSandbox() error = %v", err)
 			}
 			action := baseAction()
 			test.mutate(action)
@@ -308,7 +308,7 @@ func TestProviderCompensatesSingleActionProjectionFailure(t *testing.T) {
 		t.Fatal(err)
 	}
 	safePoint := true
-	if err := p.ApplySandboxEvent(context.Background(), provider.SandboxEvent{SandboxID: "sandbox-a", Generation: 1, State: provider.SandboxStatePaused, SafePoint: &safePoint}); err != nil {
+	if _, err := p.ObserveSandbox(context.Background(), observedSandboxEvent("paused-before-compensation", tgsrlv1.RuntimeState_RUNTIME_STATE_PAUSED, safePoint)); err != nil {
 		t.Fatal(err)
 	}
 	action := &tgsrlv1.Action{
@@ -337,7 +337,7 @@ func TestProviderCompensatesSingleActionProjectionFailure(t *testing.T) {
 	}
 }
 
-func TestProviderExecutePlanUsesStoreRevisionAndCompensatesInReverse(t *testing.T) {
+func TestProviderTransactionUsesStoreRevisionAndCompensatesInReverse(t *testing.T) {
 	now := time.Date(2026, time.August, 27, 9, 0, 0, 0, time.UTC)
 	driver := &scriptedDriver{Driver: NewFakeDriver(testDevices(), nil), failActionID: "pause"}
 	p, err := New(WithNow(func() time.Time { return now }), WithDriver(driver))
@@ -345,7 +345,7 @@ func TestProviderExecutePlanUsesStoreRevisionAndCompensatesInReverse(t *testing.
 		t.Fatal(err)
 	}
 	safePoint := true
-	if err := p.ApplySandboxEvent(context.Background(), provider.SandboxEvent{SandboxID: "sandbox-a", Generation: 1, State: provider.SandboxStateRunning, SafePoint: &safePoint}); err != nil {
+	if _, err := p.ObserveSandbox(context.Background(), observedSandboxEvent("transaction-reverse", tgsrlv1.RuntimeState_RUNTIME_STATE_RUNNING, safePoint)); err != nil {
 		t.Fatal(err)
 	}
 	first := nvidiaAction(now, "share", "plan", "share-key", tgsrlv1.ActionType_ACTION_TYPE_SET_SHARE, 99)
@@ -358,7 +358,7 @@ func TestProviderExecutePlanUsesStoreRevisionAndCompensatesInReverse(t *testing.
 	third.Rollback = &tgsrlv1.Rollback{ActionType: tgsrlv1.ActionType_ACTION_TYPE_RESUME, TargetId: "sandbox-a"}
 	plan := nvidiaPlan("plan", 99, first, second, third)
 
-	results, err := p.ExecutePlan(context.Background(), plan)
+	results, err := executeTestTransaction(context.Background(), p, plan)
 	if !errors.Is(err, provider.ErrPartialFailure) {
 		t.Fatalf("ExecutePlan() error = %v, want ErrPartialFailure", err)
 	}
@@ -390,7 +390,7 @@ func TestProviderExecutePlanUsesStoreRevisionAndCompensatesInReverse(t *testing.
 	}
 }
 
-func TestProviderExecutePlanMarksRemainingSkippedAndRollbackFailure(t *testing.T) {
+func TestProviderTransactionMarksRemainingSkippedAndRollbackFailure(t *testing.T) {
 	now := time.Date(2026, time.August, 27, 9, 0, 0, 0, time.UTC)
 	driver := &scriptedDriver{Driver: NewFakeDriver(testDevices(), nil), failActionID: "priority", failRollbackID: "share-rollback"}
 	p, err := New(WithNow(func() time.Time { return now }), WithDriver(driver))
@@ -398,7 +398,7 @@ func TestProviderExecutePlanMarksRemainingSkippedAndRollbackFailure(t *testing.T
 		t.Fatal(err)
 	}
 	safePoint := true
-	if err := p.ApplySandboxEvent(context.Background(), provider.SandboxEvent{SandboxID: "sandbox-a", Generation: 1, State: provider.SandboxStateRunning, SafePoint: &safePoint}); err != nil {
+	if _, err := p.ObserveSandbox(context.Background(), observedSandboxEvent("transaction-rollback-failure", tgsrlv1.RuntimeState_RUNTIME_STATE_RUNNING, safePoint)); err != nil {
 		t.Fatal(err)
 	}
 	share := nvidiaAction(now, "share", "plan", "share-key", tgsrlv1.ActionType_ACTION_TYPE_SET_SHARE, 77)
@@ -409,7 +409,7 @@ func TestProviderExecutePlanMarksRemainingSkippedAndRollbackFailure(t *testing.T
 	pause := nvidiaAction(now, "pause", "plan", "pause-key", tgsrlv1.ActionType_ACTION_TYPE_PAUSE, 77)
 	pause.Rollback = &tgsrlv1.Rollback{ActionType: tgsrlv1.ActionType_ACTION_TYPE_RESUME, TargetId: "sandbox-a"}
 
-	results, err := p.ExecutePlan(context.Background(), nvidiaPlan("plan", 77, share, priority, pause))
+	results, err := executeTestTransaction(context.Background(), p, nvidiaPlan("plan", 77, share, priority, pause))
 	if !errors.Is(err, provider.ErrPartialFailure) {
 		t.Fatalf("ExecutePlan() error = %v, want ErrPartialFailure", err)
 	}
@@ -425,7 +425,7 @@ func TestProviderExecutePlanMarksRemainingSkippedAndRollbackFailure(t *testing.T
 	}
 }
 
-func TestProviderExecutePlanRejectsAtomicReplacementBeforeDriver(t *testing.T) {
+func TestProviderTransactionPreparesAtomicReplacementBeforeDriver(t *testing.T) {
 	now := time.Date(2026, time.August, 27, 9, 0, 0, 0, time.UTC)
 	driver := &recordingDriver{Driver: NewFakeDriver(testDevices(), nil)}
 	p, err := New(WithNow(func() time.Time { return now }), WithDriver(driver))
@@ -440,8 +440,9 @@ func TestProviderExecutePlanRejectsAtomicReplacementBeforeDriver(t *testing.T) {
 	plan := nvidiaPlan("atomic", 42, action)
 	plan.CapabilityRequirements = actionpolicy.StableCapabilityRequirements(&tgsrlv1.CapabilityRequirement{Kind: tgsrlv1.CapabilityRequirementKind_CAPABILITY_REQUIREMENT_KIND_ATOMIC_REPLACEMENT, Required: true})
 
-	if _, err := p.ExecutePlan(context.Background(), plan); !errors.Is(err, provider.ErrUnsupported) {
-		t.Fatalf("ExecutePlan() error = %v, want ErrUnsupported", err)
+	receipt, err := p.PreparePlan(context.Background(), plan.GetPlanId(), 1, plan)
+	if err != nil || receipt.Phase != provider.TransactionPhasePrepared {
+		t.Fatalf("PreparePlan() = (%+v, %v), want prepared", receipt, err)
 	}
 	if driver.executeCalls != 0 {
 		t.Fatalf("driver calls = %d, want 0", driver.executeCalls)
@@ -456,7 +457,7 @@ func TestProviderFenceFailureCanRetryWithSameIdempotencyKey(t *testing.T) {
 		t.Fatal(err)
 	}
 	safePoint := false
-	if err := p.ApplySandboxEvent(context.Background(), provider.SandboxEvent{SandboxID: "sandbox-a", Generation: 1, State: provider.SandboxStateRunning, SafePoint: &safePoint}); err != nil {
+	if _, err := p.ObserveSandbox(context.Background(), observedSandboxEvent("unsafe-fence", tgsrlv1.RuntimeState_RUNTIME_STATE_RUNNING, safePoint)); err != nil {
 		t.Fatal(err)
 	}
 	action := nvidiaAction(now, "pause", "plan", "same-key", tgsrlv1.ActionType_ACTION_TYPE_PAUSE, 2)
@@ -465,7 +466,7 @@ func TestProviderFenceFailureCanRetryWithSameIdempotencyKey(t *testing.T) {
 		t.Fatalf("first ExecuteAction() error = %v", err)
 	}
 	safePoint = true
-	if err := p.ApplySandboxEvent(context.Background(), provider.SandboxEvent{SandboxID: "sandbox-a", Generation: 1, State: provider.SandboxStateRunning, SafePoint: &safePoint}); err != nil {
+	if _, err := p.ObserveSandbox(context.Background(), observedSandboxEvent("safe-fence", tgsrlv1.RuntimeState_RUNTIME_STATE_RUNNING, safePoint)); err != nil {
 		t.Fatal(err)
 	}
 	action.ExpectedSnapshotRevision = 3
@@ -477,7 +478,7 @@ func TestProviderFenceFailureCanRetryWithSameIdempotencyKey(t *testing.T) {
 	}
 }
 
-func TestProviderConcurrentPlanRetryReturnsInFlightError(t *testing.T) {
+func TestProviderConcurrentTransactionRetrySharesInFlightAction(t *testing.T) {
 	now := time.Date(2026, time.August, 27, 9, 0, 0, 0, time.UTC)
 	started := make(chan struct{})
 	release := make(chan struct{})
@@ -494,16 +495,29 @@ func TestProviderConcurrentPlanRetryReturnsInFlightError(t *testing.T) {
 	plan := nvidiaPlan("plan", 55, action)
 	done := make(chan error, 1)
 	go func() {
-		_, executeErr := p.ExecutePlan(context.Background(), plan)
+		_, executeErr := executeTestTransaction(context.Background(), p, plan)
 		done <- executeErr
 	}()
 	<-started
-	if results, err := p.ExecutePlan(context.Background(), plan); !errors.Is(err, provider.ErrFailedPrecondition) || len(results) != 0 {
-		t.Fatalf("concurrent retry = (%v, %v), want empty retryable error", results, err)
+	retryDone := make(chan error, 1)
+	go func() {
+		_, executeErr := executeTestTransaction(context.Background(), p, plan)
+		retryDone <- executeErr
+	}()
+	select {
+	case retryErr := <-retryDone:
+		t.Fatalf("concurrent retry returned before the in-flight action completed: %v", retryErr)
+	case <-time.After(10 * time.Millisecond):
 	}
 	close(release)
 	if err := <-done; err != nil {
-		t.Fatalf("first ExecutePlan() error = %v", err)
+		t.Fatalf("first transaction error = %v", err)
+	}
+	if err := <-retryDone; err != nil {
+		t.Fatalf("retried transaction error = %v", err)
+	}
+	if calls := driver.executeCalls(); calls != 1 {
+		t.Fatalf("driver calls = %d, want 1", calls)
 	}
 }
 
@@ -574,7 +588,7 @@ func TestProviderStandaloneActionPlanCrossRaceRestoresProjection(t *testing.T) {
 		t.Fatal(err)
 	}
 	safePoint := true
-	if err := p.ApplySandboxEvent(context.Background(), provider.SandboxEvent{SandboxID: "sandbox-a", Generation: 1, State: provider.SandboxStateRunning, SafePoint: &safePoint}); err != nil {
+	if _, err := p.ObserveSandbox(context.Background(), observedSandboxEvent("cross-race", tgsrlv1.RuntimeState_RUNTIME_STATE_RUNNING, safePoint)); err != nil {
 		t.Fatal(err)
 	}
 	share := nvidiaAction(now, "share", "cross-race-plan", "shared-key", tgsrlv1.ActionType_ACTION_TYPE_SET_SHARE, 2)
@@ -597,7 +611,7 @@ func TestProviderStandaloneActionPlanCrossRaceRestoresProjection(t *testing.T) {
 	}
 	planDone := make(chan planOutcome, 1)
 	go func() {
-		results, executeErr := p.ExecutePlan(context.Background(), plan)
+		results, executeErr := executeTestTransaction(context.Background(), p, plan)
 		planDone <- planOutcome{results: results, err: executeErr}
 	}()
 	deadline := time.Now().Add(time.Second)
@@ -651,8 +665,8 @@ func TestProviderObservationMetadataAndLifecycleTimestamps(t *testing.T) {
 		}},
 	}
 	observedStateChangedAt := current.Add(-time.Minute)
-	if err := p.ApplySandboxEvent(context.Background(), provider.SandboxEvent{
-		EventID: "created", SandboxID: "sandbox-a", Generation: 1, State: provider.SandboxStateRunning, SemanticContext: semanticContext, StateChangedAt: observedStateChangedAt,
+	if _, err := p.ObserveSandbox(context.Background(), &tgsrlv1.SandboxEvent{
+		EventId: "created", SandboxId: "sandbox-a", Generation: 1, State: tgsrlv1.RuntimeState_RUNTIME_STATE_RUNNING, SemanticContext: semanticContext, OccurredAt: timestamppb.New(observedStateChangedAt),
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -668,8 +682,8 @@ func TestProviderObservationMetadataAndLifecycleTimestamps(t *testing.T) {
 
 	stateChangedAt := created.StateChangedAt
 	current = current.Add(time.Minute)
-	if err := p.ApplySandboxEvent(context.Background(), provider.SandboxEvent{
-		EventID: "confirmed", SandboxID: "sandbox-a", Generation: 1, State: provider.SandboxStateRunning,
+	if _, err := p.ObserveSandbox(context.Background(), &tgsrlv1.SandboxEvent{
+		EventId: "confirmed", SandboxId: "sandbox-a", Generation: 1, State: tgsrlv1.RuntimeState_RUNTIME_STATE_RUNNING,
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -737,8 +751,34 @@ func TestProviderObservationMetadataAndLifecycleTimestamps(t *testing.T) {
 	}
 }
 
+func executeTestTransaction(ctx context.Context, p provider.TransactionalResourceProvider, plan *tgsrlv1.PlacementPlan) ([]*tgsrlv1.ActionResult, error) {
+	const generation = uint64(1)
+	receipt, err := p.PreparePlan(ctx, plan.GetPlanId(), generation, plan)
+	if err != nil {
+		return nil, err
+	}
+	for index := range plan.GetActions() {
+		receipt, err = p.ExecuteStep(ctx, plan.GetPlanId(), generation, index)
+		if err != nil {
+			aborted, abortErr := p.AbortPlan(context.WithoutCancel(ctx), plan.GetPlanId(), generation)
+			if aborted != nil {
+				receipt = aborted
+			}
+			return transactionResults(receipt), errors.Join(provider.ErrPartialFailure, err, abortErr)
+		}
+	}
+	receipt, err = p.CommitPlan(ctx, plan.GetPlanId(), generation)
+	return transactionResults(receipt), err
+}
+
 func testDevices() []*tgsrlv1.Device {
 	return []*tgsrlv1.Device{{DeviceId: "nvidia-0", Kind: tgsrlv1.DeviceKind_DEVICE_KIND_GPU, Health: tgsrlv1.DeviceHealth_DEVICE_HEALTH_READY, Capacity: &tgsrlv1.ResourceVector{AcceleratorUnits: 1}, Allocatable: &tgsrlv1.ResourceVector{AcceleratorUnits: 1}}}
+}
+
+func observedSandboxEvent(eventID string, state tgsrlv1.RuntimeState, safePoint bool) *tgsrlv1.SandboxEvent {
+	return &tgsrlv1.SandboxEvent{
+		EventId: eventID, SandboxId: "sandbox-a", Generation: 1, State: state, SafePoint: &safePoint,
+	}
 }
 
 func nvidiaAction(now time.Time, actionID, planID, key string, actionType tgsrlv1.ActionType, revision uint64) *tgsrlv1.Action {

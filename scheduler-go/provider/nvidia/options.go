@@ -10,9 +10,33 @@ import (
 type Option func(*config) error
 
 type config struct {
-	driver    Driver
-	now       func() time.Time
-	retention int
+	driver       Driver
+	now          func() time.Time
+	retention    int
+	probeTimeout time.Duration
+}
+
+// WithProbeTimeout bounds initial hardware discovery.
+func WithProbeTimeout(timeout time.Duration) Option {
+	return func(cfg *config) error {
+		if timeout <= 0 {
+			return fmt.Errorf("%w: probe timeout must be positive", base.ErrInvalidArgument)
+		}
+		cfg.probeTimeout = timeout
+		return nil
+	}
+}
+
+// WithDriverV2 configures a composed v2 driver without changing the Provider API.
+func WithDriverV2(options LocalDriverV2Options) Option {
+	return func(cfg *config) error {
+		driver, err := NewLocalDriverV2(options)
+		if err != nil {
+			return err
+		}
+		cfg.driver = driver
+		return nil
+	}
 }
 
 func WithDriver(driver Driver) Option {

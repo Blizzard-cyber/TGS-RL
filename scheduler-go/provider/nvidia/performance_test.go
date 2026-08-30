@@ -8,7 +8,6 @@ import (
 	"time"
 
 	tgsrlv1 "github.com/Blizzard-cyber/TGS-RL/gen/go/tgsrl/v1"
-	base "github.com/Blizzard-cyber/TGS-RL/scheduler-go/provider"
 )
 
 // TestApplyResourceEventP95Budget is a local regression gate for provider-side
@@ -57,21 +56,17 @@ func TestApplyResourceEventP95Budget(t *testing.T) {
 
 	const iterations = 51
 	latencies := make([]time.Duration, 0, iterations)
-	injector, ok := any(p).(base.SandboxEventInjector)
-	if !ok {
-		t.Fatalf("provider %T does not expose SandboxEventInjector test seam", p)
-	}
 	for iteration := 0; iteration < iterations; iteration++ {
 		started := time.Now()
-		err := injector.ApplySandboxEvent(context.Background(), base.SandboxEvent{
-			EventID:    fmt.Sprintf("perf-event-%03d", iteration),
-			SandboxID:  "sandbox-a",
+		_, err := p.ObserveSandbox(context.Background(), &tgsrlv1.SandboxEvent{
+			EventId:    fmt.Sprintf("perf-event-%03d", iteration),
+			SandboxId:  "sandbox-a",
 			Generation: 1,
-			State:      baseState(iteration),
+			State:      sandboxRuntimeState(iteration),
 		})
 		latencies = append(latencies, time.Since(started))
 		if err != nil {
-			t.Fatalf("ApplySandboxEvent() error = %v", err)
+			t.Fatalf("ObserveSandbox() error = %v", err)
 		}
 	}
 	sort.Slice(latencies, func(i, j int) bool { return latencies[i] < latencies[j] })
@@ -81,9 +76,9 @@ func TestApplyResourceEventP95Budget(t *testing.T) {
 	}
 }
 
-func baseState(iteration int) base.SandboxState {
+func sandboxRuntimeState(iteration int) tgsrlv1.RuntimeState {
 	if iteration%2 == 0 {
-		return base.SandboxStateRunning
+		return tgsrlv1.RuntimeState_RUNTIME_STATE_RUNNING
 	}
-	return base.SandboxStatePaused
+	return tgsrlv1.RuntimeState_RUNTIME_STATE_PAUSED
 }

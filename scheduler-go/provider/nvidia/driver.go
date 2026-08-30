@@ -31,35 +31,48 @@ const (
 
 // Command describes one structured argv-only driver command.
 type Command struct {
-	Argv []string
+	Argv  []string
+	Env   map[string]string
+	Stdin []byte
 }
 
 // ProbeResult is the evidence-backed driver discovery snapshot.
 type ProbeResult struct {
-	Available    bool
-	Reason       string
-	Devices      []*tgsrlv1.Device
-	Capabilities *tgsrlv1.CapabilitySet
+	Available              bool
+	Reason                 string
+	Devices                []*tgsrlv1.Device
+	Capabilities           *tgsrlv1.CapabilitySet
+	Sandboxes              []provider.Sandbox
+	SandboxesAuthoritative bool
 }
 
 // DriverState is the provider-owned runtime state exposed to the driver.
 type DriverState struct {
 	Healthy      bool
 	HealthReason string
+	Revision     uint64
 	Devices      []*tgsrlv1.Device
 	Sandboxes    map[string]provider.Sandbox
 }
 
 // ActionExecution records one completed vendor action.
 type ActionExecution struct {
-	Detail string
+	Detail                 string
+	Commands               []Command
+	DryRun                 bool
+	Binding                *DiscoveredBinding
+	ObservedShare          *float64
+	MutationMayHaveApplied bool
 }
 
 // ReconcileState reports the driver's current view of device readiness.
 type ReconcileState struct {
-	Healthy bool
-	Reason  string
-	Devices []*tgsrlv1.Device
+	Healthy                bool
+	Reason                 string
+	Devices                []*tgsrlv1.Device
+	Capabilities           *tgsrlv1.CapabilitySet
+	Sandboxes              []provider.Sandbox
+	SandboxesAuthoritative bool
 }
 
 // Driver abstracts the vendor-specific probe and execution boundary.
@@ -78,11 +91,8 @@ type Runner interface {
 type execRunner struct{}
 
 func (execRunner) Run(ctx context.Context, command Command) ([]byte, error) {
-	if len(command.Argv) == 0 {
-		return nil, fmt.Errorf("%w: empty command", provider.ErrInvalidArgument)
-	}
-	cmd := exec.CommandContext(ctx, command.Argv[0], command.Argv[1:]...)
-	return cmd.Output()
+	result, err := NewExecCommandExecutor().Execute(ctx, command)
+	return result.Stdout, err
 }
 
 // CommandBuilder constructs argv-only commands without shell interpolation.
@@ -154,9 +164,10 @@ func (d *FakeDriver) Reconcile(_ context.Context, _ *DriverState, _ *tgsrlv1.Pla
 		return &ReconcileState{Healthy: false, Reason: "fake probe result is unavailable"}, nil
 	}
 	return &ReconcileState{
-		Healthy: probe.Available,
-		Reason:  probe.Reason,
-		Devices: cloneDevices(probe.Devices),
+		Healthy:      probe.Available,
+		Reason:       probe.Reason,
+		Devices:      cloneDevices(probe.Devices),
+		Capabilities: cloneCapabilities(probe.Capabilities),
 	}, nil
 }
 
@@ -190,9 +201,10 @@ func (d *UnavailableDriver) ExecuteAction(_ context.Context, _ *DriverState, act
 
 func (d *UnavailableDriver) Reconcile(_ context.Context, _ *DriverState, _ *tgsrlv1.PlacementPlan) (*ReconcileState, error) {
 	return &ReconcileState{
-		Healthy: false,
-		Reason:  d.reason,
-		Devices: unavailableDevices(d.reason),
+		Healthy:      false,
+		Reason:       d.reason,
+		Devices:      unavailableDevices(d.reason),
+		Capabilities: unavailableCapabilities(d.reason),
 	}, nil
 }
 
@@ -232,7 +244,8 @@ func (d *LocalDriver) Probe(ctx context.Context) (*ProbeResult, error) {
 	output, err := d.runner.Run(ctx, command)
 	if err != nil {
 		reason := "nvidia probe failed"
-		if errors.Is(err, exec.ErrNotFound) {
+		var commandErr *CommandError
+		if errors.Is(err, exec.ErrNotFound) || errors.As(err, &commandErr) && commandErr.Kind == CommandFailureUnavailable {
 			reason = "nvidia-smi not found"
 		}
 		return &ProbeResult{
@@ -286,9 +299,10 @@ func (d *LocalDriver) Reconcile(ctx context.Context, _ *DriverState, _ *tgsrlv1.
 		devices = unavailableDevices(probe.Reason)
 	}
 	return &ReconcileState{
-		Healthy: probe.Available,
-		Reason:  probe.Reason,
-		Devices: devices,
+		Healthy:      probe.Available,
+		Reason:       probe.Reason,
+		Devices:      devices,
+		Capabilities: cloneCapabilities(probe.Capabilities),
 	}, nil
 }
 
@@ -369,13 +383,6 @@ func unsupportedLocalActionError(action *tgsrlv1.Action) error {
 		SandboxID: actionSandboxID(action),
 		Cause:     provider.ErrUnsupported,
 	}
-}
-
-func driverExecutionDetail(execution *ActionExecution) string {
-	if execution == nil || strings.TrimSpace(execution.Detail) == "" {
-		return "action applied"
-	}
-	return strings.TrimSpace(execution.Detail)
 }
 
 func normalizeDriverError(action *tgsrlv1.Action, err error) error {
@@ -499,10 +506,12 @@ func cloneProbeResult(result *ProbeResult) *ProbeResult {
 		return nil
 	}
 	return &ProbeResult{
-		Available:    result.Available,
-		Reason:       result.Reason,
-		Devices:      cloneDevices(result.Devices),
-		Capabilities: cloneCapabilities(result.Capabilities),
+		Available:              result.Available,
+		Reason:                 result.Reason,
+		Devices:                cloneDevices(result.Devices),
+		Capabilities:           cloneCapabilities(result.Capabilities),
+		Sandboxes:              cloneSandboxSlice(result.Sandboxes),
+		SandboxesAuthoritative: result.SandboxesAuthoritative,
 	}
 }
 

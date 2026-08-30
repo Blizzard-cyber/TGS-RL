@@ -87,6 +87,63 @@ func (p *Provider) GetSandbox(ctx context.Context, sandboxID string) (base.Sandb
 	return cloneSandbox(sandbox), nil
 }
 
+// DriverInventory returns the last detached v2 hardware inventory.
+func (p *Provider) DriverInventory(ctx context.Context) (*InventorySnapshot, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	p.mu.Lock()
+	driver, ok := p.driver.(V2Driver)
+	p.mu.Unlock()
+	if !ok {
+		return nil, fmt.Errorf("%w: NVIDIA Driver v2 is not enabled", base.ErrUnsupported)
+	}
+	return driver.Inventory(), nil
+}
+
+// DriverPartitions returns the last detached v2 partition discovery.
+func (p *Provider) DriverPartitions(ctx context.Context) (*PartitionSnapshot, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	p.mu.Lock()
+	driver, ok := p.driver.(V2Driver)
+	p.mu.Unlock()
+	if !ok {
+		return nil, fmt.Errorf("%w: NVIDIA Driver v2 is not enabled", base.ErrUnsupported)
+	}
+	return driver.Partitions(), nil
+}
+
+// PlanAction returns a v2 dry-run command plan without changing provider state.
+func (p *Provider) PlanAction(ctx context.Context, action *tgsrlv1.Action) (*ActionExecution, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	p.mu.Lock()
+	driver, ok := p.driver.(V2Driver)
+	state := p.driverStateLocked()
+	p.mu.Unlock()
+	if !ok {
+		return nil, fmt.Errorf("%w: NVIDIA Driver v2 is not enabled", base.ErrUnsupported)
+	}
+	return driver.PlanAction(ctx, state, action)
+}
+
+// DriverAuditRecords returns detached v2 audit records.
+func (p *Provider) DriverAuditRecords(ctx context.Context) ([]AuditRecord, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	p.mu.Lock()
+	driver, ok := p.driver.(V2Driver)
+	p.mu.Unlock()
+	if !ok {
+		return nil, fmt.Errorf("%w: NVIDIA Driver v2 is not enabled", base.ErrUnsupported)
+	}
+	return driver.AuditRecords(), nil
+}
+
 func (p *Provider) WatchResources(ctx context.Context, cursor uint64) (<-chan base.WatchedResourceEvent, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
@@ -159,6 +216,127 @@ func (p *Provider) ReconcilePlan(ctx context.Context, plan *tgsrlv1.PlacementPla
 	p.applyReconcileStateLocked(reconciled)
 	record = p.plans[plan.GetPlanId()]
 	return clonePlanRecord(record), nil
+}
+
+// Rediscover refreshes inventory, capabilities, and recovered runtime state.
+func (p *Provider) Rediscover(ctx context.Context) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	p.mu.Lock()
+	state := p.driverStateLocked()
+	p.mu.Unlock()
+	reconciled, err := p.driver.Reconcile(ctx, state, nil)
+	if err != nil {
+		return normalizeDriverError(nil, err)
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.applyReconciledDiscoveryLocked(reconciled)
+	return nil
+}
+
+func (p *Provider) applyReconciledDiscoveryLocked(reconciled *ReconcileState) {
+	if reconciled == nil {
+		return
+	}
+	previousHealthy := p.healthy
+	previousReason := p.healthReason
+	previousDevices := cloneDevices(p.devices)
+	previousCapabilities := cloneCapabilities(p.capabilities)
+	previousSandboxes := make(map[string]base.Sandbox, len(p.sandboxes))
+	for sandboxID, sandbox := range p.sandboxes {
+		previousSandboxes[sandboxID] = cloneSandbox(sandbox)
+	}
+	p.applyReconcileStateLocked(reconciled)
+	capabilitiesChanged := !equalCapabilityContent(previousCapabilities, p.capabilities)
+	sandboxesChanged := !equalSandboxMaps(previousSandboxes, p.sandboxes)
+	if !sandboxesChanged {
+		for sandboxID, previous := range previousSandboxes {
+			if current, exists := p.sandboxes[sandboxID]; exists {
+				current.UpdatedAt = previous.UpdatedAt
+				current.StateChangedAt = previous.StateChangedAt
+				p.sandboxes[sandboxID] = current
+			}
+		}
+	}
+	changed := previousHealthy != p.healthy || previousReason != p.healthReason || !equalDeviceContent(previousDevices, p.devices) || capabilitiesChanged || sandboxesChanged
+	if !changed {
+		return
+	}
+	p.revision++
+	if capabilitiesChanged {
+		p.publishCapabilityRefreshLocked()
+	}
+	if reconciled.SandboxesAuthoritative {
+		for _, sandboxID := range p.sortedSandboxIDsLocked() {
+			if previous, exists := previousSandboxes[sandboxID]; !exists || !equalSandbox(previous, p.sandboxes[sandboxID]) {
+				p.publishSandboxSnapshotLocked(p.sandboxes[sandboxID], "authoritative runtime discovery reconciled")
+			}
+		}
+	}
+	if reconciled.SandboxesAuthoritative {
+		for sandboxID, previous := range previousSandboxes {
+			if _, exists := p.sandboxes[sandboxID]; exists {
+				continue
+			}
+			tombstone := cloneSandbox(previous)
+			tombstone.State = base.SandboxStateTerminated
+			tombstone.UpdatedAt = p.now()
+			tombstone.StateChangedAt = tombstone.UpdatedAt
+			p.publishSandboxSnapshotLocked(tombstone, "runtime discovery removed sandbox")
+		}
+	}
+	p.publishSnapshotLocked(tgsrlv1.ResourceEventType_RESOURCE_EVENT_TYPE_SNAPSHOT_PUBLISHED)
+}
+
+func equalCapabilityContent(left, right *tgsrlv1.CapabilitySet) bool {
+	left, right = cloneCapabilities(left), cloneCapabilities(right)
+	for _, capabilities := range []*tgsrlv1.CapabilitySet{left, right} {
+		if capabilities == nil {
+			continue
+		}
+		capabilities.MeasuredAt = nil
+		capabilities.Revision = 0
+		delete(capabilities.Attributes, "capability_content_digest")
+		delete(capabilities.Attributes, "observation_cursor")
+		for _, component := range capabilities.ComponentVersions {
+			component.ObservedAt = nil
+			component.Revision = 0
+		}
+		for _, evidence := range capabilities.Evidence {
+			evidence.ObservedAt = nil
+			evidence.Revision = 0
+		}
+	}
+	return proto.Equal(left, right)
+}
+
+func equalDeviceContent(left, right []*tgsrlv1.Device) bool {
+	left, right = cloneDevices(left), cloneDevices(right)
+	for _, devices := range [][]*tgsrlv1.Device{left, right} {
+		for _, device := range devices {
+			if device == nil || device.Capabilities == nil {
+				continue
+			}
+			device.Capabilities.MeasuredAt = nil
+			device.Capabilities.Revision = 0
+			delete(device.Capabilities.Attributes, "capability_content_digest")
+			delete(device.Capabilities.Attributes, "observation_cursor")
+			for _, component := range device.Capabilities.ComponentVersions {
+				component.ObservedAt = nil
+				component.Revision = 0
+			}
+			for _, evidence := range device.Capabilities.Evidence {
+				evidence.ObservedAt = nil
+				evidence.Revision = 0
+			}
+		}
+	}
+	return proto.Equal(&tgsrlv1.ClusterSnapshot{Devices: left}, &tgsrlv1.ClusterSnapshot{Devices: right})
 }
 
 func (p *Provider) RecoverInFlightPlans(ctx context.Context) ([]*base.PlanRecord, error) {
@@ -237,7 +415,7 @@ func (p *Provider) publishSandboxSnapshotLocked(sandbox base.Sandbox, detail str
 	if nextRevision == 0 {
 		nextRevision = p.sandboxSeq + 1
 	}
-	share, priority, offloaded := sandbox.Share, sandbox.Priority, sandbox.Offloaded
+	share, priority, safePoint, offloaded := sandbox.Share, sandbox.Priority, sandbox.SafePoint, sandbox.Offloaded
 	event := &tgsrlv1.SandboxEvent{
 		EventId:          fmt.Sprintf("%s-sandbox-%d", ProviderID, p.sandboxSeq+1),
 		EventType:        sandboxStateToEventType(sandbox.State),
@@ -248,12 +426,37 @@ func (p *Provider) publishSandboxSnapshotLocked(sandbox base.Sandbox, detail str
 		SemanticContext:  cloneSemanticEnvelope(sandbox.SemanticContext),
 		Share:            &share,
 		Priority:         &priority,
-		SafePoint:        sandbox.SafePoint,
+		SafePoint:        &safePoint,
 		Offloaded:        &offloaded,
 		Detail:           detail,
 		OccurredAt:       timestamppb.New(nonZeroTime(sandbox.UpdatedAt, p.now())),
 		ProviderRevision: nextRevision,
 		IdempotencyKey:   fmt.Sprintf("%s-sandbox-%s-%d", ProviderID, sandbox.SandboxID, nextRevision),
+	}
+	p.publishSandboxEventLocked(event)
+}
+
+func (p *Provider) publishSandboxShareReadbackLocked(action *tgsrlv1.Action, share float64, detail string) {
+	if action == nil {
+		return
+	}
+	sandbox, ok := p.sandboxes[actionSandboxID(action)]
+	if !ok {
+		return
+	}
+	event := &tgsrlv1.SandboxEvent{
+		EventId:          fmt.Sprintf("%s-sandbox-%d", ProviderID, p.sandboxSeq+1),
+		EventType:        sandboxStateToEventType(sandbox.State),
+		SandboxId:        sandbox.SandboxID,
+		Generation:       sandbox.Generation,
+		State:            sandboxStateToRuntimeState(sandbox.State),
+		Share:            &share,
+		Detail:           detail,
+		OccurredAt:       timestamppb.New(p.now()),
+		PlanId:           action.GetPlanId(),
+		ActionId:         action.GetActionId(),
+		ProviderRevision: p.revision,
+		IdempotencyKey:   action.GetIdempotencyKey(),
 	}
 	p.publishSandboxEventLocked(event)
 }
