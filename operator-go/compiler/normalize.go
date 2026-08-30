@@ -50,11 +50,19 @@ func normalize(input CompileInput, runtimeConfig RuntimeConfig) (*normalizedInpu
 	if input.ManifestHasNoImageDigests() {
 		return nil, fmt.Errorf("runtime manifest must include at least one image digest")
 	}
-	parallelism := maxRunUnits(input.PlacementPlan, desiredUnits(input.JobRun))
-	if parallelism == 0 {
-		parallelism = 1
+	binding, err := workloadBinding(input.PlacementPlan)
+	if err != nil {
+		return nil, err
 	}
-	accelerators := acceleratorUnits(input.PlacementPlan)
+	resourcesPerUnit := binding.GetResources()
+	concreteGeneration := binding.GetGeneration()
+	if concreteGeneration == 0 {
+		concreteGeneration = input.Generation
+	}
+	if concreteGeneration == 0 {
+		return nil, fmt.Errorf("binding %q generation must be positive", binding.GetBindingId())
+	}
+	accelerators := resourcesPerUnit.GetAcceleratorUnits()
 	if accelerators > 0 && profile == GPUProfileNone {
 		return nil, fmt.Errorf("gpu profile none cannot compile accelerator demand")
 	}
@@ -64,15 +72,14 @@ func normalize(input CompileInput, runtimeConfig RuntimeConfig) (*normalizedInpu
 	return &normalizedInput{
 		Namespace:        namespace,
 		GPUProfile:       profile,
-		Generation:       input.Generation,
+		Generation:       concreteGeneration,
 		Run:              input.JobRun,
 		Manifest:         input.RuntimeManifest,
 		Plan:             input.PlacementPlan,
-		AdmissionAllowed: input.AdmissionAllowed,
 		Runtime:          cloneRuntimeConfig(runtimeConfig),
-		parallelism:      parallelism,
 		priority:         derivePriority(input.JobRun, input.PlacementPlan),
-		acceleratorUnits: accelerators,
+		resourcesPerUnit: cloneResourceVector(resourcesPerUnit),
+		workloadUnitID:   binding.GetPendingUnitId(),
 	}, nil
 }
 
@@ -138,20 +145,34 @@ func ValidateRuntimeConfig(config RuntimeConfig) (RuntimeConfig, error) {
 	return normalized, nil
 }
 
-func maxRunUnits(plan *tgsrlv1.PlacementPlan, fallback uint32) uint32 {
-	if plan == nil {
-		return fallback
-	}
-	var max uint32
+func workloadBinding(plan *tgsrlv1.PlacementPlan) (*tgsrlv1.Binding, error) {
+	var selected *tgsrlv1.Binding
 	for _, binding := range plan.GetBindings() {
-		if binding.GetPendingUnitId() != "" {
-			max++
+		if binding == nil || binding.GetPendingUnitId() == "" {
+			continue
 		}
+		if binding.GetResources() == nil {
+			return nil, fmt.Errorf("binding %q is missing resources", binding.GetBindingId())
+		}
+		if selected != nil {
+			return nil, fmt.Errorf("operator bundle requires exactly one concrete binding")
+		}
+		selected = binding
 	}
-	if max > 0 {
-		return max
+	if selected == nil {
+		return nil, fmt.Errorf("operator bundle requires one concrete binding")
 	}
-	return fallback
+	if bindingRuntimeUnitID(selected) == "" {
+		return nil, fmt.Errorf("binding %q is missing runtime unit identity", selected.GetBindingId())
+	}
+	return selected, nil
+}
+
+func bindingRuntimeUnitID(binding *tgsrlv1.Binding) string {
+	if binding.GetRuntimeUnitId() != "" {
+		return binding.GetRuntimeUnitId()
+	}
+	return binding.GetPendingUnitId()
 }
 
 func derivePriority(run *tgsrlv1.JobRun, plan *tgsrlv1.PlacementPlan) int32 {
@@ -165,22 +186,6 @@ func derivePriority(run *tgsrlv1.JobRun, plan *tgsrlv1.PlacementPlan) int32 {
 	for _, action := range plan.GetActions() {
 		if action.GetPriority() != 0 {
 			return action.GetPriority()
-		}
-	}
-	return 0
-}
-
-func desiredUnits(run *tgsrlv1.JobRun) uint32 {
-	if run == nil {
-		return 0
-	}
-	if run.GetDesiredUnits() > 0 {
-		return run.GetDesiredUnits()
-	}
-	if raw := strings.TrimSpace(run.GetLabels()["desired_units"]); raw != "" {
-		var v uint32
-		if _, err := fmt.Sscanf(raw, "%d", &v); err == nil {
-			return v
 		}
 	}
 	return 0

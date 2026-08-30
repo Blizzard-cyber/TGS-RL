@@ -46,6 +46,10 @@ type BundleSource interface {
 	List(context.Context) ([]*api.Bundle, error)
 }
 
+type BundleCleaner interface {
+	Cleanup(context.Context, string, uint64) error
+}
+
 type ControlMetadataRestorer interface {
 	RestoreControlMetadata(context.Context) error
 }
@@ -315,23 +319,22 @@ func (m *ObservationManager) Register(ctx context.Context, registration Observat
 	restart := false
 	if err == nil && !ok {
 		err = m.repository.SaveRegistration(registration)
-	} else if err == nil && !sameRegistration(existing, registration) {
-		err = fmt.Errorf("registration conflicts with existing bundle identity")
-	} else if err == nil && registration.Decision.GetSequence() != 0 && existing.Decision.GetSequence() == 0 {
-		registration.PublishedEventIDs = existing.PublishedEventIDs
-		registration.LastState = existing.LastState
-		registration.PendingState = existing.PendingState
-		registration.Transition = existing.Transition
-		registration.PublishedStates = existing.PublishedStates
-		registration.PendingObservedAt = existing.PendingObservedAt
-		registration.PendingDetail = existing.PendingDetail
-		registration.PendingControlKey = existing.PendingControlKey
-		registration.PendingControlRevision = existing.PendingControlRevision
-		registration.PendingControlRequestID = existing.PendingControlRequestID
-		err = m.repository.SaveRegistration(registration)
-		restart = err == nil
 	} else if err == nil {
-		registration = existing
+		switch {
+		case sameRegistration(existing, registration):
+			registration = existing
+		case registration.Decision.GetSequence() > existing.Decision.GetSequence():
+			registration.PublishedEventIDs = existing.PublishedEventIDs
+			if existing.Bundle != nil && registration.Bundle != nil && existing.Bundle.Generation == registration.Bundle.Generation {
+				registration.LastState = existing.LastState
+				registration.PublishedStates = existing.PublishedStates
+				registration.Transition = existing.Transition
+			}
+			err = m.repository.SaveRegistration(registration)
+			restart = err == nil
+		default:
+			err = fmt.Errorf("registration conflicts with existing bundle identity")
+		}
 	}
 	m.repoMu.Unlock()
 	if err != nil {
@@ -543,6 +546,11 @@ func (m *ObservationManager) publishSnapshot(ctx context.Context, registration *
 	}
 	terminal := projection.State == tgsrlv1.RuntimeState_RUNTIME_STATE_TERMINATED || projection.State == tgsrlv1.RuntimeState_RUNTIME_STATE_FAILED
 	if terminal {
+		if cleaner, ok := m.bundles.(BundleCleaner); ok {
+			if err := cleaner.Cleanup(ctx, registration.BundleKey, registration.Bundle.Generation); err != nil {
+				return false, fmt.Errorf("cleanup terminal bundle %q: %w", registration.BundleKey, err)
+			}
+		}
 		return true, nil
 	}
 	registration.LastState = projection.State

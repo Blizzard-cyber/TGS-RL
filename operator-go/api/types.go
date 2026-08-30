@@ -19,13 +19,16 @@ type OwnerReference struct {
 }
 
 type ObjectMeta struct {
-	Name            string            `json:"name,omitempty"`
-	Namespace       string            `json:"namespace,omitempty"`
-	UID             string            `json:"uid,omitempty"`
-	Generation      int64             `json:"generation,omitempty"`
-	Labels          map[string]string `json:"labels,omitempty"`
-	Annotations     map[string]string `json:"annotations,omitempty"`
-	OwnerReferences []OwnerReference  `json:"ownerReferences,omitempty"`
+	Name              string            `json:"name,omitempty"`
+	Namespace         string            `json:"namespace,omitempty"`
+	UID               string            `json:"uid,omitempty"`
+	Generation        int64             `json:"generation,omitempty"`
+	ResourceVersion   string            `json:"resourceVersion,omitempty"`
+	Finalizers        []string          `json:"finalizers,omitempty"`
+	DeletionTimestamp string            `json:"deletionTimestamp,omitempty"`
+	Labels            map[string]string `json:"labels,omitempty"`
+	Annotations       map[string]string `json:"annotations,omitempty"`
+	OwnerReferences   []OwnerReference  `json:"ownerReferences,omitempty"`
 }
 
 type ResourceList map[string]string

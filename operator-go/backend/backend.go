@@ -8,6 +8,7 @@ import (
 	tgsrlv1 "github.com/Blizzard-cyber/TGS-RL/gen/go/tgsrl/v1"
 	"github.com/Blizzard-cyber/TGS-RL/operator-go/api"
 	"github.com/Blizzard-cyber/TGS-RL/operator-go/bundleadapter"
+	"github.com/Blizzard-cyber/TGS-RL/operator-go/compiler"
 )
 
 var (
@@ -28,6 +29,7 @@ type Backend interface {
 	Get(ctx context.Context, key string) (*api.Bundle, bool, error)
 	List(ctx context.Context) ([]*api.Bundle, error)
 	Control(ctx context.Context, request ControlRequest) (*ControlResult, error)
+	Cleanup(ctx context.Context, key string, expectedGeneration uint64) error
 }
 
 // ControlRequest is the narrow, transport-independent lifecycle mutation
@@ -42,6 +44,10 @@ type ControlRequest struct {
 	IdempotencyKey string
 	Reason         string
 	Deadline       time.Time
+	// GlobalTargetLookup lets the in-process decision reconciler locate a
+	// preemption victim outside the replacement run. Transport requests never
+	// set it and remain scoped by job_id/run_id.
+	GlobalTargetLookup bool
 }
 
 type ControlTarget struct {
@@ -119,6 +125,18 @@ func (b *FakeBackend) List(ctx context.Context) ([]*api.Bundle, error) {
 
 func (b *FakeBackend) Control(ctx context.Context, request ControlRequest) (*ControlResult, error) {
 	return b.inner.Control(ctx, request)
+}
+
+func (b *FakeBackend) Cleanup(ctx context.Context, key string, expectedGeneration uint64) error {
+	return b.inner.Cleanup(ctx, key, expectedGeneration)
+}
+
+func (b *FakeBackend) DiscoverCapabilities(ctx context.Context) (compiler.CapabilitySet, error) {
+	return b.client.DiscoverCapabilities(ctx)
+}
+
+func (b *FakeBackend) SetCapabilities(values compiler.CapabilitySet) {
+	b.client.SetCapabilities(values)
 }
 
 func (b *FakeBackend) Snapshots(ctx context.Context, bundle *api.Bundle) ([]*ObservationSnapshot, error) {

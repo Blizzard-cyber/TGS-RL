@@ -3,7 +3,6 @@ package worker
 import (
 	"context"
 
-	"github.com/Blizzard-cyber/TGS-RL/operator-go/admission"
 	"github.com/Blizzard-cyber/TGS-RL/operator-go/compiler"
 	opcontroller "github.com/Blizzard-cyber/TGS-RL/operator-go/controller"
 )
@@ -19,13 +18,13 @@ func NewControllerReconciler(inner *opcontroller.Reconciler) *ControllerReconcil
 	return &ControllerReconciler{inner: inner}
 }
 
-func (r *ControllerReconciler) Reconcile(ctx context.Context, input compiler.CompileInput, policy admission.QueuePolicy) (*ReconcileResult, error) {
-	result, err := r.inner.Reconcile(ctx, input, policy)
+func (r *ControllerReconciler) Reconcile(ctx context.Context, input compiler.CompileInput) (*ReconcileResult, error) {
+	result, err := r.inner.Reconcile(ctx, input)
 	if err != nil {
 		return nil, err
 	}
 	return &ReconcileResult{
-		Bundle:     result.Bundle,
+		Bundles:    result.Bundles,
 		Applied:    result.Applied,
 		Idempotent: result.Idempotent,
 	}, nil

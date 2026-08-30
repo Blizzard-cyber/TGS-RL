@@ -15,6 +15,31 @@ func TestBuildSandboxEventPreservesSchedulingCausality(t *testing.T) {
 	}
 }
 
+func TestBuildSandboxEventUsesConcreteBindingGeneration(t *testing.T) {
+	binding := &tgsrlv1.Binding{
+		BindingId:     "replacement-binding",
+		RuntimeUnitId: "unit-1",
+		SandboxId:     "sandbox-1",
+		Generation:    4,
+	}
+	decision := &tgsrlv1.DecisionRecord{
+		DecisionId: "replacement-decision",
+		Generation: 3,
+		SelectedPlan: &tgsrlv1.PlacementPlan{
+			PlanId:   "replacement-plan",
+			Bindings: []*tgsrlv1.Binding{binding},
+		},
+	}
+
+	event := BuildSandboxEvent(decision, &tgsrlv1.JobRun{RunId: "run-1", JobId: "job-1"}, binding, tgsrlv1.SandboxEventType_SANDBOX_EVENT_TYPE_RUNNING, tgsrlv1.RuntimeState_RUNTIME_STATE_RUNNING, "running")
+	if event.GetGeneration() != binding.GetGeneration() {
+		t.Fatalf("event generation = %d, want replacement binding generation %d", event.GetGeneration(), binding.GetGeneration())
+	}
+	if event.GetBinding().GetGeneration() != binding.GetGeneration() {
+		t.Fatalf("event binding generation = %d, want %d", event.GetBinding().GetGeneration(), binding.GetGeneration())
+	}
+}
+
 func TestBuildSandboxEventProjectsMutableActionStateWithPresence(t *testing.T) {
 	binding := &tgsrlv1.Binding{BindingId: "binding-1", PendingUnitId: "unit-1", RuntimeUnitId: "unit-1", SandboxId: "sandbox-1", Generation: 3, Resources: &tgsrlv1.ResourceVector{AcceleratorUnits: 0.25}}
 	tests := []struct {

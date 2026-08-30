@@ -80,6 +80,18 @@ func (c *partialApplyClient) Upsert(ctx context.Context, object ClientObject) (b
 	return c.MemoryClient.Upsert(ctx, object)
 }
 
+func (c *partialApplyClient) EnsureRuntimeClass(ctx context.Context, object ClientObject) (bool, *ClientObject, error) {
+	if c.calls == nil {
+		c.calls = make(map[string]int)
+	}
+	c.calls[object.Key]++
+	if object.Key == c.failObjectKey && c.failCount > 0 {
+		c.failCount--
+		return false, nil, errors.New("injected apply failure")
+	}
+	return c.MemoryClient.EnsureRuntimeClass(ctx, object)
+}
+
 func (c *deleteControlClient) ControlJob(ctx context.Context, object ClientObject, action tgsrlv1.JobCommandType, expectedVersion string) (*bundleadapter.JobControlReadback, error) {
 	if c.calls == nil {
 		c.calls = make(map[string]int)
@@ -209,6 +221,55 @@ func TestKubernetesBackendRepairsMissingObjectsBeforeIdempotentReplay(t *testing
 	}
 }
 
+func TestKubernetesBackendReplacementFailurePreservesPreviousGeneration(t *testing.T) {
+	client := &partialApplyClient{MemoryClient: NewMemoryClient()}
+	backend, err := NewKubernetes(client)
+	if err != nil {
+		t.Fatal(err)
+	}
+	previous := testBundle()
+	if _, err := backend.Apply(context.Background(), previous); err != nil {
+		t.Fatal(err)
+	}
+
+	replacement, err := api.CloneBundle(previous)
+	if err != nil {
+		t.Fatal(err)
+	}
+	replacement.Generation = 2
+	replacement.Fingerprint = "fp-2"
+	replacement.Workload.ObjectMeta.Name = "workload-a-g2"
+	replacement.Workload.ObjectMeta.Generation = 2
+	replacement.Job.ObjectMeta.Name = "job-a-g2"
+	replacement.Job.ObjectMeta.Generation = 2
+	replacement.ResourceClaim.ObjectMeta.Name = "claim-a-g2"
+	replacement.ResourceClaim.ObjectMeta.Generation = 2
+	client.failObjectKey = "ns/workload-a-g2"
+	client.failCount = 1
+
+	if _, err := backend.Apply(context.Background(), replacement); err == nil {
+		t.Fatal("replacement apply should fail")
+	}
+	stored, found, err := backend.Get(context.Background(), previous.Key)
+	if err != nil || !found {
+		t.Fatalf("get previous bundle after failed replacement: found=%v err=%v", found, err)
+	}
+	if stored.Generation != previous.Generation || stored.Fingerprint != previous.Fingerprint {
+		t.Fatalf("stored bundle = generation %d fingerprint %q, want previous generation %d fingerprint %q", stored.Generation, stored.Fingerprint, previous.Generation, previous.Fingerprint)
+	}
+	previousObjects, _ := splitCompletionMarker(mustMaterialize(t, backend, previous))
+	for _, object := range previousObjects {
+		if object.Kind == "RuntimeClass" {
+			continue
+		}
+		if _, found, err := client.Get(context.Background(), object); err != nil {
+			t.Fatal(err)
+		} else if !found {
+			t.Fatalf("previous-generation object %s was removed before replacement was ready", object.Key)
+		}
+	}
+}
+
 func TestKubernetesBackendRepairsStaleMarkerReplayByRecreatingMissingObject(t *testing.T) {
 	client := NewMemoryClient()
 	b, err := NewKubernetes(client)
@@ -275,8 +336,167 @@ func TestKubernetesBackendRepairsExistingStaleObjectBeforeIdempotentReplay(t *te
 	if err != nil || !found {
 		t.Fatalf("Get(repaired Job) found=%v err=%v", found, err)
 	}
-	if string(repaired.Payload) != string(desiredJob.Payload) {
-		t.Fatalf("repaired Job payload remained stale")
+	var repairedJob api.Job
+	if err := json.Unmarshal(repaired.Payload, &repairedJob); err != nil {
+		t.Fatalf("decode repaired Job: %v", err)
+	}
+	if repairedJob.Spec.Parallelism != bundle.Job.Spec.Parallelism || repairedJob.ObjectMeta.Name != bundle.Job.ObjectMeta.Name {
+		t.Fatalf("repaired Job remained stale: %+v", repairedJob.Spec)
+	}
+}
+
+func TestKubernetesBackendGetReturnsStoredBundleMarkerMetadata(t *testing.T) {
+	client := NewMemoryClient()
+	b, err := NewKubernetes(client)
+	if err != nil {
+		t.Fatal(err)
+	}
+	bundle := testBundle()
+	bundle.GPUProfile = "nvidia-device-plugin"
+	if _, err := b.Apply(context.Background(), bundle); err != nil {
+		t.Fatal(err)
+	}
+
+	object, found, err := client.Get(context.Background(), b.adapter.BundleObject(bundle.Key))
+	if err != nil || !found {
+		t.Fatalf("get raw bundle marker: found=%v err=%v", found, err)
+	}
+	marker, metadata, err := updateStoredBundleMetadata(*object, func(meta *api.ObjectMeta) {
+		if meta.Annotations == nil {
+			meta.Annotations = make(map[string]string)
+		}
+		meta.Annotations["custom"] = "value"
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := client.Upsert(context.Background(), marker); err != nil {
+		t.Fatal(err)
+	}
+
+	got, ok, err := b.Get(context.Background(), bundle.Key)
+	if err != nil || !ok {
+		t.Fatalf("Get() ok=%v err=%v", ok, err)
+	}
+	if got.GPUProfile != bundle.GPUProfile {
+		t.Fatalf("gpu profile = %q, want %q", got.GPUProfile, bundle.GPUProfile)
+	}
+	raw, found, err := client.Get(context.Background(), b.adapter.BundleObject(bundle.Key))
+	if err != nil || !found {
+		t.Fatalf("re-read raw bundle marker: found=%v err=%v", found, err)
+	}
+	_, roundTrippedMeta, err := decodeStoredBundleObject(*raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if roundTrippedMeta.Annotations["custom"] != metadata.Annotations["custom"] || roundTrippedMeta.Annotations[bundleSelectedGPUProfile] != bundle.GPUProfile {
+		t.Fatalf("bundle marker metadata lost: %+v", roundTrippedMeta.Annotations)
+	}
+}
+
+func TestKubernetesBackendGetReconcilesDeletingBundleAndRemovesFinalizer(t *testing.T) {
+	client := NewMemoryClient()
+	b, err := NewKubernetes(client)
+	if err != nil {
+		t.Fatal(err)
+	}
+	bundle := testBundle()
+	if _, err := b.Apply(context.Background(), bundle); err != nil {
+		t.Fatal(err)
+	}
+
+	object, found, err := client.Get(context.Background(), b.adapter.BundleObject(bundle.Key))
+	if err != nil || !found {
+		t.Fatalf("get raw bundle marker: found=%v err=%v", found, err)
+	}
+	marker, _, err := updateStoredBundleMetadata(*object, func(meta *api.ObjectMeta) {
+		meta.DeletionTimestamp = "2026-08-29T10:00:00Z"
+		if !containsString(meta.Finalizers, bundleFinalizer) {
+			meta.Finalizers = append(meta.Finalizers, bundleFinalizer)
+		}
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := client.Upsert(context.Background(), marker); err != nil {
+		t.Fatal(err)
+	}
+
+	got, ok, err := b.Get(context.Background(), bundle.Key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ok || got != nil {
+		t.Fatalf("Get() = %+v, ok=%v; want bundle removed after delete reconciliation", got, ok)
+	}
+	for _, object := range []ClientObject{
+		metaObject(bundle.Job.TypeMeta.APIVersion, bundle.Job.TypeMeta.Kind, bundle.Job.ObjectMeta),
+		metaObject(bundle.Workload.TypeMeta.APIVersion, bundle.Workload.TypeMeta.Kind, bundle.Workload.ObjectMeta),
+		metaObject(bundle.ResourceClaim.TypeMeta.APIVersion, bundle.ResourceClaim.TypeMeta.Kind, bundle.ResourceClaim.ObjectMeta),
+		metaObject(bundle.RuntimeClass.TypeMeta.APIVersion, bundle.RuntimeClass.TypeMeta.Kind, bundle.RuntimeClass.ObjectMeta),
+		b.adapter.BundleObject(bundle.Key),
+	} {
+		if _, found, err := client.Get(context.Background(), object); err != nil {
+			t.Fatal(err)
+		} else if found {
+			t.Fatalf("object %s still exists after deleting-bundle reconciliation", object.Key)
+		}
+	}
+}
+
+func TestKubernetesBackendListOmitsDeletingBundleAfterCleanup(t *testing.T) {
+	client := NewMemoryClient()
+	b, err := NewKubernetes(client)
+	if err != nil {
+		t.Fatal(err)
+	}
+	keep := testBundle()
+	keep.Key = "ns/bundle-keep"
+	keep.Fingerprint = "fp-keep"
+	keep.Job.ObjectMeta.Name = "job-keep"
+	keep.Workload.ObjectMeta.Name = "workload-keep"
+	keep.ResourceClaim.ObjectMeta.Name = "claim-keep"
+	keep.RuntimeClass.ObjectMeta.Name = "runtime-keep"
+	if _, err := b.Apply(context.Background(), keep); err != nil {
+		t.Fatal(err)
+	}
+	deleting, err := api.CloneBundle(keep)
+	if err != nil {
+		t.Fatal(err)
+	}
+	deleting.Key = "ns/bundle-delete"
+	deleting.Fingerprint = "fp-delete"
+	deleting.Job.ObjectMeta.Name = "job-delete"
+	deleting.Workload.ObjectMeta.Name = "workload-delete"
+	deleting.ResourceClaim.ObjectMeta.Name = "claim-delete"
+	deleting.RuntimeClass.ObjectMeta.Name = "runtime-delete"
+	if _, err := b.Apply(context.Background(), deleting); err != nil {
+		t.Fatal(err)
+	}
+
+	object, found, err := client.Get(context.Background(), b.adapter.BundleObject(deleting.Key))
+	if err != nil || !found {
+		t.Fatalf("get deleting marker: found=%v err=%v", found, err)
+	}
+	marker, _, err := updateStoredBundleMetadata(*object, func(meta *api.ObjectMeta) {
+		meta.DeletionTimestamp = "2026-08-29T10:00:00Z"
+		if !containsString(meta.Finalizers, bundleFinalizer) {
+			meta.Finalizers = append(meta.Finalizers, bundleFinalizer)
+		}
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := client.Upsert(context.Background(), marker); err != nil {
+		t.Fatal(err)
+	}
+
+	bundles, err := b.List(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(bundles) != 1 || bundles[0].Key != keep.Key {
+		t.Fatalf("List() = %+v, want only surviving bundle %q", bundles, keep.Key)
 	}
 }
 

@@ -7,7 +7,6 @@ import (
 	"time"
 
 	tgsrlv1 "github.com/Blizzard-cyber/TGS-RL/gen/go/tgsrl/v1"
-	"github.com/Blizzard-cyber/TGS-RL/operator-go/admission"
 	"github.com/Blizzard-cyber/TGS-RL/operator-go/api"
 	"github.com/Blizzard-cyber/TGS-RL/operator-go/compiler"
 	"github.com/Blizzard-cyber/TGS-RL/operator-go/cursor"
@@ -34,11 +33,11 @@ type RuntimeManifestClient interface {
 }
 
 type Reconciler interface {
-	Reconcile(ctx context.Context, input compiler.CompileInput, policy admission.QueuePolicy) (*ReconcileResult, error)
+	Reconcile(ctx context.Context, input compiler.CompileInput) (*ReconcileResult, error)
 }
 
 type ReconcileResult struct {
-	Bundle     *api.Bundle
+	Bundles    []*api.Bundle
 	Applied    bool
 	Idempotent bool
 }
@@ -51,7 +50,6 @@ type Worker struct {
 	cursors      cursor.Repository
 	deliveries   DeliveryRepository
 	observations *ObservationManager
-	queuePolicy  admission.QueuePolicy
 	namespace    string
 	gpuProfiles  []string
 	retryBase    time.Duration
@@ -69,7 +67,6 @@ type Config struct {
 	Deliveries    DeliveryRepository
 	Registrations RegistrationRepository
 	Bundles       BundleSource
-	QueuePolicy   admission.QueuePolicy
 	Namespace     string
 	GPUProfiles   []string
 }
@@ -119,7 +116,6 @@ func New(config Config) (*Worker, error) {
 		cursors:      config.Cursors,
 		deliveries:   config.Deliveries,
 		observations: observations,
-		queuePolicy:  config.QueuePolicy,
 		namespace:    config.Namespace,
 		gpuProfiles:  append([]string(nil), config.GPUProfiles...),
 		retryBase:    200 * time.Millisecond,
@@ -244,15 +240,14 @@ func (w *Worker) handleDecision(ctx context.Context, decision *tgsrlv1.DecisionR
 		return err
 	}
 	input := compiler.CompileInput{
-		Namespace:        w.namespace,
-		GPUProfiles:      append([]string(nil), w.gpuProfiles...),
-		Generation:       decisionGeneration(decision),
-		JobRun:           proto.Clone(jobRunResp.GetRun()).(*tgsrlv1.JobRun),
-		RuntimeManifest:  proto.Clone(manifestResp.GetManifest()).(*tgsrlv1.RuntimeManifest),
-		PlacementPlan:    proto.Clone(plan).(*tgsrlv1.PlacementPlan),
-		AdmissionAllowed: true,
+		Namespace:       w.namespace,
+		GPUProfiles:     append([]string(nil), w.gpuProfiles...),
+		Generation:      decisionGeneration(decision),
+		JobRun:          proto.Clone(jobRunResp.GetRun()).(*tgsrlv1.JobRun),
+		RuntimeManifest: proto.Clone(manifestResp.GetManifest()).(*tgsrlv1.RuntimeManifest),
+		PlacementPlan:   proto.Clone(plan).(*tgsrlv1.PlacementPlan),
 	}
-	result, err := w.reconciler.Reconcile(ctx, input, w.queuePolicy)
+	result, err := w.reconciler.Reconcile(ctx, input)
 	if err != nil {
 		return err
 	}
@@ -266,19 +261,55 @@ func (w *Worker) handleDecision(ctx context.Context, decision *tgsrlv1.DecisionR
 	if err := w.deliveries.Save(record); err != nil {
 		return err
 	}
-	if result.Bundle == nil {
-		return fmt.Errorf("reconcile applied decision %q without a bundle", decision.GetDecisionId())
-	}
-	if err := w.observations.Register(ctx, ObservationRegistration{
-		BundleKey:         result.Bundle.Key,
-		Bundle:            result.Bundle,
-		Decision:          decision,
-		JobRun:            jobRunResp.GetRun(),
-		PublishedEventIDs: record.PublishedEventIDs,
-	}); err != nil {
-		return err
+	for _, bundle := range result.Bundles {
+		if bundle == nil {
+			return fmt.Errorf("reconcile applied decision %q with a nil bundle", decision.GetDecisionId())
+		}
+		if err := w.observations.Register(ctx, ObservationRegistration{
+			BundleKey:         bundle.Key,
+			Bundle:            bundle,
+			Decision:          decisionForBundle(decision, bundle),
+			JobRun:            jobRunResp.GetRun(),
+			PublishedEventIDs: record.PublishedEventIDs,
+		}); err != nil {
+			return err
+		}
 	}
 	return w.completeDelivery(decision)
+}
+
+func decisionForBundle(decision *tgsrlv1.DecisionRecord, bundle *api.Bundle) *tgsrlv1.DecisionRecord {
+	projected := proto.Clone(decision).(*tgsrlv1.DecisionRecord)
+	plan := projected.GetSelectedPlan()
+	plan.Bindings = nil
+	plan.Actions = nil
+	actionIDs := make(map[string]struct{}, len(bundle.RuntimeTargets))
+	for _, target := range bundle.RuntimeTargets {
+		for _, binding := range decision.GetSelectedPlan().GetBindings() {
+			if binding.GetBindingId() == target.BindingID {
+				plan.Bindings = append(plan.Bindings, proto.Clone(binding).(*tgsrlv1.Binding))
+				break
+			}
+		}
+		if target.ActionID != "" {
+			actionIDs[target.ActionID] = struct{}{}
+		}
+	}
+	for _, action := range decision.GetSelectedPlan().GetActions() {
+		if _, ok := actionIDs[action.GetActionId()]; ok {
+			plan.Actions = append(plan.Actions, proto.Clone(action).(*tgsrlv1.Action))
+		}
+	}
+	results := projected.ActionResults[:0]
+	for _, result := range projected.GetActionResults() {
+		if _, ok := actionIDs[result.GetActionId()]; ok {
+			results = append(results, result)
+		}
+	}
+	projected.ActionResults = results
+	projected.Generation = bundle.Generation
+	plan.Generation = bundle.Generation
+	return projected
 }
 
 // ObservationRegistrar exposes the durable recovery handoff without coupling
@@ -329,15 +360,38 @@ func shouldProcess(decision *tgsrlv1.DecisionRecord) bool {
 	if decision == nil || decision.GetSelectedPlan() == nil || decision.GetFallback() {
 		return false
 	}
-	if len(decision.GetActionResults()) == 0 {
+	plan := decision.GetSelectedPlan()
+	// The Operator materializes only actions that carry workload desired state.
+	// Resource-only and lifecycle-only actions are already owned by their
+	// explicit execution paths and must not be repeated from the decision stream.
+	if len(plan.GetActions()) == 0 {
 		return false
 	}
+	results := make(map[string]*tgsrlv1.ActionResult, len(decision.GetActionResults()))
 	for _, result := range decision.GetActionResults() {
-		if result.GetStatus() != tgsrlv1.ActionResultStatus_ACTION_RESULT_STATUS_SUCCEEDED {
+		if result == nil || result.GetActionId() == "" {
 			return false
 		}
+		if _, duplicate := results[result.GetActionId()]; duplicate {
+			return false
+		}
+		results[result.GetActionId()] = result
 	}
-	return true
+	hasBindingMutation := false
+	hasRelease := false
+	for _, action := range plan.GetActions() {
+		result := results[action.GetActionId()]
+		if result == nil || result.GetStatus() != tgsrlv1.ActionResultStatus_ACTION_RESULT_STATUS_SUCCEEDED {
+			return false
+		}
+		switch action.GetActionType() {
+		case tgsrlv1.ActionType_ACTION_TYPE_BIND, tgsrlv1.ActionType_ACTION_TYPE_REBIND, tgsrlv1.ActionType_ACTION_TYPE_RECREATE:
+			hasBindingMutation = true
+		case tgsrlv1.ActionType_ACTION_TYPE_RELEASE:
+			hasRelease = true
+		}
+	}
+	return hasRelease || hasBindingMutation && len(plan.GetBindings()) > 0
 }
 
 func decisionGeneration(decision *tgsrlv1.DecisionRecord) uint64 {

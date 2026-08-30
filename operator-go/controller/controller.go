@@ -4,27 +4,27 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/Blizzard-cyber/TGS-RL/operator-go/admission"
+	tgsrlv1 "github.com/Blizzard-cyber/TGS-RL/gen/go/tgsrl/v1"
 	"github.com/Blizzard-cyber/TGS-RL/operator-go/api"
 	"github.com/Blizzard-cyber/TGS-RL/operator-go/backend"
 	"github.com/Blizzard-cyber/TGS-RL/operator-go/compiler"
 )
 
 type ReconcileResult struct {
-	Bundle        *api.Bundle
-	Created       bool
-	Updated       bool
-	Idempotent    bool
-	Admission     admission.Decision
-	Applied       bool
-	Queued        bool
-	PreemptedKeys []string
+	Bundles    []*api.Bundle
+	Created    bool
+	Updated    bool
+	Idempotent bool
+	Applied    bool
 }
 
 type Reconciler struct {
-	compiler  *compiler.Compiler
-	admission *admission.Evaluator
-	backend   backend.Backend
+	compiler *compiler.Compiler
+	backend  backend.Backend
+}
+
+type capabilityDiscoverer interface {
+	DiscoverCapabilities(context.Context) (compiler.CapabilitySet, error)
 }
 
 func New(b backend.Backend) *Reconciler {
@@ -44,86 +44,114 @@ func NewWithCompiler(b backend.Backend, c *compiler.Compiler) *Reconciler {
 		c = compiler.New()
 	}
 	return &Reconciler{
-		compiler:  c,
-		admission: admission.New(),
-		backend:   b,
+		compiler: c,
+		backend:  b,
 	}
 }
 
-func (r *Reconciler) Reconcile(ctx context.Context, input compiler.CompileInput, policy admission.QueuePolicy) (*ReconcileResult, error) {
+func (r *Reconciler) Reconcile(ctx context.Context, input compiler.CompileInput) (*ReconcileResult, error) {
 	if r.backend == nil {
 		return nil, fmt.Errorf("backend is required")
 	}
-	bundle, err := r.compiler.Compile(input)
-	if err != nil {
+	var bundles []*api.Bundle
+	if len(input.PlacementPlan.GetBindings()) > 0 {
+		if discoverer, ok := r.backend.(capabilityDiscoverer); ok && r.compiler != nil {
+			capabilities, err := discoverer.DiscoverCapabilities(ctx)
+			if err != nil {
+				return nil, err
+			}
+			if len(capabilities.GPUProfiles) == 0 {
+				capabilities.GPUProfiles = map[string]bool{compiler.GPUProfileNone: true}
+			}
+			r.compiler.SetCapabilities(capabilities)
+		}
+		var err error
+		bundles, err = r.compiler.Compile(input)
+		if err != nil {
+			return nil, err
+		}
+	}
+	result := &ReconcileResult{Applied: true, Idempotent: true}
+	if request, ok, err := releaseControlRequest(input); err != nil {
 		return nil, err
+	} else if ok {
+		applied, err := r.backend.Control(ctx, request)
+		if err != nil {
+			return nil, fmt.Errorf("release workloads for plan %q: %w", input.PlacementPlan.GetPlanId(), err)
+		}
+		if applied == nil || !applied.Accepted {
+			return nil, fmt.Errorf("release workloads for plan %q was not accepted", input.PlacementPlan.GetPlanId())
+		}
+		result.Idempotent = result.Idempotent && applied.Idempotent
 	}
+	result.Bundles = make([]*api.Bundle, 0, len(bundles))
+	for _, bundle := range bundles {
+		bundle.ControllerStatus.ObservedGeneration = bundle.Generation
+		bundle.ControllerStatus.BundleFingerprint = bundle.Fingerprint
 
-	decision, err := r.admission.Evaluate(bundle, policy)
-	if err != nil {
-		return nil, err
+		applied, err := r.backend.Apply(ctx, bundle)
+		if err != nil {
+			return nil, err
+		}
+		out := applied.Bundle
+		out.StatusProjection = projectStatus(out)
+		if applied.Idempotent {
+			out.ControllerStatus.Phase = "steady"
+			out.ControllerStatus.Reason = "idempotent-replay"
+		} else {
+			out.ControllerStatus.Phase = "ready"
+			out.ControllerStatus.Reason = "applied"
+		}
+		out.ControllerStatus.ObservedGeneration = bundle.Generation
+		out.ControllerStatus.BundleFingerprint = bundle.Fingerprint
+		result.Bundles = append(result.Bundles, out)
+		result.Created = result.Created || applied.Created
+		result.Updated = result.Updated || applied.Updated
+		result.Idempotent = result.Idempotent && applied.Idempotent
 	}
-	bundle.AdmissionStatus = api.AdmissionStatus{
-		Allowed:       decision.Allowed,
-		Phase:         decision.Phase,
-		Reason:        decision.Reason,
-		ReservedQuota: api.CloneResourceList(decision.ReservedQuota),
-		PreemptedKeys: append([]string(nil), decision.PreemptedKeys...),
-	}
-	bundle.Admission.AllowPreemption = bundle.Admission.AllowPreemption && policy.AllowPreemption
-	bundle.Workload.Status.Admitted = decision.Allowed
-	bundle.Workload.Status.Phase = decision.Phase
-	bundle.Workload.Status.Reason = decision.Reason
-	bundle.Workload.Status.ReservedQuota = api.CloneResourceList(decision.ReservedQuota)
-	bundle.Workload.Status.PreemptedKeys = append([]string(nil), decision.PreemptedKeys...)
-	bundle.ControllerStatus.ObservedGeneration = bundle.Generation
-	bundle.ControllerStatus.BundleFingerprint = bundle.Fingerprint
+	return result, nil
+}
 
-	if !decision.Allowed {
-		bundle.ControllerStatus.Phase = "queued"
-		bundle.ControllerStatus.Reason = decision.Reason
-		return &ReconcileResult{
-			Bundle:        bundle,
-			Admission:     decision,
-			Queued:        true,
-			PreemptedKeys: append([]string(nil), decision.PreemptedKeys...),
-		}, nil
+func releaseControlRequest(input compiler.CompileInput) (backend.ControlRequest, bool, error) {
+	plan := input.PlacementPlan
+	request := backend.ControlRequest{
+		Action:             tgsrlv1.JobCommandType_JOB_COMMAND_TYPE_STOP,
+		JobID:              input.JobRun.GetJobId(),
+		RunID:              input.JobRun.GetRunId(),
+		TraceID:            input.JobRun.GetTraceId(),
+		RequestID:          plan.GetDecisionId(),
+		IdempotencyKey:     "scheduler-release:" + plan.GetPlanId(),
+		Reason:             "scheduler release plan " + plan.GetPlanId(),
+		GlobalTargetLookup: true,
 	}
+	for _, action := range plan.GetActions() {
+		if action.GetActionType() != tgsrlv1.ActionType_ACTION_TYPE_RELEASE {
+			continue
+		}
+		binding := action.GetBinding()
+		if binding == nil {
+			binding = action.GetRollback().GetRestoreBinding()
+		}
+		if binding == nil || runtimeUnitID(binding) == "" || binding.GetSandboxId() == "" || action.GetExpectedGeneration() == 0 || action.GetIdempotencyKey() == "" {
+			return backend.ControlRequest{}, false, fmt.Errorf("release action %q lacks workload identity, generation, or idempotency key", action.GetActionId())
+		}
+		request.Targets = append(request.Targets, backend.ControlTarget{RuntimeUnitID: runtimeUnitID(binding), SandboxID: binding.GetSandboxId(), ExpectedGeneration: action.GetExpectedGeneration()})
+	}
+	if len(request.Targets) == 0 {
+		return backend.ControlRequest{}, false, nil
+	}
+	return request, true, nil
+}
 
-	applied, err := r.backend.Apply(ctx, bundle)
-	if err != nil {
-		return nil, err
+func runtimeUnitID(binding *tgsrlv1.Binding) string {
+	if binding.GetRuntimeUnitId() != "" {
+		return binding.GetRuntimeUnitId()
 	}
-	out := applied.Bundle
-	out.AdmissionStatus = bundle.AdmissionStatus
-	out.Workload.Status = bundle.Workload.Status
-	out.StatusProjection = projectStatus(out)
-	if applied.Idempotent {
-		out.ControllerStatus.Phase = "steady"
-		out.ControllerStatus.Reason = "idempotent-replay"
-	} else {
-		out.ControllerStatus.Phase = "ready"
-		out.ControllerStatus.Reason = "applied-and-admitted"
-	}
-	out.ControllerStatus.ObservedGeneration = bundle.Generation
-	out.ControllerStatus.BundleFingerprint = bundle.Fingerprint
-	return &ReconcileResult{
-		Bundle:        out,
-		Created:       applied.Created,
-		Updated:       applied.Updated,
-		Idempotent:    applied.Idempotent,
-		Admission:     decision,
-		Applied:       true,
-		PreemptedKeys: append([]string(nil), decision.PreemptedKeys...),
-	}, nil
+	return binding.GetPendingUnitId()
 }
 
 func projectStatus(bundle *api.Bundle) api.StatusProjection {
 	status := bundle.StatusProjection
-	if !bundle.AdmissionStatus.Allowed {
-		status.Reason = bundle.AdmissionStatus.Reason
-		return status
-	}
 	switch {
 	case bundle.Job.Status.Succeeded > 0:
 		status.RunState = "JOB_RUN_STATE_SUCCEEDED"

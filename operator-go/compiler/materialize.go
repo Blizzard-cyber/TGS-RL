@@ -10,7 +10,7 @@ import (
 func buildBundle(input *normalizedInput) (*api.Bundle, error) {
 	labels := buildLabels(input)
 	annotations := buildAnnotations(input)
-	workloadName := buildName("workload", input)
+	workloadName := buildObjectName("workload", input)
 	labels["kueue.x-k8s.io/queue-name"] = queueName(input.Run)
 	podLabels := api.CloneMap(labels)
 	podAnnotations := api.CloneMap(annotations)
@@ -50,7 +50,7 @@ func buildBundle(input *normalizedInput) (*api.Bundle, error) {
 			Priority:  input.priority,
 			PodSets: []api.PodSet{{
 				Name:     "main",
-				Count:    input.parallelism,
+				Count:    1,
 				Template: template,
 			}},
 		},
@@ -59,14 +59,14 @@ func buildBundle(input *normalizedInput) (*api.Bundle, error) {
 	job := api.Job{
 		TypeMeta: api.TypeMeta{APIVersion: "batch/v1", Kind: "Job"},
 		ObjectMeta: api.ObjectMeta{
-			Name:        buildName("job", input),
+			Name:        buildObjectName("job", input),
 			Namespace:   input.Namespace,
 			Labels:      api.CloneMap(labels),
 			Annotations: api.CloneMap(annotations),
 		},
 		Spec: api.JobSpec{
-			Parallelism: input.parallelism,
-			Completions: input.parallelism,
+			Parallelism: 1,
+			Completions: 1,
 			Suspend:     true,
 			Template:    template,
 		},
@@ -87,11 +87,11 @@ func buildBundle(input *normalizedInput) (*api.Bundle, error) {
 	}
 
 	var resourceClaim *api.ResourceClaim
-	if requiresResourceClaim(input.GPUProfile, input.acceleratorUnits) {
+	if requiresResourceClaim(input.GPUProfile, input.resourcesPerUnit.GetAcceleratorUnits()) {
 		resourceClaim = &api.ResourceClaim{
 			TypeMeta: api.TypeMeta{APIVersion: "resource.k8s.io/v1beta1", Kind: "ResourceClaim"},
 			ObjectMeta: api.ObjectMeta{
-				Name:        buildName("resourceclaim", input),
+				Name:        buildObjectName("resourceclaim", input),
 				Namespace:   input.Namespace,
 				Labels:      api.CloneMap(labels),
 				Annotations: api.CloneMap(annotations),
@@ -101,9 +101,9 @@ func buildBundle(input *normalizedInput) (*api.Bundle, error) {
 					Name:            "accelerator",
 					DeviceClassName: deviceClass(input.GPUProfile),
 					AllocationMode:  "ExactCount",
-					Count:           int64(math.Ceil(input.acceleratorUnits)),
+					Count:           int64(math.Ceil(input.resourcesPerUnit.GetAcceleratorUnits())),
 				}}},
-				Count: uint32(math.Ceil(input.acceleratorUnits)),
+				Count: uint32(math.Ceil(input.resourcesPerUnit.GetAcceleratorUnits())),
 			},
 		}
 		job.Spec.Template.Spec.ResourceClaims = []api.PodResourceClaim{{
@@ -136,9 +136,8 @@ func buildBundle(input *normalizedInput) (*api.Bundle, error) {
 			AllowPreemption: preemptionAllowed(input.Run),
 		},
 		AdmissionStatus: api.AdmissionStatus{
-			Allowed: input.AdmissionAllowed,
-			Phase:   admissionReason(input),
-			Reason:  admissionReason(input),
+			Phase:  "pending-admission",
+			Reason: "waiting-for-backend-admission",
 		},
 		ControllerStatus: api.ControllerStatus{
 			ObservedGeneration: input.Generation,
@@ -153,16 +152,6 @@ func buildBundle(input *normalizedInput) (*api.Bundle, error) {
 			Reason:   statusReason(input.Run),
 		},
 	}, nil
-}
-
-func admissionReason(input *normalizedInput) string {
-	if input.AdmissionAllowed {
-		return "accepted"
-	}
-	if input.GPUProfile != GPUProfileNone {
-		return "pending-admission"
-	}
-	return "queued"
 }
 
 func validateBundle(bundle *api.Bundle) error {

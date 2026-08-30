@@ -9,6 +9,7 @@ import (
 
 	tgsrlv1 "github.com/Blizzard-cyber/TGS-RL/gen/go/tgsrl/v1"
 	"github.com/Blizzard-cyber/TGS-RL/operator-go/api"
+	"google.golang.org/protobuf/proto"
 )
 
 func buildRuntimeTargets(plan *tgsrlv1.PlacementPlan, generation uint64) []api.RuntimeTarget {
@@ -49,20 +50,6 @@ func actionIDForBinding(plan *tgsrlv1.PlacementPlan, binding *tgsrlv1.Binding) s
 		}
 	}
 	return ""
-}
-
-func acceleratorUnits(plan *tgsrlv1.PlacementPlan) float64 {
-	if plan == nil {
-		return 0
-	}
-	var total float64
-	for _, binding := range plan.GetBindings() {
-		if binding.GetResources() == nil {
-			continue
-		}
-		total += binding.GetResources().GetAcceleratorUnits()
-	}
-	return total
 }
 
 func primaryImage(manifest *tgsrlv1.RuntimeManifest) string {
@@ -122,7 +109,7 @@ func buildEnv(input *normalizedInput) []api.EnvVar {
 }
 
 func buildResources(input *normalizedInput) api.ResourceRequirements {
-	cpuMillis, memoryBytes := aggregateResourceRequests(input.Plan)
+	cpuMillis, memoryBytes := input.resourcesPerUnit.GetCpuMillis(), input.resourcesPerUnit.GetMemoryBytes()
 	if cpuMillis == 0 {
 		cpuMillis = 1000
 	}
@@ -131,7 +118,8 @@ func buildResources(input *normalizedInput) api.ResourceRequirements {
 		"memory": quantityBytes(memoryBytes),
 	}
 	limits := api.ResourceList{}
-	if input.acceleratorUnits > 0 {
+	acceleratorUnits := input.resourcesPerUnit.GetAcceleratorUnits()
+	if acceleratorUnits > 0 {
 		key := "example.com/accelerator"
 		switch input.GPUProfile {
 		case GPUProfileNVIDIADevicePlugin:
@@ -141,7 +129,7 @@ func buildResources(input *normalizedInput) api.ResourceRequirements {
 		case GPUProfileKubernetesDRA:
 			return api.ResourceRequirements{Requests: requests}
 		}
-		value := formatAcceleratorQuantity(input.acceleratorUnits)
+		value := formatAcceleratorQuantity(acceleratorUnits)
 		requests[key] = value
 		limits[key] = value
 	}
@@ -152,20 +140,11 @@ func buildNodeSelector(input *normalizedInput) map[string]string {
 	return cloneStringMap(input.Runtime.NodeSelector)
 }
 
-func aggregateResourceRequests(plan *tgsrlv1.PlacementPlan) (uint64, uint64) {
-	if plan == nil {
-		return 0, 0
+func cloneResourceVector(value *tgsrlv1.ResourceVector) *tgsrlv1.ResourceVector {
+	if value == nil {
+		return nil
 	}
-	var cpuMillis uint64
-	var memoryBytes uint64
-	for _, binding := range plan.GetBindings() {
-		if binding.GetResources() == nil {
-			continue
-		}
-		cpuMillis += binding.GetResources().GetCpuMillis()
-		memoryBytes += binding.GetResources().GetMemoryBytes()
-	}
-	return cpuMillis, memoryBytes
+	return proto.Clone(value).(*tgsrlv1.ResourceVector)
 }
 
 func requiresResourceClaim(profile string, accelerators float64) bool {

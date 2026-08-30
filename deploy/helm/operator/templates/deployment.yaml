@@ -27,7 +27,6 @@ spec:
           args:
             - --mode={{ ternary "fake" "kubernetes" .Values.controller.fakeBackend }}
             - --controller=true
-            - --admission={{ ternary "true" "false" .Values.controller.admission }}
             - --scheduler={{ .Values.controller.schedulerAddress }}
             - --control={{ .Values.controller.controlAddress }}
             - --runtime={{ .Values.controller.runtimeAddress }}

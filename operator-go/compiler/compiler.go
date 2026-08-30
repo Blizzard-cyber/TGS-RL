@@ -1,6 +1,12 @@
 package compiler
 
-import "github.com/Blizzard-cyber/TGS-RL/operator-go/api"
+import (
+	"fmt"
+
+	tgsrlv1 "github.com/Blizzard-cyber/TGS-RL/gen/go/tgsrl/v1"
+	"github.com/Blizzard-cyber/TGS-RL/operator-go/api"
+	"google.golang.org/protobuf/proto"
+)
 
 const (
 	GPUProfileNone               = "none"
@@ -11,10 +17,11 @@ const (
 
 type Compiler struct {
 	runtimeConfig RuntimeConfig
+	capabilities  CapabilitySet
 }
 
 func New() *Compiler {
-	return &Compiler{}
+	return &Compiler{capabilities: DefaultCapabilitySet()}
 }
 
 func NewWithRuntimeConfig(config RuntimeConfig) (*Compiler, error) {
@@ -22,11 +29,26 @@ func NewWithRuntimeConfig(config RuntimeConfig) (*Compiler, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &Compiler{runtimeConfig: validated}, nil
+	return &Compiler{runtimeConfig: validated, capabilities: DefaultCapabilitySet()}, nil
 }
 
-func (c *Compiler) Compile(input CompileInput) (*api.Bundle, error) {
-	normalized, err := normalize(input, c.runtimeConfig)
+func (c *Compiler) SetCapabilities(capabilities CapabilitySet) {
+	if c == nil {
+		return
+	}
+	c.capabilities = capabilities
+}
+
+func (c *Compiler) compileBinding(input CompileInput) (*api.Bundle, error) {
+	if _, err := validateGPUProfiles(input.GPUProfiles); err != nil {
+		return nil, err
+	}
+	selected, err := SelectCapabilityProfile(c.runtimeConfig, input.GPUProfiles, c.capabilities)
+	if err != nil {
+		return nil, err
+	}
+	input.GPUProfiles = []string{selected.GPUProfile}
+	normalized, err := normalize(input, RuntimeConfig{RuntimeClass: selected.RuntimeClass, NodeSelector: selected.NodeSelector})
 	if err != nil {
 		return nil, err
 	}
@@ -43,4 +65,55 @@ func (c *Compiler) Compile(input CompileInput) (*api.Bundle, error) {
 	}
 	bundle.Fingerprint = fingerprint
 	return bundle, nil
+}
+
+// Compile projects each concrete scheduler binding into one independently
+// fenced workload bundle. PlacementPlan.bindings is an incremental mutation
+// surface, not a complete stage replica set, so combining several bindings in
+// one Job would lose per-unit identity and make later rebind/recreate unsafe.
+func (c *Compiler) Compile(input CompileInput) ([]*api.Bundle, error) {
+	if input.PlacementPlan == nil {
+		return nil, errNilPlan
+	}
+	bindings := input.PlacementPlan.GetBindings()
+	if len(bindings) == 0 {
+		return nil, fmt.Errorf("placement plan requires at least one binding")
+	}
+	bundles := make([]*api.Bundle, 0, len(bindings))
+	for index, binding := range bindings {
+		if binding == nil {
+			return nil, fmt.Errorf("placement plan binding %d is nil", index)
+		}
+		plan := proto.Clone(input.PlacementPlan).(*tgsrlv1.PlacementPlan)
+		plan.Bindings = []*tgsrlv1.Binding{proto.Clone(binding).(*tgsrlv1.Binding)}
+		plan.Actions = actionsForBinding(input.PlacementPlan, binding)
+		unitInput := input
+		unitInput.PlacementPlan = plan
+		if binding.GetGeneration() != 0 {
+			unitInput.Generation = binding.GetGeneration()
+		}
+		bundle, err := c.compileBinding(unitInput)
+		if err != nil {
+			return nil, fmt.Errorf("compile binding %q: %w", binding.GetBindingId(), err)
+		}
+		bundles = append(bundles, bundle)
+	}
+	return bundles, nil
+}
+
+func actionsForBinding(plan *tgsrlv1.PlacementPlan, binding *tgsrlv1.Binding) []*tgsrlv1.Action {
+	actions := make([]*tgsrlv1.Action, 0, 1)
+	for _, action := range plan.GetActions() {
+		if action == nil {
+			continue
+		}
+		actionBinding := action.GetBinding()
+		matches := actionBinding.GetBindingId() == binding.GetBindingId() ||
+			action.GetSandboxId() != "" && action.GetSandboxId() == binding.GetSandboxId() ||
+			action.GetTargetId() != "" && (action.GetTargetId() == binding.GetRuntimeUnitId() || action.GetTargetId() == binding.GetPendingUnitId())
+		if matches {
+			actions = append(actions, proto.Clone(action).(*tgsrlv1.Action))
+		}
+	}
+	return actions
 }

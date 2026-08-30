@@ -16,26 +16,37 @@ type Publisher interface {
 }
 
 type RPCPublisher struct {
-	client RuntimeClient
+	runtime   RuntimeClient
+	scheduler SchedulerClient
 }
 
 type RuntimeClient interface {
 	PublishSandboxEvent(ctx context.Context, in *tgsrlv1.PublishSandboxEventRequest, opts ...grpc.CallOption) (*tgsrlv1.PublishSandboxEventResponse, error)
 }
 
-func NewRPCPublisher(client RuntimeClient) (*RPCPublisher, error) {
-	if client == nil {
-		return nil, fmt.Errorf("runtime client is required")
+type SchedulerClient interface {
+	ObserveSandbox(ctx context.Context, in *tgsrlv1.ObserveSandboxRequest, opts ...grpc.CallOption) (*tgsrlv1.ObserveSandboxResponse, error)
+}
+
+func NewRPCPublisher(runtimeClient RuntimeClient, schedulerClient SchedulerClient) (*RPCPublisher, error) {
+	if runtimeClient == nil || schedulerClient == nil {
+		return nil, fmt.Errorf("runtime and scheduler observation clients are required")
 	}
-	return &RPCPublisher{client: client}, nil
+	return &RPCPublisher{runtime: runtimeClient, scheduler: schedulerClient}, nil
 }
 
 func (p *RPCPublisher) Publish(ctx context.Context, event *tgsrlv1.SandboxEvent) error {
 	if event == nil {
 		return fmt.Errorf("sandbox event is required")
 	}
-	_, err := p.client.PublishSandboxEvent(ctx, &tgsrlv1.PublishSandboxEventRequest{
+	stored, err := p.runtime.PublishSandboxEvent(ctx, &tgsrlv1.PublishSandboxEventRequest{
 		Event: proto.Clone(event).(*tgsrlv1.SandboxEvent),
+	})
+	if err != nil {
+		return err
+	}
+	_, err = p.scheduler.ObserveSandbox(ctx, &tgsrlv1.ObserveSandboxRequest{
+		Event: proto.Clone(stored.GetEvent()).(*tgsrlv1.SandboxEvent),
 	})
 	return err
 }
@@ -49,9 +60,12 @@ func BuildSandboxEvent(decision *tgsrlv1.DecisionRecord, jobRun *tgsrlv1.JobRun,
 		actionID = action.GetActionId()
 		idempotencyKey = action.GetIdempotencyKey()
 	}
-	generation := decision.GetGeneration()
+	// The binding identifies the concrete runtime incarnation being observed.
+	// A decision may carry the generation of the planning transaction, which
+	// can differ from a replacement binding during rebind/recreate.
+	generation := binding.GetGeneration()
 	if generation == 0 {
-		generation = binding.GetGeneration()
+		generation = decision.GetGeneration()
 	}
 	if generation == 0 {
 		generation = 1

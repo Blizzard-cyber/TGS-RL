@@ -20,13 +20,12 @@ var (
 )
 
 type CompileInput struct {
-	Namespace        string
-	GPUProfiles      []string
-	Generation       uint64
-	JobRun           *tgsrlv1.JobRun
-	RuntimeManifest  *tgsrlv1.RuntimeManifest
-	PlacementPlan    *tgsrlv1.PlacementPlan
-	AdmissionAllowed bool
+	Namespace       string
+	GPUProfiles     []string
+	Generation      uint64
+	JobRun          *tgsrlv1.JobRun
+	RuntimeManifest *tgsrlv1.RuntimeManifest
+	PlacementPlan   *tgsrlv1.PlacementPlan
 }
 
 type RuntimeClassConfig struct {
@@ -40,6 +39,12 @@ type RuntimeConfig struct {
 	NodeSelector map[string]string
 }
 
+type CapabilityProfile struct {
+	GPUProfile   string
+	RuntimeClass RuntimeClassConfig
+	NodeSelector map[string]string
+}
+
 type normalizedInput struct {
 	Namespace        string
 	GPUProfile       string
@@ -47,11 +52,10 @@ type normalizedInput struct {
 	Run              *tgsrlv1.JobRun
 	Manifest         *tgsrlv1.RuntimeManifest
 	Plan             *tgsrlv1.PlacementPlan
-	AdmissionAllowed bool
 	Runtime          RuntimeConfig
-	parallelism      uint32
 	priority         int32
-	acceleratorUnits float64
+	resourcesPerUnit *tgsrlv1.ResourceVector
+	workloadUnitID   string
 }
 
 func (in CompileInput) ManifestHasNoImageDigests() bool {

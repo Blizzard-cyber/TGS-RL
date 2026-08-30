@@ -27,17 +27,26 @@ func bundleFingerprint(bundle *api.Bundle) (string, error) {
 }
 
 func bundleKey(input *normalizedInput) string {
-	return fmt.Sprintf("%s/%s", input.Namespace, buildName("bundle", input))
+	return fmt.Sprintf("%s/%s", input.Namespace, buildStableName("bundle", input))
 }
 
-func buildName(kind string, input *normalizedInput) string {
+func buildStableName(kind string, input *normalizedInput) string {
 	parts := []string{
 		kind,
 		compactName(input.Run.GetJobId()),
 		compactName(input.Run.GetRunId()),
-		compactName(input.Plan.GetPlanId()),
-		fmt.Sprintf("g%d", input.Generation),
+		compactName(input.Plan.GetExecutionId()),
+		compactName(input.Plan.GetStageId()),
+		compactName(input.workloadUnitID),
 	}
+	return boundedName(parts)
+}
+
+func buildObjectName(kind string, input *normalizedInput) string {
+	return boundedName([]string{buildStableName(kind, input), fmt.Sprintf("g%d", input.Generation)})
+}
+
+func boundedName(parts []string) string {
 	joined := strings.Join(parts, "-")
 	if len(joined) > 63 {
 		sum := sha256.Sum256([]byte(joined))

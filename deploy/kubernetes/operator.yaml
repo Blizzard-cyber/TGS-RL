@@ -90,7 +90,6 @@ spec:
           args:
             - --mode=kubernetes
             - --controller=true
-            - --admission=true
             - --scheduler=tgsrl-scheduler:50051
             - --control=tgsrl-job-controller:50061
             - --runtime=tgsrl-runtime:50071

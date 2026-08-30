@@ -6,25 +6,38 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"sync"
 	"testing"
 	"time"
 
 	tgsrlv1 "github.com/Blizzard-cyber/TGS-RL/gen/go/tgsrl/v1"
-	"github.com/Blizzard-cyber/TGS-RL/operator-go/admission"
+	"github.com/Blizzard-cyber/TGS-RL/operator-go/api"
 	"github.com/Blizzard-cyber/TGS-RL/operator-go/backend"
 	"github.com/Blizzard-cyber/TGS-RL/operator-go/compiler"
 	"github.com/Blizzard-cyber/TGS-RL/operator-go/controller"
 	"github.com/Blizzard-cyber/TGS-RL/operator-go/cursor"
 	"github.com/Blizzard-cyber/TGS-RL/operator-go/statuswatch"
 	"google.golang.org/grpc"
+	"google.golang.org/protobuf/proto"
 )
+
+func discoveredWorkerBackend() *backend.FakeBackend {
+	fakeBackend := backend.NewFake()
+	fakeBackend.SetCapabilities(compiler.CapabilitySet{
+		GPUProfiles: map[string]bool{
+			compiler.GPUProfileNone:               true,
+			compiler.GPUProfileNVIDIADevicePlugin: true,
+		},
+	})
+	return fakeBackend
+}
 
 func TestWorkerPublishesEventsAndPersistsCursor(t *testing.T) {
 	dir := t.TempDir()
 	repo := cursor.NewFileRepository(filepath.Join(dir, "cursor.json"))
 	publisher := &fakePublisher{}
-	fakeBackend := backend.NewFake()
+	fakeBackend := discoveredWorkerBackend()
 	w, err := New(Config{
 		Source:      &sliceDecisionSource{decisions: []*tgsrlv1.DecisionRecord{successfulDecision()}},
 		JobRuns:     fakeJobRunClient{run: testJobRun()},
@@ -34,7 +47,6 @@ func TestWorkerPublishesEventsAndPersistsCursor(t *testing.T) {
 		Publisher:   publisher,
 		Cursors:     repo,
 		Deliveries:  NewFileDeliveryRepository(filepath.Join(dir, "delivery.json")),
-		QueuePolicy: queuePolicy(),
 		Namespace:   "test-ns",
 		GPUProfiles: []string{"nvidia-device-plugin"},
 	})
@@ -68,7 +80,7 @@ func TestWorkerRestartIsIdempotentFromCursor(t *testing.T) {
 		afterSequenceSeen: make([]uint64, 0, 1),
 		decisions:         []*tgsrlv1.DecisionRecord{successfulDecision()},
 	}
-	fakeBackend := backend.NewFake()
+	fakeBackend := discoveredWorkerBackend()
 	w, err := New(Config{
 		Source:      source,
 		JobRuns:     fakeJobRunClient{run: testJobRun()},
@@ -78,7 +90,6 @@ func TestWorkerRestartIsIdempotentFromCursor(t *testing.T) {
 		Publisher:   publisher,
 		Cursors:     repo,
 		Deliveries:  NewFileDeliveryRepository(filepath.Join(dir, "delivery.json")),
-		QueuePolicy: queuePolicy(),
 		Namespace:   "test-ns",
 		GPUProfiles: []string{"nvidia-device-plugin"},
 	})
@@ -116,12 +127,11 @@ func TestWorkerDoesNotPublishFromApplyWithoutObservedState(t *testing.T) {
 		Source:      &sliceDecisionSource{decisions: []*tgsrlv1.DecisionRecord{successfulDecision()}},
 		JobRuns:     fakeJobRunClient{run: testJobRun()},
 		Manifests:   fakeManifestClient{manifest: testManifest()},
-		Reconciler:  NewControllerReconciler(controller.New(backend.NewFake())),
+		Reconciler:  NewControllerReconciler(controller.New(discoveredWorkerBackend())),
 		Observer:    &scriptedObserver{},
 		Publisher:   publisher,
 		Cursors:     cursor.NewFileRepository(filepath.Join(t.TempDir(), "cursor.json")),
 		Deliveries:  NewFileDeliveryRepository(filepath.Join(t.TempDir(), "delivery.json")),
-		QueuePolicy: queuePolicy(),
 		Namespace:   "test-ns",
 		GPUProfiles: []string{"nvidia-device-plugin"},
 	})
@@ -145,7 +155,7 @@ func TestWorkerPublishesOnlyObservedTransitions(t *testing.T) {
 		Source:     &sliceDecisionSource{decisions: []*tgsrlv1.DecisionRecord{successfulDecision()}},
 		JobRuns:    fakeJobRunClient{run: testJobRun()},
 		Manifests:  fakeManifestClient{manifest: testManifest()},
-		Reconciler: NewControllerReconciler(controller.New(backend.NewFake())),
+		Reconciler: NewControllerReconciler(controller.New(discoveredWorkerBackend())),
 		Observer: &scriptedObserver{snapshots: []*statuswatch.Snapshot{
 			{ObservedGeneration: 2, WorkloadAdmitted: true, ResourceClaimsAllocated: true}, // stale
 			{ObservedGeneration: 3, WorkloadAdmitted: true},                                // claim pending
@@ -157,7 +167,6 @@ func TestWorkerPublishesOnlyObservedTransitions(t *testing.T) {
 		Publisher:   publisher,
 		Cursors:     cursor.NewFileRepository(filepath.Join(t.TempDir(), "cursor.json")),
 		Deliveries:  NewFileDeliveryRepository(filepath.Join(t.TempDir(), "delivery.json")),
-		QueuePolicy: queuePolicy(),
 		Namespace:   "test-ns",
 		GPUProfiles: []string{"nvidia-device-plugin"},
 	})
@@ -168,21 +177,24 @@ func TestWorkerPublishesOnlyObservedTransitions(t *testing.T) {
 	if err := w.RunOnce(context.Background()); err != nil {
 		t.Fatalf("run once failed: %v", err)
 	}
-	want := []tgsrlv1.RuntimeState{
-		tgsrlv1.RuntimeState_RUNTIME_STATE_BOUND, tgsrlv1.RuntimeState_RUNTIME_STATE_BOUND,
-		tgsrlv1.RuntimeState_RUNTIME_STATE_RUNNING, tgsrlv1.RuntimeState_RUNTIME_STATE_RUNNING,
-		tgsrlv1.RuntimeState_RUNTIME_STATE_TERMINATED, tgsrlv1.RuntimeState_RUNTIME_STATE_TERMINATED,
-	}
-	publisher.waitForCount(t, len(want), 2*time.Second)
+	publisher.waitForCount(t, 6, 2*time.Second)
 	stopObservationManager(t, cancel, done)
 	events := publisher.snapshot()
-	if len(events) != len(want) {
-		t.Fatalf("got %d events, want %d", len(events), len(want))
+	if len(events) != 6 {
+		t.Fatalf("got %d events, want 6", len(events))
 	}
-	for i, state := range want {
-		if events[i].GetState() != state {
-			t.Fatalf("event[%d] state = %s, want %s", i, events[i].GetState(), state)
+	bySandbox := make(map[string][]tgsrlv1.RuntimeState)
+	for _, event := range events {
+		bySandbox[event.GetSandboxId()] = append(bySandbox[event.GetSandboxId()], event.GetState())
+	}
+	want := []tgsrlv1.RuntimeState{tgsrlv1.RuntimeState_RUNTIME_STATE_BOUND, tgsrlv1.RuntimeState_RUNTIME_STATE_RUNNING, tgsrlv1.RuntimeState_RUNTIME_STATE_TERMINATED}
+	for sandboxID, states := range bySandbox {
+		if !slices.Equal(states, want) {
+			t.Fatalf("sandbox %s states = %v, want %v", sandboxID, states, want)
 		}
+	}
+	if len(bySandbox) != 2 {
+		t.Fatalf("observed sandboxes = %d, want 2", len(bySandbox))
 	}
 }
 
@@ -204,7 +216,7 @@ func TestWorkerResumesPartialPublishFromDeliveryLedger(t *testing.T) {
 		t.Fatalf("seed delivery ledger failed: %v", err)
 	}
 
-	fakeBackend := backend.NewFake()
+	fakeBackend := discoveredWorkerBackend()
 	w, err := New(Config{
 		Source:      &sliceDecisionSource{decisions: []*tgsrlv1.DecisionRecord{successfulDecision()}},
 		JobRuns:     fakeJobRunClient{run: testJobRun()},
@@ -214,7 +226,6 @@ func TestWorkerResumesPartialPublishFromDeliveryLedger(t *testing.T) {
 		Publisher:   publisher,
 		Cursors:     cursorRepo,
 		Deliveries:  deliveryRepo,
-		QueuePolicy: queuePolicy(),
 		Namespace:   "test-ns",
 		GPUProfiles: []string{"nvidia-device-plugin"},
 	})
@@ -231,8 +242,10 @@ func TestWorkerResumesPartialPublishFromDeliveryLedger(t *testing.T) {
 	if got := len(events); got != 3 {
 		t.Fatalf("expected 3 newly published events after resume, got %d", got)
 	}
-	if events[0].GetEventId() != "decision-1:SANDBOX_EVENT_TYPE_BOUND:3:binding-2" {
-		t.Fatalf("first resumed event = %q", events[0].GetEventId())
+	for _, event := range events {
+		if event.GetEventId() == "decision-1:SANDBOX_EVENT_TYPE_BOUND:3:binding-1" {
+			t.Fatalf("already published event was emitted again: %q", event.GetEventId())
+		}
 	}
 	saved, err := cursorRepo.Load()
 	if err != nil {
@@ -260,7 +273,7 @@ func TestWorkerRunReconnectsAfterEOFAndResumesFromCursor(t *testing.T) {
 			nil,
 		},
 	}
-	fakeBackend := backend.NewFake()
+	fakeBackend := discoveredWorkerBackend()
 	w, err := New(Config{
 		Source:      source,
 		JobRuns:     fakeJobRunClient{run: testJobRun()},
@@ -270,7 +283,6 @@ func TestWorkerRunReconnectsAfterEOFAndResumesFromCursor(t *testing.T) {
 		Publisher:   publisher,
 		Cursors:     repo,
 		Deliveries:  NewFileDeliveryRepository(filepath.Join(dir, "delivery.json")),
-		QueuePolicy: queuePolicy(),
 		Namespace:   "test-ns",
 		GPUProfiles: []string{"nvidia-device-plugin"},
 	})
@@ -314,7 +326,7 @@ func TestWorkerRunRetriesTemporaryWatchErrorAndStopsOnCancel(t *testing.T) {
 		release:   make(chan struct{}),
 		watchSeen: make(chan struct{}, 4),
 	}
-	fakeBackend := backend.NewFake()
+	fakeBackend := discoveredWorkerBackend()
 	w, err := New(Config{
 		Source:      source,
 		JobRuns:     fakeJobRunClient{run: testJobRun()},
@@ -324,7 +336,6 @@ func TestWorkerRunRetriesTemporaryWatchErrorAndStopsOnCancel(t *testing.T) {
 		Publisher:   publisher,
 		Cursors:     repo,
 		Deliveries:  NewFileDeliveryRepository(filepath.Join(t.TempDir(), "delivery.json")),
-		QueuePolicy: queuePolicy(),
 		Namespace:   "test-ns",
 		GPUProfiles: []string{"nvidia-device-plugin"},
 	})
@@ -359,15 +370,14 @@ func TestWorkerAdvancesCursorForSkippedDecision(t *testing.T) {
 	decision := successfulDecision()
 	decision.Fallback = true
 	w, err := New(Config{
-		Source:      &sliceDecisionSource{decisions: []*tgsrlv1.DecisionRecord{decision}},
-		JobRuns:     fakeJobRunClient{run: testJobRun()},
-		Manifests:   fakeManifestClient{manifest: testManifest()},
-		Reconciler:  NewControllerReconciler(controller.New(backend.NewFake())),
-		Observer:    &scriptedObserver{},
-		Publisher:   &fakePublisher{},
-		Cursors:     repo,
-		Deliveries:  NewFileDeliveryRepository(filepath.Join(dir, "delivery.json")),
-		QueuePolicy: queuePolicy(),
+		Source:     &sliceDecisionSource{decisions: []*tgsrlv1.DecisionRecord{decision}},
+		JobRuns:    fakeJobRunClient{run: testJobRun()},
+		Manifests:  fakeManifestClient{manifest: testManifest()},
+		Reconciler: NewControllerReconciler(controller.New(discoveredWorkerBackend())),
+		Observer:   &scriptedObserver{},
+		Publisher:  &fakePublisher{},
+		Cursors:    repo,
+		Deliveries: NewFileDeliveryRepository(filepath.Join(dir, "delivery.json")),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -384,6 +394,47 @@ func TestWorkerAdvancesCursorForSkippedDecision(t *testing.T) {
 	}
 }
 
+func TestShouldProcessOnlyMaterializesCompleteSuccessfulBindingPlans(t *testing.T) {
+	decision := successfulDecision()
+	if !shouldProcess(decision) {
+		t.Fatal("complete binding plan was not selected for materialization")
+	}
+
+	resourceOnly := proto.Clone(decision).(*tgsrlv1.DecisionRecord)
+	resourceOnly.SelectedPlan.Bindings = nil
+	if shouldProcess(resourceOnly) {
+		t.Fatal("resource-only plan was sent to workload materialization")
+	}
+
+	incomplete := proto.Clone(decision).(*tgsrlv1.DecisionRecord)
+	incomplete.SelectedPlan.Actions = append(
+		incomplete.SelectedPlan.Actions,
+		&tgsrlv1.Action{ActionId: "a3"},
+	)
+	if shouldProcess(incomplete) {
+		t.Fatal("plan with missing action result was materialized")
+	}
+}
+
+func TestShouldProcessMaterializesReconfigurationDesiredState(t *testing.T) {
+	decision := successfulDecision()
+	replacement := proto.Clone(decision.GetSelectedPlan().GetBindings()[0]).(*tgsrlv1.Binding)
+	replacement.BindingId = "replacement-binding"
+	replacement.Generation++
+	decision.DecisionId = "replacement-decision"
+	decision.Sequence++
+	decision.Generation = replacement.GetGeneration()
+	decision.SelectedPlan = &tgsrlv1.PlacementPlan{
+		PlanId: "replacement-plan", ExecutionId: "exec-1", StageId: "stage-1", RunId: "run-1",
+		Purpose: tgsrlv1.PlanPurpose_PLAN_PURPOSE_REBALANCE, Bindings: []*tgsrlv1.Binding{replacement},
+		Actions: []*tgsrlv1.Action{{ActionId: "rebind", ActionType: tgsrlv1.ActionType_ACTION_TYPE_REBIND, Binding: proto.Clone(replacement).(*tgsrlv1.Binding)}},
+	}
+	decision.ActionResults = []*tgsrlv1.ActionResult{{ActionId: "rebind", Status: tgsrlv1.ActionResultStatus_ACTION_RESULT_STATUS_SUCCEEDED}}
+	if !shouldProcess(decision) {
+		t.Fatal("rebind desired state was not selected for Operator materialization")
+	}
+}
+
 func TestWorkerDoesNotOverwriteUnfinishedDelivery(t *testing.T) {
 	dir := t.TempDir()
 	ledger := NewFileDeliveryRepository(filepath.Join(dir, "delivery.json"))
@@ -392,15 +443,14 @@ func TestWorkerDoesNotOverwriteUnfinishedDelivery(t *testing.T) {
 		t.Fatal(err)
 	}
 	w, err := New(Config{
-		Source:      &sliceDecisionSource{decisions: []*tgsrlv1.DecisionRecord{successfulDecision()}},
-		JobRuns:     fakeJobRunClient{run: testJobRun()},
-		Manifests:   fakeManifestClient{manifest: testManifest()},
-		Reconciler:  NewControllerReconciler(controller.New(backend.NewFake())),
-		Observer:    &scriptedObserver{},
-		Publisher:   &fakePublisher{},
-		Cursors:     cursor.NewFileRepository(filepath.Join(dir, "cursor.json")),
-		Deliveries:  ledger,
-		QueuePolicy: queuePolicy(),
+		Source:     &sliceDecisionSource{decisions: []*tgsrlv1.DecisionRecord{successfulDecision()}},
+		JobRuns:    fakeJobRunClient{run: testJobRun()},
+		Manifests:  fakeManifestClient{manifest: testManifest()},
+		Reconciler: NewControllerReconciler(controller.New(discoveredWorkerBackend())),
+		Observer:   &scriptedObserver{},
+		Publisher:  &fakePublisher{},
+		Cursors:    cursor.NewFileRepository(filepath.Join(dir, "cursor.json")),
+		Deliveries: ledger,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -423,15 +473,14 @@ func TestWorkerRegistersIdempotentReconcileBeforeAdvancingCursor(t *testing.T) {
 	repo := cursor.NewFileRepository(filepath.Join(dir, "cursor.json"))
 	decision := successfulDecision()
 	w, err := New(Config{
-		Source:      &sliceDecisionSource{decisions: []*tgsrlv1.DecisionRecord{decision}},
-		JobRuns:     fakeJobRunClient{run: testJobRun()},
-		Manifests:   fakeManifestClient{manifest: testManifest()},
-		Reconciler:  staticReconciler{result: &ReconcileResult{Bundle: bundleForDecision(decision), Idempotent: true}},
-		Observer:    &scriptedObserver{},
-		Publisher:   &fakePublisher{},
-		Cursors:     repo,
-		Deliveries:  ledger,
-		QueuePolicy: queuePolicy(),
+		Source:     &sliceDecisionSource{decisions: []*tgsrlv1.DecisionRecord{decision}},
+		JobRuns:    fakeJobRunClient{run: testJobRun()},
+		Manifests:  fakeManifestClient{manifest: testManifest()},
+		Reconciler: staticReconciler{result: &ReconcileResult{Bundles: []*api.Bundle{bundleForDecision(decision)}, Idempotent: true}},
+		Observer:   &scriptedObserver{},
+		Publisher:  &fakePublisher{},
+		Cursors:    repo,
+		Deliveries: ledger,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -460,7 +509,7 @@ type staticReconciler struct {
 	err    error
 }
 
-func (r staticReconciler) Reconcile(context.Context, compiler.CompileInput, admission.QueuePolicy) (*ReconcileResult, error) {
+func (r staticReconciler) Reconcile(context.Context, compiler.CompileInput) (*ReconcileResult, error) {
 	return r.result, r.err
 }
 
@@ -727,16 +776,15 @@ func stopObservationManager(t *testing.T, cancel context.CancelFunc, done <-chan
 	}
 }
 
-func queuePolicy() admission.QueuePolicy {
-	return admission.QueuePolicy{
-		Name:            "train",
-		QuotaGroup:      "team-a",
-		Capacity:        map[string]string{"cpu": "4", "memory": "8192", "nvidia.com/gpu": "2"},
-		AllowPreemption: true,
-	}
-}
-
 func successfulDecision() *tgsrlv1.DecisionRecord {
+	binding1 := &tgsrlv1.Binding{
+		BindingId: "binding-1", PendingUnitId: "unit-1", SandboxId: "sandbox-1", Generation: 3,
+		Resources: &tgsrlv1.ResourceVector{CpuMillis: 2000, MemoryBytes: 4096, AcceleratorUnits: 1},
+	}
+	binding2 := &tgsrlv1.Binding{
+		BindingId: "binding-2", PendingUnitId: "unit-2", SandboxId: "sandbox-2", Generation: 3,
+		Resources: &tgsrlv1.ResourceVector{CpuMillis: 2000, MemoryBytes: 4096, AcceleratorUnits: 1},
+	}
 	return &tgsrlv1.DecisionRecord{
 		DecisionId: "decision-1",
 		Sequence:   9,
@@ -754,29 +802,10 @@ func successfulDecision() *tgsrlv1.DecisionRecord {
 			RunId:            "run-1",
 			TraceId:          "trace-1",
 			Generation:       3,
-			Bindings: []*tgsrlv1.Binding{
-				{
-					BindingId:     "binding-1",
-					PendingUnitId: "unit-1",
-					SandboxId:     "sandbox-1",
-					Generation:    3,
-					Resources: &tgsrlv1.ResourceVector{
-						CpuMillis:        2000,
-						MemoryBytes:      4096,
-						AcceleratorUnits: 1,
-					},
-				},
-				{
-					BindingId:     "binding-2",
-					PendingUnitId: "unit-2",
-					SandboxId:     "sandbox-2",
-					Generation:    3,
-					Resources: &tgsrlv1.ResourceVector{
-						CpuMillis:        2000,
-						MemoryBytes:      4096,
-						AcceleratorUnits: 1,
-					},
-				},
+			Bindings:         []*tgsrlv1.Binding{binding1, binding2},
+			Actions: []*tgsrlv1.Action{
+				{ActionId: "a1", ActionType: tgsrlv1.ActionType_ACTION_TYPE_BIND, Binding: proto.Clone(binding1).(*tgsrlv1.Binding)},
+				{ActionId: "a2", ActionType: tgsrlv1.ActionType_ACTION_TYPE_BIND, Binding: proto.Clone(binding2).(*tgsrlv1.Binding)},
 			},
 		},
 		Candidates: []*tgsrlv1.PlacementCandidate{
@@ -784,6 +813,7 @@ func successfulDecision() *tgsrlv1.DecisionRecord {
 		},
 		ActionResults: []*tgsrlv1.ActionResult{
 			{ActionId: "a1", Status: tgsrlv1.ActionResultStatus_ACTION_RESULT_STATUS_SUCCEEDED, ObservedGeneration: 3},
+			{ActionId: "a2", Status: tgsrlv1.ActionResultStatus_ACTION_RESULT_STATUS_SUCCEEDED, ObservedGeneration: 3},
 		},
 	}
 }

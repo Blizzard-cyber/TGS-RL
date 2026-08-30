@@ -11,7 +11,6 @@ import (
 	"time"
 
 	tgsrlv1 "github.com/Blizzard-cyber/TGS-RL/gen/go/tgsrl/v1"
-	"github.com/Blizzard-cyber/TGS-RL/operator-go/admission"
 	"github.com/Blizzard-cyber/TGS-RL/operator-go/api"
 	"github.com/Blizzard-cyber/TGS-RL/operator-go/backend"
 	"github.com/Blizzard-cyber/TGS-RL/operator-go/compiler"
@@ -43,7 +42,6 @@ func TestWorkerConsumesSecondDecisionWhileFirstObservationBlocks(t *testing.T) {
 		Cursors:       cursorRepo,
 		Deliveries:    ledger,
 		Registrations: ledger,
-		QueuePolicy:   queuePolicy(),
 		Namespace:     "test-ns",
 	})
 	if err != nil {
@@ -202,6 +200,12 @@ func TestObservationManagerRecoversDurableAndMaterializedRegistrations(t *testin
 
 func TestObservationManagerPublishesLifecycleControlOnlyAfterReadback(t *testing.T) {
 	fakeBackend := backend.NewFake()
+	fakeBackend.SetCapabilities(compiler.CapabilitySet{
+		GPUProfiles: map[string]bool{
+			compiler.GPUProfileNone:               true,
+			compiler.GPUProfileNVIDIADevicePlugin: true,
+		},
+	})
 	decision := decisionForSequence(9)
 	bundle := bundleForDecision(decision)
 	bundle.Workload.TypeMeta = api.TypeMeta{APIVersion: "kueue.x-k8s.io/v1beta1", Kind: "Workload"}
@@ -332,7 +336,7 @@ func registerCurrentBundle(t *testing.T, manager *ObservationManager, source Bun
 
 type deterministicReconciler struct{}
 
-func (deterministicReconciler) Reconcile(_ context.Context, input compiler.CompileInput, _ admission.QueuePolicy) (*ReconcileResult, error) {
+func (deterministicReconciler) Reconcile(_ context.Context, input compiler.CompileInput) (*ReconcileResult, error) {
 	decision := &tgsrlv1.DecisionRecord{
 		DecisionId:   input.PlacementPlan.GetDecisionId(),
 		RunId:        input.PlacementPlan.GetRunId(),
@@ -340,7 +344,7 @@ func (deterministicReconciler) Reconcile(_ context.Context, input compiler.Compi
 		Generation:   input.Generation,
 		SelectedPlan: input.PlacementPlan,
 	}
-	return &ReconcileResult{Bundle: bundleForDecision(decision), Applied: true}, nil
+	return &ReconcileResult{Bundles: []*api.Bundle{bundleForDecision(decision)}, Applied: true}, nil
 }
 
 type flexibleJobRunClient struct{}

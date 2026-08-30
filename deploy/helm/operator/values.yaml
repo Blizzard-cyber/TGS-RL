@@ -31,7 +31,6 @@ serviceAccount:
 
 controller:
   fakeBackend: false
-  admission: true
   schedulerAddress: tgsrl-scheduler:50051
   controlAddress: tgsrl-job-controller:50061
   runtimeAddress: tgsrl-runtime:50071

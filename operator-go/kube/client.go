@@ -7,11 +7,13 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
 	tgsrlv1 "github.com/Blizzard-cyber/TGS-RL/gen/go/tgsrl/v1"
 	"github.com/Blizzard-cyber/TGS-RL/operator-go/bundleadapter"
+	"github.com/Blizzard-cyber/TGS-RL/operator-go/compiler"
 )
 
 type Client struct {
@@ -20,6 +22,13 @@ type Client struct {
 	bearerToken string
 	httpClient  *http.Client
 	adapter     bundleadapter.Adapter
+}
+
+type capabilityResponse struct {
+	GPUProfiles         []string                     `json:"gpuProfiles"`
+	RuntimeClasses      map[string]string            `json:"runtimeClasses"`
+	NodeSelectors       map[string]map[string]string `json:"nodeSelectors"`
+	DefaultNodeSelector map[string]string            `json:"defaultNodeSelector"`
 }
 
 func NewClient(config *Config) (*Client, error) {
@@ -46,16 +55,43 @@ func NewClient(config *Config) (*Client, error) {
 }
 
 func (c *Client) Upsert(ctx context.Context, object bundleadapter.Object) (bool, *bundleadapter.Object, error) {
-	previous, ok, err := c.Get(ctx, object)
-	if err != nil {
-		return false, nil, err
-	}
 	payload := object.Payload
 	if len(payload) == 0 {
 		return false, nil, fmt.Errorf("client object payload is required")
 	}
-	if !ok {
-		req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.host+c.adapter.CollectionPath(object, c.namespace), bytes.NewReader(payload))
+	var previous *bundleadapter.Object
+	for attempt := 0; attempt < 3; attempt++ {
+		current, ok, err := c.Get(ctx, object)
+		if err != nil {
+			return false, nil, err
+		}
+		if !ok {
+			req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.host+c.adapter.CollectionPath(object, c.namespace), bytes.NewReader(payload))
+			if err != nil {
+				return false, nil, err
+			}
+			req.Header.Set("Content-Type", "application/json")
+			c.applyAuth(req)
+			resp, err := c.httpClient.Do(req)
+			if err != nil {
+				return false, nil, err
+			}
+			defer resp.Body.Close()
+			if resp.StatusCode == http.StatusConflict {
+				continue
+			}
+			if resp.StatusCode >= 300 {
+				body, _ := io.ReadAll(resp.Body)
+				return false, nil, fmt.Errorf("kubernetes create %s failed: %s: %s", object.Key, resp.Status, strings.TrimSpace(string(body)))
+			}
+			return true, nil, nil
+		}
+		previous = current
+		updatedPayload, err := injectResourceVersion(payload, current.Version)
+		if err != nil {
+			return false, nil, err
+		}
+		req, err := http.NewRequestWithContext(ctx, http.MethodPut, c.host+c.adapter.ObjectPath(object, c.namespace), bytes.NewReader(updatedPayload))
 		if err != nil {
 			return false, nil, err
 		}
@@ -66,37 +102,19 @@ func (c *Client) Upsert(ctx context.Context, object bundleadapter.Object) (bool,
 			return false, nil, err
 		}
 		defer resp.Body.Close()
+		if resp.StatusCode == http.StatusConflict {
+			continue
+		}
 		if resp.StatusCode >= 300 {
 			body, _ := io.ReadAll(resp.Body)
-			return false, nil, fmt.Errorf("kubernetes create %s failed: %s: %s", object.Key, resp.Status, strings.TrimSpace(string(body)))
+			return false, previous, fmt.Errorf("kubernetes update %s failed: %s: %s", object.Key, resp.Status, strings.TrimSpace(string(body)))
 		}
-		return true, nil, nil
+		return false, previous, nil
 	}
-
-	updatedPayload, err := injectResourceVersion(payload, previous.Version)
-	if err != nil {
-		return false, nil, err
+	if previous != nil {
+		return false, previous, fmt.Errorf("kubernetes update conflict for %s: retry budget exhausted", object.Key)
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPut, c.host+c.adapter.ObjectPath(object, c.namespace), bytes.NewReader(updatedPayload))
-	if err != nil {
-		return false, nil, err
-	}
-	req.Header.Set("Content-Type", "application/json")
-	c.applyAuth(req)
-	resp, err := c.httpClient.Do(req)
-	if err != nil {
-		return false, nil, err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode == http.StatusConflict {
-		body, _ := io.ReadAll(resp.Body)
-		return false, previous, fmt.Errorf("kubernetes update conflict for %s: %s", object.Key, strings.TrimSpace(string(body)))
-	}
-	if resp.StatusCode >= 300 {
-		body, _ := io.ReadAll(resp.Body)
-		return false, previous, fmt.Errorf("kubernetes update %s failed: %s: %s", object.Key, resp.Status, strings.TrimSpace(string(body)))
-	}
-	return false, previous, nil
+	return false, nil, fmt.Errorf("kubernetes create conflict for %s: retry budget exhausted", object.Key)
 }
 
 func (c *Client) EnsureRuntimeClass(ctx context.Context, object bundleadapter.Object) (bool, *bundleadapter.Object, error) {
@@ -225,6 +243,199 @@ func (c *Client) ListBundles(ctx context.Context) ([]bundleadapter.Object, error
 		objects = append(objects, bundleadapter.Object{APIVersion: "tgsrl.io/v1alpha1", Kind: "JobRunBundle", Key: namespace + "/" + metadata.Metadata.Name, Name: metadata.Metadata.Name, Namespace: namespace, Generation: metadata.Metadata.Generation, Version: metadata.Metadata.ResourceVersion, Payload: append([]byte(nil), item...)})
 	}
 	return objects, nil
+}
+
+func (c *Client) Delete(ctx context.Context, object bundleadapter.Object) (bool, error) {
+	path := c.adapter.ObjectPath(object, c.namespace)
+	payload, err := json.Marshal(map[string]any{"propagationPolicy": "Foreground"})
+	if err != nil {
+		return false, err
+	}
+	_, err = c.doJSON(ctx, http.MethodDelete, path, payload, "application/json")
+	if err != nil {
+		if strings.Contains(err.Error(), "404") {
+			return false, nil
+		}
+		return false, err
+	}
+	return true, nil
+}
+
+func (c *Client) DiscoverCapabilities(ctx context.Context) (compiler.CapabilitySet, error) {
+	body, statusCode, err := c.getURL(ctx, c.host+"/apis/tgsrl.io/v1alpha1/capabilities")
+	if err != nil {
+		return compiler.CapabilitySet{}, err
+	}
+	if statusCode == http.StatusNotFound {
+		return c.discoverCapabilitiesByProbe(ctx)
+	}
+	var response capabilityResponse
+	if err := json.Unmarshal(body, &response); err != nil {
+		return compiler.CapabilitySet{}, fmt.Errorf("decode capabilities: %w", err)
+	}
+	profiles := make(map[string]bool, len(response.GPUProfiles))
+	for _, profile := range response.GPUProfiles {
+		profiles[strings.TrimSpace(profile)] = true
+	}
+	if len(profiles) == 0 {
+		profiles[compiler.GPUProfileNone] = true
+	}
+	return compiler.CapabilitySet{
+		GPUProfiles:         profiles,
+		RuntimeClasses:      response.RuntimeClasses,
+		NodeSelectors:       response.NodeSelectors,
+		DefaultNodeSelector: response.DefaultNodeSelector,
+	}, nil
+}
+
+func (c *Client) discoverCapabilitiesByProbe(ctx context.Context) (compiler.CapabilitySet, error) {
+	capabilities := compiler.DefaultCapabilitySet()
+
+	runtimeClasses, err := c.discoverRuntimeClassesByProbe(ctx)
+	if err != nil {
+		return compiler.CapabilitySet{}, err
+	}
+	capabilities.RuntimeClasses = runtimeClasses
+
+	gpuProfiles, err := c.discoverGPUProfilesByProbe(ctx)
+	if err != nil {
+		return compiler.CapabilitySet{}, err
+	}
+	for profile := range gpuProfiles {
+		capabilities.GPUProfiles[profile] = true
+	}
+
+	return capabilities, nil
+}
+
+func (c *Client) discoverRuntimeClassesByProbe(ctx context.Context) (map[string]string, error) {
+	body, statusCode, err := c.getURL(ctx, c.host+"/apis/node.k8s.io/v1/runtimeclasses")
+	if err != nil {
+		return nil, err
+	}
+	if statusCode == http.StatusNotFound {
+		return nil, nil
+	}
+	var list struct {
+		Items []struct {
+			Metadata struct {
+				Name string `json:"name"`
+			} `json:"metadata"`
+			Handler string `json:"handler"`
+		} `json:"items"`
+	}
+	if err := json.Unmarshal(body, &list); err != nil {
+		return nil, fmt.Errorf("decode runtime classes: %w", err)
+	}
+	values := make(map[string]string, len(list.Items))
+	for _, item := range list.Items {
+		name := strings.TrimSpace(item.Metadata.Name)
+		if name == "" {
+			continue
+		}
+		values[name] = strings.TrimSpace(item.Handler)
+	}
+	if len(values) == 0 {
+		return nil, nil
+	}
+	return values, nil
+}
+
+func (c *Client) discoverGPUProfilesByProbe(ctx context.Context) (map[string]bool, error) {
+	profiles := make(map[string]bool)
+
+	body, statusCode, err := c.getURL(ctx, c.host+"/api/v1/nodes")
+	if err != nil {
+		return nil, err
+	}
+	if statusCode != http.StatusNotFound {
+		var list struct {
+			Items []struct {
+				Status struct {
+					Allocatable map[string]string `json:"allocatable"`
+					Capacity    map[string]string `json:"capacity"`
+				} `json:"status"`
+			} `json:"items"`
+		}
+		if err := json.Unmarshal(body, &list); err != nil {
+			return nil, fmt.Errorf("decode nodes: %w", err)
+		}
+		for _, item := range list.Items {
+			if positiveResourceQuantity(item.Status.Allocatable["nvidia.com/gpu"]) || positiveResourceQuantity(item.Status.Capacity["nvidia.com/gpu"]) {
+				profiles[compiler.GPUProfileNVIDIADevicePlugin] = true
+			}
+			if positiveResourceQuantity(item.Status.Allocatable["volcano.sh/gpu"]) || positiveResourceQuantity(item.Status.Capacity["volcano.sh/gpu"]) {
+				profiles[compiler.GPUProfileVolcanoHAMI] = true
+			}
+		}
+	}
+
+	draSupported, err := c.discoverDRAGPUByProbe(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if draSupported {
+		profiles[compiler.GPUProfileKubernetesDRA] = true
+	}
+	if len(profiles) == 0 {
+		return nil, nil
+	}
+	return profiles, nil
+}
+
+func (c *Client) discoverDRAGPUByProbe(ctx context.Context) (bool, error) {
+	body, statusCode, err := c.getURL(ctx, c.host+"/apis/resource.k8s.io/v1beta1/deviceclasses")
+	if err != nil {
+		return false, err
+	}
+	if statusCode == http.StatusNotFound {
+		draCollection := c.host + c.adapter.CollectionPath(bundleadapter.Object{
+			APIVersion: "resource.k8s.io/v1beta1",
+			Kind:       "ResourceClaim",
+			Namespace:  c.namespace,
+		}, c.namespace)
+		_, statusCode, err = c.getURL(ctx, draCollection)
+		if err != nil {
+			return false, err
+		}
+		return statusCode != http.StatusNotFound, nil
+	}
+	var list struct {
+		Items []struct {
+			Metadata struct {
+				Name string `json:"name"`
+			} `json:"metadata"`
+		} `json:"items"`
+	}
+	if err := json.Unmarshal(body, &list); err != nil {
+		return false, fmt.Errorf("decode device classes: %w", err)
+	}
+	for _, item := range list.Items {
+		name := strings.ToLower(strings.TrimSpace(item.Metadata.Name))
+		if strings.Contains(name, "gpu") || strings.Contains(name, "nvidia") {
+			return true, nil
+		}
+	}
+	return len(list.Items) > 0, nil
+}
+
+func positiveResourceQuantity(value string) bool {
+	value = strings.TrimSpace(value)
+	if value == "" || value == "0" || value == "0m" {
+		return false
+	}
+	numeric := value
+	if index := strings.IndexFunc(value, func(r rune) bool { return !(r >= '0' && r <= '9') }); index > 0 {
+		numeric = value[:index]
+	}
+	if numeric == "" {
+		return true
+	}
+	parsed, err := strconv.ParseInt(numeric, 10, 64)
+	if err != nil {
+		return true
+	}
+	return parsed > 0
 }
 
 // ControlJob applies one Kubernetes lifecycle mutation. Pause/resume read back

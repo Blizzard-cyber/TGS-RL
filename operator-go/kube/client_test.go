@@ -154,6 +154,134 @@ func TestClientGetAndUpsertAgainstHTTPServer(t *testing.T) {
 	}
 }
 
+func TestClientUpsertRetriesCreateConflictUntilReadable(t *testing.T) {
+	var (
+		stored        map[string]any
+		getCalls      int
+		postConflicts int
+		putCalls      int
+	)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodGet:
+			getCalls++
+			if stored == nil {
+				http.NotFound(w, r)
+				return
+			}
+			_ = json.NewEncoder(w).Encode(stored)
+		case http.MethodPost:
+			postConflicts++
+			if postConflicts == 1 {
+				w.WriteHeader(http.StatusConflict)
+				_, _ = w.Write([]byte("create conflict"))
+				stored = map[string]any{
+					"apiVersion": "tgsrl.io/v1alpha1",
+					"kind":       "JobRunBundle",
+					"metadata": map[string]any{
+						"name":            "bundle-a",
+						"namespace":       "test-ns",
+						"resourceVersion": "9",
+					},
+					"spec": map[string]any{"bundle": map[string]any{"key": "test-ns/bundle-a", "namespace": "test-ns"}},
+				}
+				return
+			}
+			t.Fatalf("unexpected extra POST after conflict")
+		case http.MethodPut:
+			putCalls++
+			var payload map[string]any
+			if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+				t.Fatal(err)
+			}
+			payload["metadata"].(map[string]any)["resourceVersion"] = "10"
+			stored = payload
+			_ = json.NewEncoder(w).Encode(stored)
+		default:
+			t.Fatalf("unexpected method %s", r.Method)
+		}
+	}))
+	defer server.Close()
+	client, err := NewClient(&Config{Host: server.URL, Namespace: "test-ns", HTTPClient: server.Client()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	payload, _ := json.Marshal(map[string]any{
+		"apiVersion": "tgsrl.io/v1alpha1",
+		"kind":       "JobRunBundle",
+		"metadata": map[string]any{
+			"name":      "bundle-a",
+			"namespace": "test-ns",
+		},
+		"spec": map[string]any{"bundle": map[string]any{"key": "test-ns/bundle-a", "namespace": "test-ns"}},
+	})
+	created, previous, err := client.Upsert(context.Background(), bundleadapter.Object{
+		APIVersion: "tgsrl.io/v1alpha1",
+		Kind:       "JobRunBundle",
+		Key:        "test-ns/bundle-a",
+		Name:       "bundle-a",
+		Namespace:  "test-ns",
+		Payload:    payload,
+	})
+	if err != nil {
+		t.Fatalf("Upsert() error = %v", err)
+	}
+	if created || previous == nil || previous.Version != "9" {
+		t.Fatalf("create conflict retry result = created:%v previous:%+v", created, previous)
+	}
+	if getCalls < 2 || postConflicts != 1 || putCalls != 1 {
+		t.Fatalf("getCalls=%d postConflicts=%d putCalls=%d", getCalls, postConflicts, putCalls)
+	}
+}
+
+func TestClientUpsertFailsAfterUpdateConflictRetryBudget(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodGet:
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"apiVersion": "tgsrl.io/v1alpha1",
+				"kind":       "JobRunBundle",
+				"metadata": map[string]any{
+					"name":            "bundle-a",
+					"namespace":       "test-ns",
+					"resourceVersion": "7",
+				},
+				"spec": map[string]any{"bundle": map[string]any{"key": "test-ns/bundle-a", "namespace": "test-ns"}},
+			})
+		case http.MethodPut:
+			w.WriteHeader(http.StatusConflict)
+			_, _ = w.Write([]byte("resourceVersion conflict"))
+		default:
+			t.Fatalf("unexpected method %s", r.Method)
+		}
+	}))
+	defer server.Close()
+	client, err := NewClient(&Config{Host: server.URL, Namespace: "test-ns", HTTPClient: server.Client()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	payload, _ := json.Marshal(map[string]any{
+		"apiVersion": "tgsrl.io/v1alpha1",
+		"kind":       "JobRunBundle",
+		"metadata": map[string]any{
+			"name":      "bundle-a",
+			"namespace": "test-ns",
+		},
+		"spec": map[string]any{"bundle": map[string]any{"key": "test-ns/bundle-a", "namespace": "test-ns"}},
+	})
+	_, _, err = client.Upsert(context.Background(), bundleadapter.Object{
+		APIVersion: "tgsrl.io/v1alpha1",
+		Kind:       "JobRunBundle",
+		Key:        "test-ns/bundle-a",
+		Name:       "bundle-a",
+		Namespace:  "test-ns",
+		Payload:    payload,
+	})
+	if err == nil || !strings.Contains(err.Error(), "retry budget exhausted") {
+		t.Fatalf("Upsert() error = %v, want retry budget exhausted", err)
+	}
+}
+
 func TestClientControlJobUsesSuspendPatchAndDeleteReadback(t *testing.T) {
 	var (
 		suspended     bool
@@ -404,6 +532,167 @@ func TestClientEnsureRuntimeClassRejectsHandlerConflictWithoutOverwrite(t *testi
 	}
 	if strings.Join(methods, "|") != "GET /apis/node.k8s.io/v1/runtimeclasses/runtime-a" {
 		t.Fatalf("methods = %v, want single GET", methods)
+	}
+}
+
+func TestClientDeleteUsesForegroundDeletion(t *testing.T) {
+	var methods []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		methods = append(methods, r.Method+" "+r.URL.Path)
+		if r.Method != http.MethodDelete {
+			t.Fatalf("unexpected method %s", r.Method)
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+	client, err := NewClient(&Config{Host: server.URL, Namespace: "test", HTTPClient: server.Client()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	deleted, err := client.Delete(context.Background(), bundleadapter.Object{APIVersion: "batch/v1", Kind: "Job", Key: "test/job-1", Name: "job-1", Namespace: "test"})
+	if err != nil || !deleted {
+		t.Fatalf("Delete() = %v, %v", deleted, err)
+	}
+	if strings.Join(methods, "|") != "DELETE /apis/batch/v1/namespaces/test/jobs/job-1" {
+		t.Fatalf("methods = %v", methods)
+	}
+}
+
+func TestClientDiscoverCapabilitiesFromAPI(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet || r.URL.Path != "/apis/tgsrl.io/v1alpha1/capabilities" {
+			t.Fatalf("unexpected request %s %s", r.Method, r.URL.Path)
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"gpuProfiles":         []string{"kubernetes-dra"},
+			"runtimeClasses":      map[string]string{"kata-gpu": "kata-qemu"},
+			"nodeSelectors":       map[string]any{"kubernetes-dra": map[string]any{"feature.node.kubernetes.io/dra": "true"}},
+			"defaultNodeSelector": map[string]any{"kubernetes.io/os": "linux"},
+		})
+	}))
+	defer server.Close()
+	client, err := NewClient(&Config{Host: server.URL, Namespace: "test", HTTPClient: server.Client()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	capabilities, err := client.DiscoverCapabilities(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !capabilities.GPUProfiles["kubernetes-dra"] {
+		t.Fatalf("capabilities = %+v", capabilities)
+	}
+	if capabilities.RuntimeClasses["kata-gpu"] != "kata-qemu" {
+		t.Fatalf("runtime classes = %+v", capabilities.RuntimeClasses)
+	}
+	if capabilities.NodeSelectors["kubernetes-dra"]["feature.node.kubernetes.io/dra"] != "true" {
+		t.Fatalf("node selectors = %+v", capabilities.NodeSelectors)
+	}
+}
+
+func TestClientDiscoverCapabilitiesFallsClosedWhenEndpointAndProbeMissing(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.NotFound(w, r)
+	}))
+	defer server.Close()
+	client, err := NewClient(&Config{Host: server.URL, Namespace: "test", HTTPClient: server.Client()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	capabilities, err := client.DiscoverCapabilities(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(capabilities.GPUProfiles) != 1 || !capabilities.GPUProfiles["none"] {
+		t.Fatalf("capabilities = %+v, want fail-closed none-only profile set", capabilities)
+	}
+}
+
+func TestClientDiscoverCapabilitiesProbesDRAWhenEndpointMissing(t *testing.T) {
+	var paths []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		paths = append(paths, r.URL.Path)
+		switch r.URL.Path {
+		case "/apis/tgsrl.io/v1alpha1/capabilities":
+			http.NotFound(w, r)
+		case "/apis/node.k8s.io/v1/runtimeclasses":
+			_ = json.NewEncoder(w).Encode(map[string]any{"items": []any{}})
+		case "/api/v1/nodes":
+			_ = json.NewEncoder(w).Encode(map[string]any{"items": []any{}})
+		case "/apis/resource.k8s.io/v1beta1/deviceclasses":
+			http.NotFound(w, r)
+		case "/apis/resource.k8s.io/v1beta1/namespaces/test/resourceclaims":
+			_ = json.NewEncoder(w).Encode(map[string]any{"items": []any{}})
+		default:
+			t.Fatalf("unexpected request %s", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+	client, err := NewClient(&Config{Host: server.URL, Namespace: "test", HTTPClient: server.Client()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	capabilities, err := client.DiscoverCapabilities(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !capabilities.GPUProfiles["none"] || !capabilities.GPUProfiles["kubernetes-dra"] {
+		t.Fatalf("capabilities = %+v", capabilities)
+	}
+	if strings.Join(paths, "|") != strings.Join([]string{
+		"/apis/tgsrl.io/v1alpha1/capabilities",
+		"/apis/node.k8s.io/v1/runtimeclasses",
+		"/api/v1/nodes",
+		"/apis/resource.k8s.io/v1beta1/deviceclasses",
+		"/apis/resource.k8s.io/v1beta1/namespaces/test/resourceclaims",
+	}, "|") {
+		t.Fatalf("paths = %v", paths)
+	}
+}
+
+func TestClientDiscoverCapabilitiesProbesNodeAndRuntimeClassSurfaces(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/apis/tgsrl.io/v1alpha1/capabilities":
+			http.NotFound(w, r)
+		case "/apis/node.k8s.io/v1/runtimeclasses":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"items": []any{
+					map[string]any{"metadata": map[string]any{"name": "kata-gpu"}, "handler": "kata-qemu"},
+				},
+			})
+		case "/api/v1/nodes":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"items": []any{
+					map[string]any{"status": map[string]any{
+						"allocatable": map[string]any{"nvidia.com/gpu": "2", "volcano.sh/gpu": "1"},
+					}},
+				},
+			})
+		case "/apis/resource.k8s.io/v1beta1/deviceclasses":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"items": []any{
+					map[string]any{"metadata": map[string]any{"name": "gpu.resource.k8s.io"}},
+				},
+			})
+		default:
+			t.Fatalf("unexpected request %s", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+	client, err := NewClient(&Config{Host: server.URL, Namespace: "test", HTTPClient: server.Client()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	capabilities, err := client.DiscoverCapabilities(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !capabilities.GPUProfiles["none"] || !capabilities.GPUProfiles["nvidia-device-plugin"] || !capabilities.GPUProfiles["volcano-hami"] || !capabilities.GPUProfiles["kubernetes-dra"] {
+		t.Fatalf("capabilities = %+v", capabilities)
+	}
+	if capabilities.RuntimeClasses["kata-gpu"] != "kata-qemu" {
+		t.Fatalf("runtime classes = %+v", capabilities.RuntimeClasses)
 	}
 }
 

@@ -14,7 +14,6 @@ import (
 	"time"
 
 	tgsrlv1 "github.com/Blizzard-cyber/TGS-RL/gen/go/tgsrl/v1"
-	"github.com/Blizzard-cyber/TGS-RL/operator-go/admission"
 	"github.com/Blizzard-cyber/TGS-RL/operator-go/backend"
 	"github.com/Blizzard-cyber/TGS-RL/operator-go/compiler"
 	operatorcontrol "github.com/Blizzard-cyber/TGS-RL/operator-go/control"
@@ -70,7 +69,6 @@ func main() {
 func run() error {
 	mode := flag.String("mode", "kubernetes", "backend mode: kubernetes or fake")
 	controllerEnabled := flag.Bool("controller", true, "enable controller reconcile loop")
-	admissionEnabled := flag.Bool("admission", true, "enable admission/quota evaluation")
 	schedulerAddress := flag.String("scheduler", "127.0.0.1:50051", "scheduler gRPC address")
 	controlAddress := flag.String("control", "127.0.0.1:50061", "job control gRPC address")
 	runtimeAddress := flag.String("runtime", "127.0.0.1:50071", "runtime control gRPC address")
@@ -143,12 +141,13 @@ func run() error {
 		}
 		defer runtimeConn.Close()
 
-		source, err := worker.NewWatchDecisionSourceFromGRPC(tgsrlv1.NewSchedulerServiceClient(schedulerConn), 30*time.Second)
+		schedulerClient := tgsrlv1.NewSchedulerServiceClient(schedulerConn)
+		source, err := worker.NewWatchDecisionSourceFromGRPC(schedulerClient, 30*time.Second)
 		if err != nil {
 			return err
 		}
 		runtimeClient := tgsrlv1.NewRuntimeControlServiceClient(runtimeConn)
-		rpcPublisher, err := runtimepub.NewRPCPublisher(runtimeClient)
+		rpcPublisher, err := runtimepub.NewRPCPublisher(runtimeClient, tgsrlv1.NewSchedulerObservationServiceClient(schedulerConn))
 		if err != nil {
 			return err
 		}
@@ -168,7 +167,6 @@ func run() error {
 			Cursors:     repo,
 			Deliveries:  deliveryRepo,
 			Bundles:     selectedBackend,
-			QueuePolicy: defaultQueuePolicy(*admissionEnabled),
 			Namespace:   *namespace,
 			GPUProfiles: []string{*gpuProfile},
 		})
@@ -180,7 +178,7 @@ func run() error {
 			run:  w.Run,
 		})
 	} else {
-		slog.Info("operator started without controller", "mode", backendName, "admission", *admissionEnabled)
+		slog.Info("operator started without controller", "mode", backendName)
 	}
 	ctx, stop := signalContext()
 	defer stop()
@@ -188,7 +186,7 @@ func run() error {
 	if runErr != nil {
 		return runErr
 	}
-	slog.Info("operator stopped", "mode", backendName, "controller", *controllerEnabled, "admission", *admissionEnabled)
+	slog.Info("operator stopped", "mode", backendName, "controller", *controllerEnabled)
 	return nil
 }
 
@@ -335,14 +333,5 @@ func selectObserver(mode, namespace, kubeconfigPath string, selectedBackend back
 		return statuswatch.NewBackendObserver(kubeBackend, 2*time.Second)
 	default:
 		return nil, fmt.Errorf("unsupported mode %q", mode)
-	}
-}
-
-func defaultQueuePolicy(admissionEnabled bool) admission.QueuePolicy {
-	return admission.QueuePolicy{
-		Name:            "default",
-		QuotaGroup:      "default",
-		Capacity:        map[string]string{"cpu": "1000", "memory": "1073741824"},
-		AllowPreemption: admissionEnabled,
 	}
 }
