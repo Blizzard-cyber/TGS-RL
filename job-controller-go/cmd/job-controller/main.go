@@ -36,8 +36,12 @@ func run() error {
 	listenAddress := flags.String("listen", defaultListenAddress, "gRPC listen address")
 	runtimeTarget := flags.String("runtime-target", defaultRuntimeTarget, "runtime control gRPC target")
 	stateDir := flags.String("state-dir", defaultStateDir(), "durable controller state directory")
+	reconcileTimeout := flags.Duration("reconcile-timeout", 30*time.Second, "startup timeout for incomplete operation reconciliation")
 	if err := flags.Parse(os.Args[1:]); err != nil {
 		return err
+	}
+	if *reconcileTimeout <= 0 {
+		return fmt.Errorf("reconcile timeout must be positive")
 	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -62,6 +66,12 @@ func run() error {
 	if err != nil {
 		return fmt.Errorf("create controller: %w", err)
 	}
+	reconcileCtx, reconcileCancel := context.WithTimeout(ctx, *reconcileTimeout)
+	if err := engine.ReconcileIncompleteOperations(reconcileCtx); err != nil {
+		reconcileCancel()
+		return fmt.Errorf("reconcile incomplete operations: %w", err)
+	}
+	reconcileCancel()
 	server, err := service.New(service.Config{Controller: engine})
 	if err != nil {
 		return fmt.Errorf("create service: %w", err)

@@ -192,7 +192,7 @@ registry 的不可变 digest，并预装 Kueue 与所选 GPU 资源控制器。
 | 组件 | 持久化方式 | 重启后的行为 |
 |---|---|---|
 | Scheduler | checkpoint + journal | 恢复 Snapshot、Intent、Decision、provider projection/cursor 和 reservation；调和未完成 reservation，并重新排队 Intent |
-| Job Controller | snapshot + journal | 恢复 Job、Run、Operation、事件与幂等记录；不自动重新执行中间态 Operation |
+| Job Controller | snapshot + journal | 恢复 Job、Run、Operation、事件与幂等记录；启动时按 Runtime 观察与原幂等键调和中间态，未知结果显式要求人工处理 |
 | Runtime / Experiment | SQLite | 分页恢复 manifest、unit、Sandbox、Trace、Intent、Checkpoint、Replay、Experiment 与必要水位；仅补投未确认的 Start Intent |
 | Operator | cursor、delivery 与 backend-control 文件 | 恢复决策位置、未完成 delivery、观察注册与 lifecycle 幂等记录；fake backend 对象不持久化 |
 | Gateway / Console | 无业务状态 | 重启后从后端读取 |

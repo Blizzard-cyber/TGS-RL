@@ -96,6 +96,15 @@ Scheduler 的 Prometheus 输出为指标名添加 `tgsrl_` 前缀。三档 loop 
 `tgsrl_ticks_skipped_fast|medium|slow` 和
 `tgsrl_tick_latency_fast|medium|slow_{count,sum}` 观察启动、完成、重叠跳过和处理耗时。
 
+### Job Controller
+
+| 参数 | 默认值 | 说明 |
+|---|---|---|
+| `-listen` | `127.0.0.1:50061` | JobControl gRPC 监听地址 |
+| `-runtime-target` | `127.0.0.1:50071` | Runtime gRPC 目标 |
+| `-state-dir` | 用户 cache 下的 `tgs-rl/job-controller` | snapshot 与 journal 目录 |
+| `-reconcile-timeout` | `30s` | 启动时调和全部 RUNNING Operation 的总超时；必须为正值 |
+
 ### Runtime / Experiment
 
 | 参数 | 默认值 | 说明 |
@@ -215,7 +224,7 @@ mkdir -p .cache/tgsrl/scheduler-state .cache/tgsrl/job-controller .cache/tgsrl/o
 |---|---|---|
 | Scheduler | Cluster snapshot、最新 Intent、Decision 与 action result、Decision cursor、provider sandbox projection/event cursor、reservation；启动时调和未完成 reservation 并重新排队恢复出的 Intent | Provider 进程内执行对象本身；无法由 Provider 确认完成的 plan 会失败收敛，不会盲目重放外部副作用 |
 | Runtime / Experiment | 分页回填最新 Intent、Trace batch、manifest、runtime unit、sandbox、全局且可稀疏的 runtime event sequence、generation、intent-version、Start 发布进度、checkpoint、Replay、Experiment、Replay START 已完成的 Scheduler step、component status 及必要计数 | 仅补投未确认的 Start Intent；checkpoint 不是外部进程镜像；不是跨服务 HA/灾备 |
-| Job Controller | Job、Run、Operation、幂等记录、事件历史与事件序号 | 不会扫描并重新执行重启前未完成的 Operation |
+| Job Controller | Job、Run、Operation、幂等记录、事件历史与事件序号；启动时扫描 RUNNING Operation，优先按 Runtime 收敛状态完成，未派发且有幂等键时安全重放 | Runtime 不可达时保留启动失败以便重试；已派发但结果不确定或缺少幂等键时标记 `RECONCILIATION_REQUIRED`，不猜测成功 |
 | Operator | Decision cursor、未完成 delivery、持久化 observation registration、已发布 transition，以及 lifecycle control 幂等记录；Kubernetes 对象由 API Server 保存 | fake backend 对象不持久化；跨服务没有分布式事务 |
 | Gateway / Console | 无本地状态 | 重启后从后端重新读取 |
 
@@ -252,8 +261,9 @@ mkdir -p .cache/tgsrl/scheduler-state .cache/tgsrl/job-controller .cache/tgsrl/o
 1. **Scheduler**：使用原 `-state-dir`，确认进程成功完成恢复并开始监听。
 2. **Runtime / Experiment**：使用原 `--state-db`，确认 manifest、unit、sandbox、event、
    Replay 和 Experiment 均可查询。
-3. **Job Controller**：使用原 `-state-dir`，检查 Job、Run、Operation 与事件；人工处理
-   重启前处于中间态的 Operation。
+3. **Job Controller**：使用原 `-state-dir`；启动前会查询 Runtime 并调和 RUNNING Operation。
+   已收敛状态直接补写终态，尚未派发且有稳定幂等键的请求按原身份重放；已派发但结果未知
+   或缺少幂等键的记录会进入 `RECONCILIATION_REQUIRED`，需要人工核对后再发新命令。
 4. **Operator**：使用原 `-cursor-dir` 并监听原 lifecycle control 地址；确认三个上游都
    可用后再恢复消费和 observation registration。fake backend 需要单独处理已丢失对象；
    Kubernetes backend 应核对 API Server 中对象、registration 与 cursor 是否一致。

@@ -189,7 +189,7 @@ safe-point marker；offload、checkpoint、reload 与安全 rebind 继续 fail c
 
 | 状态 | 权威组件 | 持久化 | 重启边界 |
 |---|---|---|---|
-| Job、Run、Operation、JobEvent、请求幂等记录 | Job Controller | `snapshot.gob`、`journal.gob` | 恢复记录；不自动重新执行中间态 Operation |
+| Job、Run、Operation、JobEvent、请求幂等记录 | Job Controller | `snapshot.gob`、`journal.gob` | 启动时扫描 RUNNING Operation；先用 Runtime 观察收敛，安全时以原幂等键重放，未知结果转为 `RECONCILIATION_REQUIRED` |
 | RuntimeManifest、RuntimeUnit、Sandbox、RuntimeEvent、Trace、Intent、Checkpoint | Runtime | SQLite，WAL + `synchronous=FULL` | 分页恢复状态与水位；仅补投未确认的 Start Intent |
 | Replay、Experiment | Runtime / Experiment | 同一 SQLite 数据库 | 分页恢复并提供查询 |
 | Snapshot、Intent、reservation、Decision、ActionResult、cursor | Scheduler | checkpoint + 校验 journal | 对外监听前恢复；先调和未完成 reservation，再重新排队 Intent |

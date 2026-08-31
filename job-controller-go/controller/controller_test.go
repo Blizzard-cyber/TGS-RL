@@ -3,6 +3,7 @@ package controller
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strconv"
 	"sync"
 	"testing"
@@ -1631,6 +1632,342 @@ func TestAdmitJobResumesPersistedRunningOperationAfterRestart(t *testing.T) {
 	}
 }
 
+func TestReconcileIncompleteOperationsCompletesFromRuntimeObservation(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 8, 31, 17, 0, 0, 0, time.UTC)
+	repository, job, run, operation := seedRunningOperation(t, now, tgsrlv1.OperationType_OPERATION_TYPE_START, "idem-reconcile-observed")
+	driver := newDesiredOnlyDriver(runtimeclient.NewFakeDriver())
+	driver.statusResponse = &tgsrlv1.GetRuntimeStatusResponse{RuntimeStatus: &tgsrlv1.RuntimeStatusSummary{
+		Health:               tgsrlv1.RuntimeHealth_RUNTIME_HEALTH_HEALTHY,
+		Detail:               "worker running",
+		Source:               "runtime",
+		Revision:             8,
+		ObservedAt:           timestamppb.New(now.Add(time.Second)),
+		ObservedRuntimeState: tgsrlv1.RuntimeState_RUNTIME_STATE_RUNNING,
+		Converged:            true,
+	}}
+	engine, err := New(Config{Repository: repository, Runtime: driver, Clock: state.ClockFunc(func() time.Time { return now.Add(2 * time.Second) })})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	if err := engine.ReconcileIncompleteOperations(context.Background()); err != nil {
+		t.Fatalf("ReconcileIncompleteOperations() error = %v", err)
+	}
+	if driver.startCalls != 0 {
+		t.Fatalf("start calls = %d, want 0 after observed convergence", driver.startCalls)
+	}
+	assertReconciledOperation(t, engine, job.GetJobId(), run.GetRunId(), operation.GetOperationId(), tgsrlv1.OperationState_OPERATION_STATE_SUCCEEDED, "")
+}
+
+func TestReconcileIncompleteOperationsReplaysWithOriginalIdempotency(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 8, 31, 17, 5, 0, 0, time.UTC)
+	repository, job, run, operation := seedRunningOperation(t, now, tgsrlv1.OperationType_OPERATION_TYPE_START, "idem-reconcile-replay")
+	driver := newDesiredOnlyDriver(runtimeclient.NewFakeDriver())
+	driver.statusResponse = &tgsrlv1.GetRuntimeStatusResponse{RuntimeStatus: &tgsrlv1.RuntimeStatusSummary{
+		Health:               tgsrlv1.RuntimeHealth_RUNTIME_HEALTH_PROGRESSING,
+		Detail:               "runtime start has not converged",
+		Revision:             1,
+		ObservedAt:           timestamppb.New(now),
+		ObservedRuntimeState: tgsrlv1.RuntimeState_RUNTIME_STATE_REQUESTED,
+		Converged:            false,
+	}}
+	engine, err := New(Config{Repository: repository, Runtime: driver, Clock: state.ClockFunc(func() time.Time { return now.Add(time.Second) })})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	if err := engine.ReconcileIncompleteOperations(context.Background()); err != nil {
+		t.Fatalf("ReconcileIncompleteOperations() error = %v", err)
+	}
+	if driver.startCalls != 1 {
+		t.Fatalf("start calls = %d, want one idempotent replay", driver.startCalls)
+	}
+	assertReconciledOperation(t, engine, job.GetJobId(), run.GetRunId(), operation.GetOperationId(), tgsrlv1.OperationState_OPERATION_STATE_RUNNING, "")
+	got, err := engine.GetOperation(context.Background(), &tgsrlv1.GetOperationRequest{OperationId: operation.GetOperationId()})
+	if err != nil {
+		t.Fatalf("GetOperation() error = %v", err)
+	}
+	if got.GetOperation().GetAnnotations()["runtime.dispatch.accepted"] != "true" {
+		t.Fatalf("operation annotations = %v, want accepted dispatch", got.GetOperation().GetAnnotations())
+	}
+}
+
+func TestReconcileIncompleteOperationsIgnoresStaleRuntimeObservation(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 8, 31, 17, 8, 0, 0, time.UTC)
+	repository, job, run, operation := seedRunningOperation(t, now, tgsrlv1.OperationType_OPERATION_TYPE_START, "idem-reconcile-stale")
+	driver := newDesiredOnlyDriver(runtimeclient.NewFakeDriver())
+	driver.statusResponse = &tgsrlv1.GetRuntimeStatusResponse{RuntimeStatus: &tgsrlv1.RuntimeStatusSummary{
+		Health:               tgsrlv1.RuntimeHealth_RUNTIME_HEALTH_HEALTHY,
+		Detail:               "stale running state",
+		Revision:             1,
+		ObservedAt:           timestamppb.New(now.Add(-time.Second)),
+		ObservedRuntimeState: tgsrlv1.RuntimeState_RUNTIME_STATE_RUNNING,
+		Converged:            true,
+	}}
+	engine, err := New(Config{Repository: repository, Runtime: driver, Clock: state.ClockFunc(func() time.Time { return now.Add(time.Second) })})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	if err := engine.ReconcileIncompleteOperations(context.Background()); err != nil {
+		t.Fatalf("ReconcileIncompleteOperations() error = %v", err)
+	}
+	if driver.startCalls != 1 {
+		t.Fatalf("start calls = %d, want stale observation to trigger one replay", driver.startCalls)
+	}
+	assertReconciledOperation(t, engine, job.GetJobId(), run.GetRunId(), operation.GetOperationId(), tgsrlv1.OperationState_OPERATION_STATE_RUNNING, "")
+}
+
+func TestReconcileIncompleteAdmissionUsesOriginalIdempotency(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 8, 31, 17, 9, 0, 0, time.UTC)
+	repository, job, run, operation := seedRunningOperation(t, now, tgsrlv1.OperationType_OPERATION_TYPE_ADMIT, "idem-reconcile-admit")
+	engine, err := New(Config{Repository: repository, Runtime: runtimeclient.NewFakeDriver(), Clock: state.ClockFunc(func() time.Time { return now.Add(time.Second) })})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	if err := engine.ReconcileIncompleteOperations(context.Background()); err != nil {
+		t.Fatalf("ReconcileIncompleteOperations() error = %v", err)
+	}
+	assertReconciledOperation(t, engine, job.GetJobId(), run.GetRunId(), operation.GetOperationId(), tgsrlv1.OperationState_OPERATION_STATE_SUCCEEDED, "")
+	gotRun, err := engine.GetJobRun(context.Background(), &tgsrlv1.GetJobRunRequest{JobId: job.GetJobId(), RunId: run.GetRunId()})
+	if err != nil || gotRun.GetRun().GetRunState() != tgsrlv1.JobRunState_JOB_RUN_STATE_WAITING {
+		t.Fatalf("reconciled admission run = %v, %v", gotRun.GetRun(), err)
+	}
+}
+
+func TestReconcileIncompleteRetryUsesOriginalIdempotency(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 8, 31, 17, 12, 0, 0, time.UTC)
+	repository, job, run, operation := seedRunningOperation(t, now, tgsrlv1.OperationType_OPERATION_TYPE_RETRY, "idem-reconcile-retry")
+	engine, err := New(Config{Repository: repository, Runtime: runtimeclient.NewFakeDriver(), Clock: state.ClockFunc(func() time.Time { return now.Add(time.Second) })})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	if err := engine.ReconcileIncompleteOperations(context.Background()); err != nil {
+		t.Fatalf("ReconcileIncompleteOperations() error = %v", err)
+	}
+	assertReconciledOperation(t, engine, job.GetJobId(), run.GetRunId(), operation.GetOperationId(), tgsrlv1.OperationState_OPERATION_STATE_SUCCEEDED, "")
+}
+
+func TestReconcileIncompleteOperationsMarksUnsafeReplayForManualReconcile(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 8, 31, 17, 10, 0, 0, time.UTC)
+	repository, job, run, operation := seedRunningOperation(t, now, tgsrlv1.OperationType_OPERATION_TYPE_START, "")
+	driver := newDesiredOnlyDriver(runtimeclient.NewFakeDriver())
+	driver.statusErr = status.Error(codes.Unavailable, "runtime unavailable")
+	engine, err := New(Config{Repository: repository, Runtime: driver, Clock: state.ClockFunc(func() time.Time { return now.Add(time.Second) })})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	if err := engine.ReconcileIncompleteOperations(context.Background()); err != nil {
+		t.Fatalf("ReconcileIncompleteOperations() error = %v", err)
+	}
+	if driver.startCalls != 0 {
+		t.Fatalf("start calls = %d, want no unsafe replay", driver.startCalls)
+	}
+	assertReconciledOperation(t, engine, job.GetJobId(), run.GetRunId(), operation.GetOperationId(), tgsrlv1.OperationState_OPERATION_STATE_FAILED, reconciliationRequiredCode)
+}
+
+func TestReconcileIncompleteOperationsDoesNotReplayAcceptedUnknownOutcome(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 8, 31, 17, 15, 0, 0, time.UTC)
+	repository, job, run, operation := seedRunningOperation(t, now, tgsrlv1.OperationType_OPERATION_TYPE_START, "idem-reconcile-accepted")
+	if err := repository.Update(func(store state.Store) error {
+		current, _ := store.GetOperation(operation.GetOperationId())
+		current.Annotations = map[string]string{"runtime.dispatch.accepted": "true"}
+		run.Operations = appendOperation(run.GetOperations(), current)
+		store.PutRun(run)
+		store.PutOperation(current)
+		return nil
+	}); err != nil {
+		t.Fatalf("mark accepted dispatch: %v", err)
+	}
+	driver := newDesiredOnlyDriver(runtimeclient.NewFakeDriver())
+	driver.statusErr = status.Error(codes.Unavailable, "runtime unavailable")
+	engine, err := New(Config{Repository: repository, Runtime: driver, Clock: state.ClockFunc(func() time.Time { return now.Add(time.Second) })})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	if err := engine.ReconcileIncompleteOperations(context.Background()); err != nil {
+		t.Fatalf("ReconcileIncompleteOperations() error = %v", err)
+	}
+	if driver.startCalls != 0 {
+		t.Fatalf("start calls = %d, want no duplicate dispatch", driver.startCalls)
+	}
+	assertReconciledOperation(t, engine, job.GetJobId(), run.GetRunId(), operation.GetOperationId(), tgsrlv1.OperationState_OPERATION_STATE_FAILED, reconciliationRequiredCode)
+}
+
+func TestReconcileIncompleteOperationsMarksAmbiguousRetryForManualReconcile(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 8, 31, 17, 18, 0, 0, time.UTC)
+	repository, job, run, operation := seedRunningOperation(t, now, tgsrlv1.OperationType_OPERATION_TYPE_START, "idem-reconcile-ambiguous")
+	driver := newDesiredOnlyDriver(runtimeclient.NewFakeDriver())
+	driver.statusErr = status.Error(codes.Unavailable, "runtime unavailable before replay")
+	driver.inner.CommandErr = status.Error(codes.Unavailable, "runtime unavailable during replay")
+	engine, err := New(Config{Repository: repository, Runtime: driver, Clock: state.ClockFunc(func() time.Time { return now.Add(time.Second) })})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	if err := engine.ReconcileIncompleteOperations(context.Background()); err != nil {
+		t.Fatalf("ReconcileIncompleteOperations() error = %v", err)
+	}
+	if driver.startCalls != 1 {
+		t.Fatalf("start calls = %d, want one idempotent replay", driver.startCalls)
+	}
+	assertReconciledOperation(t, engine, job.GetJobId(), run.GetRunId(), operation.GetOperationId(), tgsrlv1.OperationState_OPERATION_STATE_FAILED, reconciliationRequiredCode)
+}
+
+func TestListRunningOperationsReadsEveryPageInStableOrder(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 8, 31, 17, 20, 0, 0, time.UTC)
+	repository, err := state.NewMemoryRepository(state.WithClock(state.ClockFunc(func() time.Time { return now })))
+	if err != nil {
+		t.Fatalf("NewMemoryRepository() error = %v", err)
+	}
+	if err := repository.Update(func(store state.Store) error {
+		for index := range 205 {
+			store.PutOperation(&tgsrlv1.Operation{
+				OperationId: fmt.Sprintf("op-%03d", index),
+				State:       tgsrlv1.OperationState_OPERATION_STATE_RUNNING,
+				CreatedAt:   timestamppb.New(now.Add(time.Duration(204-index) * time.Second)),
+			})
+		}
+		store.PutOperation(&tgsrlv1.Operation{OperationId: "op-complete", State: tgsrlv1.OperationState_OPERATION_STATE_SUCCEEDED, CreatedAt: timestamppb.New(now)})
+		return nil
+	}); err != nil {
+		t.Fatalf("seed operations: %v", err)
+	}
+	engine, err := New(Config{Repository: repository, Runtime: runtimeclient.NewFakeDriver()})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	operations, err := engine.listRunningOperations()
+	if err != nil {
+		t.Fatalf("listRunningOperations() error = %v", err)
+	}
+	if len(operations) != 205 {
+		t.Fatalf("running operations = %d, want 205", len(operations))
+	}
+	if operations[0].GetOperationId() != "op-204" || operations[len(operations)-1].GetOperationId() != "op-000" {
+		t.Fatalf("operation order = %q ... %q, want oldest to newest", operations[0].GetOperationId(), operations[len(operations)-1].GetOperationId())
+	}
+}
+
+func seedRunningOperation(t *testing.T, now time.Time, operationType tgsrlv1.OperationType, idempotencyKey string) (state.Repository, *tgsrlv1.RLTrainingJob, *tgsrlv1.JobRun, *tgsrlv1.Operation) {
+	t.Helper()
+	stateDir := t.TempDir()
+	repository, err := state.NewFileRepository(stateDir, state.WithClock(state.ClockFunc(func() time.Time { return now })))
+	if err != nil {
+		t.Fatalf("NewMemoryRepository() error = %v", err)
+	}
+	job, diagnostics := compiler.NormalizeJob(validJob(now), now)
+	if len(diagnostics) != 0 {
+		t.Fatalf("NormalizeJob() diagnostics = %v", diagnostics)
+	}
+	runState := tgsrlv1.JobRunState_JOB_RUN_STATE_STARTING
+	if operationType == tgsrlv1.OperationType_OPERATION_TYPE_ADMIT {
+		runState = tgsrlv1.JobRunState_JOB_RUN_STATE_ADMITTING
+	} else if operationType == tgsrlv1.OperationType_OPERATION_TYPE_RETRY {
+		runState = tgsrlv1.JobRunState_JOB_RUN_STATE_RETRYING
+	}
+	run := compiler.NewRun(job, 1, runState, now)
+	run.State = tgsrlv1.JobState_JOB_STATE_PENDING
+	operation := &tgsrlv1.Operation{
+		OperationId:    "op-reconcile-" + idempotencyKey,
+		Type:           operationType,
+		State:          tgsrlv1.OperationState_OPERATION_STATE_RUNNING,
+		CreatedAt:      timestamppb.New(now),
+		JobId:          job.GetJobId(),
+		RunId:          run.GetRunId(),
+		TraceId:        run.GetTraceId(),
+		DataKind:       run.GetDataKind(),
+		RequestId:      "req-reconcile",
+		IdempotencyKey: idempotencyKey,
+	}
+	run.Operations = []*tgsrlv1.Operation{operation}
+	if err := repository.Update(func(store state.Store) error {
+		store.PutJob(job)
+		store.PutRun(run)
+		store.PutOperation(operation)
+		if idempotencyKey != "" {
+			scope := "command"
+			requestHash := hashCommandRequest(job.GetJobId(), run.GetRunId(), mustCommandForOperation(t, operationType), operation.GetActor(), operation.GetReason())
+			if operationType == tgsrlv1.OperationType_OPERATION_TYPE_ADMIT {
+				scope = "admit"
+				requestHash = hashAdmitRequest(job.GetJobId(), operation.GetReason())
+			}
+			store.PutIdempotency(scope, idempotencyKey, &state.IdempotencyRecord{
+				Scope: scope, Key: idempotencyKey, RequestHash: requestHash,
+				OperationID: operation.GetOperationId(), JobID: job.GetJobId(), RunID: run.GetRunId(),
+			})
+		}
+		return nil
+	}); err != nil {
+		t.Fatalf("seed repository: %v", err)
+	}
+	recovered, err := state.NewFileRepository(stateDir, state.WithClock(state.ClockFunc(func() time.Time { return now })))
+	if err != nil {
+		t.Fatalf("recover repository: %v", err)
+	}
+	return recovered, job, run, operation
+}
+
+func mustCommandForOperation(t *testing.T, operationType tgsrlv1.OperationType) tgsrlv1.JobCommandType {
+	t.Helper()
+	if operationType == tgsrlv1.OperationType_OPERATION_TYPE_ADMIT {
+		return tgsrlv1.JobCommandType_JOB_COMMAND_TYPE_UNKNOWN
+	}
+	command, ok := commandForOperation(operationType)
+	if !ok {
+		t.Fatalf("no command for operation type %s", operationType)
+	}
+	return command
+}
+
+func assertReconciledOperation(t *testing.T, engine *Controller, jobID, runID, operationID string, expectedState tgsrlv1.OperationState, expectedCode string) {
+	t.Helper()
+	got, err := engine.GetOperation(context.Background(), &tgsrlv1.GetOperationRequest{OperationId: operationID})
+	if err != nil {
+		t.Fatalf("GetOperation() error = %v", err)
+	}
+	if got.GetOperation().GetState() != expectedState || got.GetOperation().GetErrorCode() != expectedCode {
+		t.Fatalf("operation = (%s, %q), want (%s, %q)", got.GetOperation().GetState(), got.GetOperation().GetErrorCode(), expectedState, expectedCode)
+	}
+	if expectedCode == reconciliationRequiredCode {
+		if !got.GetOperation().GetCompletedAt().IsValid() {
+			t.Fatal("manual reconciliation operation must have a terminal timestamp")
+		}
+		if got.GetOperation().GetAnnotations()["reconciliation.manual_required"] != "true" {
+			t.Fatalf("operation annotations = %v, want manual reconciliation marker", got.GetOperation().GetAnnotations())
+		}
+	}
+	gotRun, err := engine.GetJobRun(context.Background(), &tgsrlv1.GetJobRunRequest{JobId: jobID, RunId: runID})
+	if err != nil || gotRun.GetRun() == nil {
+		t.Fatalf("GetJobRun() = %v, %v", gotRun, err)
+	}
+	if expectedCode == reconciliationRequiredCode {
+		found := false
+		for _, component := range gotRun.GetRun().GetComponentStatus() {
+			if component.GetComponent() == "reconciliation" && component.GetHealth() == tgsrlv1.ComponentHealth_COMPONENT_HEALTH_DEGRADED {
+				found = true
+			}
+		}
+		if !found {
+			t.Fatalf("run component status = %v, want degraded reconciliation status", gotRun.GetRun().GetComponentStatus())
+		}
+	}
+}
+
 func testController(t *testing.T, now time.Time) *Controller {
 	t.Helper()
 	return testControllerWithDriver(t, now, runtimeclient.NewFakeDriver())
@@ -1692,8 +2029,10 @@ type blockingDriver struct {
 }
 
 type desiredOnlyDriver struct {
-	inner      *runtimeclient.FakeDriver
-	startCalls int
+	inner          *runtimeclient.FakeDriver
+	startCalls     int
+	statusResponse *tgsrlv1.GetRuntimeStatusResponse
+	statusErr      error
 }
 
 func newDesiredOnlyDriver(inner *runtimeclient.FakeDriver) *desiredOnlyDriver {
@@ -1819,6 +2158,12 @@ func (d *desiredOnlyDriver) TerminateRuntime(ctx context.Context, request *tgsrl
 }
 
 func (d *desiredOnlyDriver) GetRuntimeStatus(_ context.Context, request *tgsrlv1.GetRuntimeStatusRequest) (*tgsrlv1.GetRuntimeStatusResponse, error) {
+	if d.statusErr != nil {
+		return nil, d.statusErr
+	}
+	if d.statusResponse != nil {
+		return d.statusResponse, nil
+	}
 	return &tgsrlv1.GetRuntimeStatusResponse{
 		RuntimeUnits: []*tgsrlv1.RuntimeUnit{{
 			RuntimeUnitId: "unit-" + request.GetRunId(),

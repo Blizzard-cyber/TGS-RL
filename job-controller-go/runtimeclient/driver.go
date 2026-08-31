@@ -19,6 +19,7 @@ type Driver interface {
 	ResumeRuntime(context.Context, *tgsrlv1.ResumeRuntimeRequest) (*tgsrlv1.ResumeRuntimeResponse, error)
 	StopRuntime(context.Context, *tgsrlv1.StopRuntimeRequest) (*tgsrlv1.StopRuntimeResponse, error)
 	TerminateRuntime(context.Context, *tgsrlv1.TerminateRuntimeRequest) (*tgsrlv1.TerminateRuntimeResponse, error)
+	GetRuntimeStatus(context.Context, *tgsrlv1.GetRuntimeStatusRequest) (*tgsrlv1.GetRuntimeStatusResponse, error)
 	Close() error
 }
 
@@ -79,6 +80,10 @@ func (d *GRPCDriver) StopRuntime(ctx context.Context, request *tgsrlv1.StopRunti
 
 func (d *GRPCDriver) TerminateRuntime(ctx context.Context, request *tgsrlv1.TerminateRuntimeRequest) (*tgsrlv1.TerminateRuntimeResponse, error) {
 	return d.client.TerminateRuntime(ctx, request)
+}
+
+func (d *GRPCDriver) GetRuntimeStatus(ctx context.Context, request *tgsrlv1.GetRuntimeStatusRequest) (*tgsrlv1.GetRuntimeStatusResponse, error) {
+	return d.client.GetRuntimeStatus(ctx, request)
 }
 
 // Close closes the underlying gRPC connection.
