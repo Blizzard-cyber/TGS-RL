@@ -167,17 +167,17 @@ func run() error {
 			return fmt.Errorf("build reconciler: %w", err)
 		}
 
-		schedulerConn, err := grpc.DialContext(context.Background(), *schedulerAddress, grpc.WithTransportCredentials(insecure.NewCredentials()))
+		schedulerConn, err := grpc.NewClient(*schedulerAddress, grpc.WithTransportCredentials(insecure.NewCredentials()))
 		if err != nil {
 			return fmt.Errorf("dial scheduler: %w", err)
 		}
 		defer schedulerConn.Close()
-		controlConn, err := grpc.DialContext(context.Background(), *controlAddress, grpc.WithTransportCredentials(insecure.NewCredentials()))
+		controlConn, err := grpc.NewClient(*controlAddress, grpc.WithTransportCredentials(insecure.NewCredentials()))
 		if err != nil {
 			return fmt.Errorf("dial control: %w", err)
 		}
 		defer controlConn.Close()
-		runtimeConn, err := grpc.DialContext(context.Background(), *runtimeAddress, grpc.WithTransportCredentials(insecure.NewCredentials()))
+		runtimeConn, err := grpc.NewClient(*runtimeAddress, grpc.WithTransportCredentials(insecure.NewCredentials()))
 		if err != nil {
 			return fmt.Errorf("dial runtime: %w", err)
 		}
@@ -251,7 +251,7 @@ func preflightBackend(ctx context.Context, selectedBackend backend.Backend, gpuP
 		return fmt.Errorf("GPU profile %q cannot enforce scheduler-selected device identities", profile)
 	}
 	if capabilities.KubernetesAPIs.KueueWorkload == "" {
-		return fmt.Errorf("Kueue Workload API is not available")
+		return fmt.Errorf("kueue Workload API is not available")
 	}
 	if profile == compiler.GPUProfileKubernetesDRA && len(capabilities.DRADevices) == 0 {
 		return fmt.Errorf("NVIDIA DRA device UUID inventory is not available")

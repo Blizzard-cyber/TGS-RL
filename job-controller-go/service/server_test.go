@@ -402,18 +402,6 @@ func (s *blockingWatchStream) Send(response *tgsrlv1.WatchJobEventsResponse) err
 	return nil
 }
 
-func (s *blockingWatchStream) responsesCopy() []*tgsrlv1.WatchJobEventsResponse {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return append([]*tgsrlv1.WatchJobEventsResponse(nil), s.responses...)
-}
-
-func (s *blockingWatchStream) trailerCopy() metadata.MD {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.trailer.Copy()
-}
-
 type sendBlockingServerStream struct {
 	grpc.ServerStream
 	beforeFirstSend func()
@@ -479,16 +467,13 @@ func startTestServerWithOptions(
 	go func() {
 		serveErrors <- server.Serve(listener)
 	}()
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
-	connection, err := grpc.DialContext(ctx, "bufconn",
+	connection, err := grpc.NewClient("passthrough:///bufconn",
 		grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) { return listener.Dial() }),
 		grpc.WithTransportCredentials(insecure.NewCredentials()),
-		grpc.WithBlock(),
 	)
-	cancel()
 	if err != nil {
 		server.Stop()
-		t.Fatalf("grpc.DialContext() error = %v", err)
+		t.Fatalf("grpc.NewClient() error = %v", err)
 	}
 	cleanup := func() {
 		_ = connection.Close()

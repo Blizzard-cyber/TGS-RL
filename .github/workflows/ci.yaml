@@ -32,11 +32,11 @@ jobs:
       - name: Check generated files
         run: make check-generated
       - name: Check backward compatibility
-        if: github.event_name == 'pull_request'
         env:
-          BASE_SHA: "${{ github.event.pull_request.base.sha }}"
+          BASE_SHA: "${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}"
         run: |
-          if git cat-file -e "${BASE_SHA}:buf.yaml" && \
+          if [ "${BASE_SHA}" != "0000000000000000000000000000000000000000" ] && \
+             git cat-file -e "${BASE_SHA}:buf.yaml" && \
              git cat-file -e "${BASE_SHA}:proto"; then
             baseline_dir="$(mktemp -d)"
             trap 'rm -rf "${baseline_dir}"' EXIT
@@ -61,6 +61,10 @@ jobs:
         run: |
           test -z "$(gofmt -l internal scheduler-go job-controller-go operator-go storage cmd)"
           go vet ./gen/go/... ./internal/... ./scheduler-go/... ./job-controller-go/... ./operator-go/... ./storage/... ./scripts ./cmd/...
+      - name: Install staticcheck v0.7.0
+        run: go install honnef.co/go/tools/cmd/staticcheck@v0.7.0
+      - name: Run staticcheck
+        run: make staticcheck
       - name: Test with the race detector
         run: make race
       - name: Build scheduler
@@ -387,3 +391,9 @@ jobs:
           npm run lint
           npm test
           npm run build
+      - name: Install Chromium
+        working-directory: console
+        run: npx playwright install --with-deps chromium
+      - name: Smoke test all Console routes
+        working-directory: console
+        run: npm run test:browser

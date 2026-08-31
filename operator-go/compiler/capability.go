@@ -81,13 +81,13 @@ func SelectCapabilityProfile(requested RuntimeConfig, preferredGPUProfiles []str
 		return CapabilityProfile{}, fmt.Errorf("GPU profile %q cannot enforce scheduler-selected device identities", selected.GPUProfile)
 	}
 	if selected.KubernetesAPIs.KueueWorkload == "" {
-		return CapabilityProfile{}, fmt.Errorf("Kueue Workload API is not discoverable")
+		return CapabilityProfile{}, fmt.Errorf("kueue Workload API is not discoverable")
 	}
 	if !supportedKueueWorkloadAPI(selected.KubernetesAPIs.KueueWorkload) {
 		return CapabilityProfile{}, fmt.Errorf("unsupported Kueue Workload API %q", selected.KubernetesAPIs.KueueWorkload)
 	}
 	if selected.GPUProfile == GPUProfileKubernetesDRA && selected.KubernetesAPIs.DRAResourceClaim == "" {
-		return CapabilityProfile{}, fmt.Errorf("Kubernetes DRA ResourceClaim API is not discoverable")
+		return CapabilityProfile{}, fmt.Errorf("kubernetes DRA ResourceClaim API is not discoverable")
 	}
 	if selected.GPUProfile == GPUProfileKubernetesDRA && !supportedDRAResourceClaimAPI(selected.KubernetesAPIs.DRAResourceClaim) {
 		return CapabilityProfile{}, fmt.Errorf("unsupported Kubernetes DRA ResourceClaim API %q", selected.KubernetesAPIs.DRAResourceClaim)
@@ -158,17 +158,6 @@ func cloneDRADevices(src map[string]DRADevice) map[string]DRADevice {
 		return nil
 	}
 	dst := make(map[string]DRADevice, len(src))
-	for key, value := range src {
-		dst[key] = value
-	}
-	return dst
-}
-
-func cloneBoolMap(src map[string]bool) map[string]bool {
-	if len(src) == 0 {
-		return nil
-	}
-	dst := make(map[string]bool, len(src))
 	for key, value := range src {
 		dst[key] = value
 	}

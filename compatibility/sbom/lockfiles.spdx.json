@@ -61,6 +61,7 @@
     "SPDXRef-Package-npm--jridgewell-sourcemap-codec-1.5.5",
     "SPDXRef-Package-npm--jridgewell-trace-mapping-0.3.31",
     "SPDXRef-Package-npm--oxc-project-types-0.147.0",
+    "SPDXRef-Package-npm--playwright-test-1.62.1",
     "SPDXRef-Package-npm--rolldown-binding-android-arm-eabi-1.2.6",
     "SPDXRef-Package-npm--rolldown-binding-android-arm64-1.2.6",
     "SPDXRef-Package-npm--rolldown-binding-darwin-arm64-1.2.6",
@@ -163,6 +164,7 @@
     "SPDXRef-Package-npm-find-up-5.0.0",
     "SPDXRef-Package-npm-flat-cache-4.0.1",
     "SPDXRef-Package-npm-flatted-3.4.4",
+    "SPDXRef-Package-npm-fsevents-2.3.2",
     "SPDXRef-Package-npm-fsevents-2.3.3",
     "SPDXRef-Package-npm-gensync-1.0.0-beta.2",
     "SPDXRef-Package-npm-glob-parent-6.0.2",
@@ -221,6 +223,8 @@
     "SPDXRef-Package-npm-pathe-2.0.3",
     "SPDXRef-Package-npm-picocolors-1.1.1",
     "SPDXRef-Package-npm-picomatch-4.0.7",
+    "SPDXRef-Package-npm-playwright-1.62.1",
+    "SPDXRef-Package-npm-playwright-core-1.62.1",
     "SPDXRef-Package-npm-postcss-8.5.26",
     "SPDXRef-Package-npm-prelude-ls-1.2.1",
     "SPDXRef-Package-npm-pretty-format-27.5.1",
@@ -315,7 +319,7 @@
     },
     {
       "path": "console/package-lock.json",
-      "sha256": "9a8ea4427da341f08b16183a59218432f01d6775ee31eaee7d5736d8386ada41"
+      "sha256": "3e3afaef1842a64cab612ba7d8fa6276e2d99e60663c350c97223597ffba24cd"
     }
   ],
   "name": "TGS-RL-lockfile-sbom",
@@ -1697,6 +1701,32 @@
       },
       "supplier": "NOASSERTION",
       "versionInfo": "0.147.0"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-npm--playwright-test-1.62.1",
+      "checksums": [
+        {
+          "algorithm": "OTHER",
+          "checksumValue": "sha512-DTcUc8qii+cpHvtOwggMtBRMjKZHXYWdw8syRYu2vtzuq4Wxphqq4NfCs5Zt44L6mA8rfDfj+PHnxFc/FeK6mQ=="
+        }
+      ],
+      "downloadLocation": "https://registry.npmjs.org/@playwright/test/-/test-1.62.1.tgz",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceLocator": "pkg:npm/@playwright/test@1.62.1",
+          "referenceType": "purl"
+        }
+      ],
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "Apache-2.0",
+      "name": "@playwright/test",
+      "properties": {
+        "ecosystem": "npm",
+        "scope": "development"
+      },
+      "supplier": "NOASSERTION",
+      "versionInfo": "1.62.1"
     },
     {
       "SPDXID": "SPDXRef-Package-npm--rolldown-binding-android-arm-eabi-1.2.6",
@@ -4351,6 +4381,32 @@
       "versionInfo": "3.4.4"
     },
     {
+      "SPDXID": "SPDXRef-Package-npm-fsevents-2.3.2",
+      "checksums": [
+        {
+          "algorithm": "OTHER",
+          "checksumValue": "sha512-xiqMQR4xAeHTuB9uWm+fFRcIOgKBMiOBP+eXiyT7jsgVCq1bkVygt00oASowB7EdtpOHaaPgKt812P9ab+DDKA=="
+        }
+      ],
+      "downloadLocation": "https://registry.npmjs.org/fsevents/-/fsevents-2.3.2.tgz",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceLocator": "pkg:npm/fsevents@2.3.2",
+          "referenceType": "purl"
+        }
+      ],
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "MIT",
+      "name": "fsevents",
+      "properties": {
+        "ecosystem": "npm",
+        "scope": "development"
+      },
+      "supplier": "NOASSERTION",
+      "versionInfo": "2.3.2"
+    },
+    {
       "SPDXID": "SPDXRef-Package-npm-fsevents-2.3.3",
       "checksums": [
         {
@@ -5857,6 +5913,58 @@
       },
       "supplier": "NOASSERTION",
       "versionInfo": "4.0.7"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-npm-playwright-1.62.1",
+      "checksums": [
+        {
+          "algorithm": "OTHER",
+          "checksumValue": "sha512-0M+L3LAD8/nm554LOla9Ayx0j0tmFZ0FBcoQ7F1VuVHpM/XpiC8RcDzBQB8W5+hA8L22THxELzeF+2WcUzvcLg=="
+        }
+      ],
+      "downloadLocation": "https://registry.npmjs.org/playwright/-/playwright-1.62.1.tgz",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceLocator": "pkg:npm/playwright@1.62.1",
+          "referenceType": "purl"
+        }
+      ],
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "Apache-2.0",
+      "name": "playwright",
+      "properties": {
+        "ecosystem": "npm",
+        "scope": "development"
+      },
+      "supplier": "NOASSERTION",
+      "versionInfo": "1.62.1"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-npm-playwright-core-1.62.1",
+      "checksums": [
+        {
+          "algorithm": "OTHER",
+          "checksumValue": "sha512-wPYSwEBJY9GHraISXqyqtx0na0LpO3XEX7jNDhntbex7tzUS7kLnZsOlFruFJB4Hi/rhDMjXGqHewDZ68nYZVw=="
+        }
+      ],
+      "downloadLocation": "https://registry.npmjs.org/playwright-core/-/playwright-core-1.62.1.tgz",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceLocator": "pkg:npm/playwright-core@1.62.1",
+          "referenceType": "purl"
+        }
+      ],
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "Apache-2.0",
+      "name": "playwright-core",
+      "properties": {
+        "ecosystem": "npm",
+        "scope": "development"
+      },
+      "supplier": "NOASSERTION",
+      "versionInfo": "1.62.1"
     },
     {
       "SPDXID": "SPDXRef-Package-npm-postcss-8.5.26",

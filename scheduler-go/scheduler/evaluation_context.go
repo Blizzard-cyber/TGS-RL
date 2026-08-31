@@ -20,7 +20,7 @@ func (s *Scheduler) normalizeEvaluationContext(input *tgsrlv1.EvaluationContext)
 		ctx = proto.Clone(input).(*tgsrlv1.EvaluationContext)
 	}
 
-	now := time.Time{}
+	var now time.Time
 	if ctx.GetEvaluationTime() != nil {
 		if err := ctx.GetEvaluationTime().CheckValid(); err != nil {
 			return nil, time.Time{}, 0, &ValidationError{Field: "evaluation_context.evaluation_time", Reason: err.Error()}
@@ -182,9 +182,7 @@ func contractFallbackReason(aggregate semantics.AggregateResult) string {
 	}
 	action := aggregate.Action.String()
 	const prefix = "CONTRACT_DECISION_ACTION_"
-	if strings.HasPrefix(action, prefix) {
-		action = strings.TrimPrefix(action, prefix)
-	}
+	action = strings.TrimPrefix(action, prefix)
 	action = strings.TrimSpace(action)
 	if action == "" || action == "UNKNOWN" {
 		return "CONTRACT_BLOCKED"

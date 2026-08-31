@@ -7,6 +7,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 HARDWARE_WORKFLOW = ROOT / ".github" / "workflows" / "hardware-validation.yaml"
+CI_WORKFLOW = ROOT / ".github" / "workflows" / "ci.yaml"
 
 
 def run_script(name: str, *arguments: str) -> subprocess.CompletedProcess[str]:
@@ -91,3 +92,14 @@ def test_hardware_workflow_has_cpu_and_automated_self_hosted_gpu_entries() -> No
     assert "campaign-evaluate" in text
     assert "--require-pass" in text
     assert "actions: read" in text
+
+
+def test_ci_enforces_static_analysis_proto_compatibility_and_browser_smoke() -> None:
+    text = CI_WORKFLOW.read_text(encoding="utf-8")
+
+    assert "go install honnef.co/go/tools/cmd/staticcheck@v0.7.0" in text
+    assert "run: make staticcheck" in text
+    assert "github.event.before" in text
+    assert "if: github.event_name == 'pull_request'" not in text
+    assert "npx playwright install --with-deps chromium" in text
+    assert "npm run test:browser" in text

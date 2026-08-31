@@ -119,7 +119,7 @@ func run() error {
 		if startup.WorkerRegistryRuntimeTarget == "" {
 			return errors.New("worker registry requires -worker-registry-runtime-target")
 		}
-		runtimeRegistryConn, err = grpc.DialContext(ctx, startup.WorkerRegistryRuntimeTarget, grpc.WithTransportCredentials(insecure.NewCredentials()))
+		runtimeRegistryConn, err = grpc.NewClient(startup.WorkerRegistryRuntimeTarget, grpc.WithTransportCredentials(insecure.NewCredentials()))
 		if err != nil {
 			return fmt.Errorf("dial Runtime for worker registry: %w", err)
 		}

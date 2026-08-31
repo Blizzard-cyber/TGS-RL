@@ -809,15 +809,6 @@ type contextualEvaluatorSpy struct {
 	contexts []*tgsrlv1.EvaluationContext
 }
 
-type adaptiveEvaluatorSpy struct {
-	mu         sync.Mutex
-	plan       *tgsrlv1.PlacementPlan
-	decision   *tgsrlv1.DecisionRecord
-	inputs     []*scheduler.AdaptiveEvaluationInput
-	evaluateCh chan struct{}
-	responder  func(*scheduler.AdaptiveEvaluationInput) (*tgsrlv1.PlacementPlan, *tgsrlv1.DecisionRecord, error)
-}
-
 type guardingEvaluator struct {
 	guard               *protection.Guard
 	staleSnapshotOffset uint64
@@ -905,75 +896,6 @@ func (s *contextualEvaluatorSpy) LastContext() *tgsrlv1.EvaluationContext {
 		return nil
 	}
 	return proto.Clone(s.contexts[len(s.contexts)-1]).(*tgsrlv1.EvaluationContext)
-}
-
-func (s *adaptiveEvaluatorSpy) Evaluate(snapshot *tgsrlv1.ClusterSnapshot, intent *tgsrlv1.SchedulingIntent) (*tgsrlv1.PlacementPlan, *tgsrlv1.DecisionRecord, error) {
-	return s.EvaluateAdaptive(&scheduler.AdaptiveEvaluationInput{
-		Snapshot: cloneSnapshot(snapshot),
-		Intent:   cloneIntent(intent),
-	})
-}
-
-func (s *adaptiveEvaluatorSpy) EvaluateAdaptive(input *scheduler.AdaptiveEvaluationInput) (*tgsrlv1.PlacementPlan, *tgsrlv1.DecisionRecord, error) {
-	s.mu.Lock()
-	cloned := &scheduler.AdaptiveEvaluationInput{
-		Snapshot:          cloneSnapshot(input.Snapshot),
-		Intent:            cloneIntent(input.Intent),
-		EvaluationContext: cloneEvaluationContext(input.EvaluationContext),
-	}
-	for _, sandbox := range input.Sandboxes {
-		if sandbox != nil {
-			cloned.Sandboxes = append(cloned.Sandboxes, proto.Clone(sandbox).(*tgsrlv1.Sandbox))
-		}
-	}
-	for _, decision := range input.RecentDecisions {
-		cloned.RecentDecisions = append(cloned.RecentDecisions, cloneDecision(decision))
-	}
-	s.inputs = append(s.inputs, cloned)
-	evaluateCh := s.evaluateCh
-	responder := s.responder
-	plan := s.plan
-	decision := s.decision
-	s.mu.Unlock()
-	if evaluateCh != nil {
-		select {
-		case evaluateCh <- struct{}{}:
-		default:
-		}
-	}
-	if responder != nil {
-		return responder(cloned)
-	}
-	return proto.Clone(plan).(*tgsrlv1.PlacementPlan), proto.Clone(decision).(*tgsrlv1.DecisionRecord), nil
-}
-
-func (s *adaptiveEvaluatorSpy) CallCount() int {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return len(s.inputs)
-}
-
-func (s *adaptiveEvaluatorSpy) LastInput() *scheduler.AdaptiveEvaluationInput {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if len(s.inputs) == 0 {
-		return nil
-	}
-	last := s.inputs[len(s.inputs)-1]
-	out := &scheduler.AdaptiveEvaluationInput{
-		Snapshot:          cloneSnapshot(last.Snapshot),
-		Intent:            cloneIntent(last.Intent),
-		EvaluationContext: cloneEvaluationContext(last.EvaluationContext),
-	}
-	for _, sandbox := range last.Sandboxes {
-		if sandbox != nil {
-			out.Sandboxes = append(out.Sandboxes, proto.Clone(sandbox).(*tgsrlv1.Sandbox))
-		}
-	}
-	for _, decision := range last.RecentDecisions {
-		out.RecentDecisions = append(out.RecentDecisions, cloneDecision(decision))
-	}
-	return out
 }
 
 type failAfterRepository struct {
@@ -1285,11 +1207,9 @@ func TestPublishIntentCheckpointFailureLeavesStateInvisibleAndWatchersQuiet(t *t
 	if got := store.Revision(); got != revisionBefore {
 		t.Fatalf("store revision = %d, want unchanged %d after failed checkpoint", got, revisionBefore)
 	}
-	select {
-	case err := <-watcherDone:
-		if !errors.Is(err, context.DeadlineExceeded) {
-			t.Fatalf("snapshot watcher error = %v, want deadline exceeded without revision signal", err)
-		}
+	err = <-watcherDone
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("snapshot watcher error = %v, want deadline exceeded without revision signal", err)
 	}
 	if implementation.persistenceFailure() == nil {
 		t.Fatal("checkpoint failure did not close persistence gate")
@@ -3164,16 +3084,13 @@ func startTestServer(t *testing.T, implementation *Server) (tgsrlv1.SchedulerSer
 		}()
 		serveErrors <- server.Serve(listener)
 	}()
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
-	connection, err := grpc.DialContext(ctx, "bufconn",
+	connection, err := grpc.NewClient("passthrough:///bufconn",
 		grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) { return listener.Dial() }),
 		grpc.WithTransportCredentials(insecure.NewCredentials()),
-		grpc.WithBlock(),
 	)
-	cancel()
 	if err != nil {
 		server.Stop()
-		t.Fatalf("grpc.DialContext() error = %v", err)
+		t.Fatalf("grpc.NewClient() error = %v", err)
 	}
 	cleanup := func() {
 		_ = connection.Close()

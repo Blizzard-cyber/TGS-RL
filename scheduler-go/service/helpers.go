@@ -562,15 +562,6 @@ func (s *Server) markProjectionLiveNotReady(kind string) {
 	s.projectionLive.mu.Unlock()
 }
 
-func (s *Server) projectionReady() bool {
-	if s == nil {
-		return false
-	}
-	s.projectionLive.mu.RLock()
-	defer s.projectionLive.mu.RUnlock()
-	return s.projectionLive.resourceLive && s.projectionLive.sandboxLive
-}
-
 func (s *Server) projectionReadinessFailure() error {
 	if s == nil {
 		return nil

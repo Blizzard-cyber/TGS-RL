@@ -331,8 +331,7 @@ func TestFinalizeTransactionPreemptionCommitActivatesReplacement(t *testing.T) {
 }
 
 func TestFinalizeTransactionPreemptionCommitReturnsOnlyTargetExcessRelease(t *testing.T) {
-	store, _, _, snapshot, pending, victimA, _ := setupPreemptionTransactionStore(t)
-	plan := preemptionReplacementPlan(snapshot, pending, victimA)
+	store, _, _, _, pending, victimA, _ := setupPreemptionTransactionStore(t)
 	replacementResources := &tgsrlv1.ResourceVector{CpuMillis: 300, MemoryBytes: 1024}
 	var err error
 	if _, err = store.MutateResources(store.Revision(), func(working *tgsrlv1.ClusterSnapshot) error {
@@ -346,12 +345,12 @@ func TestFinalizeTransactionPreemptionCommitReturnsOnlyTargetExcessRelease(t *te
 	}); err != nil {
 		t.Fatalf("MutateResources(update replacement pending) error = %v", err)
 	}
-	snapshot, err = store.GetSnapshot(context.Background(), 0, true)
+	snapshot, err := store.GetSnapshot(context.Background(), 0, true)
 	if err != nil {
 		t.Fatalf("GetSnapshot(updated) error = %v", err)
 	}
 	pending = proto.Clone(snapshot.GetPendingUnits()[0]).(*tgsrlv1.PendingUnit)
-	plan = preemptionReplacementPlan(snapshot, pending, victimA)
+	plan := preemptionReplacementPlan(snapshot, pending, victimA)
 	plan.Bindings[0].Resources = cloneResourceVector(replacementResources)
 	plan.Actions[len(plan.Actions)-1].Binding.Resources = cloneResourceVector(plan.Bindings[0].GetResources())
 	record, err := store.CreateTransaction(plan, 1)

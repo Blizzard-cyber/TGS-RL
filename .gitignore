@@ -27,6 +27,8 @@ bin/
 *.test
 *.out
 coverage/
+playwright-report/
+test-results/
 
 # Python environments and caches
 .venv/

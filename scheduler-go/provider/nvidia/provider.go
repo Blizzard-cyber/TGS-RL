@@ -581,24 +581,6 @@ func (p *Provider) recordStandaloneResultLocked(mode actionExecutionMode, action
 	}
 }
 
-func (p *Provider) setPlanTerminalLocked(plan *tgsrlv1.PlacementPlan, status base.PlanStatus, results []*tgsrlv1.ActionResult, err error) {
-	record := &base.PlanRecord{
-		Plan:             clonePlacementPlan(plan),
-		Status:           status,
-		Results:          cloneActionResults(results),
-		ObservedRevision: p.revision,
-		UpdatedAt:        p.now(),
-	}
-	if err != nil {
-		record.ErrorMessage = err.Error()
-		record.ErrorCode = errorCode(err)
-		p.planErrors[plan.GetPlanId()] = err
-	} else {
-		delete(p.planErrors, plan.GetPlanId())
-	}
-	p.plans[plan.GetPlanId()] = record
-}
-
 func validateActionAt(action *tgsrlv1.Action, now time.Time, capabilities *tgsrlv1.CapabilitySet) error {
 	if action == nil {
 		return fmt.Errorf("%w: action is required", base.ErrInvalidArgument)
@@ -776,14 +758,6 @@ func (p *Provider) driverStateLocked() *DriverState {
 	}
 }
 
-func (p *Provider) cacheActionResultLocked(action *tgsrlv1.Action, result *tgsrlv1.ActionResult, before actionBeforeImage, applied bool, err error) {
-	if action == nil || strings.TrimSpace(action.GetIdempotencyKey()) == "" {
-		return
-	}
-	entry := &actionLedgerEntry{action: cloneAction(action), before: cloneActionBeforeImage(before), done: make(chan struct{})}
-	p.completeActionLocked(action, entry, result, before, applied, err)
-}
-
 func (p *Provider) completeActionLocked(action *tgsrlv1.Action, entry *actionLedgerEntry, result *tgsrlv1.ActionResult, before actionBeforeImage, applied bool, err error) {
 	if action == nil || entry == nil || entry.completed {
 		return
@@ -863,20 +837,6 @@ func mutationsForAction(action *tgsrlv1.Action, sandboxExists bool) sandboxMutat
 		return mutations
 	default:
 		return 0
-	}
-}
-
-func skippedActionResult(action *tgsrlv1.Action, revision uint64, now time.Time, message string) *tgsrlv1.ActionResult {
-	return &tgsrlv1.ActionResult{
-		ActionId:         action.GetActionId(),
-		Status:           tgsrlv1.ActionResultStatus_ACTION_RESULT_STATUS_SKIPPED,
-		StartedAt:        timestamppb.New(now),
-		CompletedAt:      timestamppb.New(now),
-		ObservedRevision: revision,
-		ErrorCode:        base.ErrorCodeFailedPrecondition,
-		ErrorMessage:     message,
-		PlanId:           action.GetPlanId(),
-		IdempotencyKey:   action.GetIdempotencyKey(),
 	}
 }
 

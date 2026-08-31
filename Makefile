@@ -3,6 +3,7 @@ SHELL := /bin/sh
 
 BUF_VERSION := 1.72.0
 UV_VERSION := 0.12.7
+STATICCHECK_VERSION := 2026.1
 GO_PACKAGES := ./gen/go/... ./internal/... ./scheduler-go/... ./job-controller-go/... ./operator-go/... ./storage/... ./scripts ./cmd/...
 PYTHON_PATHS := adapters runtime-python gateway-python tests/python tests/api tests/storage tests/e2e tests/governance scripts/check-proto-roundtrip.py scripts/check-oci-platforms.py scripts/generate-sbom.py scripts/check-compatibility.py scripts/check-upstream-patches.py scripts/gate-tools.py scripts/verl-reference-workload.py scripts/gate-full-stack-workload.py scripts/gate-managed-workload.py
 GO_FORMAT_PATHS := scheduler-go job-controller-go operator-go storage cmd internal
@@ -19,7 +20,7 @@ GATEWAY_LISTEN ?= 127.0.0.1:8080
 OPERATOR_LISTEN ?= 127.0.0.1:50081
 SCHEDULER_FALLBACK ?= noop
 
-.PHONY: help doctor proto check-generated check-openapi proto-roundtrip check-migrations check-compose check-deploy render-kubernetes check-public-content sbom check-governance gate-campaign test-go test-performance test-python test-api test-console lint test race build-nvidia-binding build-nvidia-runtime build-nvidia-mig build-worker-bootstrap demo product-e2e gate-cpu-integration run-scheduler run-controller run-runtime run-gateway run-operator run-console
+.PHONY: help doctor proto check-generated check-openapi proto-roundtrip check-migrations check-compose check-deploy render-kubernetes check-public-content sbom check-governance gate-campaign test-go test-performance test-python test-api test-console test-console-browser lint staticcheck test race build-nvidia-binding build-nvidia-runtime build-nvidia-mig build-worker-bootstrap demo product-e2e gate-cpu-integration run-scheduler run-controller run-runtime run-gateway run-operator run-console
 
 help:
 	@printf '%s\n' \
@@ -42,8 +43,10 @@ help:
 	  '  make test-performance run non-race Scheduler and Provider P95 budgets' \
 	  '  make test-python      sync the locked Python environment and run tests' \
 	  '  make lint             run Go vet and Python Ruff/mypy checks' \
+	  '  make staticcheck      run the pinned Go static analyzer' \
 	  '  make test-api         run northbound API tests' \
 	  '  make test-console     type-check, lint, test, and build the web console' \
+	  '  make test-console-browser smoke all seven Console routes in Chromium' \
 	  '  make test             run all Go, Python, API, and console tests' \
 	  '  make race             run Go tests with the race detector' \
 	  '  make build-nvidia-binding build the durable NVIDIA binding helper' \
@@ -146,6 +149,9 @@ test-api:
 test-console:
 	cd console && npm ci && npm run typecheck && npm run lint && npm test && npm run build
 
+test-console-browser:
+	cd console && VITE_TGSRL_API_ADAPTER=mock npm run test:browser
+
 lint:
 	@test -z "$$(gofmt -l $(GO_FORMAT_PATHS))" || { \
 	  printf 'error: gofmt is required for:\n%s\n' "$$(gofmt -l $(GO_FORMAT_PATHS))" >&2; \
@@ -175,6 +181,17 @@ lint:
 	uv run --frozen ruff format --check $(PYTHON_PATHS)
 	uv run --frozen ruff check $(PYTHON_PATHS)
 	uv run --frozen mypy adapters runtime-python/tgsrl_runtime gateway-python/tgsrl_gateway tests/python tests/api tests/storage tests/e2e
+
+staticcheck:
+	@command -v staticcheck >/dev/null 2>&1 || { \
+	  printf 'error: staticcheck %s is required\n' '$(STATICCHECK_VERSION)' >&2; \
+	  exit 1; \
+	}
+	@test "$$(staticcheck -version | awk '{print $$2}')" = "$(STATICCHECK_VERSION)" || { \
+	  printf 'error: staticcheck %s is required, found %s\n' '$(STATICCHECK_VERSION)' "$$(staticcheck -version)" >&2; \
+	  exit 1; \
+	}
+	staticcheck $(GO_PACKAGES)
 
 test: test-go test-python test-api test-console proto-roundtrip check-migrations check-deploy check-public-content check-governance
 

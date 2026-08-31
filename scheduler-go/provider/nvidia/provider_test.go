@@ -753,10 +753,11 @@ func TestProviderObservationMetadataAndLifecycleTimestamps(t *testing.T) {
 
 func executeTestTransaction(ctx context.Context, p provider.TransactionalResourceProvider, plan *tgsrlv1.PlacementPlan) ([]*tgsrlv1.ActionResult, error) {
 	const generation = uint64(1)
-	receipt, err := p.PreparePlan(ctx, plan.GetPlanId(), generation, plan)
+	_, err := p.PreparePlan(ctx, plan.GetPlanId(), generation, plan)
 	if err != nil {
 		return nil, err
 	}
+	var receipt *provider.TransactionReceipt
 	for index := range plan.GetActions() {
 		receipt, err = p.ExecuteStep(ctx, plan.GetPlanId(), generation, index)
 		if err != nil {

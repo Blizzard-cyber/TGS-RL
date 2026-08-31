@@ -191,15 +191,6 @@ func (p *MockResourceProvider) restoreActionBeforeImageLocked(action *tgsrlv1.Ac
 	return nil
 }
 
-func (p *MockResourceProvider) recordRollbackResultLocked(action *tgsrlv1.Action, result *tgsrlv1.ActionResult) {
-	entry, ok := p.actions[action.GetIdempotencyKey()]
-	if !ok || !proto.Equal(entry.action, action) {
-		return
-	}
-	entry.result = cloneActionResult(result)
-	p.actions[action.GetIdempotencyKey()] = entry
-}
-
 func rollbackActionType(actionType tgsrlv1.ActionType) (tgsrlv1.ActionType, bool) {
 	switch actionType {
 	case tgsrlv1.ActionType_ACTION_TYPE_SET_SHARE:

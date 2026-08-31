@@ -62,7 +62,7 @@ func run(argv []string, stdout io.Writer) error {
 		if err != nil {
 			return err
 		}
-		return controller.Register(nil, worker)
+		return controller.Register(context.Background(), worker)
 	case "unregister":
 		fs := flag.NewFlagSet("unregister", flag.ContinueOnError)
 		fs.SetOutput(io.Discard)
@@ -79,7 +79,7 @@ func run(argv []string, stdout io.Writer) error {
 		if err := requireCSVFormat(argv[1:]); err != nil {
 			return err
 		}
-		state, err := controller.Discover(nil)
+		state, err := controller.Discover(context.Background())
 		if err != nil {
 			return err
 		}

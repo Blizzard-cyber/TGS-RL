@@ -10,7 +10,6 @@ import (
 
 	tgsrlv1 "github.com/Blizzard-cyber/TGS-RL/gen/go/tgsrl/v1"
 	base "github.com/Blizzard-cyber/TGS-RL/scheduler-go/provider"
-	"google.golang.org/protobuf/proto"
 )
 
 const (
@@ -455,10 +454,6 @@ func v2ActionError(action *tgsrlv1.Action, code, message string, cause error) er
 		return &base.Error{Code: code, Message: message, Cause: cause}
 	}
 	return &base.Error{Code: code, Message: message, PlanID: action.GetPlanId(), ActionID: action.GetActionId(), SandboxID: actionSandboxID(action), Cause: cause}
-}
-
-func protoEqualCapabilities(left, right *tgsrlv1.CapabilitySet) bool {
-	return proto.Equal(left, right)
 }
 
 func validatePartitionMode(mode PartitionMode) error {

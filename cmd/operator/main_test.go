@@ -163,7 +163,7 @@ func TestPreflightBackendValidatesSelectedProfileAndKueue(t *testing.T) {
 			GPUProfiles: map[string]bool{compiler.GPUProfileNone: true},
 		},
 	}
-	if err := preflightBackend(context.Background(), missingKueue, compiler.GPUProfileNone); err == nil || !strings.Contains(err.Error(), "Kueue Workload API") {
+	if err := preflightBackend(context.Background(), missingKueue, compiler.GPUProfileNone); err == nil || !strings.Contains(err.Error(), "kueue Workload API") {
 		t.Fatalf("preflightBackend() error = %v, want missing Kueue API", err)
 	}
 

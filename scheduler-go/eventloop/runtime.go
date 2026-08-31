@@ -381,12 +381,9 @@ func (q *keyedQueue) Len() int {
 }
 
 type tickRunner struct {
-	kind        string
-	recorder    observability.Recorder
-	inFlight    atomic.Int32
-	triggered   atomic.Int64
-	skipped     atomic.Int64
-	completions atomic.Int64
+	kind     string
+	recorder observability.Recorder
+	inFlight atomic.Int32
 }
 
 func newTickRunner(kind string, recorder observability.Recorder) *tickRunner {
@@ -395,16 +392,13 @@ func newTickRunner(kind string, recorder observability.Recorder) *tickRunner {
 
 func (r *tickRunner) trigger(ctx context.Context, fn func(context.Context)) bool {
 	if !r.inFlight.CompareAndSwap(0, 1) {
-		r.skipped.Add(1)
 		r.recorder.IncCounter("ticks_skipped_"+r.kind, 1)
 		return false
 	}
-	r.triggered.Add(1)
 	r.recorder.IncCounter("ticks_started_"+r.kind, 1)
 	startedAt := time.Now()
 	go func() {
 		defer r.inFlight.Store(0)
-		defer r.completions.Add(1)
 		defer r.recorder.IncCounter("ticks_completed_"+r.kind, 1)
 		defer func() {
 			r.recorder.ObserveHistogram("tick_latency_"+r.kind, time.Since(startedAt).Seconds())
@@ -412,10 +406,6 @@ func (r *tickRunner) trigger(ctx context.Context, fn func(context.Context)) bool
 		fn(ctx)
 	}()
 	return true
-}
-
-func (r *tickRunner) stats() (triggered, skipped, completed int64) {
-	return r.triggered.Load(), r.skipped.Load(), r.completions.Load()
 }
 
 type tickerLoop struct {

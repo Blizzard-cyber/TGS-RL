@@ -6,6 +6,7 @@ import (
 
 	tgsrlv1 "github.com/Blizzard-cyber/TGS-RL/gen/go/tgsrl/v1"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/connectivity"
 	"google.golang.org/grpc/credentials/insecure"
 )
 
@@ -37,12 +38,19 @@ func Dial(ctx context.Context, target string, options ...grpc.DialOption) (*GRPC
 	if len(options) == 0 {
 		options = []grpc.DialOption{
 			grpc.WithTransportCredentials(insecure.NewCredentials()),
-			grpc.WithBlock(),
 		}
 	}
-	connection, err := grpc.DialContext(ctx, target, options...)
+	connection, err := grpc.NewClient(target, options...)
 	if err != nil {
 		return nil, err
+	}
+	connection.Connect()
+	for connection.GetState() != connectivity.Ready {
+		if !connection.WaitForStateChange(ctx, connection.GetState()) {
+			_ = connection.Close()
+			return nil, ctx.Err()
+		}
+		connection.Connect()
 	}
 	return &GRPCDriver{
 		connection: connection,

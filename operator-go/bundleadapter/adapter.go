@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"reflect"
 	"sort"
 	"strings"
@@ -411,18 +410,4 @@ func defaultReason(values ...string) string {
 		}
 	}
 	return ""
-}
-
-type sliceStream struct {
-	snapshots []*Snapshot
-	index     int
-}
-
-func (s *sliceStream) Recv() (*Snapshot, error) {
-	if s.index >= len(s.snapshots) {
-		return nil, io.EOF
-	}
-	snapshot := *s.snapshots[s.index]
-	s.index++
-	return &snapshot, nil
 }

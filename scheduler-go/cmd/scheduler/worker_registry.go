@@ -81,7 +81,7 @@ func startWorkerRegistry(address, statePath, signingKeyFile string, resourceProv
 				}
 			}
 			if !bound {
-				return errors.New("Runtime has not observed the bound workload generation")
+				return errors.New("runtime has not observed the bound workload generation")
 			}
 		}
 		return nil
@@ -134,7 +134,7 @@ func startWorkerRegistry(address, statePath, signingKeyFile string, resourceProv
 			return err
 		}
 		if stored.GetEvent() == nil {
-			return errors.New("Runtime accepted no worker lifecycle event")
+			return errors.New("runtime accepted no worker lifecycle event")
 		}
 		_, err = resourceProvider.ObserveSandbox(ctx, stored.GetEvent())
 		return err

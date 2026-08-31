@@ -164,10 +164,6 @@ func deterministicProtoHash(message proto.Message) string {
 	return hex.EncodeToString(sum[:])
 }
 
-func deterministicProtoID(prefix string, message proto.Message) string {
-	return prefix + "-" + deterministicProtoHash(message)[:16]
-}
-
 func deterministicID(prefix string, parts ...string) string {
 	return prefix + "-" + hashStrings(parts...)[:16]
 }
@@ -179,17 +175,6 @@ func hashStrings(parts ...string) string {
 		_, _ = hasher.Write([]byte{0})
 	}
 	return hex.EncodeToString(hasher.Sum(nil))
-}
-
-func mergeMaps(base, overlay map[string]string) map[string]string {
-	merged := map[string]string{}
-	for key, value := range base {
-		merged[key] = value
-	}
-	for key, value := range overlay {
-		merged[key] = value
-	}
-	return merged
 }
 
 func cloneJob(job *tgsrlv1.RLTrainingJob) *tgsrlv1.RLTrainingJob {
@@ -231,20 +216,6 @@ func appendOperation(existing []*tgsrlv1.Operation, operation *tgsrlv1.Operation
 		output = append(output, cloneOperation(operation))
 	}
 	return output
-}
-
-func cloneRuntime(runtime *tgsrlv1.FrameworkRuntimeSpec) *tgsrlv1.FrameworkRuntimeSpec {
-	if runtime == nil {
-		return nil
-	}
-	return proto.Clone(runtime).(*tgsrlv1.FrameworkRuntimeSpec)
-}
-
-func cloneExecutionContract(contract *tgsrlv1.ExecutionContract) *tgsrlv1.ExecutionContract {
-	if contract == nil {
-		return nil
-	}
-	return proto.Clone(contract).(*tgsrlv1.ExecutionContract)
 }
 
 func cloneComponentStatus(component *tgsrlv1.ComponentStatus) *tgsrlv1.ComponentStatus {
