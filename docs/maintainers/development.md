@@ -27,9 +27,10 @@ Scheduler benchmark 可用于分析算法变化：
 go test ./scheduler-go/scheduler -run '^$' -bench BenchmarkEvaluateSimulation -benchmem
 ```
 
-`make test-performance` 通过 `performance` build tag 在独立、非 race 进程中执行稳定的
-Scheduler 与 Provider P95 回归预算。它只用于阻断明显代码退化，不是产品 SLA，也不能替代
-锁定 workload 的真实环境 Gate 数据。普通 `make test`/`make race` 不执行墙钟断言。
+`make test-performance` 通过 `performance` build tag 在独立、非 race 进程中执行 Scheduler 与
+Provider P95 回归预算。门禁取五个独立批次 P95 的中位数，以隔离 hosted runner 的单批暂停，
+同时阻断持续性代码退化。它不是产品 SLA，也不能替代锁定 workload 的真实环境 Gate 数据。
+普通 `make test`/`make race` 不执行墙钟断言。
 
 完整本地回归：
 

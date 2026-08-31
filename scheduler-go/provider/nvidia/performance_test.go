@@ -13,7 +13,8 @@ import (
 )
 
 // TestPerformanceBudgets guards local provider event publication and replay
-// bookkeeping. It is a regression budget, not a production latency SLA.
+// bookkeeping. The median of independent batch P95s rejects isolated hosted
+// runner pauses. It is a regression budget, not a production latency SLA.
 func TestPerformanceBudgets(t *testing.T) {
 	now := time.Date(2026, time.August, 28, 9, 0, 0, 0, time.UTC)
 	p, err := New(
@@ -51,27 +52,37 @@ func TestPerformanceBudgets(t *testing.T) {
 		}
 	}
 
-	const samples = 51
-	latencies := make([]time.Duration, 0, samples)
-	for iteration := range samples {
-		started := time.Now()
-		_, err := p.ObserveSandbox(context.Background(), &tgsrlv1.SandboxEvent{
-			EventId:    fmt.Sprintf("perf-event-%03d", iteration),
-			SandboxId:  "sandbox-a",
-			Generation: 1,
-			State:      performanceSandboxState(iteration),
-		})
-		latencies = append(latencies, time.Since(started))
-		if err != nil {
-			t.Fatalf("ObserveSandbox() error = %v", err)
+	const (
+		batches         = 5
+		samplesPerBatch = 51
+	)
+	batchP95s := make([]time.Duration, 0, batches)
+	iteration := 0
+	for range batches {
+		latencies := make([]time.Duration, 0, samplesPerBatch)
+		for range samplesPerBatch {
+			started := time.Now()
+			_, err := p.ObserveSandbox(context.Background(), &tgsrlv1.SandboxEvent{
+				EventId:    fmt.Sprintf("perf-event-%03d", iteration),
+				SandboxId:  "sandbox-a",
+				Generation: 1,
+				State:      performanceSandboxState(iteration),
+			})
+			latencies = append(latencies, time.Since(started))
+			if err != nil {
+				t.Fatalf("ObserveSandbox() error = %v", err)
+			}
+			iteration++
 		}
+		sort.Slice(latencies, func(i, j int) bool { return latencies[i] < latencies[j] })
+		batchP95s = append(batchP95s, latencies[(len(latencies)*95+99)/100-1])
 	}
-	sort.Slice(latencies, func(i, j int) bool { return latencies[i] < latencies[j] })
-	p95 := latencies[(samples*95+99)/100-1]
+	sort.Slice(batchP95s, func(i, j int) bool { return batchP95s[i] < batchP95s[j] })
+	medianP95 := batchP95s[len(batchP95s)/2]
 	const budget = 25 * time.Millisecond
-	t.Logf("ObserveSandbox p95=%s, budget=%s", p95, budget)
-	if p95 > budget {
-		t.Fatalf("provider resource/runtime apply p95=%s exceeds regression budget %s", p95, budget)
+	t.Logf("ObserveSandbox batch_p95=%v, median_p95=%s, budget=%s", batchP95s, medianP95, budget)
+	if medianP95 > budget {
+		t.Fatalf("provider resource/runtime apply median batch p95=%s exceeds regression budget %s", medianP95, budget)
 	}
 }
 

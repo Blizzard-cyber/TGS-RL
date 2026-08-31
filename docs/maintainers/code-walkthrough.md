@@ -313,7 +313,7 @@ CPU 证据、身份不一致或故障未恢复都不能通过；`calibration_req
 | veRL raw/typed trace 分两次读取共享 sequence | 并发 observe 时两种输出的事件身份可能错位 | `_emit` 返回本次不可变身份，typed event 复用同一快照 | `tests/python/test_adapters_runtime.py` |
 | 多个本地状态文件显式使用宽松权限 | 运行元数据可能被同机其他用户读取 | 核心状态文件改为 `0600`、新建目录改为 `0700`，cursor 增加 fsync | 既有 persistence/restart 测试 |
 | admit/retry 成功分支重复 upsert Operation | 增加阅读噪声，容易误判为追加两次 | 保留单一统一 upsert | Job Controller 测试集 |
-| 普通单测以本机 p95 毫秒阈值判定性能 | CI 负载变化会造成抖动失败，也不能代表生产性能 | 删除 wall-clock 门禁；保留显式 benchmark 和 1000×1000 无时间阈值正确性检查 | `scheduler-go/scheduler/benchmark_test.go` |
+| 普通单测以单批本机 p95 判定性能 | CI 负载变化会造成孤立抖动失败，也不能代表生产性能 | 从普通单测移出墙钟断言；独立非 race CI 使用多批次 P95 中位数阻断持续回退，同时保留显式 benchmark | `make test-performance`、`scheduler-go/scheduler/benchmark_test.go` |
 | 手写 Proto 描述符与 Gate JSON 常量测试重复正式门禁 | 生成面或配置每次变化都要维护第二份影子契约 | 依赖 Buf、跨语言 round-trip、Gate loader 与治理验证 | `make check-generated`、`make proto-roundtrip`、`tests/governance/test_gate_tools.py` |
 | 测试 fake 与仅测试使用的查询方法位于生产源码 | 扩大公开表面，并让读者误判其为产品能力 | 将 NVIDIA driver/command fake 移入既有 `_test.go`，删除未使用的 `Guard.Snapshot` | NVIDIA、Protection 与 Provider 测试集 |
 | 硬件 workflow 约束单独占用一个极小测试文件 | 增加碎片化，但与治理门禁属于同一职责 | 合并到既有 governance 测试；继续禁止 CPU/模拟证据冒充 GPU | `tests/governance/test_governance.py` |
