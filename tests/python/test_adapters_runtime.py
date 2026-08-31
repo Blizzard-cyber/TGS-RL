@@ -447,6 +447,11 @@ def test_verl_worker_bridge_controls_lifecycle_and_emits_quality_observations(
             binding_id="binding-1",
             device_id="MIG-a",
             share=1.0,
+            runtime_unit_id="unit-1",
+            worker_id="worker-1",
+            rank=0,
+            local_rank=0,
+            world_size=1,
         ),
         callbacks=ReferenceCallbacks(tmp_path / "checkpoints"),
         trace_sink=typed_events.append,
@@ -506,6 +511,15 @@ def test_verl_worker_bridge_controls_lifecycle_and_emits_quality_observations(
     assert typed_events[-1].contract_observation.sample_count == 8
     assert typed_events[-1].contract_observation.effective_sample_size_ratio == 0.9375
     assert typed_events[-1].contract_observation.HasField("observed_at")
+    assert typed_events[-1].attributes == {
+        "binding_id": "binding-1",
+        "device_id": "MIG-a",
+        "local_rank": "0",
+        "rank": "0",
+        "runtime_unit_id": "unit-1",
+        "worker_id": "worker-1",
+        "world_size": "1",
+    }
     raw_event = json.loads(bridge.trace_path.read_text(encoding="utf-8").splitlines()[-1])
     assert typed_events[-1].event_id == raw_event["event_id"]
     assert typed_events[-1].sequence == raw_event["sequence"]
@@ -680,6 +694,73 @@ def test_verl_worker_bridge_recovers_completed_idempotency_state(tmp_path: Path)
     assert restarted.safe_point
     assert len(restarted.trace_path.read_text().splitlines()) == event_count
     assert state_path.stat().st_mode & 0o777 == 0o600
+
+
+def test_verl_worker_bridge_validates_persisted_execution_identity(
+    tmp_path: Path,
+) -> None:
+    state_path = tmp_path / "worker-state.json"
+    identity = WorkerIdentity(
+        run_id="run-1",
+        job_id="job-1",
+        trace_id="trace-1",
+        sandbox_id="sandbox-1",
+        role="rollout",
+        generation=1,
+        policy_version="policy-1",
+        runtime_unit_id="unit-1",
+        worker_id="worker-1",
+        rank=0,
+        local_rank=0,
+        world_size=2,
+    )
+    first = VerlWorkerBridge(
+        socket_path=tmp_path / "worker.sock",
+        trace_path=tmp_path / "trace.ndjson",
+        state_path=state_path,
+        identity=identity,
+        callbacks=ReferenceCallbacks(tmp_path / "checkpoints"),
+    )
+    first._persist_state()
+    persisted = json.loads(state_path.read_text(encoding="utf-8"))
+
+    legacy = json.loads(json.dumps(persisted))
+    for key in ("runtime_unit_id", "worker_id", "rank", "local_rank", "world_size"):
+        legacy["identity"].pop(key)
+    state_path.write_text(json.dumps(legacy), encoding="utf-8")
+    restored = VerlWorkerBridge(
+        socket_path=tmp_path / "restored.sock",
+        trace_path=tmp_path / "trace.ndjson",
+        state_path=state_path,
+        identity=identity,
+        callbacks=ReferenceCallbacks(tmp_path / "restored-checkpoints"),
+    )
+    assert restored.identity.worker_id == "worker-1"
+    assert restored.identity.rank == 0
+
+    state_path.write_text(json.dumps(persisted), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="execution identity"):
+        VerlWorkerBridge(
+            socket_path=tmp_path / "replacement.sock",
+            trace_path=tmp_path / "trace.ndjson",
+            state_path=state_path,
+            identity=WorkerIdentity(
+                run_id="run-1",
+                job_id="job-1",
+                trace_id="trace-1",
+                sandbox_id="sandbox-1",
+                role="rollout",
+                generation=1,
+                policy_version="policy-1",
+                runtime_unit_id="unit-1",
+                worker_id="worker-2",
+                rank=1,
+                local_rank=1,
+                world_size=2,
+            ),
+            callbacks=ReferenceCallbacks(tmp_path / "replacement-checkpoints"),
+        )
 
 
 @dataclass
@@ -954,6 +1035,11 @@ def test_verl_runtime_identity_comes_from_bootstrap_environment() -> None:
             "TGSRL_DEVICE_IDS": "GPU-a",
             "TGSRL_ACCELERATOR_SHARE": "0.5",
             "TGSRL_POLICY_VERSION": "policy-9",
+            "TGSRL_RUNTIME_UNIT_ID": "unit-1",
+            "TGSRL_WORKER_ID": "worker-1",
+            "RANK": "1",
+            "LOCAL_RANK": "0",
+            "WORLD_SIZE": "2",
         }
     )
     assert identity.generation == 4
@@ -961,6 +1047,9 @@ def test_verl_runtime_identity_comes_from_bootstrap_environment() -> None:
     assert identity.share == 0.5
     assert identity.policy_version == "policy-9"
     assert identity.role == "actor_rollout"
+    assert identity.runtime_unit_id == "unit-1"
+    assert identity.worker_id == "worker-1"
+    assert (identity.rank, identity.local_rank, identity.world_size) == (1, 0, 2)
     with pytest.raises(ValueError, match="TGSRL_TRACE_ID"):
         worker_identity_from_environment({"TGSRL_RUN_ID": "run-1"})
     with pytest.raises(ValueError, match=r"within \[0,1\]"):
@@ -973,6 +1062,19 @@ def test_verl_runtime_identity_comes_from_bootstrap_environment() -> None:
                 "TGSRL_BINDING_ID": "binding-1",
                 "TGSRL_GENERATION": "4",
                 "TGSRL_ACCELERATOR_SHARE": "NaN",
+            }
+        )
+    with pytest.raises(ValueError, match="within WORLD_SIZE"):
+        worker_identity_from_environment(
+            {
+                "TGSRL_RUN_ID": "run-1",
+                "TGSRL_JOB_ID": "job-1",
+                "TGSRL_TRACE_ID": "trace-1",
+                "TGSRL_SANDBOX_ID": "sandbox-1",
+                "TGSRL_BINDING_ID": "binding-1",
+                "TGSRL_GENERATION": "4",
+                "RANK": "2",
+                "WORLD_SIZE": "2",
             }
         )
 

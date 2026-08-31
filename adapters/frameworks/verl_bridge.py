@@ -109,6 +109,11 @@ class WorkerIdentity:
     binding_id: str = ""
     device_id: str = ""
     share: float = 0.0
+    runtime_unit_id: str = ""
+    worker_id: str = ""
+    rank: int = -1
+    local_rank: int = -1
+    world_size: int = 0
 
 
 @dataclass
@@ -384,6 +389,7 @@ class VerlWorkerBridge:
                 trace_id=str(emitted["trace_id"]),
                 generation=int(emitted["generation"]),
                 contract_observation=observation,
+                attributes=self._trace_attributes(),
             )
             trace_event.occurred_at.FromDatetime(observed_at)
             self.trace_sink(trace_event)
@@ -436,6 +442,14 @@ class VerlWorkerBridge:
                 "policy_version": self.identity.policy_version,
                 "safe_point": self.safe_point,
                 "state": self.state,
+                "runtime_unit_id": self.identity.runtime_unit_id,
+                "worker_id": self.identity.worker_id,
+                "rank": self.identity.rank,
+                "local_rank": self.identity.local_rank,
+                "world_size": self.identity.world_size,
+                "binding_id": self.identity.binding_id,
+                "device_id": self.identity.device_id,
+                "share": self.identity.share,
                 **extra,
             }
             self.trace_path.parent.mkdir(parents=True, exist_ok=True)
@@ -457,6 +471,11 @@ class VerlWorkerBridge:
                 "binding_id": self.identity.binding_id,
                 "device_id": self.identity.device_id,
                 "share": self.identity.share,
+                "runtime_unit_id": self.identity.runtime_unit_id,
+                "worker_id": self.identity.worker_id,
+                "rank": self.identity.rank,
+                "local_rank": self.identity.local_rank,
+                "world_size": self.identity.world_size,
                 "algorithm": self.identity.algorithm,
                 "rollout_mode": self.identity.rollout_mode,
                 "data_kind": self.identity.data_kind,
@@ -474,6 +493,26 @@ class VerlWorkerBridge:
                 for key, (digest, response) in sorted(self._responses.items())
             },
         }
+
+    def _trace_attributes(self) -> dict[str, str]:
+        attributes = {
+            key: value
+            for key, value in (
+                ("runtime_unit_id", self.identity.runtime_unit_id),
+                ("worker_id", self.identity.worker_id),
+                ("binding_id", self.identity.binding_id),
+                ("device_id", self.identity.device_id),
+            )
+            if value
+        }
+        for key, value, minimum in (
+            ("rank", self.identity.rank, 0),
+            ("local_rank", self.identity.local_rank, 0),
+            ("world_size", self.identity.world_size, 1),
+        ):
+            if value >= minimum:
+                attributes[key] = str(value)
+        return attributes
 
     def _persist_state(self) -> None:
         if self.state_path is None:
@@ -540,6 +579,21 @@ class VerlWorkerBridge:
         )
         if observed_contract != expected_contract:
             raise ValueError("veRL worker state contract does not match the configured worker")
+        immutable_execution_identity = (
+            ("runtime_unit_id", self.identity.runtime_unit_id, str),
+            ("worker_id", self.identity.worker_id, str),
+            ("rank", self.identity.rank, int),
+            ("local_rank", self.identity.local_rank, int),
+            ("world_size", self.identity.world_size, int),
+        )
+        for key, expected_value, converter in immutable_execution_identity:
+            # States written before execution identity was persisted remain readable.
+            if key not in identity:
+                continue
+            if converter(identity[key]) != expected_value:
+                raise ValueError(
+                    "veRL worker state execution identity does not match the configured worker"
+                )
         self.identity.generation = int(identity["generation"])
         self.identity.policy_version = str(identity["policy_version"])
         self.identity.binding_id = str(identity.get("binding_id", ""))

@@ -104,6 +104,7 @@ func buildEnv(input *normalizedInput) []api.EnvVar {
 		"TGSRL_POLICY_VERSION": struct{}{}, "TGSRL_ALGORITHM": struct{}{},
 		"TGSRL_VERL_CONTROL_SOCKET": struct{}{}, "TGSRL_VERL_TRACE_PATH": struct{}{},
 		"TGSRL_VERL_STATE_PATH": struct{}{},
+		"TGSRL_WORKER_ID":       struct{}{},
 	}
 	values := make([]api.EnvVar, 0, len(input.Manifest.GetEnvironment())+12)
 	for _, key := range sortedProtoLabelKeys(input.Manifest.GetEnvironment()) {
@@ -126,6 +127,7 @@ func buildEnv(input *normalizedInput) []api.EnvVar {
 		api.EnvVar{Name: "TGSRL_SANDBOX_ID", Value: input.binding.GetSandboxId()},
 		api.EnvVar{Name: "TGSRL_BINDING_ID", Value: input.binding.GetBindingId()},
 		api.EnvVar{Name: "TGSRL_RUNTIME_UNIT_ID", Value: bindingRuntimeUnitID(input.binding)},
+		api.EnvVar{Name: "TGSRL_WORKER_ID", Value: bindingRuntimeUnitID(input.binding)},
 		api.EnvVar{Name: "TGSRL_GENERATION", Value: fmt.Sprintf("%d", input.Generation)},
 		api.EnvVar{Name: "TGSRL_DEVICE_IDS", Value: strings.Join(input.binding.GetDeviceIds(), ",")},
 		api.EnvVar{Name: "TGSRL_ACCELERATOR_SHARE", Value: formatAcceleratorQuantity(acceleratorShare)},

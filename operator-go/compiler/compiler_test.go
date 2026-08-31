@@ -213,6 +213,9 @@ func TestCompileWrapsWorkloadWithManagedWorkerBootstrap(t *testing.T) {
 	if environment["TGSRL_POLICY_VERSION"].Value != input.RuntimeManifest.GetPolicyVersion() || environment["TGSRL_ALGORITHM"].Value != input.RuntimeManifest.GetAnnotations()["algorithm"] {
 		t.Fatalf("veRL execution environment = %+v", environment)
 	}
+	if environment["TGSRL_WORKER_ID"].Value != "unit-1" || environment["TGSRL_RUNTIME_UNIT_ID"].Value != "unit-1" {
+		t.Fatalf("veRL worker identity environment = %+v", environment)
+	}
 	if environment["MANIFEST_ONLY"].Value != "frozen" {
 		t.Fatalf("manifest environment was not projected: %+v", environment)
 	}

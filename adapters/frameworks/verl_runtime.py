@@ -462,6 +462,17 @@ def worker_identity_from_environment(
     share = float(values.get("TGSRL_ACCELERATOR_SHARE", "0"))
     if not math.isfinite(share) or share < 0 or share > 1:
         raise ValueError("TGSRL_ACCELERATOR_SHARE must be within [0,1]")
+    rank = int(values.get("RANK", "-1"))
+    local_rank = int(values.get("LOCAL_RANK", "-1"))
+    world_size = int(values.get("WORLD_SIZE", "0"))
+    if rank < -1:
+        raise ValueError("RANK must be at least -1")
+    if local_rank < -1:
+        raise ValueError("LOCAL_RANK must be at least -1")
+    if world_size < 0:
+        raise ValueError("WORLD_SIZE must be non-negative")
+    if world_size > 0 and not 0 <= rank < world_size:
+        raise ValueError("RANK must be within WORLD_SIZE when WORLD_SIZE is positive")
     return WorkerIdentity(
         run_id=values["TGSRL_RUN_ID"].strip(),
         job_id=values["TGSRL_JOB_ID"].strip(),
@@ -474,6 +485,11 @@ def worker_identity_from_environment(
         binding_id=values.get("TGSRL_BINDING_ID", "").strip(),
         device_id=devices[0] if len(devices) == 1 else "",
         share=share,
+        runtime_unit_id=values.get("TGSRL_RUNTIME_UNIT_ID", "").strip(),
+        worker_id=values.get("TGSRL_WORKER_ID", values.get("TGSRL_RUNTIME_UNIT_ID", "")).strip(),
+        rank=rank,
+        local_rank=local_rank,
+        world_size=world_size,
     )
 
 
