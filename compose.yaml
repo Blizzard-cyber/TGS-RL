@@ -30,6 +30,7 @@ services:
       - ./compatibility:/workspace/compatibility:ro
       - ./configs:/workspace/configs:ro
       - ./gen/go:/workspace/gen/go:ro
+      - ./internal:/workspace/internal:ro
       - ./scheduler-go:/workspace/scheduler-go:ro
       - ./storage:/workspace/storage:ro
       - ./upstream:/workspace/upstream:ro
@@ -159,6 +160,7 @@ services:
       - ./gen/go:/workspace/gen/go:ro
       - ./go.mod:/workspace/go.mod:ro
       - ./go.sum:/workspace/go.sum:ro
+      - ./internal:/workspace/internal:ro
       - ./operator-go:/workspace/operator-go:ro
       - operator-state:/state
     ports:
