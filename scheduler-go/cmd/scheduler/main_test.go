@@ -15,12 +15,12 @@ import (
 
 	tgsrlv1 "github.com/Blizzard-cyber/TGS-RL/gen/go/tgsrl/v1"
 	"github.com/Blizzard-cyber/TGS-RL/internal/bootstrapauth"
+	runtimehelper "github.com/Blizzard-cyber/TGS-RL/internal/managedworker"
 	configpkg "github.com/Blizzard-cyber/TGS-RL/scheduler-go/config"
 	"github.com/Blizzard-cyber/TGS-RL/scheduler-go/observability"
 	"github.com/Blizzard-cyber/TGS-RL/scheduler-go/persistence"
 	"github.com/Blizzard-cyber/TGS-RL/scheduler-go/protection"
 	"github.com/Blizzard-cyber/TGS-RL/scheduler-go/provider"
-	"github.com/Blizzard-cyber/TGS-RL/scheduler-go/provider/nvidia/runtimehelper"
 	"github.com/Blizzard-cyber/TGS-RL/scheduler-go/scheduler"
 	"github.com/Blizzard-cyber/TGS-RL/scheduler-go/state"
 	"google.golang.org/grpc"

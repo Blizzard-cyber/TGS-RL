@@ -16,8 +16,8 @@ import (
 	"strings"
 	"syscall"
 
+	runtimehelper "github.com/Blizzard-cyber/TGS-RL/internal/managedworker"
 	"github.com/Blizzard-cyber/TGS-RL/scheduler-go/provider/nvidia/bindinghelper"
-	"github.com/Blizzard-cyber/TGS-RL/scheduler-go/provider/nvidia/runtimehelper"
 )
 
 const helperIdentity = "tgsrl-nvidia-binding"

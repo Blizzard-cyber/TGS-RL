@@ -1,4 +1,4 @@
-package runtimehelper
+package managedworker
 
 import (
 	"context"
@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"time"
 
 	"github.com/Blizzard-cyber/TGS-RL/internal/bootstrapauth"
 )
@@ -173,6 +174,11 @@ func (h *registryHandler) status(w http.ResponseWriter, request *http.Request) {
 	}
 	if query.Generation == 0 || worker.Generation != query.Generation {
 		http.Error(w, "worker generation mismatch", http.StatusConflict)
+		return
+	}
+	worker, err = h.controller.DiscoverWorker(request.Context(), query.SandboxID, query.Generation)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadGateway)
 		return
 	}
 	writeRegistryResponse(w, http.StatusOK, workerActionResponse{Accepted: true, Worker: publicWorker(worker)})
@@ -401,7 +407,10 @@ func postRegistryStatus(ctx context.Context, baseURL, token, path string, value,
 	}
 	request.Header.Set("Content-Type", "application/json")
 	request.Header.Set(WorkerRegistryTokenHeader, token)
-	client := &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
+	client := &http.Client{
+		Timeout:       30 * time.Second,
+		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
+	}
 	response, err := client.Do(request)
 	if err != nil {
 		return 0, err

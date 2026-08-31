@@ -1,6 +1,6 @@
 //go:build !darwin
 
-package runtimehelper
+package managedworker
 
 import "errors"
 

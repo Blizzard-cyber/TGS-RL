@@ -1,4 +1,4 @@
-package runtimehelper
+package managedworker
 
 import (
 	"bufio"
@@ -132,85 +132,108 @@ func (c *Controller) Discover(ctx context.Context) (State, error) {
 		return State{}, err
 	}
 	for _, worker := range state.Workers {
-		if worker.State == "failed" || worker.State == "terminated" {
-			if key := state.Heads[worker.SandboxID]; key != "" {
-				receipt := state.Receipts[key]
-				if !receipt.Completed {
-					if err := c.reconcilePending(worker, receipt); err != nil {
-						return State{}, err
-					}
-				}
-			}
-			continue
-		}
-		if worker.ControlURL != "" {
-			response, statusErr := c.controlRemote(ctx, worker, ControlRequest{Action: "status", SandboxID: worker.SandboxID, Generation: worker.Generation, IdempotencyKey: fmt.Sprintf("discover:%s:%d", worker.SandboxID, worker.Generation)})
-			if statusErr != nil {
-				worker.State, worker.SafePoint, worker.Offloaded, worker.Ready = "failed", false, false, false
-				worker.Detail = "remote worker is unreachable: " + statusErr.Error()
-			} else {
-				if !response.Accepted || response.Generation != worker.Generation || response.InstanceID != worker.InstanceID || response.PID != worker.PID || response.ProcessToken != worker.ProcessToken {
-					worker.State, worker.SafePoint, worker.Offloaded, worker.Ready = "failed", false, false, false
-					worker.Detail = "remote worker status does not match registration"
-				} else {
-					worker.State, worker.SafePoint, worker.Offloaded, worker.Ready = response.State, response.SafePoint, response.Offloaded, response.Ready
-					worker.CheckpointRef = response.CheckpointRef
-					if response.BindingID != "" || response.DeviceID != "" || response.Share != 0 {
-						worker.BindingID, worker.DeviceID, worker.Share = response.BindingID, response.DeviceID, response.Share
-						if response.DeviceID != "" && len(worker.AllDeviceIDs()) <= 1 {
-							worker.DeviceIDs = []string{response.DeviceID}
-						}
-					}
-				}
-			}
-		} else if current, tokenErr := ProcessToken(ctx, worker.PID); tokenErr != nil || current != worker.ProcessToken {
-			worker.State, worker.SafePoint, worker.Offloaded, worker.Ready = "failed", false, false, false
-		} else if worker.ControlSocket != "" {
-			response, statusErr := c.control(ctx, worker.ControlSocket, ControlRequest{Action: "status", SandboxID: worker.SandboxID, Generation: worker.Generation, IdempotencyKey: fmt.Sprintf("discover:%s:%d", worker.SandboxID, worker.Generation)})
-			if statusErr != nil || !response.Accepted {
-				if statusErr == nil {
-					statusErr = fmt.Errorf("managed worker rejected status: %s", response.Error)
-				}
-				return State{}, statusErr
-			}
-			if response.Generation != 0 && response.Generation != worker.Generation {
-				return State{}, fmt.Errorf("managed worker generation %d does not match %d", response.Generation, worker.Generation)
-			}
-			worker.State, worker.SafePoint, worker.Offloaded, worker.Ready = response.State, response.SafePoint, response.Offloaded, response.Ready
-			worker.CheckpointRef = response.CheckpointRef
-			if response.BindingID != "" || response.DeviceID != "" || response.Share != 0 {
-				worker.BindingID, worker.DeviceID, worker.Share = response.BindingID, response.DeviceID, response.Share
-			}
-		} else {
-			stopped, stateErr := processStopped(ctx, worker.PID)
-			if stateErr != nil {
-				return State{}, stateErr
-			}
-			if stopped {
-				if worker.State != "sleeping" {
-					worker.State = "paused"
-				}
-				worker.Ready = false
-			} else {
-				worker.State, worker.Offloaded = "running", false
-			}
-			worker.SafePoint, _ = readMarker(worker.SafePointFile)
-			worker.Ready, _ = readMarker(worker.ReadinessFile)
-		}
-		worker.LastUpdatedAt = c.now().UTC()
-		if err := c.store.Refresh(worker); err != nil {
+		if _, err := c.discoverWorker(ctx, state, worker); err != nil {
 			return State{}, err
 		}
+	}
+	return c.store.Snapshot()
+}
+
+// DiscoverWorker refreshes one exact worker without allowing a scoped caller
+// to probe or mutate unrelated registrations.
+func (c *Controller) DiscoverWorker(ctx context.Context, sandboxID string, generation uint64) (Worker, error) {
+	ctx = nonNilContext(ctx)
+	state, err := c.store.Snapshot()
+	if err != nil {
+		return Worker{}, err
+	}
+	worker, ok := state.Workers[strings.TrimSpace(sandboxID)]
+	if !ok {
+		return Worker{}, fmt.Errorf("sandbox %q is not registered", sandboxID)
+	}
+	if generation == 0 || worker.Generation != generation {
+		return Worker{}, fmt.Errorf("generation fence failed: expected %d, current generation is %d", generation, worker.Generation)
+	}
+	return c.discoverWorker(ctx, state, worker)
+}
+
+func (c *Controller) discoverWorker(ctx context.Context, state State, worker Worker) (Worker, error) {
+	if worker.State == "failed" || worker.State == "terminated" {
 		if key := state.Heads[worker.SandboxID]; key != "" {
 			receipt := state.Receipts[key]
 			if !receipt.Completed {
 				if err := c.reconcilePending(worker, receipt); err != nil {
-					return State{}, err
+					return Worker{}, err
 				}
 			}
 		}
+		return worker, nil
 	}
-	return c.store.Snapshot()
+	if worker.ControlURL != "" {
+		response, statusErr := c.controlRemote(ctx, worker, ControlRequest{Action: "status", SandboxID: worker.SandboxID, Generation: worker.Generation, IdempotencyKey: fmt.Sprintf("discover:%s:%d", worker.SandboxID, worker.Generation)})
+		if statusErr != nil {
+			worker.State, worker.SafePoint, worker.Offloaded, worker.Ready = "failed", false, false, false
+			worker.Detail = "remote worker is unreachable: " + statusErr.Error()
+		} else if !response.Accepted || response.Generation != worker.Generation || response.InstanceID != worker.InstanceID || response.PID != worker.PID || response.ProcessToken != worker.ProcessToken {
+			worker.State, worker.SafePoint, worker.Offloaded, worker.Ready = "failed", false, false, false
+			worker.Detail = "remote worker status does not match registration"
+		} else {
+			worker.State, worker.SafePoint, worker.Offloaded, worker.Ready = response.State, response.SafePoint, response.Offloaded, response.Ready
+			worker.CheckpointRef = response.CheckpointRef
+			if response.BindingID != "" || response.DeviceID != "" || response.Share != 0 {
+				worker.BindingID, worker.DeviceID, worker.Share = response.BindingID, response.DeviceID, response.Share
+				if response.DeviceID != "" && len(worker.AllDeviceIDs()) <= 1 {
+					worker.DeviceIDs = []string{response.DeviceID}
+				}
+			}
+		}
+	} else if current, tokenErr := ProcessToken(ctx, worker.PID); tokenErr != nil || current != worker.ProcessToken {
+		worker.State, worker.SafePoint, worker.Offloaded, worker.Ready = "failed", false, false, false
+	} else if worker.ControlSocket != "" {
+		response, statusErr := c.control(ctx, worker.ControlSocket, ControlRequest{Action: "status", SandboxID: worker.SandboxID, Generation: worker.Generation, IdempotencyKey: fmt.Sprintf("discover:%s:%d", worker.SandboxID, worker.Generation)})
+		if statusErr != nil || !response.Accepted {
+			if statusErr == nil {
+				statusErr = fmt.Errorf("managed worker rejected status: %s", response.Error)
+			}
+			return Worker{}, statusErr
+		}
+		if response.Generation != 0 && response.Generation != worker.Generation {
+			return Worker{}, fmt.Errorf("managed worker generation %d does not match %d", response.Generation, worker.Generation)
+		}
+		worker.State, worker.SafePoint, worker.Offloaded, worker.Ready = response.State, response.SafePoint, response.Offloaded, response.Ready
+		worker.CheckpointRef = response.CheckpointRef
+		if response.BindingID != "" || response.DeviceID != "" || response.Share != 0 {
+			worker.BindingID, worker.DeviceID, worker.Share = response.BindingID, response.DeviceID, response.Share
+		}
+	} else {
+		stopped, stateErr := processStopped(ctx, worker.PID)
+		if stateErr != nil {
+			return Worker{}, stateErr
+		}
+		if stopped {
+			if worker.State != "sleeping" {
+				worker.State = "paused"
+			}
+			worker.Ready = false
+		} else {
+			worker.State, worker.Offloaded = "running", false
+		}
+		worker.SafePoint, _ = readMarker(worker.SafePointFile)
+		worker.Ready, _ = readMarker(worker.ReadinessFile)
+	}
+	worker.LastUpdatedAt = c.now().UTC()
+	if err := c.store.Refresh(worker); err != nil {
+		return Worker{}, err
+	}
+	if key := state.Heads[worker.SandboxID]; key != "" {
+		receipt := state.Receipts[key]
+		if !receipt.Completed {
+			if err := c.reconcilePending(worker, receipt); err != nil {
+				return Worker{}, err
+			}
+		}
+	}
+	return worker, nil
 }
 
 func (c *Controller) reconcilePending(worker Worker, receipt Receipt) error {

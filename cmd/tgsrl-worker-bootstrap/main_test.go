@@ -16,7 +16,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Blizzard-cyber/TGS-RL/scheduler-go/provider/nvidia/runtimehelper"
+	runtimehelper "github.com/Blizzard-cyber/TGS-RL/internal/managedworker"
 )
 
 func TestRunWorkerRegistersRealProcessAndReportsExit(t *testing.T) {

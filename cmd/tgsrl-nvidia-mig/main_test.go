@@ -16,8 +16,8 @@ import (
 	"syscall"
 	"testing"
 
+	runtimehelper "github.com/Blizzard-cyber/TGS-RL/internal/managedworker"
 	"github.com/Blizzard-cyber/TGS-RL/scheduler-go/provider/nvidia/bindinghelper"
-	"github.com/Blizzard-cyber/TGS-RL/scheduler-go/provider/nvidia/runtimehelper"
 )
 
 const migFixture = `GPU 0: NVIDIA H100 (UUID: GPU-aaaa)

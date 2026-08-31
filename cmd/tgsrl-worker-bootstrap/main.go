@@ -28,7 +28,7 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/Blizzard-cyber/TGS-RL/scheduler-go/provider/nvidia/runtimehelper"
+	runtimehelper "github.com/Blizzard-cyber/TGS-RL/internal/managedworker"
 )
 
 var deviceUUIDPattern = regexp.MustCompile(`(?:GPU|MIG)-[A-Za-z0-9][A-Za-z0-9./_-]*`)

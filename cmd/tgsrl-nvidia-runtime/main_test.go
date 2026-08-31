@@ -12,7 +12,7 @@ import (
 	"syscall"
 	"testing"
 
-	"github.com/Blizzard-cyber/TGS-RL/scheduler-go/provider/nvidia/runtimehelper"
+	runtimehelper "github.com/Blizzard-cyber/TGS-RL/internal/managedworker"
 )
 
 func TestRuntimeHelperControlsRegisteredProcess(t *testing.T) {

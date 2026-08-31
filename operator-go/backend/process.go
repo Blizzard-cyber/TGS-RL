@@ -14,9 +14,9 @@ import (
 	"time"
 
 	tgsrlv1 "github.com/Blizzard-cyber/TGS-RL/gen/go/tgsrl/v1"
+	runtimehelper "github.com/Blizzard-cyber/TGS-RL/internal/managedworker"
 	"github.com/Blizzard-cyber/TGS-RL/operator-go/api"
 	"github.com/Blizzard-cyber/TGS-RL/operator-go/compiler"
-	"github.com/Blizzard-cyber/TGS-RL/scheduler-go/provider/nvidia/runtimehelper"
 )
 
 // ProcessConfig selects the local execution substrate used by CPU integration.

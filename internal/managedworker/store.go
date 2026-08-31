@@ -1,7 +1,7 @@
 // Package runtimehelper implements durable, generation-fenced lifecycle state
 // for the tgsrl-nvidia-runtime command. It never infers GPU offload from a
 // process signal: offload requires an explicit managed-worker acknowledgement.
-package runtimehelper
+package managedworker
 
 import (
 	"crypto/sha256"

@@ -14,8 +14,8 @@ import (
 	"time"
 
 	tgsrlv1 "github.com/Blizzard-cyber/TGS-RL/gen/go/tgsrl/v1"
+	"github.com/Blizzard-cyber/TGS-RL/internal/managedworker"
 	"github.com/Blizzard-cyber/TGS-RL/scheduler-go/provider"
-	"github.com/Blizzard-cyber/TGS-RL/scheduler-go/provider/nvidia/runtimehelper"
 	"google.golang.org/grpc"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
@@ -46,15 +46,15 @@ func startWorkerRegistry(address, statePath, signingKeyFile string, resourceProv
 	if signingKey == "" {
 		return nil, nil, errors.New("worker registry signing key is required through TGSRL_WORKER_REGISTRY_SIGNING_KEY or -worker-registry-signing-key-file")
 	}
-	store, err := runtimehelper.NewStore(statePath)
+	store, err := managedworker.NewStore(statePath)
 	if err != nil {
 		return nil, nil, err
 	}
-	controller, err := runtimehelper.NewController(store)
+	controller, err := managedworker.NewController(store)
 	if err != nil {
 		return nil, nil, err
 	}
-	authorize := func(ctx context.Context, worker runtimehelper.Worker) error {
+	authorize := func(ctx context.Context, worker managedworker.Worker) error {
 		current, err := resourceProvider.GetSandbox(ctx, worker.SandboxID)
 		if err != nil {
 			return fmt.Errorf("resolve scheduler binding: %w", err)
@@ -86,7 +86,7 @@ func startWorkerRegistry(address, statePath, signingKeyFile string, resourceProv
 		}
 		return nil
 	}
-	observe := func(ctx context.Context, worker runtimehelper.Worker) error {
+	observe := func(ctx context.Context, worker managedworker.Worker) error {
 		current, err := resourceProvider.GetSandbox(ctx, worker.SandboxID)
 		if err != nil {
 			return fmt.Errorf("resolve scheduler binding for observation: %w", err)
@@ -139,7 +139,7 @@ func startWorkerRegistry(address, statePath, signingKeyFile string, resourceProv
 		_, err = resourceProvider.ObserveSandbox(ctx, stored.GetEvent())
 		return err
 	}
-	handler, err := runtimehelper.NewRegistryHandler(controller, store, []byte(signingKey), authorize, observe)
+	handler, err := managedworker.NewRegistryHandler(controller, store, []byte(signingKey), authorize, observe)
 	if err != nil {
 		return nil, nil, err
 	}
