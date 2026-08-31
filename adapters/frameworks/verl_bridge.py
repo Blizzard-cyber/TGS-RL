@@ -700,7 +700,10 @@ def _request_environment(request: ControlRequest) -> dict[str, str]:
 
 def _control_worker(request: ControlRequest) -> CommandResult:
     socket_path = _request_socket(request)
-    if request.action.value in {"validate", "compile", "prepare"} and not socket_path:
+    # These actions execute before Operator materialization and therefore
+    # cannot require the future worker socket, even when its path is already
+    # frozen in the runtime manifest.
+    if request.action.value in {"validate", "compile", "prepare"}:
         return CommandResult(exit_code=0)
     if not socket_path:
         return CommandResult(exit_code=69, stderr="TGSRL_VERL_CONTROL_SOCKET is required")

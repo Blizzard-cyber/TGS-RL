@@ -229,6 +229,83 @@ func TestWorkerRegistryAuthenticatesAndPublishesLifecycle(t *testing.T) {
 	}
 }
 
+func TestWorkerRegistryScopesStatusAndLifecycleToRegistrationToken(t *testing.T) {
+	signingKey := []byte(strings.Repeat("registry-signing-key-", 2))
+	workerState := "running"
+	controlServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+		var control ControlRequest
+		if err := json.NewDecoder(request.Body).Decode(&control); err != nil {
+			t.Fatal(err)
+		}
+		switch control.Action {
+		case "prepare_pause":
+			_ = json.NewEncoder(w).Encode(ControlResponse{Accepted: true, Generation: 4, InstanceID: "instance-a", PID: 4242, ProcessToken: "process-a", State: workerState, SafePoint: true, BindingID: "binding-a", DeviceID: "GPU-aaaa", Share: 1})
+		case "pause":
+			workerState = "paused"
+			_ = json.NewEncoder(w).Encode(ControlResponse{Accepted: true, Generation: 4, InstanceID: "instance-a", PID: 4242, ProcessToken: "process-a", State: workerState, SafePoint: true, BindingID: "binding-a", DeviceID: "GPU-aaaa", Share: 1})
+		case "resume":
+			workerState = "running"
+			_ = json.NewEncoder(w).Encode(ControlResponse{Accepted: true, Generation: 4, InstanceID: "instance-a", PID: 4242, ProcessToken: "process-a", State: workerState, Ready: true, BindingID: "binding-a", DeviceID: "GPU-aaaa", Share: 1})
+		case "stop":
+			workerState = "terminated"
+			_ = json.NewEncoder(w).Encode(ControlResponse{Accepted: true, Generation: 4, InstanceID: "instance-a", PID: 4242, ProcessToken: "process-a", State: workerState, BindingID: "binding-a", DeviceID: "GPU-aaaa", Share: 1})
+		default:
+			_ = json.NewEncoder(w).Encode(ControlResponse{Accepted: true, Generation: 4, InstanceID: "instance-a", PID: 4242, ProcessToken: "process-a", State: workerState, Ready: workerState == "running", BindingID: "binding-a", DeviceID: "GPU-aaaa", Share: 1})
+		}
+	}))
+	defer controlServer.Close()
+	store, _ := NewStore(filepath.Join(t.TempDir(), "runtime.json"))
+	controller, _ := NewController(store)
+	var observations []Worker
+	handler, err := NewRegistryHandler(controller, store, signingKey, nil, func(_ context.Context, worker Worker) error {
+		observations = append(observations, worker)
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	registry := httptest.NewServer(handler)
+	defer registry.Close()
+	worker := Worker{RunID: "run-a", JobID: "job-a", RuntimeUnitID: "unit-a", SandboxID: "sandbox-a", BindingID: "binding-a", Generation: 4, PID: 4242, ProcessToken: "process-a", InstanceID: "instance-a", State: "running", Ready: true, DeviceIDs: []string{"GPU-aaaa"}, DeviceID: "GPU-aaaa", Share: 1, ControlURL: controlServer.URL, ControlToken: "worker-token"}
+	token, err := bootstrapauth.Sign(signingKey, registrationClaims(worker))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := RegisterRemoteWorker(context.Background(), registry.URL, token, worker); err != nil {
+		t.Fatal(err)
+	}
+	if _, found, err := GetRemoteWorker(context.Background(), registry.URL, "wrong", WorkerStatusRequest{SandboxID: worker.SandboxID, Generation: worker.Generation}); err == nil || found {
+		t.Fatalf("wrong token status = (%v, %v), want authentication failure", found, err)
+	}
+	for index, action := range []string{"pause", "resume", "stop"} {
+		updated, err := ApplyRemoteWorkerAction(context.Background(), registry.URL, token, WorkerActionRequest{Action: action, SandboxID: worker.SandboxID, Generation: worker.Generation, IdempotencyKey: fmt.Sprintf("action-%d", index)})
+		if err != nil {
+			t.Fatalf("%s action error = %v", action, err)
+		}
+		want := map[string]string{"pause": "paused", "resume": "running", "stop": "terminated"}[action]
+		if updated.State != want {
+			t.Fatalf("%s state = %q, want %q", action, updated.State, want)
+		}
+		if updated.ControlToken != "" || updated.ProcessToken != "" || updated.RegistrationTokenHash != "" || updated.ControlURL != "" {
+			t.Fatalf("%s response exposed worker credentials: %+v", action, updated)
+		}
+	}
+	worker.State, worker.Ready, worker.ExitCode, worker.Detail = "terminated", false, 0, "workload completed"
+	if err := ReportRemoteWorkerExit(context.Background(), registry.URL, token, worker); err != nil {
+		t.Fatalf("report commanded stop exit: %v", err)
+	}
+	terminal, found, err := GetRemoteWorker(context.Background(), registry.URL, token, WorkerStatusRequest{SandboxID: worker.SandboxID, Generation: worker.Generation})
+	if err != nil || !found || terminal.State != "terminated" || terminal.Detail != "workload completed" {
+		t.Fatalf("terminal worker = (%+v, %v, %v)", terminal, found, err)
+	}
+	if len(observations) != 1 || observations[0].State != "running" {
+		t.Fatalf("commanded stop published an uncorrelated registry observation: %+v", observations)
+	}
+	if _, err := ApplyRemoteWorkerAction(context.Background(), registry.URL, token, WorkerActionRequest{Action: "pause", SandboxID: worker.SandboxID, Generation: worker.Generation + 1, IdempotencyKey: "future"}); err == nil {
+		t.Fatal("future-generation action succeeded")
+	}
+}
+
 func TestStoreRejectsRemoteRestartUntilPendingReceiptIsReconciled(t *testing.T) {
 	store, err := NewStore(filepath.Join(t.TempDir(), "runtime.json"))
 	if err != nil {

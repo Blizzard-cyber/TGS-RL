@@ -525,6 +525,18 @@ func (c *Controller) apply(ctx context.Context, worker Worker, request ActionReq
 			}
 		}
 		worker.State, worker.SafePoint, worker.Offloaded, worker.Ready = "running", false, false, true
+	case "stop":
+		if worker.ControlSocket == "" && worker.ControlURL == "" {
+			return Worker{}, errors.New("stop requires a managed-worker control endpoint")
+		}
+		response, err := c.call(ctx, worker, request, "stop", worker.CheckpointRef)
+		if err != nil {
+			return Worker{}, err
+		}
+		if response.State != "terminated" {
+			return Worker{}, fmt.Errorf("%w: managed worker reported state %q after stop", ErrOutcomeUnknown, response.State)
+		}
+		worker.State, worker.SafePoint, worker.Offloaded, worker.Ready = "terminated", false, false, false
 	default:
 		return Worker{}, fmt.Errorf("unsupported lifecycle operation %q", request.Operation)
 	}

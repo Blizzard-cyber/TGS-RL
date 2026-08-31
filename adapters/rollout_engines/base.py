@@ -24,7 +24,7 @@ class BaseRolloutEngineAdapter(BaseComponentAdapter, RolloutEngineAdapter):
     dependency_name: str | None = None
     launch_metadata = ComponentLaunchMetadata(
         component_kind="rollout_engine",
-        module_name="adapters.control",
+        module_name="adapters.control_cli",
         preferred_bridge_kind=BridgeKind.API_HOOK,
     )
     _supported_actions: tuple[LifecycleAction, ...] = (
@@ -121,3 +121,8 @@ class FakeRolloutEngineAdapter(BaseRolloutEngineAdapter):
 
     component_name = "fake"
     dependency_name = None
+    launch_metadata = ComponentLaunchMetadata(
+        component_kind="rollout_engine",
+        module_name="adapters.control_cli",
+        preferred_bridge_kind=BridgeKind.PYTHON_MODULE,
+    )

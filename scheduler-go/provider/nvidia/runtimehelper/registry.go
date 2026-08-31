@@ -39,6 +39,27 @@ type exitReport struct {
 	Detail       string `json:"detail,omitempty"`
 }
 
+// WorkerActionRequest is the narrow Operator-to-registry lifecycle contract.
+// Authentication remains scoped to one exact binding through the bootstrap
+// registration token; callers cannot enumerate or target unrelated workers.
+type WorkerActionRequest struct {
+	Action         string `json:"action"`
+	SandboxID      string `json:"sandbox_id"`
+	Generation     uint64 `json:"generation"`
+	IdempotencyKey string `json:"idempotency_key"`
+}
+
+// WorkerStatusRequest identifies one exact registered workload generation.
+type WorkerStatusRequest struct {
+	SandboxID  string `json:"sandbox_id"`
+	Generation uint64 `json:"generation"`
+}
+
+type workerActionResponse struct {
+	Accepted bool   `json:"accepted"`
+	Worker   Worker `json:"worker"`
+}
+
 type registryHandler struct {
 	controller *Controller
 	store      *Store
@@ -62,7 +83,111 @@ func NewRegistryHandler(controller *Controller, store *Store, signingKey []byte,
 	mux.HandleFunc("/healthz", handler.health)
 	mux.HandleFunc("/v1/workers/register", handler.register)
 	mux.HandleFunc("/v1/workers/exit", handler.reportExit)
+	mux.HandleFunc("/v1/workers/action", handler.applyAction)
+	mux.HandleFunc("/v1/workers/status", handler.status)
 	return mux, nil
+}
+
+func (h *registryHandler) applyAction(w http.ResponseWriter, request *http.Request) {
+	if request.Method != http.MethodPost {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+	var action WorkerActionRequest
+	if err := decodeRegistryRequest(request, &action); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	action.Action = strings.TrimSpace(action.Action)
+	action.SandboxID = strings.TrimSpace(action.SandboxID)
+	action.IdempotencyKey = strings.TrimSpace(action.IdempotencyKey)
+	if action.Action == "terminate" {
+		action.Action = "stop"
+	}
+	if action.SandboxID == "" || action.Generation == 0 || action.IdempotencyKey == "" {
+		http.Error(w, "worker action requires sandbox, generation, and idempotency_key", http.StatusBadRequest)
+		return
+	}
+	if action.Action != "pause" && action.Action != "resume" && action.Action != "stop" {
+		http.Error(w, "unsupported worker action", http.StatusBadRequest)
+		return
+	}
+	state, err := h.store.Snapshot()
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	worker, found := state.Workers[action.SandboxID]
+	if !found || !authorizedRegisteredWorker(request, worker) {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+	if worker.Generation != action.Generation {
+		http.Error(w, "worker generation mismatch", http.StatusConflict)
+		return
+	}
+	digest := RequestDigest(action.Action, action.SandboxID, action.Generation)
+	updated, err := h.controller.Apply(request.Context(), ActionRequest{
+		Operation:             action.Action,
+		SandboxID:             action.SandboxID,
+		Generation:            action.Generation,
+		IdempotencyKey:        action.IdempotencyKey,
+		StepIndex:             0,
+		ExpectedActions:       1,
+		TransactionGeneration: action.Generation,
+		PlanDigest:            digest,
+		CommandDigest:         digest,
+		ActionID:              action.IdempotencyKey,
+		PlanID:                "operator-lifecycle",
+	})
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusConflict)
+		return
+	}
+	writeRegistryResponse(w, http.StatusOK, workerActionResponse{Accepted: true, Worker: publicWorker(updated)})
+}
+
+func (h *registryHandler) status(w http.ResponseWriter, request *http.Request) {
+	if request.Method != http.MethodPost {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+	var query WorkerStatusRequest
+	if err := decodeRegistryRequest(request, &query); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	state, err := h.store.Snapshot()
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	worker, found := state.Workers[strings.TrimSpace(query.SandboxID)]
+	if !found {
+		http.Error(w, "worker is not registered", http.StatusNotFound)
+		return
+	}
+	if !authorizedRegisteredWorker(request, worker) {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+	if query.Generation == 0 || worker.Generation != query.Generation {
+		http.Error(w, "worker generation mismatch", http.StatusConflict)
+		return
+	}
+	writeRegistryResponse(w, http.StatusOK, workerActionResponse{Accepted: true, Worker: publicWorker(worker)})
+}
+
+func publicWorker(worker Worker) Worker {
+	worker.ProcessToken = ""
+	worker.ControlSocket = ""
+	worker.ControlURL = ""
+	worker.ControlToken = ""
+	worker.RegistrationTokenHash = ""
+	worker.MPSServerProcessToken = ""
+	worker.SafePointFile = ""
+	worker.ReadinessFile = ""
+	return worker
 }
 
 func (h *registryHandler) health(w http.ResponseWriter, request *http.Request) {
@@ -142,7 +267,12 @@ func (h *registryHandler) reportExit(w http.ResponseWriter, request *http.Reques
 		http.Error(w, err.Error(), http.StatusConflict)
 		return
 	}
-	if matched && h.observe != nil {
+	// A deliberate stop is observed through the Operator backend so the
+	// terminal event carries the command request/idempotency causality. The
+	// registry still persists the real process exit code and reports crashes or
+	// otherwise uncommanded exits directly.
+	commandedStop := current.State == "terminated" && current.LastOperation == "stop"
+	if matched && !commandedStop && h.observe != nil {
 		state, snapshotErr := h.store.Snapshot()
 		if snapshotErr != nil {
 			http.Error(w, snapshotErr.Error(), http.StatusInternalServerError)
@@ -206,36 +336,92 @@ func ReportRemoteWorkerExit(ctx context.Context, registryURL, token string, work
 	return postRegistry(ctx, registryURL, token, "/v1/workers/exit", report)
 }
 
+// ApplyRemoteWorkerAction applies one generation-fenced lifecycle action to a
+// previously registered worker. The registration token is never placed in the
+// URL or response.
+func ApplyRemoteWorkerAction(ctx context.Context, registryURL, token string, action WorkerActionRequest) (Worker, error) {
+	var response workerActionResponse
+	if err := postRegistryResponse(ctx, registryURL, token, "/v1/workers/action", action, &response); err != nil {
+		return Worker{}, err
+	}
+	if !response.Accepted {
+		return Worker{}, errors.New("worker registry did not accept lifecycle action")
+	}
+	return response.Worker, nil
+}
+
+// GetRemoteWorker returns one scoped registration without exposing registry
+// enumeration. A not-yet-registered worker returns found=false.
+func GetRemoteWorker(ctx context.Context, registryURL, token string, query WorkerStatusRequest) (Worker, bool, error) {
+	var response workerActionResponse
+	status, err := postRegistryStatus(ctx, registryURL, token, "/v1/workers/status", query, &response)
+	if err != nil {
+		return Worker{}, false, err
+	}
+	if status == http.StatusNotFound {
+		return Worker{}, false, nil
+	}
+	if status < 200 || status >= 300 {
+		return Worker{}, false, fmt.Errorf("worker registry returned HTTP %d", status)
+	}
+	return response.Worker, response.Accepted, nil
+}
+
 func postRegistry(ctx context.Context, baseURL, token, path string, value any) error {
+	return postRegistryResponse(ctx, baseURL, token, path, value, nil)
+}
+
+func postRegistryResponse(ctx context.Context, baseURL, token, path string, value, output any) error {
+	status, err := postRegistryStatus(ctx, baseURL, token, path, value, output)
+	if err != nil {
+		return err
+	}
+	if status < 200 || status >= 300 {
+		return fmt.Errorf("worker registry returned HTTP %d", status)
+	}
+	return nil
+}
+
+func postRegistryStatus(ctx context.Context, baseURL, token, path string, value, output any) (int, error) {
 	parsed, err := url.Parse(strings.TrimSpace(baseURL))
 	if err != nil || parsed.Scheme != "http" && parsed.Scheme != "https" || parsed.Host == "" || parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" {
-		return errors.New("worker registry URL must be an absolute HTTP(S) base URL without credentials, query, or fragment")
+		return 0, errors.New("worker registry URL must be an absolute HTTP(S) base URL without credentials, query, or fragment")
 	}
 	if strings.TrimSpace(token) == "" {
-		return errors.New("worker registry token is required")
+		return 0, errors.New("worker registry token is required")
 	}
 	payload, err := json.Marshal(value)
 	if err != nil {
-		return err
+		return 0, err
 	}
 	parsed.Path = strings.TrimRight(parsed.Path, "/") + path
 	request, err := http.NewRequestWithContext(ctx, http.MethodPost, parsed.String(), strings.NewReader(string(payload)))
 	if err != nil {
-		return err
+		return 0, err
 	}
 	request.Header.Set("Content-Type", "application/json")
 	request.Header.Set(WorkerRegistryTokenHeader, token)
 	client := &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
 	response, err := client.Do(request)
 	if err != nil {
-		return err
+		return 0, err
 	}
 	defer response.Body.Close()
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
 		detail, _ := io.ReadAll(io.LimitReader(response.Body, 4096))
-		return fmt.Errorf("worker registry returned HTTP %d: %s", response.StatusCode, strings.TrimSpace(string(detail)))
+		if response.StatusCode == http.StatusNotFound {
+			return response.StatusCode, nil
+		}
+		return response.StatusCode, fmt.Errorf("worker registry returned HTTP %d: %s", response.StatusCode, strings.TrimSpace(string(detail)))
 	}
-	return nil
+	if output != nil {
+		decoder := json.NewDecoder(io.LimitReader(response.Body, maxRegistryPayloadBytes+1))
+		decoder.DisallowUnknownFields()
+		if err := decoder.Decode(output); err != nil {
+			return response.StatusCode, fmt.Errorf("decode worker registry response: %w", err)
+		}
+	}
+	return response.StatusCode, nil
 }
 
 func validateBootstrapEndpoint(endpoint, remoteAddress string) error {

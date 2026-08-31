@@ -204,7 +204,12 @@ func (s *Store) ReportExit(sandboxID string, generation uint64, instanceID, proc
 		trimmedDetail := strings.TrimSpace(detail)
 		if worker.State == "terminated" || worker.State == "failed" {
 			if worker.State != state || worker.ExitCode != exitCode || worker.Detail != trimmedDetail {
-				return fmt.Errorf("worker terminal outcome is already recorded")
+				if worker.LastOperation != "stop" || worker.Detail != "" {
+					return fmt.Errorf("worker terminal outcome is already recorded")
+				}
+				worker.ExitCode, worker.Detail, worker.LastUpdatedAt = exitCode, trimmedDetail, time.Now().UTC()
+				current.Workers[sandboxID] = worker
+				updated = true
 			}
 			return nil
 		}
@@ -553,6 +558,8 @@ func validateTransition(worker Worker, operation string) error {
 		allowed = worker.State == "running" || worker.State == "paused" || worker.State == "sleeping"
 	case "rebind", "recreate":
 		allowed = worker.ControlSocket != "" && (worker.State == "running" || worker.State == "paused" || worker.State == "sleeping" || worker.State == "failed")
+	case "stop":
+		allowed = worker.State == "running" || worker.State == "paused" || worker.State == "sleeping"
 	default:
 		return fmt.Errorf("unsupported lifecycle operation %q", operation)
 	}

@@ -67,7 +67,7 @@ func main() {
 }
 
 func run() error {
-	mode := flag.String("mode", "kubernetes", "backend mode: kubernetes or fake")
+	mode := flag.String("mode", "kubernetes", "backend mode: kubernetes, process, or fake")
 	controllerEnabled := flag.Bool("controller", true, "enable controller reconcile loop")
 	schedulerAddress := flag.String("scheduler", "127.0.0.1:50051", "scheduler gRPC address")
 	controlAddress := flag.String("control", "127.0.0.1:50061", "job control gRPC address")
@@ -85,15 +85,23 @@ func run() error {
 	workerRegistryURL := flag.String("worker-registry-url", "", "managed-worker registry base URL reachable from workloads")
 	workerRegistrySigningKeyFile := flag.String("worker-registry-signing-key-file", "", "file containing the worker registry HMAC signing key")
 	workerVerifyDeviceIDs := flag.Bool("worker-verify-device-identities", false, "require bootstrap nvidia-smi UUID verification before registration")
+	workerBootstrapBinary := flag.String("worker-bootstrap-binary", "tgsrl-worker-bootstrap", "local bootstrap executable used by process mode")
+	processStateDir := flag.String("process-state-dir", "", "local process backend state and evidence directory")
 	var nodeSelector stringMapFlag
 	flag.Var(&nodeSelector, "node-selector", "optional pod node selector in key=value form; repeat for multiple entries")
 	flag.Parse()
-	if *workerBootstrap && strings.TrimSpace(*mode) != "kubernetes" {
-		return fmt.Errorf("worker bootstrap requires kubernetes backend mode")
+	backendMode := strings.TrimSpace(*mode)
+	if *workerBootstrap && backendMode != "kubernetes" && backendMode != "process" {
+		return fmt.Errorf("worker bootstrap requires kubernetes or process backend mode")
 	}
-	registrySigningKey, err := loadWorkerRegistrySigningKey(*workerRegistrySigningKeyFile, *workerBootstrap)
+	bootstrapEnabled := *workerBootstrap || backendMode == "process"
+	registrySigningKey, err := loadWorkerRegistrySigningKey(*workerRegistrySigningKeyFile, bootstrapEnabled)
 	if err != nil {
 		return err
+	}
+	installerImage := *workerBootstrapImage
+	if backendMode == "process" && strings.TrimSpace(installerImage) == "" {
+		installerImage = "local.invalid/tgsrl-worker-bootstrap@sha256:" + strings.Repeat("0", 64)
 	}
 	runtimeConfig, err := validateStartupRuntimeConfig(*gpuProfile, compiler.RuntimeConfig{
 		RuntimeClass: compiler.RuntimeClassConfig{
@@ -103,8 +111,8 @@ func run() error {
 		},
 		NodeSelector: map[string]string(nodeSelector),
 		Bootstrap: compiler.WorkerBootstrapConfig{
-			Enabled:            *workerBootstrap,
-			InstallerImage:     *workerBootstrapImage,
+			Enabled:            bootstrapEnabled,
+			InstallerImage:     installerImage,
 			RegistryURL:        *workerRegistryURL,
 			RegistrySigningKey: registrySigningKey,
 			VerifyDeviceIDs:    *workerVerifyDeviceIDs,
@@ -114,7 +122,14 @@ func run() error {
 		return err
 	}
 
-	selectedBackend, backendName, err := selectBackend(*mode, *namespace, *kubeconfig)
+	resolvedProcessState := strings.TrimSpace(*processStateDir)
+	if resolvedProcessState == "" {
+		resolvedProcessState = filepath.Join(*cursorDir, "processes")
+	}
+	selectedBackend, backendName, err := selectBackend(*mode, *namespace, *kubeconfig, backend.ProcessConfig{
+		BootstrapBinary: *workerBootstrapBinary,
+		StateDirectory:  resolvedProcessState,
+	})
 	if err != nil {
 		return err
 	}
@@ -143,6 +158,9 @@ func run() error {
 		name: "grpc",
 		run:  func(context.Context) error { return grpcServer.Serve(listener) },
 	}}
+	if processBackend, ok := selectedBackend.(*backend.ProcessBackend); ok {
+		services = append(services, namedService{name: "process-backend", run: processBackend.Run})
+	}
 	if *controllerEnabled {
 		reconciler, err := controller.NewWithRuntimeConfig(selectedBackend, runtimeConfig)
 		if err != nil {
@@ -362,10 +380,19 @@ func loadWorkerRegistrySigningKey(path string, required bool) ([]byte, error) {
 	return key, nil
 }
 
-func selectBackend(mode, namespace, kubeconfigPath string) (backend.Backend, string, error) {
+func selectBackend(mode, namespace, kubeconfigPath string, processConfig ...backend.ProcessConfig) (backend.Backend, string, error) {
 	switch mode {
 	case "fake":
 		return backend.NewFake(), "fake", nil
+	case "process":
+		if len(processConfig) != 1 {
+			return nil, "", fmt.Errorf("process backend configuration is required")
+		}
+		selected, err := backend.NewProcess(processConfig[0])
+		if err != nil {
+			return nil, "", err
+		}
+		return selected, "process", nil
 	case "kubernetes":
 		selected, err := newKubernetesBackend(namespace, kubeconfigPath)
 		if err != nil {
@@ -403,6 +430,12 @@ func selectObserver(mode, namespace, kubeconfigPath string, selectedBackend back
 		// Fake mode still reads the same backend authority, but its finite stream
 		// deliberately preserves the admission BOUND snapshot before RUNNING.
 		return statuswatch.NewFake(fakeBackend), nil
+	case "process":
+		processBackend, ok := selectedBackend.(*backend.ProcessBackend)
+		if !ok {
+			return nil, fmt.Errorf("process observer requires process backend")
+		}
+		return statuswatch.NewBackendObserver(processBackend, 100*time.Millisecond)
 	case "kubernetes":
 		kubeBackend, ok := selectedBackend.(*backend.KubernetesBackend)
 		if !ok {

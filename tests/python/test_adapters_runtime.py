@@ -32,7 +32,7 @@ from adapters import (
     execute_control_argv,
 )
 from adapters.compliance.runtime import ComponentAdapter
-from adapters.control import CommandResult, ControlRequest
+from adapters.control import BridgeKind, BridgeTarget, CommandResult, ControlRequest
 from adapters.execution import RayExecutionBackendAdapter
 from adapters.frameworks import OpenRLHFFrameworkAdapter, VerlFrameworkAdapter
 from adapters.frameworks.verl_bridge import (
@@ -427,6 +427,31 @@ def test_verl_uses_repository_bridge_without_manifest_override() -> None:
     assert report.status is AdapterSupport.DEGRADED
     assert "adapters.frameworks.verl_bridge" in call.launch_spec.argv
     assert call.runner_kind is RunnerKind.COMMAND
+
+
+def test_verl_prepare_does_not_require_future_worker_socket(tmp_path: Path) -> None:
+    manifest = _manifest(framework="verl")
+    manifest.environment["TGSRL_VERL_CONTROL_SOCKET"] = str(tmp_path / "not-created.sock")
+    request = ControlRequest(
+        component="framework",
+        adapter="verl",
+        action=LifecycleAction.PREPARE,
+        run_id=manifest.run_id,
+        job_id=manifest.job_id,
+        trace_id=manifest.trace_id,
+        policy_version=manifest.policy_version,
+        desired_units=manifest.desired_units,
+        queue=manifest.queue,
+        deterministic_seed=manifest.deterministic_seed,
+        bridge_target=BridgeTarget(
+            kind=BridgeKind.PYTHON_MODULE,
+            module_name="adapters.frameworks.verl_bridge",
+            env=tuple(manifest.environment.items()),
+        ),
+    )
+    from adapters.frameworks.verl_bridge import handle_lifecycle
+
+    assert handle_lifecycle(request).exit_code == 0
 
 
 def test_verl_worker_bridge_controls_lifecycle_and_emits_quality_observations(

@@ -24,7 +24,7 @@ class BaseFrameworkAdapter(BaseComponentAdapter, FrameworkAdapter):
     dependency_name: str | None = None
     launch_metadata = ComponentLaunchMetadata(
         component_kind="framework",
-        module_name="adapters.control",
+        module_name="adapters.control_cli",
         preferred_bridge_kind=BridgeKind.PYTHON_MODULE,
     )
     _supported_actions: tuple[LifecycleAction, ...] = (

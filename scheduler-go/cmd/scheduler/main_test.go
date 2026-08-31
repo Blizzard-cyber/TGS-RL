@@ -273,19 +273,20 @@ func TestParseArgsRejectsWorkerRegistryWithoutRuntimeTarget(t *testing.T) {
 	if _, err := parseArgs([]string{"-worker-registry-listen=127.0.0.1:50091"}); err == nil || !strings.Contains(err.Error(), "runtime target") {
 		t.Fatalf("worker registry error = %v", err)
 	}
-	if _, err := parseArgs([]string{"-worker-registry-listen=127.0.0.1:50091", "-worker-registry-runtime-target=127.0.0.1:50071"}); err == nil || !strings.Contains(err.Error(), "NVIDIA Driver v2") {
-		t.Fatalf("worker registry provider error = %v", err)
-	}
 	t.Setenv("TGSRL_WORKER_REGISTRY_SIGNING_KEY", "")
-	if _, err := parseArgs([]string{"-nvidia-driver-v2", "-worker-registry-listen=127.0.0.1:50091", "-worker-registry-runtime-target=127.0.0.1:50071"}); err == nil || !strings.Contains(err.Error(), "signing-key") {
+	if _, err := parseArgs([]string{"-worker-registry-listen=127.0.0.1:50091", "-worker-registry-runtime-target=127.0.0.1:50071"}); err == nil || !strings.Contains(err.Error(), "signing-key") {
 		t.Fatalf("worker registry signing-key error = %v", err)
 	}
 	t.Setenv("TGSRL_WORKER_REGISTRY_SIGNING_KEY", strings.Repeat("k", 32))
-	if _, err := parseArgs([]string{"-nvidia-driver-v2", "-worker-registry-listen=127.0.0.1:50091", "-worker-registry-runtime-target=127.0.0.1:50071"}); err == nil || !strings.Contains(err.Error(), "absolute") {
+	if _, err := parseArgs([]string{"-worker-registry-listen=127.0.0.1:50091", "-worker-registry-runtime-target=127.0.0.1:50071"}); err == nil || !strings.Contains(err.Error(), "absolute") {
 		t.Fatalf("worker registry default state path error = %v", err)
 	}
-	if _, err := parseArgs([]string{"-nvidia-driver-v2", "-worker-registry-listen=127.0.0.1:50091", "-worker-registry-runtime-target=127.0.0.1:50071", "-nvidia-runtime-state=relative.json"}); err == nil || !strings.Contains(err.Error(), "absolute") {
+	if _, err := parseArgs([]string{"-worker-registry-listen=127.0.0.1:50091", "-worker-registry-runtime-target=127.0.0.1:50071", "-worker-registry-state=relative.json"}); err == nil || !strings.Contains(err.Error(), "absolute") {
 		t.Fatalf("worker registry state path error = %v", err)
+	}
+	args, err := parseArgs([]string{"-state-dir=/tmp/tgsrl", "-worker-registry-listen=127.0.0.1:50091", "-worker-registry-runtime-target=127.0.0.1:50071"})
+	if err != nil || args.WorkerRegistryState != "/tmp/tgsrl/worker-registry.json" {
+		t.Fatalf("generic worker registry args = %+v, error = %v", args, err)
 	}
 }
 

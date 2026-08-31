@@ -126,7 +126,7 @@ func run() error {
 		defer runtimeRegistryConn.Close()
 		runtimeRegistryClient = tgsrlv1.NewRuntimeControlServiceClient(runtimeRegistryConn)
 	}
-	registryServer, registryListener, err := startWorkerRegistry(startup.WorkerRegistryListen, startup.NVIDIARuntimeState, startup.WorkerRegistrySigningKeyFile, providerInstance, runtimeRegistryClient)
+	registryServer, registryListener, err := startWorkerRegistry(startup.WorkerRegistryListen, startup.WorkerRegistryState, startup.WorkerRegistrySigningKeyFile, providerInstance, runtimeRegistryClient)
 	if err != nil {
 		return err
 	}
@@ -210,6 +210,7 @@ type cliArgs struct {
 	WorkerRegistryListen         string
 	WorkerRegistrySigningKeyFile string
 	WorkerRegistryRuntimeTarget  string
+	WorkerRegistryState          string
 }
 
 type runtimeConfig struct {
@@ -233,6 +234,7 @@ type runtimeConfig struct {
 	WorkerRegistryListen         string
 	WorkerRegistrySigningKeyFile string
 	WorkerRegistryRuntimeTarget  string
+	WorkerRegistryState          string
 }
 
 func parseArgs(argv []string) (*cliArgs, error) {
@@ -256,6 +258,7 @@ func parseArgs(argv []string) (*cliArgs, error) {
 	workerRegistryListen := fs.String("worker-registry-listen", "", "optional managed-worker registry HTTP listen address")
 	workerRegistrySigningKeyFile := fs.String("worker-registry-signing-key-file", "", "worker registry HMAC signing-key file")
 	workerRegistryRuntimeTarget := fs.String("worker-registry-runtime-target", "", "Runtime gRPC target for worker lifecycle events")
+	workerRegistryState := fs.String("worker-registry-state", "", "durable managed-worker registry state file; defaults to the NVIDIA runtime state for compatibility")
 	if err := fs.Parse(argv); err != nil {
 		return nil, err
 	}
@@ -280,9 +283,6 @@ func parseArgs(argv []string) (*cliArgs, error) {
 	if strings.TrimSpace(*workerRegistryListen) != "" && strings.TrimSpace(*workerRegistryRuntimeTarget) == "" {
 		return nil, fmt.Errorf("worker registry requires runtime target")
 	}
-	if strings.TrimSpace(*workerRegistryListen) != "" && !*nvidiaDriverV2 {
-		return nil, fmt.Errorf("worker registry requires NVIDIA Driver v2")
-	}
 	if strings.TrimSpace(*workerRegistryListen) != "" && strings.TrimSpace(*workerRegistrySigningKeyFile) == "" && strings.TrimSpace(os.Getenv("TGSRL_WORKER_REGISTRY_SIGNING_KEY")) == "" {
 		return nil, fmt.Errorf("worker registry requires a signing-key file or TGSRL_WORKER_REGISTRY_SIGNING_KEY")
 	}
@@ -294,8 +294,16 @@ func parseArgs(argv []string) (*cliArgs, error) {
 	if runtimeState == "" {
 		runtimeState = filepath.Join(*stateDirectory, "nvidia-runtime.json")
 	}
-	if strings.TrimSpace(*workerRegistryListen) != "" && !filepath.IsAbs(runtimeState) {
-		return nil, fmt.Errorf("worker registry requires an absolute NVIDIA runtime state path")
+	registryState := strings.TrimSpace(*workerRegistryState)
+	if registryState == "" {
+		if *nvidiaDriverV2 {
+			registryState = runtimeState
+		} else {
+			registryState = filepath.Join(*stateDirectory, "worker-registry.json")
+		}
+	}
+	if strings.TrimSpace(*workerRegistryListen) != "" && !filepath.IsAbs(registryState) {
+		return nil, fmt.Errorf("worker registry requires an absolute state path")
 	}
 	return &cliArgs{
 		ListenAddress:                *listenAddress,
@@ -317,6 +325,7 @@ func parseArgs(argv []string) (*cliArgs, error) {
 		WorkerRegistryListen:         strings.TrimSpace(*workerRegistryListen),
 		WorkerRegistrySigningKeyFile: strings.TrimSpace(*workerRegistrySigningKeyFile),
 		WorkerRegistryRuntimeTarget:  strings.TrimSpace(*workerRegistryRuntimeTarget),
+		WorkerRegistryState:          registryState,
 	}, nil
 }
 
@@ -365,6 +374,7 @@ func loadStartupConfig(args *cliArgs) (*runtimeConfig, error) {
 		WorkerRegistryListen:         args.WorkerRegistryListen,
 		WorkerRegistrySigningKeyFile: args.WorkerRegistrySigningKeyFile,
 		WorkerRegistryRuntimeTarget:  args.WorkerRegistryRuntimeTarget,
+		WorkerRegistryState:          args.WorkerRegistryState,
 	}, nil
 }
 

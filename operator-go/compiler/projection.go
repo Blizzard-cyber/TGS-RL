@@ -135,14 +135,24 @@ func buildEnv(input *normalizedInput) []api.EnvVar {
 		api.EnvVar{Name: "TGSRL_ALGORITHM", Value: input.Manifest.GetAnnotations()["algorithm"]},
 	)
 	if strings.EqualFold(input.Manifest.GetFramework(), "verl") {
+		controlSocket := manifestEnvironmentOrDefault(input.Manifest.GetEnvironment(), "TGSRL_VERL_CONTROL_SOCKET", "/tmp/tgsrl/verl.sock")
+		tracePath := manifestEnvironmentOrDefault(input.Manifest.GetEnvironment(), "TGSRL_VERL_TRACE_PATH", "/tmp/tgsrl/verl.ndjson")
+		statePath := manifestEnvironmentOrDefault(input.Manifest.GetEnvironment(), "TGSRL_VERL_STATE_PATH", "/tmp/tgsrl/verl-state.json")
 		values = append(values,
-			api.EnvVar{Name: "TGSRL_VERL_CONTROL_SOCKET", Value: "/tmp/tgsrl/verl.sock"},
-			api.EnvVar{Name: "TGSRL_VERL_TRACE_PATH", Value: "/tmp/tgsrl/verl.ndjson"},
-			api.EnvVar{Name: "TGSRL_VERL_STATE_PATH", Value: "/tmp/tgsrl/verl-state.json"},
+			api.EnvVar{Name: "TGSRL_VERL_CONTROL_SOCKET", Value: controlSocket},
+			api.EnvVar{Name: "TGSRL_VERL_TRACE_PATH", Value: tracePath},
+			api.EnvVar{Name: "TGSRL_VERL_STATE_PATH", Value: statePath},
 		)
 	}
 	sort.Slice(values, func(i, j int) bool { return values[i].Name < values[j].Name })
 	return values
+}
+
+func manifestEnvironmentOrDefault(values map[string]string, key, fallback string) string {
+	if value := strings.TrimSpace(values[key]); value != "" {
+		return value
+	}
+	return fallback
 }
 
 func buildResources(input *normalizedInput) api.ResourceRequirements {

@@ -108,7 +108,8 @@ func startWorkerRegistry(address, statePath, signingKeyFile string, resourceProv
 			observedAt = time.Now().UTC()
 		}
 		processIdentity := sha256.Sum256([]byte(worker.ProcessToken))
-		eventID := fmt.Sprintf("bootstrap:%s:%x:%d:%s:%d", worker.InstanceID, processIdentity[:8], worker.Generation, worker.State, worker.ExitCode)
+		lifecycleIdentity := sha256.Sum256([]byte(fmt.Sprintf("%s\x00%t\x00%t\x00%t\x00%s\x00%s\x00%d", worker.State, worker.SafePoint, worker.Offloaded, worker.Ready, worker.CheckpointRef, worker.LastOperation, worker.ExitCode)))
+		eventID := fmt.Sprintf("bootstrap:%s:%x:%d:%x", worker.InstanceID, processIdentity[:8], worker.Generation, lifecycleIdentity[:8])
 		event := &tgsrlv1.SandboxEvent{
 			EventId:        eventID,
 			EventType:      eventType,

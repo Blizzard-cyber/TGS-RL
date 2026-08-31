@@ -47,6 +47,21 @@ func TestSelectBackend(t *testing.T) {
 			t.Fatalf("mode %q should fail", test.mode)
 		}
 	}
+	executable, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	selected, name, err := selectBackend("process", "default", "", backend.ProcessConfig{
+		BootstrapBinary: executable,
+		StateDirectory:  t.TempDir(),
+	})
+	if err != nil || selected == nil || name != "process" {
+		t.Fatalf("process backend = (%T, %q, %v)", selected, name, err)
+	}
+	observer, err := selectObserver("process", "default", "", selected)
+	if err != nil || observer == nil {
+		t.Fatalf("process observer = (%T, %v)", observer, err)
+	}
 }
 
 func TestSelectFakeObserverPreservesBoundThenRunning(t *testing.T) {
