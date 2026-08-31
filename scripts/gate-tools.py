@@ -7,6 +7,7 @@ import argparse
 import hashlib
 import json
 import math
+import os
 import platform
 import shlex
 import shutil
@@ -144,6 +145,8 @@ def load_manifest(path: Path) -> LoadedManifest:
         or runner["timeout_seconds"] <= 0
     ):
         raise GateToolError("manifest workload_runner.timeout_seconds must be positive")
+    if runner.get("evidence_mode", "workload") not in {"workload", "full_stack"}:
+        raise GateToolError("manifest workload_runner.evidence_mode is invalid")
     variants = runner.get("variants")
     if not isinstance(variants, dict) or set(variants) != {"baseline", "variant"}:
         raise GateToolError("manifest workload_runner.variants must define baseline and variant")
@@ -295,7 +298,11 @@ def _reset_managed_artifacts(paths: ArtifactPaths) -> None:
         raise GateToolError("output directory is too broad for managed artifact cleanup")
     for path in (paths.report, paths.baseline_trace, paths.variant_trace, paths.archive):
         path.unlink(missing_ok=True)
-    for directory in (paths.root / "artifacts" / "logs", paths.root / "artifacts" / "config"):
+    for directory in (
+        paths.root / "artifacts" / "logs",
+        paths.root / "artifacts" / "config",
+        paths.root / "artifacts" / "services",
+    ):
         if directory.is_dir():
             shutil.rmtree(directory)
 
@@ -447,17 +454,20 @@ def _metrics_from_events(events: list[dict[str, Any]]) -> dict[str, float]:
     item_count = sum(int(event.get("item_count", 0)) for event in completed)
     observations = [event.get("contract_observation", {}) for event in consumed]
     action_count = len(actions)
+    scheduler_actions = [event for event in actions if event.get("source") == "scheduler"]
+    decision_count = len(scheduler_actions) if scheduler_actions else len(actions)
     metrics = {
         "latency_ms_p50": _percentile(latencies, 0.50),
         "latency_ms_p95": _percentile(latencies, 0.95),
         "latency_ms_p99": _percentile(latencies, 0.99),
         "throughput_items_per_s": 0.0 if elapsed_ms <= 0 else item_count * 1000.0 / elapsed_ms,
-        "decision_count": float(action_count),
+        "decision_count": float(decision_count),
         "end_to_end_iteration_ms_p50": _percentile(
             [float(event.get("elapsed_ms", 0.0)) for event in completed], 0.50
         ),
         "scheduling_latency_ms_p95": _percentile(
-            [float(event.get("duration_ms", 0.0)) for event in actions], 0.95
+            [float(event.get("duration_ms", 0.0)) for event in (scheduler_actions or actions)],
+            0.95,
         ),
         "gpu_active_time_ms": sum(float(event.get("gpu_active_ms", 0.0)) for event in consumed),
         "queue_depth_max": float(max(int(event.get("buffer_level", 0)) for event in measured)),
@@ -475,7 +485,7 @@ def _metrics_from_events(events: list[dict[str, Any]]) -> dict[str, float]:
             [
                 float(event.get("duration_ms", 0.0))
                 for event in actions
-                if event.get("action") == "prepare_pause"
+                if event.get("action") in {"prepare_pause", "pause"}
             ],
             0.50,
         ),
@@ -508,6 +518,44 @@ def _metrics_from_events(events: list[dict[str, Any]]) -> dict[str, float]:
     if any(not _is_finite_number(value) for value in metrics.values()):
         raise GateToolError("measurement trace produced a non-finite metric")
     return metrics
+
+
+def _validate_full_stack_events(events: list[dict[str, Any]], *, label: str) -> None:
+    grouped: dict[tuple[str, int], list[dict[str, Any]]] = {}
+    for event in events:
+        key = (str(event.get("phase", "")), int(event.get("iteration", 0)))
+        grouped.setdefault(key, []).append(event)
+    for (phase, iteration), run_events in grouped.items():
+        run_ids = {str(event.get("service_run_id", "")) for event in run_events}
+        job_ids = {str(event.get("service_job_id", "")) for event in run_events}
+        scope = f"{label} {phase} iteration {iteration}"
+        if len(run_ids) != 1 or "" in run_ids or len(job_ids) != 1 or "" in job_ids:
+            raise GateToolError(f"{scope} must identify exactly one service run/job")
+        scheduler_events = [
+            event
+            for event in run_events
+            if event.get("event_type") == "decision_applied" and event.get("source") == "scheduler"
+        ]
+        if not scheduler_events or any(
+            not event.get("decision_id") or not event.get("plan_id") for event in scheduler_events
+        ):
+            raise GateToolError(f"{scope} requires a Scheduler decision and selected plan")
+        worker_events = [event for event in run_events if event.get("source") == "worker"]
+        if not worker_events or any(
+            not event.get("runtime_unit_id") or not event.get("worker_id")
+            for event in worker_events
+        ):
+            raise GateToolError(f"{scope} requires managed-worker runtime identities")
+        if label == "variant":
+            operator_actions = {
+                str(event.get("action"))
+                for event in run_events
+                if event.get("event_type") == "decision_applied"
+                and event.get("source") == "operator"
+                and event.get("succeeded") is True
+            }
+            if not {"pause", "resume"}.issubset(operator_actions):
+                raise GateToolError(f"{scope} requires successful Operator pause/resume actions")
 
 
 def _workload_argv(
@@ -569,6 +617,8 @@ def _execute_workloads(
             events.extend(
                 _parse_workload_events(stdout, label=label, phase=phase, iteration=iteration)
             )
+    if manifest.data["workload_runner"].get("evidence_mode") == "full_stack":
+        _validate_full_stack_events(events, label=label)
     trace = {
         "schema_version": "tgsrl.io/gate-trace/v1alpha1",
         "suite_id": manifest.data["suite_id"],
@@ -591,6 +641,36 @@ def _capture_locked_inputs(manifest: LoadedManifest, paths: ArtifactPaths) -> No
     if ROOT not in scenario.parents or not scenario.is_file():
         raise GateToolError("scenario_manifest must resolve to a repository file")
     shutil.copy2(scenario, target / scenario.name)
+
+
+def _capture_full_stack_logs(
+    manifest: LoadedManifest, paths: ArtifactPaths
+) -> list[dict[str, str]]:
+    if manifest.data["workload_runner"].get("evidence_mode") != "full_stack":
+        return []
+    captured: list[dict[str, str]] = []
+    target = paths.root / "artifacts" / "services"
+    for variable in ("TGSRL_GATE_SERVICE_LOG_DIR", "TGSRL_GATE_PROCESS_LOG_ROOT"):
+        raw = os.environ.get(variable, "").strip()
+        if not raw:
+            raise GateToolError(f"full-stack evidence requires {variable}")
+        source = Path(raw).resolve()
+        if not source.is_dir():
+            raise GateToolError(f"full-stack evidence directory is missing: {variable}")
+        prefix = "control-plane" if variable == "TGSRL_GATE_SERVICE_LOG_DIR" else "workloads"
+        for log in sorted(source.rglob("*.log")):
+            destination = target / prefix / log.relative_to(source)
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(log, destination)
+            captured.append(
+                {
+                    "path": _artifact_name(paths, destination),
+                    "sha256": hashlib.sha256(destination.read_bytes()).hexdigest(),
+                }
+            )
+    if not captured:
+        raise GateToolError("full-stack evidence captured no service or workload logs")
+    return captured
 
 
 def cmd_cpu_smoke(args: argparse.Namespace) -> int:
@@ -653,7 +733,13 @@ def cmd_cpu_smoke(args: argparse.Namespace) -> int:
         "status": "NOT_RUN",
         "simulated": False,
         "workload_lock": manifest.data["workload_lock"],
-        "environment_fingerprint": build_environment_fingerprint(execution_mode="cpu-runner"),
+        "environment_fingerprint": build_environment_fingerprint(
+            execution_mode=(
+                "cpu-full-stack"
+                if manifest.data["workload_runner"].get("evidence_mode") == "full_stack"
+                else "cpu-runner"
+            )
+        ),
         "warmup_runs": int(manifest.data["comparisons"]["warmup_runs"]),
         "measurement_runs": int(manifest.data["comparisons"]["measurement_runs"]),
         "baseline_trace": _artifact_name(paths, paths.baseline_trace),
@@ -661,13 +747,24 @@ def cmd_cpu_smoke(args: argparse.Namespace) -> int:
         "metrics": {"baseline": baseline["metrics"], "variant": variant["metrics"]},
         "executions": [*baseline_executions, *variant_executions],
         "smoke": smoke,
-        "notes": ["CPU integration executed the locked workload; GPU gates remain not run."],
+        "notes": [
+            (
+                "CPU integration executed Gateway, Job Controller, Runtime, Scheduler, "
+                "Operator process backend, bootstrap, registry, and veRL callback doubles; "
+                "real veRL packages, Kubernetes, and GPU gates remain not run."
+                if manifest.data["workload_runner"].get("evidence_mode") == "full_stack"
+                else "CPU integration executed the locked workload; GPU gates remain not run."
+            )
+        ],
     }
     run["trace_capture"] = {
         "baseline_digest": hashlib.sha256(paths.baseline_trace.read_bytes()).hexdigest(),
         "variant_digest": hashlib.sha256(paths.variant_trace.read_bytes()).hexdigest(),
     }
     _capture_locked_inputs(manifest, paths)
+    service_logs = _capture_full_stack_logs(manifest, paths)
+    if service_logs:
+        run["service_log_artifacts"] = service_logs
     _write_json(paths.report, run)
     errors = _validate_report(manifest, paths, run)
     if errors:
@@ -687,11 +784,12 @@ def cmd_hardware_run(args: argparse.Namespace) -> int:
     variant, variant_executions = _execute_workloads(
         manifest, paths, label="variant", device="cuda"
     )
+    full_stack = manifest.data["workload_runner"].get("evidence_mode") == "full_stack"
     report = {
         "schema_version": "tgsrl.io/gate-run-record/v1alpha1",
         "suite_id": manifest.data["suite_id"],
         "evidence": args.evidence,
-        "status": "PASSED",
+        "status": "PASSED" if full_stack else "NOT_RUN",
         "simulated": False,
         "workload_lock": manifest.data["workload_lock"],
         "environment_fingerprint": build_gpu_environment_fingerprint(),
@@ -706,6 +804,11 @@ def cmd_hardware_run(args: argparse.Namespace) -> int:
             "variant_digest": hashlib.sha256(paths.variant_trace.read_bytes()).hexdigest(),
         },
     }
+    if not full_stack:
+        report["notes"] = [
+            "CUDA workload conformance ran without the full TGS-RL service chain; "
+            "the GPU Gate remains not run."
+        ]
     _capture_locked_inputs(manifest, paths)
     evaluation = evaluate_gate(manifest, report)
     report["status"] = evaluation["status"]
@@ -715,7 +818,7 @@ def cmd_hardware_run(args: argparse.Namespace) -> int:
         raise GateToolError("; ".join(errors))
     _archive_run(paths)
     _print_artifacts(paths)
-    return 0 if report["status"] == "PASSED" else 1
+    return 0 if report["status"] in {"PASSED", "NOT_RUN"} else 1
 
 
 def _resolve_external_artifact(source: Path, value: object, field: str) -> Path:
@@ -834,6 +937,31 @@ def _validate_report(
             errors.append("CPU_INTEGRATION requires a successful executed smoke record")
         if status == "PASSED":
             errors.append("CPU_INTEGRATION cannot mark a GPU gate passed")
+        if manifest.data["workload_runner"].get("evidence_mode") == "full_stack":
+            fingerprint = report.get("environment_fingerprint")
+            if (
+                not isinstance(fingerprint, dict)
+                or fingerprint.get("execution_mode") != "cpu-full-stack"
+            ):
+                errors.append("full-stack CPU evidence requires execution_mode=cpu-full-stack")
+            logs = report.get("service_log_artifacts")
+            if not isinstance(logs, list) or not logs:
+                errors.append("full-stack CPU evidence requires service log artifacts")
+            else:
+                for index, record in enumerate(logs):
+                    if not isinstance(record, dict):
+                        errors.append(f"service log artifact {index} must be an object")
+                        continue
+                    try:
+                        artifact = paths.root / _relative_path(
+                            record.get("path"), f"service_log_artifacts[{index}].path"
+                        )
+                        digest = hashlib.sha256(artifact.read_bytes()).hexdigest()
+                    except (GateToolError, OSError) as error:
+                        errors.append(f"cannot verify service log artifact {index}: {error}")
+                        continue
+                    if record.get("sha256") != digest:
+                        errors.append(f"service log artifact {index} digest does not match")
     if evidence in REAL_EVIDENCE:
         if report.get("workload_lock") != manifest.data["workload_lock"]:
             errors.append("real evidence workload_lock does not match the gate manifest")
@@ -854,6 +982,11 @@ def _validate_report(
                 errors.append(f"{side} trace seed does not match the workload lock")
             if status == "BLOCKED" and not events:
                 continue
+            if manifest.data["workload_runner"].get("evidence_mode") == "full_stack":
+                try:
+                    _validate_full_stack_events(events, label=side)
+                except GateToolError as error:
+                    errors.append(str(error))
             if status == "PASSED" or (evidence == "CPU_INTEGRATION" and status == "NOT_RUN"):
                 expected_iterations = {
                     "warmup": set(range(1, int(manifest.data["comparisons"]["warmup_runs"]) + 1)),
@@ -1099,6 +1232,7 @@ def build_parser() -> argparse.ArgumentParser:
             "simulator",
             "cpu-smoke",
             "cpu-runner",
+            "cpu-full-stack",
             "manual",
             "ci",
             "gpu-manual",

@@ -78,9 +78,10 @@ Scheduler 还支持以下启动覆盖：
 | `-fallback` | 空 | 覆盖 Policy，只接受 `noop`/`no_op` 或 `static` |
 | `-state-dir` | `.tmp/scheduler-state` | 持久化根目录 |
 | `-metrics-listen` | `127.0.0.1:9090` | Prometheus 地址；空字符串关闭 |
-| `-worker-registry-listen` | 空 | managed-worker registry HTTP 监听地址；启用时要求 NVIDIA Driver v2 |
+| `-worker-registry-listen` | 空 | managed-worker registry HTTP 监听地址；可供本地 process 或 NVIDIA/Kubernetes workload 使用 |
 | `-worker-registry-runtime-target` | 空 | registry 发布 SandboxEvent 使用的 Runtime gRPC target |
 | `-worker-registry-signing-key-file` | 空 | 至少 32 bytes 的 HMAC 主签名 key；也可用 `TGSRL_WORKER_REGISTRY_SIGNING_KEY` |
+| `-worker-registry-state` | `<state-dir>/worker-registry.json`；NVIDIA v2 默认兼容旧 runtime state | managed-worker 注册与 lifecycle receipt 的绝对状态路径 |
 
 `-fallback` 的优先级高于 Policy；provider、strategy、top-k 和三个调度周期则可由
 对应的 `TGSRL_CONFIG_*` 变量覆盖。fast/medium/slow 队列本身是进程内状态；重启时
@@ -139,7 +140,7 @@ export TGSRL_GATEWAY_EXPERIMENT_TARGET=127.0.0.1:50071
 
 | 参数 | 默认值 | 说明 |
 |---|---|---|
-| `-mode` | `kubernetes` | `fake` 使用进程内 backend；`kubernetes` 连接 API Server |
+| `-mode` | `kubernetes` | `fake` 使用进程内 backend；`process` 启动本机真实子进程；`kubernetes` 连接 API Server |
 | `-scheduler` | `127.0.0.1:50051` | Scheduler gRPC target |
 | `-control` | `127.0.0.1:50061` | Job Controller gRPC target |
 | `-runtime` | `127.0.0.1:50071` | Runtime gRPC target |
@@ -152,6 +153,8 @@ export TGSRL_GATEWAY_EXPERIMENT_TARGET=127.0.0.1:50071
 | `-worker-registry-url` | 空 | workload 可访问的 Scheduler registry URL |
 | `-worker-registry-signing-key-file` | 空 | 与 Scheduler 相同的主签名 key，仅供 Operator 派生 scoped token |
 | `-worker-verify-device-identities` | `false` | 注册前核对容器可见设备 UUID；DRA 会强制启用 |
+| `-worker-bootstrap-binary` | `tgsrl-worker-bootstrap` | process backend 使用的本机 bootstrap 可执行文件 |
+| `-process-state-dir` | `<cursor-dir>/processes` | process backend 的状态与 worker log 目录 |
 
 Kubernetes 凭据解析顺序为：显式 `-kubeconfig`、`KUBECONFIG`、用户默认
 `.kube/config`；没有可用文件路径时使用集群内 ServiceAccount 配置。kubeconfig

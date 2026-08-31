@@ -117,10 +117,16 @@ reload → readiness`。`rebind` 必须指定不同的 source/target MIG UUID，
 Gate G/I runner 从同一个锁定 manifest 自动运行 baseline 和 variant，执行 warmup 与多次
 measurement，并从原始 NDJSON 事件重新计算吞吐、P50/P95/P99 延迟、iteration time、GPU active
 time、queue depth、policy lag、staleness、ESS、lifecycle latency、action/rollback rate 和 recovery
-time。CPU runner 只生成 `CPU_INTEGRATION/NOT_RUN` 证据；self-hosted CUDA runner 生成
-`GPU_SINGLE_NODE` 证据。`GPU_MULTI_NODE` 仅接受原始 trace 中至少有两个真实节点身份且
-baseline/variant 节点集合一致的外部运行证据。证据包包含原始 stdout/stderr、trace、锁定配置、
-环境指纹、digest 和汇总报告，报告指标必须与原始 trace 重算一致。
+time。`make gate-cpu-integration` 会启动 Gateway、Job Controller、Runtime、Scheduler、Operator
+process backend、worker bootstrap 与 veRL callback doubles；每个 trace 分组必须同时包含
+service job/run identity、Scheduler decision/plan identity、worker/runtime-unit identity，variant 还必须
+包含带 Runtime event 因果链的 Operator pause/resume。该路径只生成
+`CPU_INTEGRATION/NOT_RUN`，不安装真实 veRL，也不声称 GPU/Kubernetes 通过。旧的
+`verl-reference-workload.py` 仅保留为进程级 bridge/CUDA conformance；即使在 CUDA runner 上
+成功也保持 `NOT_RUN`，不能单独形成 Gate PASS。`GPU_MULTI_NODE` 仍仅接受原始 trace 中至少有
+两个真实节点身份且 baseline/variant 节点集合一致的外部运行证据。证据包包含原始
+stdout/stderr、服务日志、worker 日志、trace、锁定配置、环境指纹、digest 和汇总报告，报告
+指标必须与原始 trace 重算一致。
 
 ## 明确不支持
 
@@ -128,7 +134,7 @@ baseline/variant 节点集合一致的外部运行证据。证据包包含原始
 - 内置 TLS、身份认证、授权、多租户隔离、CORS 策略、限流或密钥管理；
 - 在未验证仓库内 binding/runtime/MIG helper 与目标环境时执行 GPU 分配、
   MIG/MPS 管理或 Runtime lifecycle；
-- 把 bootstrap 的 CPU/真实子进程验证解释为真实 Kubernetes Pod、DRA/CDI 或 veRL callback 证据；
+- 把 bootstrap/full-stack CPU 进程验证解释为真实 Kubernetes Pod、DRA/CDI、真实 veRL 包或 GPU 证据；
 - 把 `nvidia-smi` 设备发现、Mock 行为或单元测试解释为真实 GPU 调度与执行验证；
 - 依靠 fake backend 在进程重启后恢复 workload 对象；
 - 跨服务原子事务、自动故障转移、HA 或灾备；

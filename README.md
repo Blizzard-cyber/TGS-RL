@@ -177,6 +177,11 @@ HTTP 路由、分页、错误、CLI 和 Console 说明见
 [API、CLI 与 Console 指南](docs/guides/api-and-console.md)。运行中的 Gateway 在
 `GET /openapi.json` 提供 OpenAPI 3.1 文档。
 
+本地 CPU full-stack Gate 可通过 `make gate-cpu-integration` 执行。该命令启动实际的
+Gateway、Job Controller、Runtime、Scheduler、Operator process backend 与 managed worker
+进程，并归档 service/worker trace；输出仍为 `CPU_INTEGRATION/NOT_RUN`，不能作为真实
+veRL package、Kubernetes 或 GPU Gate 通过的证据。
+
 ## 数据与恢复
 
 | 组件 | 持久化方式 | 重启后的行为 |

@@ -1,0 +1,105 @@
+{
+  "schema_version": "tgsrl.io/gate-suite/v1alpha1",
+  "suite_id": "gate-g-i-process",
+  "suite_revision": 1,
+  "title": "Gate G/I full-stack CPU process validation",
+  "scenario_manifest": "configs/scenarios/gate-gi-process.yaml",
+  "workload_lock": {
+    "algorithm": "grpo",
+    "rollout_mode": "partially_async",
+    "seed": 20260829,
+    "version_lock": {
+      "policy": "static",
+      "scenario_revision": 1,
+      "compatibility_profile": "cpu-process-verl-v1"
+    }
+  },
+  "workload_runner": {
+    "evidence_mode": "full_stack",
+    "argv": [
+      "{python}",
+      "scripts/gate-full-stack-workload.py"
+    ],
+    "items_per_run": 64,
+    "timeout_seconds": 120,
+    "variants": {
+      "baseline": {
+        "control_mode": "static"
+      },
+      "variant": {
+        "control_mode": "tgsrl"
+      }
+    }
+  },
+  "environment_fingerprint": {
+    "required_fields": [
+      "host_hash",
+      "platform",
+      "python_version",
+      "git_commit",
+      "git_dirty",
+      "execution_mode"
+    ]
+  },
+  "artifacts": {
+    "archive": "artifacts/raw/archive.tar.gz",
+    "baseline_trace": "artifacts/traces/baseline-trace.json",
+    "variant_trace": "artifacts/traces/variant-trace.json",
+    "report": "report.json"
+  },
+  "metrics_schema": {
+    "required_metrics": [
+      "latency_ms_p50",
+      "latency_ms_p95",
+      "latency_ms_p99",
+      "throughput_items_per_s",
+      "decision_count",
+      "end_to_end_iteration_ms_p50",
+      "scheduling_latency_ms_p95",
+      "gpu_active_time_ms",
+      "queue_depth_max",
+      "policy_lag_p95",
+      "sample_staleness_ratio",
+      "effective_sample_size_mean",
+      "pause_latency_ms",
+      "checkpoint_latency_ms",
+      "reload_latency_ms",
+      "action_success_rate",
+      "rollback_rate",
+      "transaction_recovery_time_ms"
+    ]
+  },
+  "comparisons": {
+    "baseline": "baseline",
+    "variant": "variant",
+    "warmup_runs": 1,
+    "measurement_runs": 3
+  },
+  "rules": [
+    {
+      "rule_id": "gate-g-full-stack-decision-present",
+      "gate": "G",
+      "metric": "decision_count",
+      "operator": ">=",
+      "threshold": 1,
+      "requires_trace": true
+    },
+    {
+      "rule_id": "gate-i-full-stack-throughput-observed",
+      "gate": "I",
+      "metric": "throughput_items_per_s",
+      "operator": ">=",
+      "threshold": 0,
+      "comparison": "variant_over_baseline_ratio"
+    },
+    {
+      "rule_id": "gate-g-full-stack-actions-succeeded",
+      "gate": "G",
+      "metric": "action_success_rate",
+      "operator": ">=",
+      "threshold": 1
+    }
+  ],
+  "status_values": ["NOT_RUN", "BLOCKED", "INVALID", "PASSED", "FAILED"],
+  "evidence_values": ["SIMULATED", "CPU_INTEGRATION", "GPU_SINGLE_NODE", "GPU_MULTI_NODE"]
+}

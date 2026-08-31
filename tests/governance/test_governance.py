@@ -82,7 +82,7 @@ def test_hardware_workflow_has_cpu_and_automated_self_hosted_gpu_entries() -> No
     text = HARDWARE_WORKFLOW.read_text(encoding="utf-8")
 
     assert "cpu-integration:" in text
-    assert "scripts/gate-tools.py cpu-smoke" in text
+    assert "make gate-cpu-integration" in text
     assert "gpu-runner:" in text
     assert "runs-on: [self-hosted, gpu]" in text
     assert "hardware-run --evidence" in text

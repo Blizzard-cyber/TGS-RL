@@ -1,0 +1,61 @@
+schema_version: "tgsrl.io/compatibility-profile/v1alpha1"
+profile_id: "cpu-process-verl-v1"
+revision: 1
+status: "supported-with-limitations"
+description: >-
+  Local process profile for exercising the veRL 0.9 lifecycle adapter with
+  structural trainer doubles. It is not evidence of a real veRL installation,
+  CUDA, NVIDIA devices, or model training quality.
+
+provider:
+  kind: "MockResourceProvider"
+  source: "mock"
+  live_hardware: false
+  authoritative_for: "cpu-process-resource-state-only"
+
+runtime_scope:
+  required_host_resources:
+    - "cpu"
+    - "memory"
+    - "local-process"
+  data_kinds:
+    - "synthetic"
+  algorithms:
+    - "grpo"
+  rollout_modes:
+    - "partially_async"
+  lifecycle_actions:
+    - "bind"
+    - "pause"
+    - "resume"
+    - "release"
+
+gpu_management_profile:
+  selected: "none"
+  allowed_values:
+    - "none"
+    - "nvidia-device-plugin"
+    - "kubernetes-dra"
+    - "volcano-hami"
+  mutually_exclusive: true
+  maximum_active_profiles: 1
+  admission_rejects_multiple_profiles: true
+  enabled_profiles: []
+
+unsupported_scope:
+  - "installed veRL, Ray, PyTorch, vLLM, or SGLang packages"
+  - "live GPU scheduling or execution"
+  - "CUDA MPS or MIG behavior"
+  - "Kubernetes or Kueue admission"
+  - "hardware latency, throughput, convergence, VUG, or wall-clock claims"
+
+admission:
+  require_explicit_capability: true
+  unknown_capability_supported: false
+  reject_live_data: true
+  reject_physical_device_claims: true
+
+evidence:
+  status: "cpu-process-integration"
+  full_stack_gate:
+    - "scripts/gate-full-stack.sh"

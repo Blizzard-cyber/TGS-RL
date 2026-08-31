@@ -53,7 +53,7 @@ jobs:
             .cache/tgsrl/gate-gi/artifacts/traces/*.json
 
   cpu-integration:
-    name: Gate G/I CPU integration smoke
+    name: Gate G/I full-stack CPU integration
     if: ${{ github.event.inputs.mode == 'cpu-integration' }}
     runs-on: ubuntu-24.04
     steps:
@@ -63,26 +63,29 @@ jobs:
         uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.12.14"
+      - name: Install Go from go.mod
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
       - name: Install locked dependencies
         run: |
           python -m pip install uv==0.12.7
           uv sync --frozen
-      - name: Capture CPU smoke evidence
+      - name: Capture full-stack CPU evidence
         run: |
-          uv run --frozen python scripts/gate-tools.py cpu-smoke --smoke-command "python -c 'print(\"cpu smoke\")'"
-          uv run --frozen python scripts/gate-tools.py report
-          uv run --frozen python scripts/gate-tools.py evaluate
+          make gate-cpu-integration
       - name: Upload CPU artifacts
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: gate-gi-cpu-integration
           path: |
-            .cache/tgsrl/gate-gi/report.json
-            .cache/tgsrl/gate-gi/artifacts/raw/archive.tar.gz
-            .cache/tgsrl/gate-gi/artifacts/traces/*.json
+            .cache/tgsrl/gate-gi-process/report.json
+            .cache/tgsrl/gate-gi-process/artifacts/raw/archive.tar.gz
+            .cache/tgsrl/gate-gi-process/artifacts/traces/*.json
 
   gpu-runner:
-    name: Gate G/I GPU workload runner
+    name: GPU workload conformance (not Gate G/I)
     if: ${{ github.event.inputs.mode == 'gpu-single-node' }}
     runs-on: [self-hosted, gpu]
     steps:
@@ -101,7 +104,15 @@ jobs:
           nvidia-smi -L
           uv run --frozen python scripts/gate-tools.py hardware-run --evidence GPU_SINGLE_NODE
           uv run --frozen python scripts/gate-tools.py report
-          uv run --frozen python scripts/gate-tools.py evaluate
+          uv run --frozen python scripts/gate-tools.py evaluate > /tmp/gate-evaluation.json
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          data = json.loads(Path("/tmp/gate-evaluation.json").read_text(encoding="utf-8"))
+          if data["status"] == "PASSED":
+              raise SystemExit("reference CUDA workload must not claim a full-system Gate pass")
+          print(json.dumps(data, indent=2, sort_keys=True))
+          PY
       - name: Upload GPU evidence bundle
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:

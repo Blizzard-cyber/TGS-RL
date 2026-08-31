@@ -234,12 +234,14 @@ CUDA/container 级设备隔离。
 
 使用 `make build-nvidia-runtime` 构建 runtime helper。Scheduler 的
 `-nvidia-runtime-helper` 指定可执行文件，`-nvidia-runtime-state` 指定持久化 worker/receipt
-文件。Kubernetes 路径可额外启用 `-worker-registry-listen`、
+文件。Kubernetes 或本地 process 路径可额外启用 `-worker-registry-listen`、
 `-worker-registry-runtime-target` 和 `-worker-registry-signing-key-file`：registry 校验 scoped
 HMAC、当前 Provider binding、来源 IP 与 Runtime 的 BOUND generation，然后保存 bootstrap 的
 control URL/token 并发布运行或退出 observation。签名 key 至少 32 bytes，必须与 Operator 使用
 同一 Secret，但不能下发到 workload。registry/control endpoint 没有内建 TLS，只允许隔离网络
 或外部 TLS 终止层。
+`-worker-registry-state` 可把通用 worker 状态与 NVIDIA helper 状态分离；未设置时，NVIDIA v2
+继续复用 `-nvidia-runtime-state`，非 NVIDIA provider 使用 `<state-dir>/worker-registry.json`。
 
 本机兼容路径仍可通过 helper 的 `register` 命令登记 PID。未配置 cooperative worker socket
 时 offload 会 fail closed；signal pause 还需要 safe-point marker，并且不会释放 CUDA context/显存。

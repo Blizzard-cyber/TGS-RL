@@ -59,8 +59,8 @@ jobs:
           cache-dependency-path: go.sum
       - name: Verify formatting and static checks
         run: |
-          test -z "$(gofmt -l scheduler-go job-controller-go operator-go storage cmd)"
-          go vet ./gen/go/... ./scheduler-go/... ./job-controller-go/... ./operator-go/... ./storage/... ./scripts ./cmd/...
+          test -z "$(gofmt -l internal scheduler-go job-controller-go operator-go storage cmd)"
+          go vet ./gen/go/... ./internal/... ./scheduler-go/... ./job-controller-go/... ./operator-go/... ./storage/... ./scripts ./cmd/...
       - name: Test with the race detector
         run: make race
       - name: Build scheduler
@@ -264,6 +264,45 @@ jobs:
       - name: Stop local product stack
         if: always()
         run: docker compose down
+
+  gate-cpu:
+    name: Full-stack CPU Gate
+    runs-on: ubuntu-24.04
+    needs:
+      - go
+      - python
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Install Go from go.mod
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
+      - name: Install Python 3.12.14
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12.14"
+      - name: Install uv 0.12.7
+        uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+        with:
+          version: "0.12.7"
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+      - name: Sync locked dependencies
+        run: uv sync --frozen
+      - name: Run full-stack CPU Gate
+        run: make gate-cpu-integration
+      - name: Upload Gate evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: gate-gi-full-stack-cpu
+          if-no-files-found: error
+          path: |
+            .cache/tgsrl/gate-gi-process/report.json
+            .cache/tgsrl/gate-gi-process/artifacts/raw/archive.tar.gz
+            .cache/tgsrl/gate-gi-process/artifacts/traces/*.json
 
   console:
     name: Web console

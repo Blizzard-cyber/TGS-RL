@@ -248,7 +248,10 @@ Decision
 → 发布 SandboxEvent
 ```
 
-fake backend 用于本地控制链，Kubernetes backend 管理 CRD、Kueue Workload、Job 和可选
+fake backend 用于纯内存控制契约；process backend 在本机复用同一 Bundle 投影，但由 Operator
+真实启动 `tgsrl-worker-bootstrap` 和子进程，并通过 Scheduler registry 的 scoped status/action
+接口执行 pause/resume/stop。它只用于 CPU 集成和 Gate harness，不模拟 Kubernetes 或 GPU。
+Kubernetes backend 管理 CRD、Kueue Workload、Job 和可选
 ResourceClaim。GPU 身份由 Scheduler 选择：NVIDIA Driver v2 的 device ID 就是 GPU/MIG UUID；
 `kubernetes-dra` 按 typed inventory 为 Full GPU/MIG 选择不同 DeviceClass，再编译 NVIDIA DRA
 `uuid` CEL selector。Operator 从 ResourceClaim 的
@@ -277,6 +280,8 @@ stdout/stderr 和 trace，再从事件重新计算指标。校验器不信任外
 - 指标必须是有限数值，不能是布尔值、`NaN` 或无穷；
 - trace digest、suite、seed、label、warmup 和 measurement 次数必须匹配；
 - 执行记录必须完整且无超时；
+- full-stack 模式按每个 warmup/measurement iteration 校验唯一 service job/run、Scheduler
+  decision/plan、managed-worker identity，variant 还必须有 Operator pause/resume 因果事件；
 - GPU PASS 需要 CUDA measurement、正 GPU active time、硬件指纹和干净 commit；
 - `GPU_MULTI_NODE` 还要求两侧出现同一组至少两个节点身份。
 

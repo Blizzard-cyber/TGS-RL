@@ -26,7 +26,7 @@ Operator 同时运行两个长期服务：它订阅 Scheduler Decision，并在 
 
 | 参数 | 默认值 | 说明 |
 |---|---|---|
-| `-mode` | `kubernetes` | `fake` 或 `kubernetes` backend |
+| `-mode` | `kubernetes` | `fake`、`process` 或 `kubernetes` backend；`process` 仅用于本地 CPU 集成 |
 | `-controller` | `true` | 是否运行 decision reconcile loop；关闭时仍提供 backend lifecycle control gRPC |
 | `-scheduler` | `127.0.0.1:50051` | Scheduler gRPC target |
 | `-control` | `127.0.0.1:50061` | Job Controller gRPC target |
@@ -39,11 +39,13 @@ Operator 同时运行两个长期服务：它订阅 Scheduler Decision，并在 
 | `-runtime-class-name` | 空 | 引用已有 RuntimeClass；默认不设置 |
 | `-runtime-class-create` | `false` | 是否由 Operator 创建 RuntimeClass；启用时还需 handler 和额外集群权限 |
 | `-node-selector` | 空 | Pod node selector，使用可重复的 `key=value` 参数 |
-| `-worker-bootstrap` | `false` | 用 managed-worker bootstrap 包装 Kubernetes workload；DRA 模式必须启用 |
+| `-worker-bootstrap` | `false` | 用 managed-worker bootstrap 包装 workload；`process` 模式与 DRA 会自动启用 |
 | `-worker-bootstrap-image` | 空 | 只接受 `repository@sha256:...` 的 bootstrap installer 镜像 |
 | `-worker-registry-url` | 空 | workload 可访问的 Scheduler registry HTTP(S) base URL |
 | `-worker-registry-signing-key-file` | 空 | 派生 scoped registration token 的主 HMAC key；至少 32 bytes |
 | `-worker-verify-device-identities` | `false` | 注册前用 `nvidia-smi -L` 核对 UUID；DRA claim 会强制开启 |
+| `-worker-bootstrap-binary` | `tgsrl-worker-bootstrap` | `process` 模式使用的本机 bootstrap 路径 |
+| `-process-state-dir` | `<cursor-dir>/processes` | `process` 模式的 worker 日志与状态根目录，必须是绝对路径 |
 
 ## 决策处理
 
@@ -74,9 +76,10 @@ Sandbox 已经收敛。
 | 模式 | 当前行为 |
 |---|---|
 | `fake` | 在进程内保存编译后的 bundle，适合完整 CPU Mock 本地栈 |
+| `process` | 在本机真实启动 bootstrap/worker，以 registry readback 投影状态；只用于 CPU 集成，不代表容器/Kubernetes |
 | `kubernetes` | 使用窄 HTTP client 物化并读写 API Server 中的 JobRunBundle、Workload、Job 与按需创建的 ResourceClaim；仅当显式开启 `runtimeClassCreate` 时才创建 RuntimeClass，并选择配置的 GPU profile |
 
-两种模式都会运行同一决策消费与状态回报链路。`kubernetes` 模式依次使用显式
+三种模式都会运行同一决策消费与状态回报链路。`kubernetes` 模式依次使用显式
 `-kubeconfig`、`KUBECONFIG`、用户默认 `.kube/config` 或集群内 ServiceAccount 配置。
 当前 kubeconfig 读取器只解析 API server、静态 bearer token、内嵌 CA data 和 namespace；
 不执行 exec/auth-provider 插件，也不合并多文件 `KUBECONFIG`。需要这类认证时，应使用

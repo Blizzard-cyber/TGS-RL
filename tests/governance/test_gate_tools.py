@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import importlib.util
 import json
 import subprocess
 import sys
@@ -10,15 +11,27 @@ from typing import Any, cast
 ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = ROOT / "scripts" / "gate-tools.py"
 MANIFEST = ROOT / "configs" / "gates" / "gate-gi.json"
+FULL_STACK_MANIFEST = ROOT / "configs" / "gates" / "gate-gi-process.json"
+SPEC = importlib.util.spec_from_file_location("tgsrl_gate_tools", SCRIPT)
+assert SPEC is not None and SPEC.loader is not None
+GATE_TOOLS = importlib.util.module_from_spec(SPEC)
+sys.modules[SPEC.name] = GATE_TOOLS
+SPEC.loader.exec_module(GATE_TOOLS)
 
 
 def run_tool(output_dir: Path, *arguments: str) -> subprocess.CompletedProcess[str]:
+    return run_tool_with_manifest(MANIFEST, output_dir, *arguments)
+
+
+def run_tool_with_manifest(
+    manifest: Path, output_dir: Path, *arguments: str
+) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         [
             sys.executable,
             str(SCRIPT),
             "--manifest",
-            str(MANIFEST),
+            str(manifest),
             "--output-dir",
             str(output_dir),
             *arguments,
@@ -165,6 +178,148 @@ def test_cpu_smoke_failure_is_blocked_and_returns_failure(tmp_path: Path) -> Non
     rendered = run_tool(tmp_path, "report")
     assert rendered.returncode == 0, rendered.stderr
     assert json.loads(rendered.stdout)["summary"]["status"] == "BLOCKED"
+
+
+def test_full_stack_gate_rejects_process_local_reference_events(tmp_path: Path) -> None:
+    manifest = json.loads(FULL_STACK_MANIFEST.read_text(encoding="utf-8"))
+    manifest["comparisons"] = {
+        "baseline": "baseline",
+        "variant": "variant",
+        "warmup_runs": 0,
+        "measurement_runs": 1,
+    }
+    manifest["workload_runner"]["argv"] = [
+        "{python}",
+        "scripts/verl-reference-workload.py",
+    ]
+    path = tmp_path / "full-stack.json"
+    path.write_text(json.dumps(manifest), encoding="utf-8")
+
+    result = run_tool_with_manifest(
+        path,
+        tmp_path / "output",
+        "cpu-smoke",
+        "--smoke-command",
+        f"{sys.executable} -c 'print(1)'",
+    )
+
+    assert result.returncode == 1
+    assert "must identify exactly one service run/job" in result.stderr
+
+
+def test_full_stack_report_rejects_missing_or_tampered_service_logs(tmp_path: Path) -> None:
+    manifest = GATE_TOOLS.load_manifest(FULL_STACK_MANIFEST)
+    paths = GATE_TOOLS.artifact_paths(manifest, tmp_path)
+    paths.baseline_trace.parent.mkdir(parents=True)
+    events: list[dict[str, object]] = []
+    for label in ("baseline", "variant"):
+        for phase, count in (("warmup", 1), ("measurement", 3)):
+            for iteration in range(1, count + 1):
+                common = {
+                    "label": label,
+                    "phase": phase,
+                    "iteration": iteration,
+                    "service_run_id": f"run-{label}-{phase}-{iteration}",
+                    "service_job_id": f"job-{label}-{phase}-{iteration}",
+                }
+                events.extend(
+                    [
+                        common
+                        | {
+                            "event_type": "sample_consumed",
+                            "source": "worker",
+                            "runtime_unit_id": "unit-1",
+                            "worker_id": "worker-1",
+                            "duration_ms": 1.0,
+                            "contract_observation": {},
+                        },
+                        common
+                        | {
+                            "event_type": "workload_completed",
+                            "source": "worker",
+                            "runtime_unit_id": "unit-1",
+                            "worker_id": "worker-1",
+                            "elapsed_ms": 2.0,
+                            "item_count": 1,
+                        },
+                        common
+                        | {
+                            "event_type": "decision_applied",
+                            "source": "scheduler",
+                            "decision_id": "decision-1",
+                            "plan_id": "plan-1",
+                            "duration_ms": 1.0,
+                            "succeeded": True,
+                        },
+                    ]
+                )
+                if label == "variant":
+                    events.extend(
+                        common
+                        | {
+                            "event_type": "decision_applied",
+                            "source": "operator",
+                            "action": action,
+                            "duration_ms": 1.0,
+                            "succeeded": True,
+                        }
+                        for action in ("pause", "resume")
+                    )
+    by_label = {
+        label: [event for event in events if event["label"] == label]
+        for label in ("baseline", "variant")
+    }
+    for label, path in (("baseline", paths.baseline_trace), ("variant", paths.variant_trace)):
+        path.write_text(
+            json.dumps(
+                {
+                    "schema_version": "tgsrl.io/gate-trace/v1alpha1",
+                    "suite_id": manifest.data["suite_id"],
+                    "label": label,
+                    "seed": manifest.data["workload_lock"]["seed"],
+                    "events": by_label[label],
+                    "metrics": GATE_TOOLS._metrics_from_events(by_label[label]),
+                }
+            ),
+            encoding="utf-8",
+        )
+    log = tmp_path / "artifacts/services/control-plane/scheduler.log"
+    log.parent.mkdir(parents=True)
+    log.write_text("decision recorded\n", encoding="utf-8")
+    metrics = {label: GATE_TOOLS._metrics_from_events(by_label[label]) for label in by_label}
+    report = {
+        "schema_version": "tgsrl.io/gate-run-record/v1alpha1",
+        "suite_id": manifest.data["suite_id"],
+        "evidence": "CPU_INTEGRATION",
+        "status": "NOT_RUN",
+        "simulated": False,
+        "workload_lock": manifest.data["workload_lock"],
+        "environment_fingerprint": {"execution_mode": "cpu-full-stack"},
+        "warmup_runs": 1,
+        "measurement_runs": 3,
+        "baseline_trace": paths.baseline_trace.relative_to(tmp_path).as_posix(),
+        "variant_trace": paths.variant_trace.relative_to(tmp_path).as_posix(),
+        "metrics": metrics,
+        "trace_capture": {
+            "baseline_digest": hashlib.sha256(paths.baseline_trace.read_bytes()).hexdigest(),
+            "variant_digest": hashlib.sha256(paths.variant_trace.read_bytes()).hexdigest(),
+        },
+        "smoke": {"executed": True, "exit_code": 0},
+        "executions": [{"executed": True, "exit_code": 0, "timed_out": False} for _ in range(8)],
+        "service_log_artifacts": [
+            {
+                "path": log.relative_to(tmp_path).as_posix(),
+                "sha256": hashlib.sha256(log.read_bytes()).hexdigest(),
+            }
+        ],
+    }
+    paths.report.write_text(json.dumps(report), encoding="utf-8")
+    assert run_tool_with_manifest(FULL_STACK_MANIFEST, tmp_path, "report").returncode == 0
+
+    log.write_text("tampered\n", encoding="utf-8")
+    result = run_tool_with_manifest(FULL_STACK_MANIFEST, tmp_path, "report")
+    assert result.returncode == 1
+    assert "service log artifact 0 digest does not match" in result.stderr
 
 
 def test_gpu_ingest_copies_external_artifacts_and_preserves_not_run(tmp_path: Path) -> None:

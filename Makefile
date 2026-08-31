@@ -3,8 +3,8 @@ SHELL := /bin/sh
 
 BUF_VERSION := 1.72.0
 UV_VERSION := 0.12.7
-GO_PACKAGES := ./gen/go/... ./scheduler-go/... ./job-controller-go/... ./operator-go/... ./storage/... ./scripts ./cmd/...
-PYTHON_PATHS := adapters runtime-python gateway-python tests/python tests/api tests/storage tests/e2e tests/governance scripts/check-proto-roundtrip.py scripts/check-oci-platforms.py scripts/generate-sbom.py scripts/check-compatibility.py scripts/check-upstream-patches.py scripts/gate-tools.py scripts/verl-reference-workload.py
+GO_PACKAGES := ./gen/go/... ./internal/... ./scheduler-go/... ./job-controller-go/... ./operator-go/... ./storage/... ./scripts ./cmd/...
+PYTHON_PATHS := adapters runtime-python gateway-python tests/python tests/api tests/storage tests/e2e tests/governance scripts/check-proto-roundtrip.py scripts/check-oci-platforms.py scripts/generate-sbom.py scripts/check-compatibility.py scripts/check-upstream-patches.py scripts/gate-tools.py scripts/verl-reference-workload.py scripts/gate-full-stack-workload.py scripts/gate-managed-workload.py
 GO_FORMAT_PATHS := scheduler-go job-controller-go operator-go storage cmd internal
 SCHEDULER_PACKAGE := ./scheduler-go/cmd/scheduler
 NVIDIA_BINDING_PACKAGE := ./cmd/tgsrl-nvidia-binding
@@ -19,7 +19,7 @@ GATEWAY_LISTEN ?= 127.0.0.1:8080
 OPERATOR_LISTEN ?= 127.0.0.1:50081
 SCHEDULER_FALLBACK ?= noop
 
-.PHONY: help doctor proto check-generated check-openapi proto-roundtrip check-migrations check-compose check-deploy check-public-content sbom check-governance test-go test-python test-api test-console lint test race build-nvidia-binding build-nvidia-runtime build-nvidia-mig build-worker-bootstrap demo product-e2e run-scheduler run-controller run-runtime run-gateway run-operator run-console
+.PHONY: help doctor proto check-generated check-openapi proto-roundtrip check-migrations check-compose check-deploy check-public-content sbom check-governance test-go test-python test-api test-console lint test race build-nvidia-binding build-nvidia-runtime build-nvidia-mig build-worker-bootstrap demo product-e2e gate-cpu-integration run-scheduler run-controller run-runtime run-gateway run-operator run-console
 
 help:
 	@printf '%s\n' \
@@ -35,6 +35,7 @@ help:
 	  '  make check-public-content reject private links, paths, and credential-like content' \
 	  '  make sbom             regenerate the deterministic lockfile SBOM' \
 	  '  make check-governance validate SBOM, compatibility evidence, and patch ledger' \
+	  '  make gate-cpu-integration run the full local process Gate path' \
 	  '  make test-go          run all Go tests' \
 	  '  make test-python      sync the locked Python environment and run tests' \
 	  '  make lint             run Go vet and Python Ruff/mypy checks' \
@@ -192,6 +193,9 @@ demo:
 
 product-e2e:
 	./scripts/product-e2e.sh
+
+gate-cpu-integration:
+	./scripts/gate-full-stack.sh
 
 run-scheduler:
 	go run ./scheduler-go/cmd/scheduler -listen "$(SCHEDULER_LISTEN)"
