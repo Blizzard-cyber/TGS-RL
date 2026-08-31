@@ -21,24 +21,37 @@ import (
 const SchemaVersion = 1
 
 type Worker struct {
-	SandboxID     string    `json:"sandbox_id"`
-	Generation    uint64    `json:"generation"`
-	PID           int       `json:"pid"`
-	ProcessToken  string    `json:"process_token"`
-	State         string    `json:"state"`
-	SafePoint     bool      `json:"safe_point"`
-	Offloaded     bool      `json:"offloaded"`
-	Ready         bool      `json:"ready"`
-	Priority      int32     `json:"priority"`
-	BindingID     string    `json:"binding_id,omitempty"`
-	DeviceID      string    `json:"device_id,omitempty"`
-	Share         float64   `json:"share,omitempty"`
-	ControlSocket string    `json:"control_socket,omitempty"`
-	SafePointFile string    `json:"safe_point_file,omitempty"`
-	ReadinessFile string    `json:"readiness_file,omitempty"`
-	CheckpointRef string    `json:"checkpoint_ref,omitempty"`
-	LastOperation string    `json:"last_operation,omitempty"`
-	LastUpdatedAt time.Time `json:"last_updated_at"`
+	RunID                 string    `json:"run_id,omitempty"`
+	JobID                 string    `json:"job_id,omitempty"`
+	TraceID               string    `json:"trace_id,omitempty"`
+	RuntimeUnitID         string    `json:"runtime_unit_id,omitempty"`
+	SandboxID             string    `json:"sandbox_id"`
+	Generation            uint64    `json:"generation"`
+	PID                   int       `json:"pid"`
+	ProcessToken          string    `json:"process_token"`
+	InstanceID            string    `json:"instance_id,omitempty"`
+	State                 string    `json:"state"`
+	SafePoint             bool      `json:"safe_point"`
+	Offloaded             bool      `json:"offloaded"`
+	Ready                 bool      `json:"ready"`
+	Priority              int32     `json:"priority"`
+	BindingID             string    `json:"binding_id,omitempty"`
+	DeviceID              string    `json:"device_id,omitempty"`
+	Share                 float64   `json:"share,omitempty"`
+	ControlSocket         string    `json:"control_socket,omitempty"`
+	ControlURL            string    `json:"control_url,omitempty"`
+	ControlToken          string    `json:"control_token,omitempty"`
+	RegistrationTokenHash string    `json:"registration_token_hash,omitempty"`
+	DeviceIDs             []string  `json:"device_ids,omitempty"`
+	MPSServerPID          uint32    `json:"mps_server_pid,omitempty"`
+	MPSServerProcessToken string    `json:"mps_server_process_token,omitempty"`
+	SafePointFile         string    `json:"safe_point_file,omitempty"`
+	ReadinessFile         string    `json:"readiness_file,omitempty"`
+	CheckpointRef         string    `json:"checkpoint_ref,omitempty"`
+	LastOperation         string    `json:"last_operation,omitempty"`
+	LastUpdatedAt         time.Time `json:"last_updated_at"`
+	ExitCode              int       `json:"exit_code,omitempty"`
+	Detail                string    `json:"detail,omitempty"`
 }
 
 type Receipt struct {
@@ -133,8 +146,11 @@ func (s *Store) Register(worker Worker) error {
 				return fmt.Errorf("stale generation %d; current generation is %d", worker.Generation, current.Generation)
 			}
 			if worker.Generation == current.Generation {
-				if !sameWorkerRegistration(current, worker) {
+				if !sameWorkerRegistrationIdentity(current, worker) {
 					return fmt.Errorf("generation %d is already registered with different worker identity", worker.Generation)
+				}
+				if current.State == "failed" || current.State == "terminated" {
+					return fmt.Errorf("generation %d already has terminal worker state %q", worker.Generation, current.State)
 				}
 				return nil
 			}
@@ -161,6 +177,47 @@ func (s *Store) Unregister(sandboxID string, generation uint64) error {
 		delete(state.Heads, sandboxID)
 		return nil
 	})
+}
+
+// ReportExit records a terminal remote-worker observation without allowing an
+// old bootstrap generation or instance to overwrite its replacement.
+func (s *Store) ReportExit(sandboxID string, generation uint64, instanceID, processToken, state string, exitCode int, detail string) (bool, bool, error) {
+	updated, matched := false, false
+	err := s.state.Update(func(current *State) error {
+		worker, ok := current.Workers[sandboxID]
+		if !ok {
+			return fmt.Errorf("sandbox %q is not registered", sandboxID)
+		}
+		if generation < worker.Generation {
+			return nil
+		}
+		if generation > worker.Generation {
+			return fmt.Errorf("future generation %d; current generation is %d", generation, worker.Generation)
+		}
+		if worker.InstanceID != instanceID || worker.ProcessToken != processToken {
+			return nil
+		}
+		matched = true
+		if state != "terminated" && state != "failed" {
+			return fmt.Errorf("worker exit state must be terminated or failed")
+		}
+		trimmedDetail := strings.TrimSpace(detail)
+		if worker.State == "terminated" || worker.State == "failed" {
+			if worker.State != state || worker.ExitCode != exitCode || worker.Detail != trimmedDetail {
+				return fmt.Errorf("worker terminal outcome is already recorded")
+			}
+			return nil
+		}
+		if worker.State == state && worker.ExitCode == exitCode && worker.Detail == trimmedDetail {
+			return nil
+		}
+		worker.State, worker.SafePoint, worker.Offloaded, worker.Ready = state, false, false, false
+		worker.ExitCode, worker.Detail, worker.LastUpdatedAt = exitCode, trimmedDetail, time.Now().UTC()
+		current.Workers[sandboxID] = worker
+		updated = true
+		return nil
+	})
+	return updated, matched, err
 }
 
 func (s *Store) Refresh(worker Worker) error {
@@ -375,7 +432,10 @@ func cloneState(state State) State {
 	return result
 }
 
-func cloneWorker(worker Worker) Worker { return worker }
+func cloneWorker(worker Worker) Worker {
+	worker.DeviceIDs = append([]string(nil), worker.DeviceIDs...)
+	return worker
+}
 
 func receiptFor(request ActionRequest) Receipt {
 	return Receipt{Operation: request.Operation, Phase: "pending", StepIndex: request.StepIndex, ExpectedActions: request.ExpectedActions, PlanDigest: request.PlanDigest, ActionID: request.ActionID, PlanID: request.PlanID, IdempotencyKey: request.IdempotencyKey, SandboxID: request.SandboxID, TransactionGeneration: request.TransactionGeneration, ActionGeneration: request.Generation, TargetGeneration: request.TargetGeneration, TargetDeviceID: request.TargetDeviceID, TargetProfile: request.TargetProfile, TargetParentID: request.TargetParentID, TargetBindingID: request.TargetBindingID, TargetShare: request.TargetShare, SourceBindingID: request.SourceBindingID, SourceDeviceID: request.SourceDeviceID, ErrorCode: "OUTCOME_UNKNOWN", ErrorMessage: "runtime mutation outcome is not confirmed", CommandDigest: request.CommandDigest, RequestDigest: RequestDigest(request.Operation, request.SandboxID, request.Generation, request.SourceBindingID, request.SourceDeviceID, strconv.FormatUint(request.TargetGeneration, 10), request.TargetParentID, request.TargetDeviceID, request.TargetProfile, request.TargetBindingID, strconv.FormatFloat(request.TargetShare, 'g', -1, 64)), Recoverable: request.Recoverable}
@@ -392,14 +452,40 @@ func validateWorker(worker Worker) error {
 	if strings.TrimSpace(worker.SandboxID) == "" || worker.Generation == 0 || worker.PID <= 0 || strings.TrimSpace(worker.ProcessToken) == "" {
 		return errors.New("worker requires sandbox, generation, pid, and process token")
 	}
+	if worker.ControlURL != "" && (worker.RunID == "" || worker.JobID == "" || worker.RuntimeUnitID == "" || worker.InstanceID == "" || worker.ControlToken == "") {
+		return errors.New("remote worker requires run, job, runtime unit, instance identity, and control token")
+	}
+	if worker.ControlURL != "" && worker.ControlSocket != "" {
+		return errors.New("worker cannot use both remote and Unix control endpoints")
+	}
+	if worker.InstanceID != "" && worker.ControlURL == "" {
+		return errors.New("remote worker instance identity requires a control URL")
+	}
+	if worker.MPSServerPID > 0 && worker.MPSServerProcessToken == "" {
+		return errors.New("MPS server PID requires a process identity token")
+	}
 	switch worker.State {
 	case "running", "paused", "sleeping", "failed", "terminated":
 	default:
 		return fmt.Errorf("unsupported worker state %q", worker.State)
 	}
-	hasBinding := worker.BindingID != "" || worker.DeviceID != "" || worker.Share != 0
-	if hasBinding && (worker.BindingID == "" || !strings.HasPrefix(worker.DeviceID, "MIG-") || math.IsNaN(worker.Share) || math.IsInf(worker.Share, 0) || worker.Share <= 0 || worker.Share > 1) {
-		return errors.New("worker binding requires binding ID, MIG device ID, and share within (0,1]")
+	deviceIDs := append([]string(nil), worker.DeviceIDs...)
+	if len(deviceIDs) == 0 && worker.DeviceID != "" {
+		deviceIDs = []string{worker.DeviceID}
+	}
+	hasAcceleratorBinding := len(deviceIDs) != 0 || worker.Share != 0
+	if hasAcceleratorBinding && (worker.BindingID == "" || len(deviceIDs) == 0 || math.IsNaN(worker.Share) || math.IsInf(worker.Share, 0) || worker.Share < 0 || worker.Share > 1) {
+		return errors.New("worker binding requires binding ID, device identities, and optional share within [0,1]")
+	}
+	seen := make(map[string]struct{}, len(deviceIDs))
+	for _, deviceID := range deviceIDs {
+		if strings.TrimSpace(deviceID) == "" {
+			return errors.New("worker device identities must be nonblank")
+		}
+		if _, duplicate := seen[deviceID]; duplicate {
+			return errors.New("worker device identities must be unique")
+		}
+		seen[deviceID] = struct{}{}
 	}
 	return nil
 }
@@ -430,8 +516,28 @@ func validPhaseTransition(current, next string) bool {
 	return currentOK && nextOK && nextOrder == currentOrder+1
 }
 
-func sameWorkerRegistration(left, right Worker) bool {
-	return left.SandboxID == right.SandboxID && left.Generation == right.Generation && left.PID == right.PID && left.ProcessToken == right.ProcessToken && left.Priority == right.Priority && left.BindingID == right.BindingID && left.DeviceID == right.DeviceID && left.Share == right.Share && left.ControlSocket == right.ControlSocket && left.SafePointFile == right.SafePointFile && left.ReadinessFile == right.ReadinessFile
+func sameWorkerRegistrationIdentity(left, right Worker) bool {
+	return left.RunID == right.RunID && left.JobID == right.JobID && left.TraceID == right.TraceID && left.RuntimeUnitID == right.RuntimeUnitID && left.SandboxID == right.SandboxID && left.Generation == right.Generation && left.PID == right.PID && left.ProcessToken == right.ProcessToken && left.InstanceID == right.InstanceID && left.Priority == right.Priority && left.BindingID == right.BindingID && left.DeviceID == right.DeviceID && equalStrings(left.DeviceIDs, right.DeviceIDs) && left.MPSServerPID == right.MPSServerPID && left.MPSServerProcessToken == right.MPSServerProcessToken && left.Share == right.Share && left.ControlSocket == right.ControlSocket && left.ControlURL == right.ControlURL && left.ControlToken == right.ControlToken && left.RegistrationTokenHash == right.RegistrationTokenHash && left.SafePointFile == right.SafePointFile && left.ReadinessFile == right.ReadinessFile
+}
+
+func equalStrings(left, right []string) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	for index := range left {
+		if left[index] != right[index] {
+			return false
+		}
+	}
+	return true
+}
+
+func (w Worker) AllDeviceIDs() []string {
+	result := append([]string(nil), w.DeviceIDs...)
+	if len(result) == 0 && w.DeviceID != "" {
+		result = []string{w.DeviceID}
+	}
+	return result
 }
 
 func validateTransition(worker Worker, operation string) error {
@@ -466,8 +572,12 @@ func WriteWorkersCSV(w io.Writer, state State) error {
 	for _, id := range ids {
 		worker := state.Workers[id]
 		record := []string{worker.SandboxID, strconv.FormatUint(worker.Generation, 10), worker.State, strconv.FormatBool(worker.SafePoint), strconv.FormatBool(worker.Offloaded), strconv.FormatInt(int64(worker.Priority), 10)}
-		if worker.BindingID != "" && worker.DeviceID != "" && worker.Share > 0 {
-			record = append(record, worker.BindingID, worker.DeviceID, strconv.FormatFloat(worker.Share, 'g', -1, 64))
+		deviceIDs := append([]string(nil), worker.DeviceIDs...)
+		if len(deviceIDs) == 0 && worker.DeviceID != "" {
+			deviceIDs = []string{worker.DeviceID}
+		}
+		if worker.BindingID != "" && len(deviceIDs) > 0 && worker.Share > 0 {
+			record = append(record, worker.BindingID, strings.Join(deviceIDs, ";"), strconv.FormatFloat(worker.Share, 'g', -1, 64))
 		}
 		if err := writer.Write(record); err != nil {
 			return err

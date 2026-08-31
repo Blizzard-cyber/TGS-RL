@@ -2,6 +2,8 @@ package main
 
 import (
 	"bytes"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -9,6 +11,8 @@ import (
 	"strings"
 	"syscall"
 	"testing"
+
+	"github.com/Blizzard-cyber/TGS-RL/scheduler-go/provider/nvidia/runtimehelper"
 )
 
 func TestRuntimeHelperControlsRegisteredProcess(t *testing.T) {
@@ -71,5 +75,37 @@ func TestRuntimeHelperCapabilities(t *testing.T) {
 		if !strings.Contains(got, value) {
 			t.Fatalf("capabilities %q missing %q", got, value)
 		}
+	}
+}
+
+func TestParseWorkerAcceptsRemoteBootstrapIdentity(t *testing.T) {
+	worker, err := parseWorker([]string{
+		"--run", "run-a", "--job", "job-a", "--trace", "trace-a",
+		"--runtime-unit", "unit-a", "--sandbox", "sandbox-a", "--binding", "binding-a",
+		"--generation", "4", "--pid", "42", "--process-token", "process-a",
+		"--instance-id", "pod-a", "--control-url", "http://127.0.0.1:50092/v1/control",
+		"--control-token", "control-a", "--device-id", "GPU-a", "--device-id", "GPU-b",
+		"--share", "1", "--mps-server-pid", "77",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if worker.InstanceID != "pod-a" || worker.ProcessToken != "process-a" || len(worker.DeviceIDs) != 2 || worker.MPSServerPID != 77 {
+		t.Fatalf("worker = %+v", worker)
+	}
+}
+
+func TestRuntimeHelperServeRequiresAuthentication(t *testing.T) {
+	store, _ := runtimehelper.NewStore(filepath.Join(t.TempDir(), "runtime.json"))
+	controller, _ := runtimehelper.NewController(store)
+	handler, err := runtimehelper.NewRegistryHandler(controller, store, []byte(strings.Repeat("s", 32)), nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := httptest.NewRequest(http.MethodPost, "/v1/workers/register", strings.NewReader(`{}`))
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want %d", response.Code, http.StatusUnauthorized)
 	}
 }

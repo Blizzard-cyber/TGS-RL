@@ -275,6 +275,10 @@ class VerlWorkerBridge:
             self.identity.generation = int(request["generation"])
             if request.get("device_id"):
                 self.identity.device_id = str(request["device_id"])
+            if request.get("binding_id"):
+                self.identity.binding_id = str(request["binding_id"])
+            if request.get("share") is not None:
+                self.identity.share = float(request["share"])
             self.checkpoint_ref, self.offloaded, self.ready = checkpoint_ref, False, False
         elif action == "resume":
             self.callbacks.resume()
@@ -673,6 +677,8 @@ def _control_worker(request: ControlRequest) -> CommandResult:
                 "checkpoint_ref": checkpoint_ref,
                 "device_id": environment.get("TGSRL_DEVICE_ID", ""),
                 "profile": environment.get("TGSRL_DEVICE_PROFILE", ""),
+                "binding_id": environment.get("TGSRL_BINDING_ID", ""),
+                "share": float(environment.get("TGSRL_ACCELERATOR_SHARE", "0")),
                 "policy_version": request.policy_version,
             }
             response = request_worker(

@@ -45,8 +45,11 @@ func (s *Store[T]) withLock(write bool, fn func(*T) error) error {
 	if fn == nil {
 		return errors.New("helper state callback is required")
 	}
-	if err := os.MkdirAll(filepath.Dir(s.path), 0o750); err != nil {
+	if err := os.MkdirAll(filepath.Dir(s.path), 0o700); err != nil {
 		return fmt.Errorf("create helper state directory: %w", err)
+	}
+	if err := os.Chmod(filepath.Dir(s.path), 0o700); err != nil {
+		return fmt.Errorf("restrict helper state directory: %w", err)
 	}
 	lock, err := os.OpenFile(s.path+".lock", os.O_CREATE|os.O_RDWR, 0o600)
 	if err != nil {

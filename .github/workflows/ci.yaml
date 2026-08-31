@@ -71,6 +71,8 @@ jobs:
         run: go build -trimpath -o /tmp/tgsrl-nvidia-runtime ./cmd/tgsrl-nvidia-runtime
       - name: Build NVIDIA MIG helper
         run: go build -trimpath -o /tmp/tgsrl-nvidia-mig ./cmd/tgsrl-nvidia-mig
+      - name: Build workload bootstrap
+        run: go build -trimpath -o /tmp/tgsrl-worker-bootstrap ./cmd/tgsrl-worker-bootstrap
       - name: Build job controller
         run: go build -trimpath -o /tmp/tgsrl-job-controller ./job-controller-go/cmd/job-controller
       - name: Build operator
@@ -159,6 +161,15 @@ jobs:
             --output type=oci,dest=/tmp/tgsrl-operator.oci .
           python3 scripts/check-oci-platforms.py \
             /tmp/tgsrl-operator.oci linux/amd64 linux/arm64
+      - name: Build multi-platform workload bootstrap image
+        run: |
+          docker buildx build \
+            --platform linux/amd64,linux/arm64 \
+            --file Dockerfile.worker-bootstrap \
+            --tag tgsrl-worker-bootstrap:ci \
+            --output type=oci,dest=/tmp/tgsrl-worker-bootstrap.oci .
+          python3 scripts/check-oci-platforms.py \
+            /tmp/tgsrl-worker-bootstrap.oci linux/amd64 linux/arm64
       - name: Load amd64 operator image
         run: |
           docker buildx build \
@@ -168,6 +179,14 @@ jobs:
             --load .
       - name: Smoke test operator image
         run: docker run --rm tgsrl-operator:ci -h
+      - name: Load and smoke test workload bootstrap image
+        run: |
+          docker buildx build \
+            --platform linux/amd64 \
+            --file Dockerfile.worker-bootstrap \
+            --tag tgsrl-worker-bootstrap:ci \
+            --load .
+          docker run --rm tgsrl-worker-bootstrap:ci || test $? -eq 1
 
   demo:
     name: Process E2E

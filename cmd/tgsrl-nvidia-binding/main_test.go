@@ -2,11 +2,15 @@ package main
 
 import (
 	"bytes"
+	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/Blizzard-cyber/TGS-RL/scheduler-go/provider/nvidia/runtimehelper"
 )
 
 func TestBindingHelperLifecycleAndRestartDiscovery(t *testing.T) {
@@ -93,6 +97,41 @@ func TestBindingHelperAdvertisesLiveMPSPIDOnly(t *testing.T) {
 	}
 	if got := strings.TrimSpace(output.String()); !strings.HasSuffix(got, ",mps_profile_pid") {
 		t.Fatalf("capabilities = %q", got)
+	}
+	processToken, err := runtimehelper.ProcessToken(context.Background(), os.Getpid())
+	if err != nil {
+		t.Fatal(err)
+	}
+	record, err := json.Marshal(map[string]any{"generation": 4, "pid": os.Getpid(), "process_token": processToken})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(directory, "sandbox-a.pid"), append(record, '\n'), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if got := resolveMPSPID("sandbox-a", 5); got != 0 {
+		t.Fatalf("stale-generation MPS PID = %d, want 0", got)
+	}
+	if got := resolveMPSPID("sandbox-a", 4); got != uint32(os.Getpid()) {
+		t.Fatalf("matching-generation MPS PID = %d, want %d", got, os.Getpid())
+	}
+	output.Reset()
+	if err := run([]string{"capabilities", "--format=csv"}, &output); err != nil || !strings.HasSuffix(strings.TrimSpace(output.String()), ",mps_profile_pid") {
+		t.Fatalf("generation-fenced PID capabilities = %q error = %v", output.String(), err)
+	}
+	record, err = json.Marshal(map[string]any{"generation": 4, "pid": os.Getpid(), "process_token": "stale-token"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(directory, "sandbox-a.pid"), append(record, '\n'), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	output.Reset()
+	if err := run([]string{"capabilities", "--format=csv"}, &output); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(output.String(), "mps_profile_pid") {
+		t.Fatalf("reused MPS PID advertised capability: %q", output.String())
 	}
 	if err := os.WriteFile(filepath.Join(directory, "sandbox-a.pid"), []byte("999999999"), 0o600); err != nil {
 		t.Fatal(err)

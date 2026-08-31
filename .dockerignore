@@ -1,6 +1,7 @@
 **
 !.dockerignore
 !Dockerfile.operator
+!Dockerfile.worker-bootstrap
 !Dockerfile.local
 !go.mod
 !go.sum
@@ -17,5 +18,12 @@ console/*.tsbuildinfo
 !gen/
 !gen/go/
 !gen/go/**
+!internal/
+!internal/bootstrapauth/
+!internal/bootstrapauth/**
 !operator-go/
 !operator-go/**
+!scheduler-go/
+!scheduler-go/provider/
+!scheduler-go/provider/nvidia/
+!scheduler-go/provider/nvidia/**

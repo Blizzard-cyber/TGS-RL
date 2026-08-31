@@ -2,29 +2,68 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
+	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
 	tgsrlv1 "github.com/Blizzard-cyber/TGS-RL/gen/go/tgsrl/v1"
+	"github.com/Blizzard-cyber/TGS-RL/internal/bootstrapauth"
 	configpkg "github.com/Blizzard-cyber/TGS-RL/scheduler-go/config"
 	"github.com/Blizzard-cyber/TGS-RL/scheduler-go/observability"
 	"github.com/Blizzard-cyber/TGS-RL/scheduler-go/persistence"
 	"github.com/Blizzard-cyber/TGS-RL/scheduler-go/protection"
+	"github.com/Blizzard-cyber/TGS-RL/scheduler-go/provider"
+	"github.com/Blizzard-cyber/TGS-RL/scheduler-go/provider/nvidia/runtimehelper"
 	"github.com/Blizzard-cyber/TGS-RL/scheduler-go/scheduler"
 	"github.com/Blizzard-cyber/TGS-RL/scheduler-go/state"
+	"google.golang.org/grpc"
 	"google.golang.org/protobuf/proto"
 )
+
+func signedWorkerToken(t *testing.T, signingKey []byte, worker runtimehelper.Worker) string {
+	t.Helper()
+	token, err := bootstrapauth.Sign(signingKey, bootstrapauth.Claims{RunID: worker.RunID, JobID: worker.JobID, RuntimeUnitID: worker.RuntimeUnitID, SandboxID: worker.SandboxID, BindingID: worker.BindingID, Generation: worker.Generation, DeviceIDs: worker.AllDeviceIDs()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return token
+}
 
 type recordingResumer struct {
 	called    int
 	ctx       context.Context
 	recovered *persistence.SchedulerState
 	err       error
+}
+
+type recordingRuntimePublisher struct {
+	events    []*tgsrlv1.SandboxEvent
+	sandboxes []*tgsrlv1.Sandbox
+}
+
+func (p *recordingRuntimePublisher) PublishSandboxEvent(_ context.Context, request *tgsrlv1.PublishSandboxEventRequest, _ ...grpc.CallOption) (*tgsrlv1.PublishSandboxEventResponse, error) {
+	event := proto.Clone(request.GetEvent()).(*tgsrlv1.SandboxEvent)
+	for _, existing := range p.events {
+		if existing.GetEventId() == event.GetEventId() {
+			if !proto.Equal(existing, event) {
+				return nil, errors.New("event identity conflict")
+			}
+			return &tgsrlv1.PublishSandboxEventResponse{Event: proto.Clone(existing).(*tgsrlv1.SandboxEvent)}, nil
+		}
+	}
+	p.events = append(p.events, event)
+	return &tgsrlv1.PublishSandboxEventResponse{Event: event}, nil
+}
+
+func (p *recordingRuntimePublisher) GetRuntimeStatus(_ context.Context, _ *tgsrlv1.GetRuntimeStatusRequest, _ ...grpc.CallOption) (*tgsrlv1.GetRuntimeStatusResponse, error) {
+	return &tgsrlv1.GetRuntimeStatusResponse{Sandboxes: p.sandboxes}, nil
 }
 
 func (r *recordingResumer) ResumeRecoveredState(ctx context.Context, recovered *persistence.SchedulerState) error {
@@ -230,6 +269,26 @@ func TestParseArgsRejectsIncompleteNVIDIADriverV2Configuration(t *testing.T) {
 	}
 }
 
+func TestParseArgsRejectsWorkerRegistryWithoutRuntimeTarget(t *testing.T) {
+	if _, err := parseArgs([]string{"-worker-registry-listen=127.0.0.1:50091"}); err == nil || !strings.Contains(err.Error(), "runtime target") {
+		t.Fatalf("worker registry error = %v", err)
+	}
+	if _, err := parseArgs([]string{"-worker-registry-listen=127.0.0.1:50091", "-worker-registry-runtime-target=127.0.0.1:50071"}); err == nil || !strings.Contains(err.Error(), "NVIDIA Driver v2") {
+		t.Fatalf("worker registry provider error = %v", err)
+	}
+	t.Setenv("TGSRL_WORKER_REGISTRY_SIGNING_KEY", "")
+	if _, err := parseArgs([]string{"-nvidia-driver-v2", "-worker-registry-listen=127.0.0.1:50091", "-worker-registry-runtime-target=127.0.0.1:50071"}); err == nil || !strings.Contains(err.Error(), "signing-key") {
+		t.Fatalf("worker registry signing-key error = %v", err)
+	}
+	t.Setenv("TGSRL_WORKER_REGISTRY_SIGNING_KEY", strings.Repeat("k", 32))
+	if _, err := parseArgs([]string{"-nvidia-driver-v2", "-worker-registry-listen=127.0.0.1:50091", "-worker-registry-runtime-target=127.0.0.1:50071"}); err == nil || !strings.Contains(err.Error(), "absolute") {
+		t.Fatalf("worker registry default state path error = %v", err)
+	}
+	if _, err := parseArgs([]string{"-nvidia-driver-v2", "-worker-registry-listen=127.0.0.1:50091", "-worker-registry-runtime-target=127.0.0.1:50071", "-nvidia-runtime-state=relative.json"}); err == nil || !strings.Contains(err.Error(), "absolute") {
+		t.Fatalf("worker registry state path error = %v", err)
+	}
+}
+
 func TestStartMetricsServer(t *testing.T) {
 	recorder := observability.NewPrometheusRecorder()
 	recorder.IncCounter("startup", 1)
@@ -247,6 +306,73 @@ func TestStartMetricsServer(t *testing.T) {
 	body, err := io.ReadAll(response.Body)
 	if err != nil || !strings.Contains(string(body), "tgsrl_startup 1") {
 		t.Fatalf("metrics body = %q, error = %v", body, err)
+	}
+}
+
+func TestWorkerRegistryAuthorizesBindingAndPublishesLifecycle(t *testing.T) {
+	binding := &tgsrlv1.Binding{BindingId: "binding-a", PendingUnitId: "unit-a", RuntimeUnitId: "unit-a", SandboxId: "sandbox-a", Generation: 4, DeviceIds: []string{"mock-cpu-0"}, Resources: &tgsrlv1.ResourceVector{AcceleratorUnits: 1}}
+	resourceProvider, err := provider.NewMockResourceProvider(provider.WithSandboxes(provider.Sandbox{SandboxID: "sandbox-a", State: provider.SandboxStateBound, Generation: 4, Binding: binding, Share: 1}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	signingKey := []byte(strings.Repeat("registry-signing-key-", 2))
+	t.Setenv("TGSRL_WORKER_REGISTRY_SIGNING_KEY", string(signingKey))
+	statePath := filepath.Join(t.TempDir(), "runtime.json")
+	runtimePublisher := &recordingRuntimePublisher{sandboxes: []*tgsrlv1.Sandbox{{SandboxId: "sandbox-a", Generation: 4, State: tgsrlv1.RuntimeState_RUNTIME_STATE_BOUND}}}
+	server, listener, err := startWorkerRegistry("127.0.0.1:0", statePath, "", resourceProvider, runtimePublisher)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer server.Close()
+	defer listener.Close()
+	go server.Serve(listener) //nolint:errcheck
+
+	workerControl := http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+		_ = json.NewEncoder(w).Encode(runtimehelper.ControlResponse{Accepted: true, State: "running", Generation: 4, Ready: true, InstanceID: "instance-a", PID: 4242, ProcessToken: "process-a", BindingID: "binding-a", DeviceID: "mock-cpu-0", Share: 1})
+	})
+	controlServer := httptest.NewServer(workerControl)
+	defer controlServer.Close()
+	worker := runtimehelper.Worker{RunID: "run-a", JobID: "job-a", RuntimeUnitID: "unit-a", SandboxID: "sandbox-a", Generation: 4, BindingID: "binding-a", DeviceIDs: []string{"mock-cpu-0"}, DeviceID: "mock-cpu-0", Share: 1, PID: 4242, ProcessToken: "process-a", InstanceID: "instance-a", State: "running", Ready: true, ControlURL: controlServer.URL, ControlToken: "control-token"}
+	registryURL := "http://" + listener.Addr().String()
+	registryToken := signedWorkerToken(t, signingKey, worker)
+	runtimePublisher.sandboxes[0].State = tgsrlv1.RuntimeState_RUNTIME_STATE_STARTING
+	if err := runtimehelper.RegisterRemoteWorker(context.Background(), registryURL, registryToken, worker); err == nil || !strings.Contains(err.Error(), "bound workload generation") {
+		t.Fatalf("registration before Runtime BOUND error = %v", err)
+	}
+	stateBeforeBound, err := runtimehelper.NewStore(statePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if snapshot, err := stateBeforeBound.Snapshot(); err != nil || len(snapshot.Workers) != 0 {
+		t.Fatalf("worker persisted before Runtime BOUND: %+v, error = %v", snapshot.Workers, err)
+	}
+	runtimePublisher.sandboxes[0].State = tgsrlv1.RuntimeState_RUNTIME_STATE_BOUND
+	if err := runtimehelper.RegisterRemoteWorker(context.Background(), registryURL, registryToken, worker); err != nil {
+		t.Fatal(err)
+	}
+	if err := runtimehelper.RegisterRemoteWorker(context.Background(), registryURL, registryToken, worker); err != nil {
+		t.Fatal(err)
+	}
+	observed, err := resourceProvider.GetSandbox(context.Background(), "sandbox-a")
+	if err != nil || observed.State != provider.SandboxStateRunning {
+		t.Fatalf("registered sandbox = %+v error = %v", observed, err)
+	}
+	if len(runtimePublisher.events) != 1 || runtimePublisher.events[0].GetState() != tgsrlv1.RuntimeState_RUNTIME_STATE_RUNNING {
+		t.Fatalf("runtime events = %+v", runtimePublisher.events)
+	}
+	worker.State, worker.Ready, worker.ExitCode, worker.Detail = "failed", false, 7, "worker exited"
+	if err := runtimehelper.ReportRemoteWorkerExit(context.Background(), registryURL, registryToken, worker); err != nil {
+		t.Fatal(err)
+	}
+	observed, err = resourceProvider.GetSandbox(context.Background(), "sandbox-a")
+	if err != nil || observed.State != provider.SandboxStateFailed {
+		t.Fatalf("terminal sandbox = %+v error = %v", observed, err)
+	}
+	if len(runtimePublisher.events) != 2 || runtimePublisher.events[1].GetState() != tgsrlv1.RuntimeState_RUNTIME_STATE_FAILED {
+		t.Fatalf("runtime terminal events = %+v", runtimePublisher.events)
+	}
+	if _, err := os.Stat(statePath); err != nil {
+		t.Fatalf("runtime registry state was not persisted: %v", err)
 	}
 }
 

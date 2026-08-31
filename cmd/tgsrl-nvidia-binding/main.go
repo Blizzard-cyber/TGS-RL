@@ -4,6 +4,8 @@
 package main
 
 import (
+	"context"
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -15,6 +17,7 @@ import (
 	"syscall"
 
 	"github.com/Blizzard-cyber/TGS-RL/scheduler-go/provider/nvidia/bindinghelper"
+	"github.com/Blizzard-cyber/TGS-RL/scheduler-go/provider/nvidia/runtimehelper"
 )
 
 const helperIdentity = "tgsrl-nvidia-binding"
@@ -148,7 +151,7 @@ func parseMutationArgs(command string, argv []string) (mutationArgs, error) {
 	}
 	var mpsServerPID uint32
 	if command == "bind" {
-		mpsServerPID = resolveMPSPID(result.sandbox)
+		mpsServerPID = resolveMPSPID(result.sandbox, result.generation)
 	}
 	if command == "release" && strings.TrimSpace(result.target) == "" {
 		return mutationArgs{}, errors.New("release requires target")
@@ -192,7 +195,7 @@ func configuredMPSPIDDirectory() string {
 	return directory
 }
 
-func resolveMPSPID(sandboxID string) uint32 {
+func resolveMPSPID(sandboxID string, generation uint64) uint32 {
 	directory := configuredMPSPIDDirectory()
 	if directory == "" || filepath.Base(sandboxID) != sandboxID {
 		return 0
@@ -201,7 +204,29 @@ func resolveMPSPID(sandboxID string) uint32 {
 	if err != nil {
 		return 0
 	}
-	pid, err := strconv.ParseUint(strings.TrimSpace(string(raw)), 10, 32)
+	var record struct {
+		Generation   uint64 `json:"generation"`
+		PID          uint32 `json:"pid"`
+		ProcessToken string `json:"process_token"`
+	}
+	if json.Unmarshal(raw, &record) == nil && record.Generation > 0 && record.PID > 0 && record.ProcessToken != "" {
+		if generation != 0 && record.Generation != generation {
+			return 0
+		}
+		current, tokenErr := runtimehelper.ProcessToken(context.Background(), int(record.PID))
+		if tokenErr != nil || current != record.ProcessToken {
+			return 0
+		}
+		return record.PID
+	}
+	fields := strings.Fields(string(raw))
+	if len(fields) == 2 {
+		fields = fields[1:]
+	}
+	if len(fields) != 1 {
+		return 0
+	}
+	pid, err := strconv.ParseUint(fields[0], 10, 32)
 	if err != nil || pid == 0 {
 		return 0
 	}
@@ -213,7 +238,7 @@ func resolveMPSPID(sandboxID string) uint32 {
 
 func refreshMPSPIDs(state *bindinghelper.State) {
 	for sandboxID, binding := range state.Bindings {
-		binding.MPSServerPID = resolveMPSPID(sandboxID)
+		binding.MPSServerPID = resolveMPSPID(sandboxID, binding.Generation)
 		state.Bindings[sandboxID] = binding
 	}
 }
@@ -232,7 +257,7 @@ func hasAnyLiveMPSPID() bool {
 			continue
 		}
 		sandboxID := strings.TrimSuffix(entry.Name(), ".pid")
-		if resolveMPSPID(sandboxID) > 0 {
+		if resolveMPSPID(sandboxID, 0) > 0 {
 			return true
 		}
 	}

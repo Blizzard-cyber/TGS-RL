@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os/exec"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -207,6 +208,20 @@ func TestCommandRuntimeBackendDiscoversAuthoritativeSandboxState(t *testing.T) {
 	sandbox := status.Sandboxes[0]
 	if sandbox.State != base.SandboxStatePaused || sandbox.Generation != 4 || !sandbox.SafePoint || sandbox.Offloaded || sandbox.Priority != 7 {
 		t.Fatalf("runtime sandbox = %+v", sandbox)
+	}
+}
+
+func TestCommandRuntimeBackendDiscoversFullAndMultiDeviceBindings(t *testing.T) {
+	executor := NewFakeCommandExecutor(
+		FakeCommandResponse{Result: CommandResult{Stdout: []byte("tgsrl-nvidia-runtime,1,pause,resume,generation_fence,idempotency,durable_receipts,safe_point,checkpoint,reload,readiness")}},
+		FakeCommandResponse{Result: CommandResult{Stdout: []byte("sandbox-a,4,running,false,false,7,binding-a,GPU-a;GPU-b,1\n")}},
+	)
+	status, err := NewCommandRuntimeBackend(executor, time.Second).Discover(context.Background())
+	if err != nil || len(status.Sandboxes) != 1 {
+		t.Fatalf("Discover() = (%+v, %v)", status, err)
+	}
+	if got := status.Sandboxes[0].Binding.GetDeviceIds(); !reflect.DeepEqual(got, []string{"GPU-a", "GPU-b"}) {
+		t.Fatalf("device IDs = %v", got)
 	}
 }
 

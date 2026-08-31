@@ -151,11 +151,25 @@ func parseRuntimeSandboxes(output []byte) ([]base.Sandbox, error) {
 		sandbox := base.Sandbox{SandboxID: fields[0], Generation: generation, State: state, SafePoint: safePoint, Offloaded: offloaded, Priority: int32(priority)}
 		if len(fields) == 9 {
 			share, parseErr := strconv.ParseFloat(fields[8], 64)
-			if parseErr != nil || fields[6] == "" || !strings.HasPrefix(fields[7], "MIG-") || !validShare(share) {
+			deviceIDs := strings.Split(fields[7], ";")
+			deviceSet := make(map[string]struct{}, len(deviceIDs))
+			validDevices := len(deviceIDs) > 0
+			for _, deviceID := range deviceIDs {
+				if deviceID == "" {
+					validDevices = false
+					break
+				}
+				if _, duplicate := deviceSet[deviceID]; duplicate {
+					validDevices = false
+					break
+				}
+				deviceSet[deviceID] = struct{}{}
+			}
+			if parseErr != nil || fields[6] == "" || !validDevices || !validShare(share) {
 				return nil, fmt.Errorf("nvidia runtime row %d has invalid binding metadata", row+1)
 			}
 			sandbox.Share = share
-			sandbox.Binding = &tgsrlv1.Binding{BindingId: fields[6], SandboxId: fields[0], Generation: generation, DeviceIds: []string{fields[7]}, Resources: &tgsrlv1.ResourceVector{AcceleratorUnits: share}}
+			sandbox.Binding = &tgsrlv1.Binding{BindingId: fields[6], SandboxId: fields[0], Generation: generation, DeviceIds: deviceIDs, Resources: &tgsrlv1.ResourceVector{AcceleratorUnits: share}}
 		}
 		result = append(result, sandbox)
 	}

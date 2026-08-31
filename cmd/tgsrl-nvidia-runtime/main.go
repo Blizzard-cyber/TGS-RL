@@ -106,16 +106,30 @@ func parseWorker(argv []string) (runtimehelper.Worker, error) {
 	fs.SetOutput(io.Discard)
 	var worker runtimehelper.Worker
 	var priority int64
+	var mpsServerPID uint
+	fs.StringVar(&worker.RunID, "run", "", "run identity")
+	fs.StringVar(&worker.JobID, "job", "", "job identity")
+	fs.StringVar(&worker.TraceID, "trace", "", "trace identity")
+	fs.StringVar(&worker.RuntimeUnitID, "runtime-unit", "", "runtime unit identity")
 	fs.StringVar(&worker.SandboxID, "sandbox", "", "sandbox identity")
 	fs.Uint64Var(&worker.Generation, "generation", 0, "worker generation")
 	fs.IntVar(&worker.PID, "pid", 0, "worker process id")
+	fs.StringVar(&worker.ProcessToken, "process-token", "", "worker process identity from its execution namespace")
+	fs.StringVar(&worker.InstanceID, "instance-id", "", "bootstrap instance identity")
 	fs.Int64Var(&priority, "priority", 0, "worker priority")
 	fs.StringVar(&worker.ControlSocket, "control-socket", "", "managed-worker Unix socket")
+	fs.StringVar(&worker.ControlURL, "control-url", "", "remote managed-worker HTTP endpoint")
+	fs.StringVar(&worker.ControlToken, "control-token", "", "remote managed-worker bearer token")
 	fs.StringVar(&worker.SafePointFile, "safe-point-file", "", "safe-point marker file")
 	fs.StringVar(&worker.ReadinessFile, "readiness-file", "", "readiness marker file")
 	fs.StringVar(&worker.BindingID, "binding", "", "current binding identity")
 	fs.StringVar(&worker.DeviceID, "device", "", "current device identity")
+	fs.Func("device-id", "allocated device identity; repeat for multiple devices", func(value string) error {
+		worker.DeviceIDs = append(worker.DeviceIDs, value)
+		return nil
+	})
 	fs.Float64Var(&worker.Share, "share", 0, "current accelerator share")
+	fs.UintVar(&mpsServerPID, "mps-server-pid", 0, "MPS server process id")
 	if err := fs.Parse(argv); err != nil {
 		return runtimehelper.Worker{}, err
 	}
@@ -125,7 +139,11 @@ func parseWorker(argv []string) (runtimehelper.Worker, error) {
 	if priority < -1<<31 || priority > 1<<31-1 {
 		return runtimehelper.Worker{}, errors.New("priority exceeds int32")
 	}
+	if mpsServerPID > 1<<32-1 {
+		return runtimehelper.Worker{}, errors.New("MPS server pid exceeds uint32")
+	}
 	worker.Priority = int32(priority)
+	worker.MPSServerPID = uint32(mpsServerPID)
 	return worker, nil
 }
 

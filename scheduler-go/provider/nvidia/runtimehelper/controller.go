@@ -8,6 +8,8 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"runtime"
@@ -17,14 +19,18 @@ import (
 	"time"
 )
 
+const WorkerControlTokenHeader = "X-TGSRL-Worker-Control-Token"
+
 type ControlRequest struct {
-	Action         string `json:"action"`
-	SandboxID      string `json:"sandbox_id"`
-	Generation     uint64 `json:"generation"`
-	IdempotencyKey string `json:"idempotency_key"`
-	CheckpointRef  string `json:"checkpoint_ref,omitempty"`
-	DeviceID       string `json:"device_id,omitempty"`
-	Profile        string `json:"profile,omitempty"`
+	Action         string  `json:"action"`
+	SandboxID      string  `json:"sandbox_id"`
+	Generation     uint64  `json:"generation"`
+	IdempotencyKey string  `json:"idempotency_key"`
+	CheckpointRef  string  `json:"checkpoint_ref,omitempty"`
+	DeviceID       string  `json:"device_id,omitempty"`
+	Profile        string  `json:"profile,omitempty"`
+	BindingID      string  `json:"binding_id,omitempty"`
+	Share          float64 `json:"share,omitempty"`
 }
 
 type ControlResponse struct {
@@ -38,6 +44,9 @@ type ControlResponse struct {
 	BindingID     string  `json:"binding_id,omitempty"`
 	DeviceID      string  `json:"device_id,omitempty"`
 	Share         float64 `json:"share,omitempty"`
+	InstanceID    string  `json:"instance_id,omitempty"`
+	PID           int     `json:"pid,omitempty"`
+	ProcessToken  string  `json:"process_token,omitempty"`
 	Error         string  `json:"error,omitempty"`
 }
 
@@ -45,26 +54,51 @@ var ErrOutcomeUnknown = errors.New("managed-worker outcome is unknown")
 var ErrRequestNotDelivered = errors.New("managed-worker request was not delivered")
 
 type Controller struct {
-	store   *Store
-	now     func() time.Time
-	signal  func(int, syscall.Signal) error
-	control func(context.Context, string, ControlRequest) (ControlResponse, error)
+	store         *Store
+	now           func() time.Time
+	signal        func(int, syscall.Signal) error
+	control       func(context.Context, string, ControlRequest) (ControlResponse, error)
+	remoteControl func(context.Context, string, string, ControlRequest) (ControlResponse, error)
 }
 
 func NewController(store *Store) (*Controller, error) {
 	if store == nil {
 		return nil, errors.New("runtime store is required")
 	}
-	return &Controller{store: store, now: time.Now, signal: signalProcess, control: callUnixControl}, nil
+	return &Controller{store: store, now: time.Now, signal: signalProcess, control: callUnixControl, remoteControl: callHTTPControl}, nil
 }
 
 func (c *Controller) Register(ctx context.Context, worker Worker) error {
 	ctx = nonNilContext(ctx)
-	token, err := ProcessToken(ctx, worker.PID)
-	if err != nil {
-		return err
+	if worker.ControlURL != "" {
+		if worker.ProcessToken == "" || worker.InstanceID == "" || worker.ControlToken == "" {
+			return errors.New("remote worker registration requires process token, instance identity, and control token")
+		}
+		response, err := c.controlRemote(ctx, worker, ControlRequest{Action: "status", SandboxID: worker.SandboxID, Generation: worker.Generation, IdempotencyKey: fmt.Sprintf("register:%s:%d", worker.SandboxID, worker.Generation)})
+		if err != nil {
+			return err
+		}
+		if !response.Accepted || response.Generation != worker.Generation || response.InstanceID != worker.InstanceID || response.PID != worker.PID || response.ProcessToken != worker.ProcessToken {
+			return errors.New("remote worker status does not match registration")
+		}
+		if response.BindingID != "" && response.BindingID != worker.BindingID {
+			return errors.New("remote worker binding does not match registration")
+		}
+		if response.DeviceID != "" && len(worker.AllDeviceIDs()) == 1 && response.DeviceID != worker.AllDeviceIDs()[0] {
+			return errors.New("remote worker device does not match registration")
+		}
+		worker.State, worker.SafePoint, worker.Offloaded, worker.Ready = response.State, response.SafePoint, response.Offloaded, response.Ready
+		worker.CheckpointRef = response.CheckpointRef
+		if response.DeviceID != "" && len(worker.AllDeviceIDs()) <= 1 {
+			worker.DeviceID, worker.DeviceIDs = response.DeviceID, []string{response.DeviceID}
+		}
+	} else {
+		token, err := ProcessToken(ctx, worker.PID)
+		if err != nil {
+			return err
+		}
+		worker.ProcessToken = token
 	}
-	worker.ProcessToken = token
 	if worker.ControlSocket != "" {
 		response, err := c.control(ctx, worker.ControlSocket, ControlRequest{Action: "status", SandboxID: worker.SandboxID, Generation: worker.Generation, IdempotencyKey: fmt.Sprintf("register:%s:%d", worker.SandboxID, worker.Generation)})
 		if err != nil {
@@ -75,7 +109,7 @@ func (c *Controller) Register(ctx context.Context, worker Worker) error {
 		}
 		worker.State, worker.SafePoint, worker.Offloaded, worker.Ready = response.State, response.SafePoint, response.Offloaded, response.Ready
 		worker.CheckpointRef = response.CheckpointRef
-	} else {
+	} else if worker.ControlURL == "" {
 		if worker.SafePointFile == "" || worker.ReadinessFile == "" {
 			return errors.New("signal-managed worker requires safe-point and readiness marker files")
 		}
@@ -97,8 +131,38 @@ func (c *Controller) Discover(ctx context.Context) (State, error) {
 		return State{}, err
 	}
 	for _, worker := range state.Workers {
-		current, tokenErr := ProcessToken(ctx, worker.PID)
-		if tokenErr != nil || current != worker.ProcessToken {
+		if worker.State == "failed" || worker.State == "terminated" {
+			if key := state.Heads[worker.SandboxID]; key != "" {
+				receipt := state.Receipts[key]
+				if !receipt.Completed {
+					if err := c.reconcilePending(worker, receipt); err != nil {
+						return State{}, err
+					}
+				}
+			}
+			continue
+		}
+		if worker.ControlURL != "" {
+			response, statusErr := c.controlRemote(ctx, worker, ControlRequest{Action: "status", SandboxID: worker.SandboxID, Generation: worker.Generation, IdempotencyKey: fmt.Sprintf("discover:%s:%d", worker.SandboxID, worker.Generation)})
+			if statusErr != nil {
+				worker.State, worker.SafePoint, worker.Offloaded, worker.Ready = "failed", false, false, false
+				worker.Detail = "remote worker is unreachable: " + statusErr.Error()
+			} else {
+				if !response.Accepted || response.Generation != worker.Generation || response.InstanceID != worker.InstanceID || response.PID != worker.PID || response.ProcessToken != worker.ProcessToken {
+					worker.State, worker.SafePoint, worker.Offloaded, worker.Ready = "failed", false, false, false
+					worker.Detail = "remote worker status does not match registration"
+				} else {
+					worker.State, worker.SafePoint, worker.Offloaded, worker.Ready = response.State, response.SafePoint, response.Offloaded, response.Ready
+					worker.CheckpointRef = response.CheckpointRef
+					if response.BindingID != "" || response.DeviceID != "" || response.Share != 0 {
+						worker.BindingID, worker.DeviceID, worker.Share = response.BindingID, response.DeviceID, response.Share
+						if response.DeviceID != "" && len(worker.AllDeviceIDs()) <= 1 {
+							worker.DeviceIDs = []string{response.DeviceID}
+						}
+					}
+				}
+			}
+		} else if current, tokenErr := ProcessToken(ctx, worker.PID); tokenErr != nil || current != worker.ProcessToken {
 			worker.State, worker.SafePoint, worker.Offloaded, worker.Ready = "failed", false, false, false
 		} else if worker.ControlSocket != "" {
 			response, statusErr := c.control(ctx, worker.ControlSocket, ControlRequest{Action: "status", SandboxID: worker.SandboxID, Generation: worker.Generation, IdempotencyKey: fmt.Sprintf("discover:%s:%d", worker.SandboxID, worker.Generation)})
@@ -243,7 +307,7 @@ func (c *Controller) Reconfigure(ctx context.Context, request ActionRequest, mut
 		_ = c.store.Complete(request.IdempotencyKey, worker, false, "WORKER_UNAVAILABLE", err.Error())
 		return Worker{}, err
 	}
-	if worker.ControlSocket == "" {
+	if worker.ControlSocket == "" && worker.ControlURL == "" {
 		err := errors.New("MIG reconfiguration requires a managed-worker control socket")
 		_ = c.store.Complete(request.IdempotencyKey, worker, false, "FAILED_PRECONDITION", err.Error())
 		return Worker{}, err
@@ -255,7 +319,7 @@ func (c *Controller) resumeReconfiguration(ctx context.Context, request ActionRe
 	if err := c.verifyWorker(ctx, worker); err != nil {
 		return Worker{}, err
 	}
-	if worker.ControlSocket == "" {
+	if worker.ControlSocket == "" && worker.ControlURL == "" {
 		return Worker{}, errors.New("MIG reconfiguration requires a managed-worker control socket")
 	}
 	phase := receipt.Phase
@@ -311,6 +375,7 @@ func (c *Controller) resumeReconfiguration(ctx context.Context, request ActionRe
 		}
 		worker.Generation = request.TargetGeneration
 		worker.BindingID, worker.DeviceID, worker.Share = request.TargetBindingID, newDeviceID, request.TargetShare
+		worker.DeviceIDs = []string{newDeviceID}
 		worker.State, worker.SafePoint, worker.Offloaded, worker.Ready = "sleeping", true, true, false
 		if err := c.store.Advance(request.IdempotencyKey, "reconfigured", worker); err != nil {
 			return Worker{}, fmt.Errorf("%w: persist post-MIG worker state: %v", ErrOutcomeUnknown, err)
@@ -363,7 +428,7 @@ func (c *Controller) apply(ctx context.Context, worker Worker, request ActionReq
 	}
 	switch request.Operation {
 	case "pause", "sleep":
-		if worker.ControlSocket != "" {
+		if worker.ControlSocket != "" || worker.ControlURL != "" {
 			prepared, err := c.call(ctx, worker, request, "prepare_pause", "")
 			if err != nil || !prepared.SafePoint {
 				if err == nil {
@@ -403,7 +468,7 @@ func (c *Controller) apply(ctx context.Context, worker Worker, request ActionReq
 		}
 		worker.Ready = false
 	case "offload":
-		if worker.ControlSocket == "" {
+		if worker.ControlSocket == "" && worker.ControlURL == "" {
 			return Worker{}, errors.New("offload requires a managed-worker control socket")
 		}
 		prepared, err := c.call(ctx, worker, request, "prepare_pause", "")
@@ -429,7 +494,7 @@ func (c *Controller) apply(ctx context.Context, worker Worker, request ActionReq
 		}
 		worker.State, worker.SafePoint, worker.Offloaded, worker.Ready, worker.CheckpointRef = "sleeping", true, true, false, checkpoint.CheckpointRef
 	case "resume":
-		if worker.ControlSocket != "" {
+		if worker.ControlSocket != "" || worker.ControlURL != "" {
 			if worker.Offloaded {
 				if _, err := c.call(ctx, worker, request, "reload", worker.CheckpointRef); err != nil {
 					return Worker{}, err
@@ -466,7 +531,14 @@ func (c *Controller) apply(ctx context.Context, worker Worker, request ActionReq
 }
 
 func (c *Controller) call(ctx context.Context, worker Worker, request ActionRequest, action, checkpointRef string) (ControlResponse, error) {
-	response, err := c.control(ctx, worker.ControlSocket, ControlRequest{Action: action, SandboxID: worker.SandboxID, Generation: worker.Generation, IdempotencyKey: request.IdempotencyKey + ":" + action, CheckpointRef: checkpointRef, DeviceID: request.TargetDeviceID, Profile: request.TargetProfile})
+	controlRequest := ControlRequest{Action: action, SandboxID: worker.SandboxID, Generation: worker.Generation, IdempotencyKey: request.IdempotencyKey + ":" + action, CheckpointRef: checkpointRef, DeviceID: request.TargetDeviceID, Profile: request.TargetProfile, BindingID: request.TargetBindingID, Share: request.TargetShare}
+	var response ControlResponse
+	var err error
+	if worker.ControlURL != "" {
+		response, err = c.controlRemote(ctx, worker, controlRequest)
+	} else {
+		response, err = c.control(ctx, worker.ControlSocket, controlRequest)
+	}
 	if err != nil {
 		if errors.Is(err, ErrRequestNotDelivered) {
 			return ControlResponse{}, err
@@ -479,10 +551,23 @@ func (c *Controller) call(ctx context.Context, worker Worker, request ActionRequ
 	if response.Generation != 0 && response.Generation != worker.Generation {
 		return ControlResponse{}, fmt.Errorf("%w: managed worker generation %d does not match %d", ErrOutcomeUnknown, response.Generation, worker.Generation)
 	}
+	if worker.ControlURL != "" && (response.InstanceID != worker.InstanceID || response.PID != worker.PID || response.ProcessToken != worker.ProcessToken) {
+		return ControlResponse{}, fmt.Errorf("%w: remote worker identity changed", ErrOutcomeUnknown)
+	}
 	return response, nil
 }
 
 func (c *Controller) verifyWorker(ctx context.Context, worker Worker) error {
+	if worker.ControlURL != "" {
+		response, err := c.controlRemote(ctx, worker, ControlRequest{Action: "status", SandboxID: worker.SandboxID, Generation: worker.Generation, IdempotencyKey: fmt.Sprintf("verify:%s:%d", worker.SandboxID, worker.Generation)})
+		if err != nil {
+			return err
+		}
+		if !response.Accepted || response.Generation != worker.Generation || response.InstanceID != worker.InstanceID || response.PID != worker.PID || response.ProcessToken != worker.ProcessToken {
+			return errors.New("remote worker identity changed")
+		}
+		return nil
+	}
 	token, err := ProcessToken(ctx, worker.PID)
 	if err != nil {
 		return err
@@ -491,6 +576,13 @@ func (c *Controller) verifyWorker(ctx context.Context, worker Worker) error {
 		return errors.New("worker PID identity changed")
 	}
 	return nil
+}
+
+func (c *Controller) controlRemote(ctx context.Context, worker Worker, request ControlRequest) (ControlResponse, error) {
+	if c.remoteControl == nil {
+		return ControlResponse{}, errors.New("remote worker control is unavailable")
+	}
+	return c.remoteControl(ctx, worker.ControlURL, worker.ControlToken, request)
 }
 
 func ProcessToken(ctx context.Context, pid int) (string, error) {
@@ -513,7 +605,14 @@ func ProcessToken(ctx context.Context, pid int) (string, error) {
 			}
 		}
 	}
-	command := exec.CommandContext(ctx, "ps", "-o", "lstart=", "-p", strconv.Itoa(pid))
+	if token, err := platformProcessToken(pid); err == nil && token != "" {
+		return token, nil
+	}
+	psBinary, err := exec.LookPath("ps")
+	if err != nil && runtime.GOOS == "darwin" {
+		psBinary = "/bin/ps"
+	}
+	command := exec.CommandContext(ctx, psBinary, "-o", "lstart=", "-p", strconv.Itoa(pid))
 	output, err := command.Output()
 	if err != nil || strings.TrimSpace(string(output)) == "" {
 		return "", fmt.Errorf("read worker process identity: %w", err)
@@ -542,6 +641,9 @@ func processStopped(ctx context.Context, pid int) (bool, error) {
 				}
 			}
 		}
+	}
+	if stopped, err := platformProcessStopped(pid); err == nil {
+		return stopped, nil
 	}
 	output, err := exec.CommandContext(ctx, "ps", "-o", "state=", "-p", strconv.Itoa(pid)).Output()
 	if err != nil {
@@ -625,6 +727,41 @@ func callUnixControl(ctx context.Context, socketPath string, request ControlRequ
 	decoder := json.NewDecoder(bufio.NewReader(io.LimitReader(connection, 64<<10)))
 	if err := decoder.Decode(&response); err != nil {
 		return ControlResponse{}, fmt.Errorf("%w: read managed-worker response: %v", ErrOutcomeUnknown, err)
+	}
+	return response, nil
+}
+
+func callHTTPControl(ctx context.Context, endpoint, token string, request ControlRequest) (ControlResponse, error) {
+	parsed, err := url.Parse(strings.TrimSpace(endpoint))
+	if err != nil || parsed.Scheme != "http" && parsed.Scheme != "https" || parsed.Host == "" || parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" {
+		return ControlResponse{}, errors.New("managed-worker control URL must be an absolute HTTP(S) URL without credentials, query, or fragment")
+	}
+	if strings.TrimSpace(token) == "" {
+		return ControlResponse{}, errors.New("managed-worker control token is required")
+	}
+	payload, err := json.Marshal(request)
+	if err != nil {
+		return ControlResponse{}, fmt.Errorf("encode managed-worker request: %w", err)
+	}
+	httpRequest, err := http.NewRequestWithContext(ctx, http.MethodPost, parsed.String(), strings.NewReader(string(payload)))
+	if err != nil {
+		return ControlResponse{}, fmt.Errorf("build managed-worker request: %w", err)
+	}
+	httpRequest.Header.Set("Content-Type", "application/json")
+	httpRequest.Header.Set(WorkerControlTokenHeader, token)
+	client := &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
+	httpResponse, err := client.Do(httpRequest)
+	if err != nil {
+		return ControlResponse{}, fmt.Errorf("%w: call managed-worker endpoint: %v", ErrRequestNotDelivered, err)
+	}
+	defer httpResponse.Body.Close()
+	if httpResponse.StatusCode < 200 || httpResponse.StatusCode >= 300 {
+		return ControlResponse{}, fmt.Errorf("managed-worker endpoint returned HTTP %d", httpResponse.StatusCode)
+	}
+	var response ControlResponse
+	decoder := json.NewDecoder(io.LimitReader(httpResponse.Body, 64<<10))
+	if err := decoder.Decode(&response); err != nil {
+		return ControlResponse{}, fmt.Errorf("%w: decode managed-worker response: %v", ErrOutcomeUnknown, err)
 	}
 	return response, nil
 }

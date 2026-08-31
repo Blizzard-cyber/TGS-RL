@@ -303,7 +303,7 @@
   "lockfiles": [
     {
       "path": "go.mod",
-      "sha256": "cbc576c2d5640b9ec90eb7e567849debc33b3da18193f96134d10e6d5b6147df"
+      "sha256": "f874bf2ada81f25b7c50ac65ef5ff68eb8df73a7445d8db4de2a4c55be23d798"
     },
     {
       "path": "go.sum",
@@ -367,7 +367,7 @@
       "name": "golang.org/x/sys",
       "properties": {
         "ecosystem": "golang",
-        "scope": "indirect"
+        "scope": "runtime"
       },
       "supplier": "NOASSERTION",
       "versionInfo": "0.47.0"

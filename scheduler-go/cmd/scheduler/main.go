@@ -3,6 +3,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"log/slog"
@@ -26,6 +27,7 @@ import (
 	"github.com/Blizzard-cyber/TGS-RL/scheduler-go/service"
 	"github.com/Blizzard-cyber/TGS-RL/scheduler-go/state"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -111,6 +113,33 @@ func run() error {
 		defer metricsServer.Close()
 		defer metricsListener.Close()
 	}
+	var runtimeRegistryConn *grpc.ClientConn
+	var runtimeRegistryClient tgsrlv1.RuntimeControlServiceClient
+	if startup.WorkerRegistryListen != "" {
+		if startup.WorkerRegistryRuntimeTarget == "" {
+			return errors.New("worker registry requires -worker-registry-runtime-target")
+		}
+		runtimeRegistryConn, err = grpc.DialContext(ctx, startup.WorkerRegistryRuntimeTarget, grpc.WithTransportCredentials(insecure.NewCredentials()))
+		if err != nil {
+			return fmt.Errorf("dial Runtime for worker registry: %w", err)
+		}
+		defer runtimeRegistryConn.Close()
+		runtimeRegistryClient = tgsrlv1.NewRuntimeControlServiceClient(runtimeRegistryConn)
+	}
+	registryServer, registryListener, err := startWorkerRegistry(startup.WorkerRegistryListen, startup.NVIDIARuntimeState, startup.WorkerRegistrySigningKeyFile, providerInstance, runtimeRegistryClient)
+	if err != nil {
+		return err
+	}
+	if registryServer != nil {
+		defer registryServer.Close()
+		defer registryListener.Close()
+		go func() {
+			if err := registryServer.Serve(registryListener); err != nil && err != http.ErrServerClosed {
+				slog.Error("worker registry stopped", "error", err)
+				stop()
+			}
+		}()
+	}
 
 	listener, err := net.Listen("tcp", args.ListenAddress)
 	if err != nil {
@@ -139,6 +168,7 @@ func run() error {
 		"top_k", startup.StartupConfig.TopK,
 		"metrics_address", args.MetricsAddress,
 		"state_directory", args.StateDirectory,
+		"worker_registry_address", startup.WorkerRegistryListen,
 	)
 	if err := grpcServer.Serve(listener); err != nil {
 		return fmt.Errorf("serve gRPC: %w", err)
@@ -161,42 +191,48 @@ func buildSchedulerConfig(startup *runtimeConfig) (scheduler.Config, error) {
 }
 
 type cliArgs struct {
-	ListenAddress         string
-	ConfigRoot            string
-	ManifestPath          string
-	FallbackFlag          string
-	StateDirectory        string
-	MetricsAddress        string
-	NVIDIADriverV2        bool
-	NVIDIAPartitionMode   string
-	NVIDIADryRun          bool
-	NVIDIACommandTimeout  time.Duration
-	NVIDIABindingHelper   string
-	NVIDIABindingState    string
-	NVIDIAMPSPIDDirectory string
-	NVIDIARuntimeHelper   string
-	NVIDIARuntimeState    string
-	NVIDIAMIGHelper       string
+	ListenAddress                string
+	ConfigRoot                   string
+	ManifestPath                 string
+	FallbackFlag                 string
+	StateDirectory               string
+	MetricsAddress               string
+	NVIDIADriverV2               bool
+	NVIDIAPartitionMode          string
+	NVIDIADryRun                 bool
+	NVIDIACommandTimeout         time.Duration
+	NVIDIABindingHelper          string
+	NVIDIABindingState           string
+	NVIDIAMPSPIDDirectory        string
+	NVIDIARuntimeHelper          string
+	NVIDIARuntimeState           string
+	NVIDIAMIGHelper              string
+	WorkerRegistryListen         string
+	WorkerRegistrySigningKeyFile string
+	WorkerRegistryRuntimeTarget  string
 }
 
 type runtimeConfig struct {
-	ListenAddress         string
-	StartupConfig         *configpkg.StartupConfig
-	ProviderCaps          *tgsrlv1.CapabilitySet
-	FallbackMode          scheduler.FallbackMode
-	Provider              provider.CompleteResourceProvider
-	RuntimeConfig         eventloop.RuntimeConfig
-	ResolvedConfigRoot    string
-	NVIDIADriverV2        bool
-	NVIDIAPartitionMode   nvidiaprovider.PartitionMode
-	NVIDIADryRun          bool
-	NVIDIACommandTimeout  time.Duration
-	NVIDIABindingHelper   string
-	NVIDIABindingState    string
-	NVIDIAMPSPIDDirectory string
-	NVIDIARuntimeHelper   string
-	NVIDIARuntimeState    string
-	NVIDIAMIGHelper       string
+	ListenAddress                string
+	StartupConfig                *configpkg.StartupConfig
+	ProviderCaps                 *tgsrlv1.CapabilitySet
+	FallbackMode                 scheduler.FallbackMode
+	Provider                     provider.CompleteResourceProvider
+	RuntimeConfig                eventloop.RuntimeConfig
+	ResolvedConfigRoot           string
+	NVIDIADriverV2               bool
+	NVIDIAPartitionMode          nvidiaprovider.PartitionMode
+	NVIDIADryRun                 bool
+	NVIDIACommandTimeout         time.Duration
+	NVIDIABindingHelper          string
+	NVIDIABindingState           string
+	NVIDIAMPSPIDDirectory        string
+	NVIDIARuntimeHelper          string
+	NVIDIARuntimeState           string
+	NVIDIAMIGHelper              string
+	WorkerRegistryListen         string
+	WorkerRegistrySigningKeyFile string
+	WorkerRegistryRuntimeTarget  string
 }
 
 func parseArgs(argv []string) (*cliArgs, error) {
@@ -217,6 +253,9 @@ func parseArgs(argv []string) (*cliArgs, error) {
 	nvidiaRuntimeHelper := fs.String("nvidia-runtime-helper", "tgsrl-nvidia-runtime", "NVIDIA runtime helper executable")
 	nvidiaRuntimeState := fs.String("nvidia-runtime-state", "", "durable NVIDIA runtime state file; defaults under state-dir")
 	nvidiaMIGHelper := fs.String("nvidia-mig-helper", "tgsrl-nvidia-mig", "NVIDIA MIG lifecycle helper executable")
+	workerRegistryListen := fs.String("worker-registry-listen", "", "optional managed-worker registry HTTP listen address")
+	workerRegistrySigningKeyFile := fs.String("worker-registry-signing-key-file", "", "worker registry HMAC signing-key file")
+	workerRegistryRuntimeTarget := fs.String("worker-registry-runtime-target", "", "Runtime gRPC target for worker lifecycle events")
 	if err := fs.Parse(argv); err != nil {
 		return nil, err
 	}
@@ -238,6 +277,15 @@ func parseArgs(argv []string) (*cliArgs, error) {
 			return nil, fmt.Errorf("NVIDIA MIG helper must not be empty")
 		}
 	}
+	if strings.TrimSpace(*workerRegistryListen) != "" && strings.TrimSpace(*workerRegistryRuntimeTarget) == "" {
+		return nil, fmt.Errorf("worker registry requires runtime target")
+	}
+	if strings.TrimSpace(*workerRegistryListen) != "" && !*nvidiaDriverV2 {
+		return nil, fmt.Errorf("worker registry requires NVIDIA Driver v2")
+	}
+	if strings.TrimSpace(*workerRegistryListen) != "" && strings.TrimSpace(*workerRegistrySigningKeyFile) == "" && strings.TrimSpace(os.Getenv("TGSRL_WORKER_REGISTRY_SIGNING_KEY")) == "" {
+		return nil, fmt.Errorf("worker registry requires a signing-key file or TGSRL_WORKER_REGISTRY_SIGNING_KEY")
+	}
 	bindingState := strings.TrimSpace(*nvidiaBindingState)
 	if bindingState == "" {
 		bindingState = filepath.Join(*stateDirectory, "nvidia-binding.json")
@@ -246,23 +294,29 @@ func parseArgs(argv []string) (*cliArgs, error) {
 	if runtimeState == "" {
 		runtimeState = filepath.Join(*stateDirectory, "nvidia-runtime.json")
 	}
+	if strings.TrimSpace(*workerRegistryListen) != "" && !filepath.IsAbs(runtimeState) {
+		return nil, fmt.Errorf("worker registry requires an absolute NVIDIA runtime state path")
+	}
 	return &cliArgs{
-		ListenAddress:         *listenAddress,
-		ConfigRoot:            *configRoot,
-		ManifestPath:          *manifestPath,
-		FallbackFlag:          *fallbackFlag,
-		StateDirectory:        *stateDirectory,
-		MetricsAddress:        *metricsAddress,
-		NVIDIADriverV2:        *nvidiaDriverV2,
-		NVIDIAPartitionMode:   *nvidiaPartitionMode,
-		NVIDIADryRun:          *nvidiaDryRun,
-		NVIDIACommandTimeout:  *nvidiaCommandTimeout,
-		NVIDIABindingHelper:   strings.TrimSpace(*nvidiaBindingHelper),
-		NVIDIABindingState:    bindingState,
-		NVIDIAMPSPIDDirectory: strings.TrimSpace(*nvidiaMPSPIDDirectory),
-		NVIDIARuntimeHelper:   strings.TrimSpace(*nvidiaRuntimeHelper),
-		NVIDIARuntimeState:    runtimeState,
-		NVIDIAMIGHelper:       strings.TrimSpace(*nvidiaMIGHelper),
+		ListenAddress:                *listenAddress,
+		ConfigRoot:                   *configRoot,
+		ManifestPath:                 *manifestPath,
+		FallbackFlag:                 *fallbackFlag,
+		StateDirectory:               *stateDirectory,
+		MetricsAddress:               *metricsAddress,
+		NVIDIADriverV2:               *nvidiaDriverV2,
+		NVIDIAPartitionMode:          *nvidiaPartitionMode,
+		NVIDIADryRun:                 *nvidiaDryRun,
+		NVIDIACommandTimeout:         *nvidiaCommandTimeout,
+		NVIDIABindingHelper:          strings.TrimSpace(*nvidiaBindingHelper),
+		NVIDIABindingState:           bindingState,
+		NVIDIAMPSPIDDirectory:        strings.TrimSpace(*nvidiaMPSPIDDirectory),
+		NVIDIARuntimeHelper:          strings.TrimSpace(*nvidiaRuntimeHelper),
+		NVIDIARuntimeState:           runtimeState,
+		NVIDIAMIGHelper:              strings.TrimSpace(*nvidiaMIGHelper),
+		WorkerRegistryListen:         strings.TrimSpace(*workerRegistryListen),
+		WorkerRegistrySigningKeyFile: strings.TrimSpace(*workerRegistrySigningKeyFile),
+		WorkerRegistryRuntimeTarget:  strings.TrimSpace(*workerRegistryRuntimeTarget),
 	}, nil
 }
 
@@ -292,22 +346,25 @@ func loadStartupConfig(args *cliArgs) (*runtimeConfig, error) {
 		return nil, fmt.Errorf("project startup capabilities: %w", err)
 	}
 	return &runtimeConfig{
-		ListenAddress:         args.ListenAddress,
-		StartupConfig:         startupConfig,
-		ProviderCaps:          providerCaps,
-		FallbackMode:          fallbackMode,
-		RuntimeConfig:         eventloop.RuntimeConfig{FastInterval: startupConfig.RuntimeIntervals.Fast, MediumInterval: startupConfig.RuntimeIntervals.Medium, SlowInterval: startupConfig.RuntimeIntervals.Slow},
-		ResolvedConfigRoot:    startupConfig.Root,
-		NVIDIADriverV2:        args.NVIDIADriverV2,
-		NVIDIAPartitionMode:   nvidiaprovider.PartitionMode(args.NVIDIAPartitionMode),
-		NVIDIADryRun:          args.NVIDIADryRun,
-		NVIDIACommandTimeout:  args.NVIDIACommandTimeout,
-		NVIDIABindingHelper:   args.NVIDIABindingHelper,
-		NVIDIABindingState:    args.NVIDIABindingState,
-		NVIDIAMPSPIDDirectory: args.NVIDIAMPSPIDDirectory,
-		NVIDIARuntimeHelper:   args.NVIDIARuntimeHelper,
-		NVIDIARuntimeState:    args.NVIDIARuntimeState,
-		NVIDIAMIGHelper:       args.NVIDIAMIGHelper,
+		ListenAddress:                args.ListenAddress,
+		StartupConfig:                startupConfig,
+		ProviderCaps:                 providerCaps,
+		FallbackMode:                 fallbackMode,
+		RuntimeConfig:                eventloop.RuntimeConfig{FastInterval: startupConfig.RuntimeIntervals.Fast, MediumInterval: startupConfig.RuntimeIntervals.Medium, SlowInterval: startupConfig.RuntimeIntervals.Slow},
+		ResolvedConfigRoot:           startupConfig.Root,
+		NVIDIADriverV2:               args.NVIDIADriverV2,
+		NVIDIAPartitionMode:          nvidiaprovider.PartitionMode(args.NVIDIAPartitionMode),
+		NVIDIADryRun:                 args.NVIDIADryRun,
+		NVIDIACommandTimeout:         args.NVIDIACommandTimeout,
+		NVIDIABindingHelper:          args.NVIDIABindingHelper,
+		NVIDIABindingState:           args.NVIDIABindingState,
+		NVIDIAMPSPIDDirectory:        args.NVIDIAMPSPIDDirectory,
+		NVIDIARuntimeHelper:          args.NVIDIARuntimeHelper,
+		NVIDIARuntimeState:           args.NVIDIARuntimeState,
+		NVIDIAMIGHelper:              args.NVIDIAMIGHelper,
+		WorkerRegistryListen:         args.WorkerRegistryListen,
+		WorkerRegistrySigningKeyFile: args.WorkerRegistrySigningKeyFile,
+		WorkerRegistryRuntimeTarget:  args.WorkerRegistryRuntimeTarget,
 	}, nil
 }
 

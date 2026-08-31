@@ -19,7 +19,8 @@ func testReceipt(key, actionID string, step, expected int) Receipt {
 }
 
 func TestStorePersistsBindingAndReceiptAcrossRestart(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "binding.json")
+	directory := t.TempDir()
+	path := filepath.Join(directory, "binding.json")
 	store, err := NewStore(path)
 	if err != nil {
 		t.Fatal(err)
@@ -45,6 +46,9 @@ func TestStorePersistsBindingAndReceiptAcrossRestart(t *testing.T) {
 	}
 	if info, err := os.Stat(path); err != nil || info.Mode().Perm() != 0o600 {
 		t.Fatalf("state mode = %v error = %v", info.Mode().Perm(), err)
+	}
+	if info, err := os.Stat(directory); err != nil || info.Mode().Perm() != 0o700 {
+		t.Fatalf("state directory mode = %v error = %v", info.Mode().Perm(), err)
 	}
 }
 
