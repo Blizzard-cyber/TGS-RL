@@ -29,9 +29,10 @@ go test ./scheduler-go/scheduler -run '^$' -bench BenchmarkEvaluateSimulation -b
 ```
 
 `make test-performance` 通过 `performance` build tag 在独立、非 race 进程中执行 Scheduler 与
-Provider P95 回归预算。门禁取五个独立批次 P95 的中位数，以隔离 hosted runner 的单批暂停，
-同时阻断持续性代码退化。它不是产品 SLA，也不能替代锁定 workload 的真实环境 Gate 数据。
-普通 `make test`/`make race` 不执行墙钟断言。
+Provider P95 回归预算。门禁使用进程 user+system CPU time，并取五个独立批次 P95 的中位数，
+因此共享 hosted runner 的进程 descheduling 不会被误判为算法退化；它仍会阻断代码、GC 和系统
+调用开销的持续回退。该预算不是产品 wall-clock SLA，也不能替代锁定 workload 的真实环境 Gate
+数据。普通 `make test`/`make race` 不执行性能预算。
 
 完整本地回归：
 

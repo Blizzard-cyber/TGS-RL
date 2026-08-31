@@ -6,6 +6,7 @@ import (
 	"context"
 	"fmt"
 	"sort"
+	"syscall"
 	"testing"
 	"time"
 
@@ -13,8 +14,8 @@ import (
 )
 
 // TestPerformanceBudgets guards local provider event publication and replay
-// bookkeeping. The median of independent batch P95s rejects isolated hosted
-// runner pauses. It is a regression budget, not a production latency SLA.
+// bookkeeping. Process CPU time prevents hosted-runner descheduling from
+// masquerading as a provider regression. It is not a production latency SLA.
 func TestPerformanceBudgets(t *testing.T) {
 	now := time.Date(2026, time.August, 28, 9, 0, 0, 0, time.UTC)
 	p, err := New(
@@ -61,14 +62,14 @@ func TestPerformanceBudgets(t *testing.T) {
 	for range batches {
 		latencies := make([]time.Duration, 0, samplesPerBatch)
 		for range samplesPerBatch {
-			started := time.Now()
+			started := providerProcessCPUTime(t)
 			_, err := p.ObserveSandbox(context.Background(), &tgsrlv1.SandboxEvent{
 				EventId:    fmt.Sprintf("perf-event-%03d", iteration),
 				SandboxId:  "sandbox-a",
 				Generation: 1,
 				State:      performanceSandboxState(iteration),
 			})
-			latencies = append(latencies, time.Since(started))
+			latencies = append(latencies, providerProcessCPUTime(t)-started)
 			if err != nil {
 				t.Fatalf("ObserveSandbox() error = %v", err)
 			}
@@ -80,10 +81,19 @@ func TestPerformanceBudgets(t *testing.T) {
 	sort.Slice(batchP95s, func(i, j int) bool { return batchP95s[i] < batchP95s[j] })
 	medianP95 := batchP95s[len(batchP95s)/2]
 	const budget = 25 * time.Millisecond
-	t.Logf("ObserveSandbox batch_p95=%v, median_p95=%s, budget=%s", batchP95s, medianP95, budget)
+	t.Logf("ObserveSandbox batch_cpu_p95=%v, median_cpu_p95=%s, budget=%s", batchP95s, medianP95, budget)
 	if medianP95 > budget {
-		t.Fatalf("provider resource/runtime apply median batch p95=%s exceeds regression budget %s", medianP95, budget)
+		t.Fatalf("provider resource/runtime apply median batch CPU p95=%s exceeds regression budget %s", medianP95, budget)
 	}
+}
+
+func providerProcessCPUTime(t testing.TB) time.Duration {
+	t.Helper()
+	var usage syscall.Rusage
+	if err := syscall.Getrusage(syscall.RUSAGE_SELF, &usage); err != nil {
+		t.Fatalf("Getrusage() error = %v", err)
+	}
+	return time.Duration(usage.Utime.Nano() + usage.Stime.Nano())
 }
 
 func performanceSandboxState(iteration int) tgsrlv1.RuntimeState {

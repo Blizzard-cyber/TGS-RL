@@ -4,6 +4,7 @@ package scheduler
 
 import (
 	"sort"
+	"syscall"
 	"testing"
 	"time"
 
@@ -11,9 +12,9 @@ import (
 )
 
 func TestPerformanceBudgets(t *testing.T) {
-	// Hosted runners occasionally pause an individual sample or batch. Use the
-	// median of independent batch P95s so isolated pauses do not hide or invent
-	// a sustained scheduler regression. These are CI budgets, not latency SLAs.
+	// Hosted runners can deschedule the test process for an entire batch. Measure
+	// process CPU time so runner contention does not masquerade as a Scheduler
+	// regression. These are deterministic compute budgets, not latency SLAs.
 	tests := []struct {
 		name    string
 		devices int
@@ -39,20 +40,29 @@ func TestPerformanceBudgets(t *testing.T) {
 			for range batches {
 				latencies := make([]time.Duration, 0, samplesPerBatch)
 				for range samplesPerBatch {
-					started := time.Now()
+					started := processCPUTime(t)
 					assertPerformanceDecision(t, evaluator, snapshot, intent, test.units)
-					latencies = append(latencies, time.Since(started))
+					latencies = append(latencies, processCPUTime(t)-started)
 				}
 				batchP95s = append(batchP95s, percentile95(latencies))
 			}
 			sort.Slice(batchP95s, func(i, j int) bool { return batchP95s[i] < batchP95s[j] })
 			medianP95 := batchP95s[len(batchP95s)/2]
-			t.Logf("Evaluate(%d devices, %d units) batch_p95=%v, median_p95=%s, budget=%s", test.devices, test.units, batchP95s, medianP95, test.budget)
+			t.Logf("Evaluate(%d devices, %d units) batch_cpu_p95=%v, median_cpu_p95=%s, budget=%s", test.devices, test.units, batchP95s, medianP95, test.budget)
 			if medianP95 >= test.budget {
-				t.Fatalf("Evaluate(%d devices, %d units) median batch p95=%s, budget=%s", test.devices, test.units, medianP95, test.budget)
+				t.Fatalf("Evaluate(%d devices, %d units) median batch CPU p95=%s, budget=%s", test.devices, test.units, medianP95, test.budget)
 			}
 		})
 	}
+}
+
+func processCPUTime(t testing.TB) time.Duration {
+	t.Helper()
+	var usage syscall.Rusage
+	if err := syscall.Getrusage(syscall.RUSAGE_SELF, &usage); err != nil {
+		t.Fatalf("Getrusage() error = %v", err)
+	}
+	return time.Duration(usage.Utime.Nano() + usage.Stime.Nano())
 }
 
 func percentile95(latencies []time.Duration) time.Duration {
