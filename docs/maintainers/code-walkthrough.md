@@ -265,7 +265,7 @@ stdout/stderr 和 trace，再从事件重新计算指标。校验器不信任外
 
 `SIMULATED` 与 `CPU_INTEGRATION` 永远不能生成真实 GPU PASS。
 
-## 11. 本轮源码审查发现并修复的问题
+## 11. 全仓源码审查发现并修复的问题
 
 | 问题 | 风险 | 修复 | 回归位置 |
 |---|---|---|---|
@@ -283,12 +283,39 @@ stdout/stderr 和 trace，再从事件重新计算指标。校验器不信任外
 | veRL raw/typed trace 分两次读取共享 sequence | 并发 observe 时两种输出的事件身份可能错位 | `_emit` 返回本次不可变身份，typed event 复用同一快照 | `tests/python/test_adapters_runtime.py` |
 | 多个本地状态文件显式使用宽松权限 | 运行元数据可能被同机其他用户读取 | 核心状态文件改为 `0600`、新建目录改为 `0700`，cursor 增加 fsync | 既有 persistence/restart 测试 |
 | admit/retry 成功分支重复 upsert Operation | 增加阅读噪声，容易误判为追加两次 | 保留单一统一 upsert | Job Controller 测试集 |
+| 普通单测以本机 p95 毫秒阈值判定性能 | CI 负载变化会造成抖动失败，也不能代表生产性能 | 删除 wall-clock 门禁；保留显式 benchmark 和 1000×1000 无时间阈值正确性检查 | `scheduler-go/scheduler/benchmark_test.go` |
+| 手写 Proto 描述符与 Gate JSON 常量测试重复正式门禁 | 生成面或配置每次变化都要维护第二份影子契约 | 依赖 Buf、跨语言 round-trip、Gate loader 与治理验证 | `make check-generated`、`make proto-roundtrip`、`tests/governance/test_gate_tools.py` |
+| 测试 fake 与仅测试使用的查询方法位于生产源码 | 扩大公开表面，并让读者误判其为产品能力 | 将 NVIDIA driver/command fake 移入既有 `_test.go`，删除未使用的 `Guard.Snapshot` | NVIDIA、Protection 与 Provider 测试集 |
+| 硬件 workflow 约束单独占用一个极小测试文件 | 增加碎片化，但与治理门禁属于同一职责 | 合并到既有 governance 测试；继续禁止 CPU/模拟证据冒充 GPU | `tests/governance/test_governance.py` |
 
 ## 12. 测试和提交边界
 
-测试应保护长期契约，而不是保留一次性实验。适合提交的测试包括：原子性、幂等、状态机、
-安全动作完整性、恢复、协议兼容和证据防伪。只用于手工观察输出、验证一行展示逻辑或复制
-已有覆盖的临时脚本不应进入仓库。
+测试应保护长期契约，而不是保留一次性实验。全仓测试按责任分成五层：
+
+| 层级 | 应保留的内容 | 不应承担的内容 |
+|---|---|---|
+| 单元测试 | 原子性、幂等、状态机、排序、校验和 fail-closed 分支 | 本机性能 SLA、第三方服务可用性 |
+| 组件集成 | 跨 Repository、RPC、Provider、Operator 或持久化边界的失败与恢复 | 重复每个底层纯函数的所有分支 |
+| 契约与治理 | Proto round-trip、OpenAPI、配置图、SBOM、证据防伪 | 复制生成描述符或整份 JSON 常量 |
+| 进程 E2E | 真实启动、重启、恢复和跨组件闭环 | 伪装成 GPU、Kubernetes 或训练性能验证 |
+| Benchmark | 可重复比较算法吞吐、耗时和分配数 | 作为普通 `go test` 的绝对 wall-clock 通过条件 |
+
+新增或保留测试前逐项判断：失败时能否指出一个长期产品契约；同一断言是否已由更低层测试
+或正式门禁覆盖；是否依赖机器负载、网络或当前输出文案；fixture 是否会被多个测试复用。仅用于
+开发时观察输出、验证测试替身自身、复制已有覆盖或一次性定位问题的文件应在本地验证后删除。
+小型同类检查应合并进现有测试文件，避免每个修复都新增一个文件。
+
+调度性能通过显式 benchmark 观察，不进入普通单测的固定毫秒门禁：
+
+```bash
+go test ./scheduler-go/scheduler -run '^$' -bench BenchmarkEvaluateSimulation -benchmem
+```
+
+`scheduler-go/scheduler/benchmark_test.go` 同时保留 1000 device × 1000 unit 的无时间阈值
+正确性用例，防止性能清理误删大规模绑定唯一性覆盖。`job-controller-go/runtimeclient/fake.go`
+是当前唯一明确保留在生产目录的纯测试支撑：Controller 与 Service 两个外部测试包共享同一套
+完整 lifecycle fake；迁移会复制状态机。其他名为 mock/fake 的实现均是公开的本地运行模式，
+不是一次性测试桩。
 
 提交前至少执行：
 
@@ -299,6 +326,7 @@ make test
 make race
 make product-e2e
 make check-generated
+make check-governance
 make check-public-content
 ```
 

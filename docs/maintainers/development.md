@@ -17,6 +17,15 @@ make check-governance # 校验 SBOM、兼容性证据与 patch ledger
 make check-public-content # 扫描工作树与可达历史中的私有链接、路径和凭据样式
 ```
 
+Scheduler benchmark 不属于普通单测门禁，需要观察算法变化时显式运行：
+
+```bash
+go test ./scheduler-go/scheduler -run '^$' -bench BenchmarkEvaluateSimulation -benchmem
+```
+
+不要把本机 p95 或固定毫秒阈值写进 `go test`。普通测试只检查结果、顺序、不变量和规模正确性；
+真实性能结论由锁定 workload 的 Gate runner 产生。
+
 完整本地回归：
 
 ```bash
@@ -112,8 +121,12 @@ CI 分别验证：
 ## 提交边界
 
 - 逐文件暂存实现、长期回归测试和对应文档，不使用 `git add .`；
-- 测试应保护原子性、幂等、状态机、安全、恢复或协议等长期契约；只服务于一次调试、
-  已被现有门禁覆盖或仅观察输出的临时测试不提交；
+- 测试应保护原子性、幂等、状态机、安全、恢复或协议等长期契约；失败时必须能定位一个
+  需要维护的行为，而不是只证明测试替身、固定文案或当前 JSON 常量没有变化；
+- 只服务于一次调试、已被现有门禁覆盖、仅观察输出或依赖本机 wall-clock 的临时测试不提交；
+  同类小测试优先并入已有文件，开发期脚本验证完成后删除；
+- 测试 fake 默认放在 `_test.go` 或测试目录。`job-controller-go/runtimeclient/fake.go` 是共享给
+  Controller 与 Service 两个测试包的有意例外；不要再把单包 fake 加入生产源码；
 - `WORKLOG.local.md`、`.cache/`、`.tmp/`、`bin/`、虚拟环境、依赖目录、构建目录、
   coverage、trace、数据库、journal 和日志属于本地产物；
 - 提交前同时查看 `git status --short`、`git diff --stat`、`git diff --check` 和

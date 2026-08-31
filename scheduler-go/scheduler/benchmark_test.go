@@ -35,6 +35,24 @@ func BenchmarkEvaluateSimulation(b *testing.B) {
 	}
 }
 
+func TestEvaluateLargeScaleCorrectness(t *testing.T) {
+	if testing.Short() {
+		t.Skip("large-scale correctness gate skipped in short mode")
+	}
+	snapshot, intent := simulationFixture(1000, 1000)
+	plan, decision, err := testScheduler(t, FallbackNoOp).Evaluate(snapshot, intent)
+	if err != nil || decision.GetFallback() || len(plan.GetBindings()) != 1000 {
+		t.Fatalf("large-scale Evaluate() = (%d bindings, fallback=%v, error=%v)", len(plan.GetBindings()), decision.GetFallback(), err)
+	}
+	seen := make(map[string]struct{}, len(plan.GetBindings()))
+	for _, binding := range plan.GetBindings() {
+		if _, duplicate := seen[binding.GetPendingUnitId()]; duplicate {
+			t.Fatalf("pending unit %q was bound twice", binding.GetPendingUnitId())
+		}
+		seen[binding.GetPendingUnitId()] = struct{}{}
+	}
+}
+
 func simulationFixture(deviceCount, unitCount int) (*tgsrlv1.ClusterSnapshot, *tgsrlv1.SchedulingIntent) {
 	snapshot, intent := validFixture()
 	snapshot.Devices = make([]*tgsrlv1.Device, 0, deviceCount)

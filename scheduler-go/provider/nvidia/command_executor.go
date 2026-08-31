@@ -9,8 +9,6 @@ import (
 	"os/exec"
 	"sort"
 	"strings"
-	"sync"
-	"time"
 )
 
 const commandDiagnosticLimit = 4096
@@ -104,88 +102,6 @@ func (*ExecCommandExecutor) Execute(ctx context.Context, command Command) (Comma
 		result.ExitCode = exitErr.ExitCode()
 	}
 	return cloneCommandResult(result), classifyCommandError(ctx, command, result, err)
-}
-
-// FakeCommandResponse is one deterministic executor response.
-type FakeCommandResponse struct {
-	MatchArgv []string
-	Result    CommandResult
-	Err       error
-	Delay     time.Duration
-}
-
-// FakeCommandExecutor is a race-safe scripted CommandExecutor for tests.
-type FakeCommandExecutor struct {
-	mu        sync.Mutex
-	responses []FakeCommandResponse
-	commands  []Command
-}
-
-// NewFakeCommandExecutor constructs a sequential fake executor.
-func NewFakeCommandExecutor(responses ...FakeCommandResponse) *FakeCommandExecutor {
-	return &FakeCommandExecutor{responses: append([]FakeCommandResponse(nil), responses...)}
-}
-
-// Enqueue appends responses for future Execute calls.
-func (e *FakeCommandExecutor) Enqueue(responses ...FakeCommandResponse) {
-	e.mu.Lock()
-	e.responses = append(e.responses, responses...)
-	e.mu.Unlock()
-}
-
-// Commands returns detached commands in execution order.
-func (e *FakeCommandExecutor) Commands() []Command {
-	e.mu.Lock()
-	defer e.mu.Unlock()
-	commands := make([]Command, len(e.commands))
-	for index, command := range e.commands {
-		commands[index] = cloneCommand(command)
-	}
-	return commands
-}
-
-// Execute records one command and consumes one scripted response.
-func (e *FakeCommandExecutor) Execute(ctx context.Context, command Command) (CommandResult, error) {
-	if ctx == nil {
-		ctx = context.Background()
-	}
-	if err := validateCommand(command); err != nil {
-		return CommandResult{ExitCode: -1}, err
-	}
-	e.mu.Lock()
-	e.commands = append(e.commands, cloneCommand(command))
-	if len(e.responses) == 0 {
-		e.mu.Unlock()
-		err := &CommandError{Kind: CommandFailureUnavailable, Argv: append([]string(nil), command.Argv...), ExitCode: -1, Stderr: "fake response is not configured", Cause: exec.ErrNotFound}
-		return CommandResult{ExitCode: -1}, err
-	}
-	response := e.responses[0]
-	e.responses = e.responses[1:]
-	e.mu.Unlock()
-	if len(response.MatchArgv) > 0 && !equalStringSlices(response.MatchArgv, command.Argv) {
-		return CommandResult{ExitCode: -1}, &CommandError{Kind: CommandFailureInvalid, Argv: append([]string(nil), command.Argv...), ExitCode: -1, Stderr: fmt.Sprintf("unexpected argv %q, want %q", command.Argv, response.MatchArgv)}
-	}
-	if response.Delay > 0 {
-		timer := time.NewTimer(response.Delay)
-		defer timer.Stop()
-		select {
-		case <-ctx.Done():
-			return CommandResult{ExitCode: -1}, classifyCommandError(ctx, command, CommandResult{ExitCode: -1}, ctx.Err())
-		case <-timer.C:
-		}
-	}
-	result := cloneCommandResult(response.Result)
-	if response.Err != nil {
-		var commandErr *CommandError
-		if errors.As(response.Err, &commandErr) {
-			return result, response.Err
-		}
-		return result, classifyCommandError(ctx, command, result, response.Err)
-	}
-	if result.ExitCode != 0 {
-		return result, classifyCommandError(ctx, command, result, errors.New("command exited unsuccessfully"))
-	}
-	return result, nil
 }
 
 func validateCommand(command Command) error {

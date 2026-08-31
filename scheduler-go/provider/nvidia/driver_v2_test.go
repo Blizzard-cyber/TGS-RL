@@ -3,6 +3,7 @@ package nvidia
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os/exec"
 	"strings"
 	"sync"
@@ -17,55 +18,111 @@ import (
 
 var v2Now = time.Date(2026, time.August, 29, 12, 0, 0, 0, time.UTC)
 
-func TestFakeCommandExecutorCapturesStreamsExitAndContext(t *testing.T) {
-	executor := NewFakeCommandExecutor(
-		FakeCommandResponse{Result: CommandResult{Stdout: []byte("out"), Stderr: []byte("warn"), ExitCode: 7}},
-		FakeCommandResponse{Delay: time.Second},
-	)
-	result, err := executor.Execute(context.Background(), Command{Argv: []string{"tool", "arg"}})
-	var commandErr *CommandError
-	if !errors.As(err, &commandErr) || commandErr.Kind != CommandFailureExit || result.ExitCode != 7 || string(result.Stdout) != "out" || string(result.Stderr) != "warn" {
-		t.Fatalf("Execute(exit) = (%+v, %v)", result, err)
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), time.Millisecond)
-	defer cancel()
-	result, err = executor.Execute(ctx, Command{Argv: []string{"slow-tool"}})
-	if !errors.As(err, &commandErr) || commandErr.Kind != CommandFailureTimeout || result.ExitCode != -1 {
-		t.Fatalf("Execute(timeout) = (%+v, %v)", result, err)
-	}
+type FakeCommandResponse struct {
+	MatchArgv []string
+	Result    CommandResult
+	Err       error
+	Delay     time.Duration
 }
 
-func TestFakeCommandExecutorClassifiesCallerCancellation(t *testing.T) {
-	executor := NewFakeCommandExecutor(FakeCommandResponse{Delay: time.Second})
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel()
-	_, err := executor.Execute(ctx, Command{Argv: []string{"tool"}})
-	var commandErr *CommandError
-	if !errors.As(err, &commandErr) || commandErr.Kind != CommandFailureCanceled || !errors.Is(err, context.Canceled) {
-		t.Fatalf("Execute(canceled) error = %v", err)
-	}
+type FakeCommandExecutor struct {
+	mu        sync.Mutex
+	responses []FakeCommandResponse
+	commands  []Command
 }
 
-func TestFakeCommandExecutorClassifiesUnavailableAndPermissionFailures(t *testing.T) {
+func NewFakeCommandExecutor(responses ...FakeCommandResponse) *FakeCommandExecutor {
+	return &FakeCommandExecutor{responses: append([]FakeCommandResponse(nil), responses...)}
+}
+
+func (e *FakeCommandExecutor) Enqueue(responses ...FakeCommandResponse) {
+	e.mu.Lock()
+	e.responses = append(e.responses, responses...)
+	e.mu.Unlock()
+}
+
+func (e *FakeCommandExecutor) Commands() []Command {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	commands := make([]Command, len(e.commands))
+	for index, command := range e.commands {
+		commands[index] = cloneCommand(command)
+	}
+	return commands
+}
+
+func (e *FakeCommandExecutor) Execute(ctx context.Context, command Command) (CommandResult, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := validateCommand(command); err != nil {
+		return CommandResult{ExitCode: -1}, err
+	}
+	e.mu.Lock()
+	e.commands = append(e.commands, cloneCommand(command))
+	if len(e.responses) == 0 {
+		e.mu.Unlock()
+		err := &CommandError{Kind: CommandFailureUnavailable, Argv: append([]string(nil), command.Argv...), ExitCode: -1, Stderr: "fake response is not configured", Cause: exec.ErrNotFound}
+		return CommandResult{ExitCode: -1}, err
+	}
+	response := e.responses[0]
+	e.responses = e.responses[1:]
+	e.mu.Unlock()
+	if len(response.MatchArgv) > 0 && !equalStringSlices(response.MatchArgv, command.Argv) {
+		return CommandResult{ExitCode: -1}, &CommandError{Kind: CommandFailureInvalid, Argv: append([]string(nil), command.Argv...), ExitCode: -1, Stderr: fmt.Sprintf("unexpected argv %q, want %q", command.Argv, response.MatchArgv)}
+	}
+	if response.Delay > 0 {
+		timer := time.NewTimer(response.Delay)
+		defer timer.Stop()
+		select {
+		case <-ctx.Done():
+			return CommandResult{ExitCode: -1}, classifyCommandError(ctx, command, CommandResult{ExitCode: -1}, ctx.Err())
+		case <-timer.C:
+		}
+	}
+	result := cloneCommandResult(response.Result)
+	if response.Err != nil {
+		var commandErr *CommandError
+		if errors.As(response.Err, &commandErr) {
+			return result, response.Err
+		}
+		return result, classifyCommandError(ctx, command, result, response.Err)
+	}
+	if result.ExitCode != 0 {
+		return result, classifyCommandError(ctx, command, result, errors.New("command exited unsuccessfully"))
+	}
+	return result, nil
+}
+
+func TestClassifyCommandErrorPreservesOperationalFailureKinds(t *testing.T) {
 	tests := []struct {
 		name   string
+		ctx    context.Context
 		result CommandResult
 		err    error
 		want   CommandFailureKind
 	}{
-		{name: "missing command", result: CommandResult{ExitCode: -1}, err: &exec.Error{Name: "tool", Err: exec.ErrNotFound}, want: CommandFailureUnavailable},
-		{name: "permission denied", result: CommandResult{ExitCode: 1, Stderr: []byte("permission denied")}, err: errors.New("exit status 1"), want: CommandFailurePermission},
+		{name: "missing command", ctx: context.Background(), result: CommandResult{ExitCode: -1}, err: &exec.Error{Name: "tool", Err: exec.ErrNotFound}, want: CommandFailureUnavailable},
+		{name: "permission denied", ctx: context.Background(), result: CommandResult{ExitCode: 1, Stderr: []byte("permission denied")}, err: errors.New("exit status 1"), want: CommandFailurePermission},
+		{name: "ordinary exit", ctx: context.Background(), result: CommandResult{ExitCode: 7}, err: errors.New("exit status 7"), want: CommandFailureExit},
+		{name: "deadline exceeded", ctx: context.Background(), result: CommandResult{ExitCode: -1}, err: context.DeadlineExceeded, want: CommandFailureTimeout},
+		{name: "canceled", ctx: canceledContext(), result: CommandResult{ExitCode: -1}, err: context.Canceled, want: CommandFailureCanceled},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			executor := NewFakeCommandExecutor(FakeCommandResponse{Result: test.result, Err: test.err})
-			_, err := executor.Execute(context.Background(), Command{Argv: []string{"tool"}})
 			var commandErr *CommandError
+			err := classifyCommandError(test.ctx, Command{Argv: []string{"tool"}}, test.result, test.err)
 			if !errors.As(err, &commandErr) || commandErr.Kind != test.want {
-				t.Fatalf("Execute() error = %v, want %s", err, test.want)
+				t.Fatalf("classifyCommandError() = %v, want %s", err, test.want)
 			}
 		})
 	}
+}
+
+func canceledContext() context.Context {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	return ctx
 }
 
 func TestCommandInventoryDiscoveryUsesStableUUIDIdentityAndTopology(t *testing.T) {

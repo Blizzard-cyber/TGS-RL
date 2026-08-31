@@ -6,6 +6,7 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
+HARDWARE_WORKFLOW = ROOT / ".github" / "workflows" / "hardware-validation.yaml"
 
 
 def run_script(name: str, *arguments: str) -> subprocess.CompletedProcess[str]:
@@ -66,7 +67,22 @@ def test_dockerfile_platform_flag_does_not_hide_unpinned_images() -> None:
     ]
 
 
-def test_empty_patch_ledger_passes_replay_gate() -> None:
-    result = run_script("check-upstream-patches.py")
-    assert result.returncode == 0, result.stderr
-    assert "0 registered patches" in result.stdout
+def test_hardware_workflow_runs_locked_workloads_without_cross_claiming_evidence() -> None:
+    text = HARDWARE_WORKFLOW.read_text(encoding="utf-8")
+
+    assert "hardware-run --evidence" in text
+    assert "GPU_SINGLE_NODE" in text
+    assert "gpu-multi-node" not in text
+    assert "Manual operator instructions" not in text
+    assert "python3 scripts/gate-tools.py simulate" in text
+    assert '--evidence "${{ github.event.inputs.evidence }}"' not in text
+
+
+def test_hardware_workflow_has_cpu_and_automated_self_hosted_gpu_entries() -> None:
+    text = HARDWARE_WORKFLOW.read_text(encoding="utf-8")
+
+    assert "cpu-integration:" in text
+    assert "scripts/gate-tools.py cpu-smoke" in text
+    assert "gpu-runner:" in text
+    assert "runs-on: [self-hosted, gpu]" in text
+    assert "hardware-run --evidence" in text

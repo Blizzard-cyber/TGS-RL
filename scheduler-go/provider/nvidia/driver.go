@@ -124,53 +124,6 @@ func (b *CommandBuilder) Build() (Command, error) {
 	return Command{Argv: argv}, nil
 }
 
-// FakeDriver is a deterministic test double that never claims live hardware.
-type FakeDriver struct {
-	probe *ProbeResult
-}
-
-func NewFakeDriver(devices []*tgsrlv1.Device, capabilities *tgsrlv1.CapabilitySet) *FakeDriver {
-	if capabilities == nil {
-		capabilities = defaultCapabilities(true)
-	}
-	if capabilities.GetSource() == "" {
-		capabilities.Source = ProviderID
-	}
-	return &FakeDriver{
-		probe: &ProbeResult{
-			Available:    true,
-			Devices:      cloneDevices(devices),
-			Capabilities: cloneCapabilities(capabilities),
-		},
-	}
-}
-
-func (d *FakeDriver) ID() string { return "fake" }
-
-func (d *FakeDriver) Probe(context.Context) (*ProbeResult, error) {
-	return cloneProbeResult(d.probe), nil
-}
-
-func (d *FakeDriver) ExecuteAction(_ context.Context, _ *DriverState, action *tgsrlv1.Action) (*ActionExecution, error) {
-	if err := validateDriverAction(action); err != nil {
-		return nil, err
-	}
-	return &ActionExecution{Detail: "fake action applied"}, nil
-}
-
-func (d *FakeDriver) Reconcile(_ context.Context, _ *DriverState, _ *tgsrlv1.PlacementPlan) (*ReconcileState, error) {
-	probe := cloneProbeResult(d.probe)
-	if probe == nil {
-		return &ReconcileState{Healthy: false, Reason: "fake probe result is unavailable"}, nil
-	}
-	return &ReconcileState{
-		Healthy:      probe.Available,
-		Reason:       probe.Reason,
-		Devices:      cloneDevices(probe.Devices),
-		Capabilities: cloneCapabilities(probe.Capabilities),
-	}, nil
-}
-
 // UnavailableDriver explicitly reports that no usable NVIDIA GPU is present.
 type UnavailableDriver struct {
 	reason string

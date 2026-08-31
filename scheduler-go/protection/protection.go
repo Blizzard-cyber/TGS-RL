@@ -240,25 +240,6 @@ func (g *Guard) RestoreState(snapshot State) {
 	}
 }
 
-// Snapshot returns a copy of the current internal state for tests.
-func (g *Guard) Snapshot() map[string]Decision {
-	g.mu.Lock()
-	defer g.mu.Unlock()
-	out := make(map[string]Decision, len(g.state))
-	now := g.clock.Now()
-	for key, st := range g.state {
-		st = g.normalizeLocked(st, now)
-		reason := ""
-		allowed := true
-		if !st.breakerOpened.IsZero() && now.Sub(st.breakerOpened) < g.cfg.BreakerResetAfter {
-			allowed = false
-			reason = "CIRCUIT_OPEN"
-		}
-		out[key] = Decision{Allowed: allowed, Reason: reason}
-	}
-	return out
-}
-
 func (g *Guard) evaluateLocked(st actionState, now time.Time, score float64, actionCount int) (Decision, actionState, bool) {
 	st = g.normalizeLocked(st, now)
 	if !st.breakerOpened.IsZero() && now.Sub(st.breakerOpened) < g.cfg.BreakerResetAfter {

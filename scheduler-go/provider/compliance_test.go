@@ -11,10 +11,47 @@ import (
 	"github.com/Blizzard-cyber/TGS-RL/scheduler-go/actionpolicy"
 	"github.com/Blizzard-cyber/TGS-RL/scheduler-go/provider"
 	"github.com/Blizzard-cyber/TGS-RL/scheduler-go/provider/nvidia"
+	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
 var complianceNow = time.Date(2026, time.August, 27, 9, 0, 0, 0, time.UTC)
+
+type nvidiaTestDriver struct {
+	devices      []*tgsrlv1.Device
+	capabilities *tgsrlv1.CapabilitySet
+}
+
+func newNVIDIATestDriver(devices []*tgsrlv1.Device, capabilities *tgsrlv1.CapabilitySet) *nvidiaTestDriver {
+	if capabilities == nil {
+		capabilities = &tgsrlv1.CapabilitySet{
+			Names: []string{nvidia.CapabilityName}, Source: nvidia.ProviderID, Revision: 1,
+			SupportedActions: []string{"bind", "release", "pause", "resume", "set_share", "set_priority", "sleep", "offload", "resize", "rebind", "recreate"},
+		}
+	}
+	return &nvidiaTestDriver{devices: cloneDevices(devices), capabilities: proto.Clone(capabilities).(*tgsrlv1.CapabilitySet)}
+}
+
+func (*nvidiaTestDriver) ID() string { return "fake" }
+func (d *nvidiaTestDriver) Probe(context.Context) (*nvidia.ProbeResult, error) {
+	return &nvidia.ProbeResult{Available: true, Devices: cloneDevices(d.devices), Capabilities: proto.Clone(d.capabilities).(*tgsrlv1.CapabilitySet)}, nil
+}
+func (*nvidiaTestDriver) ExecuteAction(_ context.Context, _ *nvidia.DriverState, _ *tgsrlv1.Action) (*nvidia.ActionExecution, error) {
+	return &nvidia.ActionExecution{Detail: "fake action applied"}, nil
+}
+func (d *nvidiaTestDriver) Reconcile(context.Context, *nvidia.DriverState, *tgsrlv1.PlacementPlan) (*nvidia.ReconcileState, error) {
+	return &nvidia.ReconcileState{Healthy: true, Devices: cloneDevices(d.devices), Capabilities: proto.Clone(d.capabilities).(*tgsrlv1.CapabilitySet)}, nil
+}
+
+func cloneDevices(devices []*tgsrlv1.Device) []*tgsrlv1.Device {
+	result := make([]*tgsrlv1.Device, len(devices))
+	for index, device := range devices {
+		if device != nil {
+			result[index] = proto.Clone(device).(*tgsrlv1.Device)
+		}
+	}
+	return result
+}
 
 type completeFactory struct {
 	name        string
@@ -56,7 +93,7 @@ func TestCompleteProvidersCompliance(t *testing.T) {
 				p, err := nvidia.New(
 					nvidia.WithNow(func() time.Time { return complianceNow }),
 					nvidia.WithEventRetention(4),
-					nvidia.WithDriver(nvidia.NewFakeDriver([]*tgsrlv1.Device{{
+					nvidia.WithDriver(newNVIDIATestDriver([]*tgsrlv1.Device{{
 						DeviceId:    "nvidia-0",
 						Kind:        tgsrlv1.DeviceKind_DEVICE_KIND_GPU,
 						Health:      tgsrlv1.DeviceHealth_DEVICE_HEALTH_READY,
@@ -122,7 +159,7 @@ func TestStrictAdmissionPlanCapabilityParity(t *testing.T) {
 		{
 			name: "nvidia fake",
 			newProvider: func(t *testing.T) provider.CompleteResourceProvider {
-				p, err := nvidia.New(nvidia.WithNow(func() time.Time { return complianceNow }), nvidia.WithDriver(nvidia.NewFakeDriver([]*tgsrlv1.Device{{
+				p, err := nvidia.New(nvidia.WithNow(func() time.Time { return complianceNow }), nvidia.WithDriver(newNVIDIATestDriver([]*tgsrlv1.Device{{
 					DeviceId:    "mock-cpu-0",
 					Kind:        tgsrlv1.DeviceKind_DEVICE_KIND_GPU,
 					Health:      tgsrlv1.DeviceHealth_DEVICE_HEALTH_READY,
@@ -197,7 +234,7 @@ func TestCompleteProvidersCapabilityHandshakeParity(t *testing.T) {
 			return p
 		}},
 		{name: "nvidia fake", capabilityName: nvidia.CapabilityName, newProvider: func(t *testing.T) provider.CompleteResourceProvider {
-			p, err := nvidia.New(nvidia.WithNow(func() time.Time { return complianceNow }), nvidia.WithDriver(nvidia.NewFakeDriver([]*tgsrlv1.Device{{
+			p, err := nvidia.New(nvidia.WithNow(func() time.Time { return complianceNow }), nvidia.WithDriver(newNVIDIATestDriver([]*tgsrlv1.Device{{
 				DeviceId: "nvidia-0", Kind: tgsrlv1.DeviceKind_DEVICE_KIND_GPU, Health: tgsrlv1.DeviceHealth_DEVICE_HEALTH_READY, Capacity: &tgsrlv1.ResourceVector{AcceleratorUnits: 1}, Allocatable: &tgsrlv1.ResourceVector{AcceleratorUnits: 1},
 			}}, nil)))
 			if err != nil {

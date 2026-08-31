@@ -25,6 +25,7 @@ Docker Compose 启动单机栈，再根据需要选择 Console、CLI、Python SD
 - [系统架构](design/system-design.md)：组件职责、端到端控制流、状态权威和部署边界。
 - [源码导读与维护边界](maintainers/code-walkthrough.md)：按真实调用链理解状态、事务、
   恢复、NVIDIA/veRL 执行和 Gate 证据。
+- [维护者开发指南](maintainers/development.md)：测试分层、性能 benchmark、完整门禁和提交边界。
 - [架构决策记录](adr/README.md)：协议与资源抽象背后的设计约束。
 
 Gateway 运行后可通过 `GET /openapi.json` 获取 OpenAPI 3.1 文档。也可以直接查看

@@ -5,7 +5,6 @@ import (
 	"errors"
 	"io"
 	"net/http"
-	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -329,17 +328,5 @@ func TestLoadStartupConfigLegacyFallbackFlagOverridesConfig(t *testing.T) {
 	}
 	if cfg.FallbackMode != scheduler.FallbackNoOp {
 		t.Fatalf("FallbackMode = %q, want %q", cfg.FallbackMode, scheduler.FallbackNoOp)
-	}
-}
-
-func TestNormalizeToken(t *testing.T) {
-	if got := normalizeToken("stable-first_fit"); got != "stablefirstfit" {
-		t.Fatalf("normalizeToken() = %q, want stablefirstfit", got)
-	}
-}
-
-func TestRepoRootExists(t *testing.T) {
-	if _, err := os.Stat(filepath.Join(repoRootFromTest(t), "compatibility", "manifests", "cpu-mock.yaml")); err != nil {
-		t.Fatalf("repo root missing expected manifest: %v", err)
 	}
 }
