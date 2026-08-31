@@ -80,9 +80,21 @@ func run() error {
 	runtimeClassName := flag.String("runtime-class-name", "", "optional preconfigured RuntimeClass name")
 	runtimeClassHandler := flag.String("runtime-class-handler", "", "RuntimeClass handler to create when runtime-class-create is enabled")
 	runtimeClassCreate := flag.Bool("runtime-class-create", false, "create the configured RuntimeClass instead of referencing a preconfigured one")
+	workerBootstrap := flag.Bool("worker-bootstrap", false, "wrap Kubernetes workload commands with the managed-worker bootstrap")
+	workerBootstrapImage := flag.String("worker-bootstrap-image", "", "bootstrap installer image with an immutable digest")
+	workerRegistryURL := flag.String("worker-registry-url", "", "managed-worker registry base URL reachable from workloads")
+	workerRegistrySigningKeyFile := flag.String("worker-registry-signing-key-file", "", "file containing the worker registry HMAC signing key")
+	workerVerifyDeviceIDs := flag.Bool("worker-verify-device-identities", false, "require bootstrap nvidia-smi UUID verification before registration")
 	var nodeSelector stringMapFlag
 	flag.Var(&nodeSelector, "node-selector", "optional pod node selector in key=value form; repeat for multiple entries")
 	flag.Parse()
+	if *workerBootstrap && strings.TrimSpace(*mode) != "kubernetes" {
+		return fmt.Errorf("worker bootstrap requires kubernetes backend mode")
+	}
+	registrySigningKey, err := loadWorkerRegistrySigningKey(*workerRegistrySigningKeyFile, *workerBootstrap)
+	if err != nil {
+		return err
+	}
 	runtimeConfig, err := validateStartupRuntimeConfig(*gpuProfile, compiler.RuntimeConfig{
 		RuntimeClass: compiler.RuntimeClassConfig{
 			Name:    *runtimeClassName,
@@ -90,6 +102,13 @@ func run() error {
 			Create:  *runtimeClassCreate,
 		},
 		NodeSelector: map[string]string(nodeSelector),
+		Bootstrap: compiler.WorkerBootstrapConfig{
+			Enabled:            *workerBootstrap,
+			InstallerImage:     *workerBootstrapImage,
+			RegistryURL:        *workerRegistryURL,
+			RegistrySigningKey: registrySigningKey,
+			VerifyDeviceIDs:    *workerVerifyDeviceIDs,
+		},
 	})
 	if err != nil {
 		return err
@@ -314,11 +333,33 @@ func validateStartupRuntimeConfig(profile string, config compiler.RuntimeConfig)
 	if err := validateGPUProfile(profile); err != nil {
 		return compiler.RuntimeConfig{}, err
 	}
+	if strings.TrimSpace(profile) == compiler.GPUProfileKubernetesDRA && !config.Bootstrap.Enabled {
+		return compiler.RuntimeConfig{}, fmt.Errorf("kubernetes-dra requires managed-worker bootstrap")
+	}
 	validated, err := compiler.ValidateRuntimeConfig(config)
 	if err != nil {
 		return compiler.RuntimeConfig{}, fmt.Errorf("invalid runtime configuration: %w", err)
 	}
 	return validated, nil
+}
+
+func loadWorkerRegistrySigningKey(path string, required bool) ([]byte, error) {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		if required {
+			return nil, fmt.Errorf("worker bootstrap requires -worker-registry-signing-key-file")
+		}
+		return nil, nil
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("read worker registry signing key: %w", err)
+	}
+	key := []byte(strings.TrimSpace(string(data)))
+	if len(key) < 32 {
+		return nil, fmt.Errorf("worker registry signing key must contain at least 32 bytes")
+	}
+	return key, nil
 }
 
 func selectBackend(mode, namespace, kubeconfigPath string) (backend.Backend, string, error) {

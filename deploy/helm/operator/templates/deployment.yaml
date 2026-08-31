@@ -45,6 +45,13 @@ spec:
 {{ range $key, $value := .Values.controller.nodeSelector }}
             - --node-selector={{ $key }}={{ $value }}
 {{ end }}
+{{ if .Values.controller.workerBootstrap.enabled }}
+            - --worker-bootstrap=true
+            - --worker-bootstrap-image={{ .Values.controller.workerBootstrap.installerImage }}
+            - --worker-registry-url={{ .Values.controller.workerBootstrap.registryURL }}
+            - --worker-registry-signing-key-file=/var/run/secrets/tgsrl-worker-registry/signing-key
+            - --worker-verify-device-identities={{ .Values.controller.workerBootstrap.verifyDeviceIdentities }}
+{{ end }}
             - --cursor-dir={{ .Values.persistence.mountPath }}
           ports:
             - name: grpc
@@ -53,6 +60,11 @@ spec:
           volumeMounts:
             - name: cursor-state
               mountPath: {{ .Values.persistence.mountPath }}
+{{ if .Values.controller.workerBootstrap.enabled }}
+            - name: worker-registry-signing-key
+              mountPath: /var/run/secrets/tgsrl-worker-registry
+              readOnly: true
+{{ end }}
       volumes:
         - name: cursor-state
 {{ if .Values.persistence.enabled }}
@@ -60,4 +72,12 @@ spec:
             claimName: {{ default (printf "%s-state" .Values.serviceAccount.name) .Values.persistence.existingClaim }}
 {{ else }}
           emptyDir: {}
+{{ end }}
+{{ if .Values.controller.workerBootstrap.enabled }}
+        - name: worker-registry-signing-key
+          secret:
+            secretName: {{ required "controller.workerBootstrap.registrySigningKeySecret is required when worker bootstrap is enabled" .Values.controller.workerBootstrap.registrySigningKeySecret }}
+            items:
+              - key: {{ .Values.controller.workerBootstrap.registrySigningKeyKey }}
+                path: signing-key
 {{ end }}

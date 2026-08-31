@@ -45,8 +45,35 @@ type ResourceClaimReference struct {
 }
 
 type EnvVar struct {
-	Name  string `json:"name"`
-	Value string `json:"value"`
+	Name      string        `json:"name"`
+	Value     string        `json:"value,omitempty"`
+	ValueFrom *EnvVarSource `json:"valueFrom,omitempty"`
+}
+
+type EnvVarSource struct {
+	FieldRef *ObjectFieldSelector `json:"fieldRef,omitempty"`
+}
+
+type ObjectFieldSelector struct {
+	FieldPath string `json:"fieldPath"`
+}
+
+type VolumeMount struct {
+	Name      string `json:"name"`
+	MountPath string `json:"mountPath"`
+	ReadOnly  bool   `json:"readOnly,omitempty"`
+}
+
+type EmptyDirVolumeSource struct{}
+
+type Volume struct {
+	Name     string                `json:"name"`
+	EmptyDir *EmptyDirVolumeSource `json:"emptyDir,omitempty"`
+}
+
+type PodSecurityContext struct {
+	FSGroup             int64  `json:"fsGroup,omitempty"`
+	FSGroupChangePolicy string `json:"fsGroupChangePolicy,omitempty"`
 }
 
 type PodResourceClaim struct {
@@ -55,20 +82,46 @@ type PodResourceClaim struct {
 }
 
 type Container struct {
-	Name      string               `json:"name"`
-	Image     string               `json:"image"`
-	Command   []string             `json:"command,omitempty"`
-	Args      []string             `json:"args,omitempty"`
-	Env       []EnvVar             `json:"env,omitempty"`
-	Resources ResourceRequirements `json:"resources,omitempty"`
+	Name           string               `json:"name"`
+	Image          string               `json:"image"`
+	Command        []string             `json:"command,omitempty"`
+	Args           []string             `json:"args,omitempty"`
+	Env            []EnvVar             `json:"env,omitempty"`
+	WorkingDir     string               `json:"workingDir,omitempty"`
+	Resources      ResourceRequirements `json:"resources,omitempty"`
+	VolumeMounts   []VolumeMount        `json:"volumeMounts,omitempty"`
+	Ports          []ContainerPort      `json:"ports,omitempty"`
+	ReadinessProbe *Probe               `json:"readinessProbe,omitempty"`
+}
+
+type ContainerPort struct {
+	Name          string `json:"name,omitempty"`
+	ContainerPort int32  `json:"containerPort"`
+	Protocol      string `json:"protocol,omitempty"`
+}
+
+type HTTPGetAction struct {
+	Path string `json:"path"`
+	Port int32  `json:"port"`
+}
+
+type Probe struct {
+	HTTPGet          *HTTPGetAction `json:"httpGet,omitempty"`
+	PeriodSeconds    int32          `json:"periodSeconds,omitempty"`
+	TimeoutSeconds   int32          `json:"timeoutSeconds,omitempty"`
+	FailureThreshold int32          `json:"failureThreshold,omitempty"`
+	SuccessThreshold int32          `json:"successThreshold,omitempty"`
 }
 
 type PodSpec struct {
-	RuntimeClassName string             `json:"runtimeClassName,omitempty"`
-	ResourceClaims   []PodResourceClaim `json:"resourceClaims,omitempty"`
-	NodeSelector     map[string]string  `json:"nodeSelector,omitempty"`
-	Containers       []Container        `json:"containers"`
-	RestartPolicy    string             `json:"restartPolicy"`
+	RuntimeClassName string              `json:"runtimeClassName,omitempty"`
+	SecurityContext  *PodSecurityContext `json:"securityContext,omitempty"`
+	ResourceClaims   []PodResourceClaim  `json:"resourceClaims,omitempty"`
+	NodeSelector     map[string]string   `json:"nodeSelector,omitempty"`
+	InitContainers   []Container         `json:"initContainers,omitempty"`
+	Containers       []Container         `json:"containers"`
+	Volumes          []Volume            `json:"volumes,omitempty"`
+	RestartPolicy    string              `json:"restartPolicy"`
 }
 
 type PodTemplateSpec struct {
@@ -104,10 +157,11 @@ type Workload struct {
 }
 
 type JobSpec struct {
-	Parallelism uint32          `json:"parallelism"`
-	Completions uint32          `json:"completions"`
-	Suspend     bool            `json:"suspend,omitempty"`
-	Template    PodTemplateSpec `json:"template"`
+	Parallelism  uint32          `json:"parallelism"`
+	Completions  uint32          `json:"completions"`
+	BackoffLimit *int32          `json:"backoffLimit,omitempty"`
+	Suspend      bool            `json:"suspend,omitempty"`
+	Template     PodTemplateSpec `json:"template"`
 }
 
 type JobStatus struct {

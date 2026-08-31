@@ -218,6 +218,27 @@ func TestValidateStartupRuntimeConfigFailsClosed(t *testing.T) {
 	}
 }
 
+func TestValidateStartupRuntimeConfigRequiresBootstrapForDRA(t *testing.T) {
+	if _, err := validateStartupRuntimeConfig(compiler.GPUProfileKubernetesDRA, compiler.RuntimeConfig{}); err == nil || !strings.Contains(err.Error(), "managed-worker bootstrap") {
+		t.Fatalf("DRA bootstrap error = %v", err)
+	}
+}
+
+func TestLoadWorkerRegistrySigningKey(t *testing.T) {
+	if _, err := loadWorkerRegistrySigningKey("", true); err == nil {
+		t.Fatal("required signing key file succeeded when absent")
+	}
+	path := filepath.Join(t.TempDir(), "signing-key")
+	want := strings.Repeat("k", 32)
+	if err := os.WriteFile(path, []byte(want+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	got, err := loadWorkerRegistrySigningKey(path, true)
+	if err != nil || string(got) != want {
+		t.Fatalf("loadWorkerRegistrySigningKey() = %q, %v", got, err)
+	}
+}
+
 func TestRunServicesAllowsGrpcOnlyMode(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()

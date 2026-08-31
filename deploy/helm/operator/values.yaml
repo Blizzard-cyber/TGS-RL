@@ -40,6 +40,13 @@ controller:
   runtimeClassHandler: ""
   runtimeClassCreate: false
   nodeSelector: {}
+  workerBootstrap:
+    enabled: false
+    installerImage: ""
+    registryURL: ""
+    registrySigningKeySecret: ""
+    registrySigningKeyKey: signing-key
+    verifyDeviceIdentities: false
 
 service:
   type: ClusterIP

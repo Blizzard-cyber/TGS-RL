@@ -69,22 +69,24 @@ type ControlResult struct {
 // Fake mode obtains these values from the exact same backend state mutated by
 // Control; Kubernetes mode obtains them from API-server reads.
 type ObservationSnapshot struct {
-	ObservedGeneration      uint64
-	WorkloadAdmitted        bool
-	ResourceClaimsAllocated bool
-	AllocatedDeviceIDs      []string
-	JobActive               uint32
-	JobSucceeded            uint32
-	JobFailed               uint32
-	JobPaused               bool
-	JobDeleted              bool
-	Reason                  string
-	ObservedAt              time.Time
-	ControlRequestID        string
-	ControlIdempotencyKey   string
-	ControlAction           tgsrlv1.JobCommandType
-	ControlBackendRevision  uint64
-	ControlCommitted        bool
+	ObservedGeneration         uint64
+	WorkloadAdmitted           bool
+	ResourceClaimsAllocated    bool
+	AllocatedDeviceIDs         []string
+	JobActive                  uint32
+	WorkerRegistrationRequired bool
+	PodReady                   bool
+	JobSucceeded               uint32
+	JobFailed                  uint32
+	JobPaused                  bool
+	JobDeleted                 bool
+	Reason                     string
+	ObservedAt                 time.Time
+	ControlRequestID           string
+	ControlIdempotencyKey      string
+	ControlAction              tgsrlv1.JobCommandType
+	ControlBackendRevision     uint64
+	ControlCommitted           bool
 }
 
 type ApplyResult struct {

@@ -51,7 +51,7 @@ func (c *Compiler) compileBinding(input CompileInput) (*api.Bundle, error) {
 		return nil, err
 	}
 	input.GPUProfiles = []string{selected.GPUProfile}
-	normalized, err := normalize(input, RuntimeConfig{RuntimeClass: selected.RuntimeClass, NodeSelector: selected.NodeSelector})
+	normalized, err := normalize(input, RuntimeConfig{RuntimeClass: selected.RuntimeClass, NodeSelector: selected.NodeSelector, Bootstrap: selected.Bootstrap})
 	if err != nil {
 		return nil, err
 	}

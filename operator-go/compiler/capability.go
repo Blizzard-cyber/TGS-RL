@@ -65,6 +65,7 @@ func SelectCapabilityProfile(requested RuntimeConfig, preferredGPUProfiles []str
 		DRADevices:     cloneDRADevices(discovered.DRADevices),
 		RuntimeClass:   requested.RuntimeClass,
 		NodeSelector:   cloneStringMap(requested.NodeSelector),
+		Bootstrap:      requested.Bootstrap,
 		KubernetesAPIs: discovered.KubernetesAPIs,
 	}
 	for _, profile := range preferredGPUProfiles {

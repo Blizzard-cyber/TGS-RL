@@ -33,22 +33,24 @@ type Object struct {
 }
 
 type Snapshot struct {
-	ObservedGeneration      uint64
-	WorkloadAdmitted        bool
-	ResourceClaimsAllocated bool
-	AllocatedDeviceIDs      []string
-	JobActive               uint32
-	JobSucceeded            uint32
-	JobFailed               uint32
-	JobPaused               bool
-	JobDeleted              bool
-	Reason                  string
-	ObservedAt              time.Time
-	ControlRequestID        string
-	ControlIdempotencyKey   string
-	ControlAction           tgsrlv1.JobCommandType
-	ControlBackendRevision  uint64
-	ControlCommitted        bool
+	ObservedGeneration         uint64
+	WorkloadAdmitted           bool
+	ResourceClaimsAllocated    bool
+	AllocatedDeviceIDs         []string
+	JobActive                  uint32
+	WorkerRegistrationRequired bool
+	PodReady                   bool
+	JobSucceeded               uint32
+	JobFailed                  uint32
+	JobPaused                  bool
+	JobDeleted                 bool
+	Reason                     string
+	ObservedAt                 time.Time
+	ControlRequestID           string
+	ControlIdempotencyKey      string
+	ControlAction              tgsrlv1.JobCommandType
+	ControlBackendRevision     uint64
+	ControlCommitted           bool
 }
 
 // JobControlReadback is the minimal backend-neutral state returned after a

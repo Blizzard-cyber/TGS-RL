@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/url"
 	"sort"
 	"strconv"
 	"strings"
@@ -270,7 +271,7 @@ func (a *KubernetesAdapter) observeOnce(ctx context.Context, reader Reader, bund
 	if a != nil && a.now != nil {
 		now = a.now
 	}
-	snapshot := &Snapshot{ObservedGeneration: bundle.Generation, ObservedAt: now().UTC(), ControlRequestID: requestID, ControlIdempotencyKey: idempotencyKey, ControlAction: controlAction, ControlBackendRevision: backendRevision, ControlCommitted: controlCommitted}
+	snapshot := &Snapshot{ObservedGeneration: bundle.Generation, WorkerRegistrationRequired: bundleUsesWorkerBootstrap(bundle), ObservedAt: now().UTC(), ControlRequestID: requestID, ControlIdempotencyKey: idempotencyKey, ControlAction: controlAction, ControlBackendRevision: backendRevision, ControlCommitted: controlCommitted}
 	var workload struct {
 		Metadata struct {
 			Generation uint64 `json:"generation"`
@@ -321,6 +322,18 @@ func (a *KubernetesAdapter) observeOnce(ctx context.Context, reader Reader, bund
 	snapshot.JobSucceeded = job.Status.Succeeded
 	snapshot.JobFailed = job.Status.Failed
 	snapshot.JobPaused = job.Spec.Suspend
+	if job.Status.Active > 0 && snapshot.WorkerRegistrationRequired {
+		podsPath := "/api/v1/namespaces/" + url.PathEscape(bundle.Namespace) + "/pods?labelSelector=" + url.QueryEscape("job-name="+bundle.Job.ObjectMeta.Name)
+		podBody, err := reader.GetPath(ctx, podsPath)
+		if err != nil {
+			return nil, false, fmt.Errorf("read workload pods: %w", err)
+		}
+		ready, err := podListReady(podBody)
+		if err != nil {
+			return nil, false, err
+		}
+		snapshot.PodReady = ready
+	}
 
 	if bundle.ResourceClaim == nil {
 		snapshot.ResourceClaimsAllocated = true
@@ -347,6 +360,38 @@ func (a *KubernetesAdapter) observeOnce(ctx context.Context, reader Reader, bund
 
 	terminal := snapshot.JobSucceeded > 0 || snapshot.JobFailed > 0
 	return snapshot, terminal, nil
+}
+
+func bundleUsesWorkerBootstrap(bundle *api.Bundle) bool {
+	if bundle == nil || len(bundle.Job.Spec.Template.Spec.Containers) != 1 {
+		return false
+	}
+	container := bundle.Job.Spec.Template.Spec.Containers[0]
+	return len(container.Command) == 1 && container.Command[0] == "/opt/tgsrl/tgsrl-worker-bootstrap"
+}
+
+func podListReady(payload []byte) (bool, error) {
+	var list struct {
+		Items []struct {
+			Status struct {
+				Conditions []struct {
+					Type   string `json:"type"`
+					Status string `json:"status"`
+				} `json:"conditions"`
+			} `json:"status"`
+		} `json:"items"`
+	}
+	if err := json.Unmarshal(payload, &list); err != nil {
+		return false, fmt.Errorf("decode workload pods: %w", err)
+	}
+	for _, pod := range list.Items {
+		for _, condition := range pod.Status.Conditions {
+			if condition.Type == "Ready" && condition.Status == "True" {
+				return true, nil
+			}
+		}
+	}
+	return false, nil
 }
 
 func observeDRAAllocation(ctx context.Context, reader Reader, bundle *api.Bundle, claimBody []byte) (bool, []string, error) {

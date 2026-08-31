@@ -10,6 +10,7 @@ RUN go mod download
 
 COPY cmd ./cmd
 COPY gen ./gen
+COPY internal ./internal
 COPY operator-go ./operator-go
 
 RUN CGO_ENABLED=0 GOOS="${TARGETOS}" GOARCH="${TARGETARCH}" \

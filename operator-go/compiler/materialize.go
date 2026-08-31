@@ -2,14 +2,17 @@ package compiler
 
 import (
 	"fmt"
+	"reflect"
 	"sort"
 	"strconv"
 	"strings"
 
+	"github.com/Blizzard-cyber/TGS-RL/internal/bootstrapauth"
 	"github.com/Blizzard-cyber/TGS-RL/operator-go/api"
 )
 
 func buildBundle(input *normalizedInput) (*api.Bundle, error) {
+	zeroBackoff := int32(0)
 	labels := buildLabels(input)
 	annotations := buildAnnotations(input)
 	workloadName := buildObjectName("workload", input)
@@ -27,18 +30,18 @@ func buildBundle(input *normalizedInput) (*api.Bundle, error) {
 			NodeSelector:     buildNodeSelector(input),
 			Containers: []api.Container{
 				{
-					Name:      "main",
-					Image:     primaryImage(input.Manifest),
-					Command:   append([]string(nil), input.Run.GetRuntime().GetCommand()...),
-					Args:      append([]string(nil), input.Run.GetRuntime().GetArgs()...),
-					Env:       buildEnv(input),
-					Resources: buildResources(input),
+					Name:       "main",
+					Image:      primaryImage(input.Manifest),
+					Command:    append([]string(nil), input.Manifest.GetCommand()...),
+					Args:       append([]string(nil), input.Manifest.GetArgs()...),
+					Env:        buildEnv(input),
+					WorkingDir: input.Manifest.GetWorkingDirectory(),
+					Resources:  buildResources(input),
 				},
 			},
 			RestartPolicy: "Never",
 		},
 	}
-
 	workload := api.Workload{
 		TypeMeta: api.TypeMeta{APIVersion: input.KubernetesAPIs.KueueWorkload, Kind: "Workload"},
 		ObjectMeta: api.ObjectMeta{
@@ -67,10 +70,11 @@ func buildBundle(input *normalizedInput) (*api.Bundle, error) {
 			Annotations: api.CloneMap(annotations),
 		},
 		Spec: api.JobSpec{
-			Parallelism: 1,
-			Completions: 1,
-			Suspend:     true,
-			Template:    template,
+			Parallelism:  1,
+			Completions:  1,
+			BackoffLimit: &zeroBackoff,
+			Suspend:      true,
+			Template:     template,
 		},
 	}
 	job.ObjectMeta.Labels["kueue.x-k8s.io/prebuilt-workload-name"] = workloadName
@@ -139,6 +143,15 @@ func buildBundle(input *normalizedInput) (*api.Bundle, error) {
 		// adding the DRA claim so admission and execution use the same device.
 		workload.Spec.PodSets[0].Template = job.Spec.Template
 	}
+	if input.Runtime.Bootstrap.Enabled {
+		// Resource claims are added after the base template is constructed. Re-run
+		// bootstrap wiring so mandatory DRA device verification is reflected in
+		// the final Job and Kueue pod specs.
+		if err := configureWorkerBootstrap(&job.Spec.Template, input); err != nil {
+			return nil, err
+		}
+		workload.Spec.PodSets[0].Template = job.Spec.Template
+	}
 
 	return &api.Bundle{
 		Key:            bundleKey(input),
@@ -176,6 +189,60 @@ func buildBundle(input *normalizedInput) (*api.Bundle, error) {
 			Reason:   statusReason(input.Run),
 		},
 	}, nil
+}
+
+func configureWorkerBootstrap(template *api.PodTemplateSpec, input *normalizedInput) error {
+	if template == nil || len(template.Spec.Containers) != 1 {
+		return fmt.Errorf("worker bootstrap requires exactly one workload container")
+	}
+	bootstrap := input.Runtime.Bootstrap
+	registrationToken, err := bootstrapauth.Sign(bootstrap.RegistrySigningKey, bootstrapauth.Claims{
+		RunID: input.Run.GetRunId(), JobID: input.Run.GetJobId(), RuntimeUnitID: bindingRuntimeUnitID(input.binding),
+		SandboxID: input.binding.GetSandboxId(), BindingID: input.binding.GetBindingId(),
+		Generation: input.Generation, DeviceIDs: input.binding.GetDeviceIds(),
+	})
+	if err != nil {
+		return fmt.Errorf("derive scoped worker registration token: %w", err)
+	}
+	const (
+		volumeName = "tgsrl-bootstrap"
+		mountPath  = "/opt/tgsrl"
+		binaryPath = mountPath + "/tgsrl-worker-bootstrap"
+	)
+	main := &template.Spec.Containers[0]
+	workingDirectory := main.WorkingDir
+	workload := append([]string(nil), main.Command...)
+	workload = append(workload, main.Args...)
+	main.Command = []string{binaryPath}
+	main.Args = []string{"--listen", "0.0.0.0:50092", "--"}
+	main.Args = append(main.Args, workload...)
+	main.WorkingDir = ""
+	main.VolumeMounts = append(main.VolumeMounts, api.VolumeMount{Name: volumeName, MountPath: mountPath, ReadOnly: true})
+	main.Ports = append(main.Ports, api.ContainerPort{Name: "tgsrl-control", ContainerPort: 50092, Protocol: "TCP"})
+	main.ReadinessProbe = &api.Probe{HTTPGet: &api.HTTPGetAction{Path: "/readyz", Port: 50092}, PeriodSeconds: 2, TimeoutSeconds: 1, FailureThreshold: 3, SuccessThreshold: 1}
+	main.Env = append(main.Env,
+		api.EnvVar{Name: "TGSRL_WORKER_REGISTRY_URL", Value: bootstrap.RegistryURL},
+		api.EnvVar{Name: "TGSRL_WORKER_REGISTRY_TOKEN", Value: registrationToken},
+		api.EnvVar{Name: "TGSRL_POD_IP", ValueFrom: &api.EnvVarSource{FieldRef: &api.ObjectFieldSelector{FieldPath: "status.podIP"}}},
+		api.EnvVar{Name: "TGSRL_POD_UID", ValueFrom: &api.EnvVarSource{FieldRef: &api.ObjectFieldSelector{FieldPath: "metadata.uid"}}},
+	)
+	if workingDirectory != "" {
+		main.Env = append(main.Env, api.EnvVar{Name: "TGSRL_WORKING_DIRECTORY", Value: workingDirectory})
+	}
+	if bootstrap.VerifyDeviceIDs || len(main.Resources.Claims) > 0 {
+		main.Env = append(main.Env, api.EnvVar{Name: "TGSRL_VERIFY_DEVICE_IDENTITIES", Value: "true"})
+	}
+	sort.Slice(main.Env, func(i, j int) bool { return main.Env[i].Name < main.Env[j].Name })
+	template.Spec.InitContainers = []api.Container{{
+		Name:         "install-tgsrl-bootstrap",
+		Image:        bootstrap.InstallerImage,
+		Command:      []string{"/usr/local/bin/tgsrl-worker-bootstrap"},
+		Args:         []string{"install", "--target", binaryPath},
+		VolumeMounts: []api.VolumeMount{{Name: volumeName, MountPath: mountPath}},
+	}}
+	template.Spec.SecurityContext = &api.PodSecurityContext{FSGroup: 65532, FSGroupChangePolicy: "OnRootMismatch"}
+	template.Spec.Volumes = []api.Volume{{Name: volumeName, EmptyDir: &api.EmptyDirVolumeSource{}}}
+	return nil
 }
 
 func nvidiaDRADeviceSelector(devices []DRADevice) string {
@@ -270,6 +337,9 @@ runtimeClassValidated:
 		if bundle.Job.Spec.Template.Spec.ResourceClaims[0].ResourceClaimName != bundle.ResourceClaim.ObjectMeta.Name {
 			return fmt.Errorf("job template references unexpected resource claim")
 		}
+	}
+	if len(bundle.Workload.Spec.PodSets) != 1 || !reflect.DeepEqual(bundle.Workload.Spec.PodSets[0].Template.Spec, bundle.Job.Spec.Template.Spec) {
+		return fmt.Errorf("workload pod set and job template must use the same pod specification")
 	}
 	if len(bundle.Job.ObjectMeta.OwnerReferences) != 0 || bundle.ResourceClaim != nil && len(bundle.ResourceClaim.ObjectMeta.OwnerReferences) != 0 {
 		return fmt.Errorf("materialized objects must not contain unresolved owner references")

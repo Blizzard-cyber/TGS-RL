@@ -37,6 +37,15 @@ type RuntimeClassConfig struct {
 type RuntimeConfig struct {
 	RuntimeClass RuntimeClassConfig
 	NodeSelector map[string]string
+	Bootstrap    WorkerBootstrapConfig
+}
+
+type WorkerBootstrapConfig struct {
+	Enabled            bool
+	InstallerImage     string
+	RegistryURL        string
+	RegistrySigningKey []byte
+	VerifyDeviceIDs    bool
 }
 
 type CapabilityProfile struct {
@@ -44,6 +53,7 @@ type CapabilityProfile struct {
 	DRADevices     map[string]DRADevice
 	RuntimeClass   RuntimeClassConfig
 	NodeSelector   map[string]string
+	Bootstrap      WorkerBootstrapConfig
 	KubernetesAPIs KubernetesAPIVersions
 }
 

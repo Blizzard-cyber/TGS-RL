@@ -85,7 +85,7 @@ func (b *KubernetesBackend) fakeSnapshots(ctx context.Context, bundle *api.Bundl
 	}
 	workloadAdmitted := workload.Status.Admitted
 	bound := &ObservationSnapshot{ObservedGeneration: bundle.Generation, WorkloadAdmitted: workloadAdmitted, ResourceClaimsAllocated: claimAllocated, AllocatedDeviceIDs: deviceIDs, Reason: "fake backend observed workload admission", ObservedAt: time.Now().UTC()}
-	observed := &ObservationSnapshot{ObservedGeneration: bundle.Generation, WorkloadAdmitted: workloadAdmitted, ResourceClaimsAllocated: claimAllocated, AllocatedDeviceIDs: append([]string(nil), deviceIDs...), JobActive: job.Status.Active, JobSucceeded: job.Status.Succeeded, JobFailed: job.Status.Failed, JobPaused: job.Status.Paused, JobDeleted: job.Status.Deleted, Reason: "fake backend observed job state", ObservedAt: time.Now().UTC()}
+	observed := &ObservationSnapshot{ObservedGeneration: bundle.Generation, WorkloadAdmitted: workloadAdmitted, ResourceClaimsAllocated: claimAllocated, AllocatedDeviceIDs: append([]string(nil), deviceIDs...), JobActive: job.Status.Active, PodReady: true, JobSucceeded: job.Status.Succeeded, JobFailed: job.Status.Failed, JobPaused: job.Status.Paused, JobDeleted: job.Status.Deleted, Reason: "fake backend observed job state", ObservedAt: time.Now().UTC()}
 	if hasMetadata {
 		applyControlMetadata(bound, metadata)
 		applyControlMetadata(observed, metadata)
@@ -108,5 +108,5 @@ func snapshotFromAdapter(snapshot *bundleadapter.Snapshot, terminal bool, err er
 	if err != nil || snapshot == nil {
 		return nil, terminal, err
 	}
-	return &ObservationSnapshot{ObservedGeneration: snapshot.ObservedGeneration, WorkloadAdmitted: snapshot.WorkloadAdmitted, ResourceClaimsAllocated: snapshot.ResourceClaimsAllocated, AllocatedDeviceIDs: append([]string(nil), snapshot.AllocatedDeviceIDs...), JobActive: snapshot.JobActive, JobSucceeded: snapshot.JobSucceeded, JobFailed: snapshot.JobFailed, JobPaused: snapshot.JobPaused, JobDeleted: snapshot.JobDeleted, Reason: snapshot.Reason, ObservedAt: snapshot.ObservedAt, ControlRequestID: snapshot.ControlRequestID, ControlIdempotencyKey: snapshot.ControlIdempotencyKey, ControlAction: snapshot.ControlAction, ControlBackendRevision: snapshot.ControlBackendRevision, ControlCommitted: snapshot.ControlCommitted}, terminal, nil
+	return &ObservationSnapshot{ObservedGeneration: snapshot.ObservedGeneration, WorkloadAdmitted: snapshot.WorkloadAdmitted, ResourceClaimsAllocated: snapshot.ResourceClaimsAllocated, AllocatedDeviceIDs: append([]string(nil), snapshot.AllocatedDeviceIDs...), JobActive: snapshot.JobActive, WorkerRegistrationRequired: snapshot.WorkerRegistrationRequired, PodReady: snapshot.PodReady, JobSucceeded: snapshot.JobSucceeded, JobFailed: snapshot.JobFailed, JobPaused: snapshot.JobPaused, JobDeleted: snapshot.JobDeleted, Reason: snapshot.Reason, ObservedAt: snapshot.ObservedAt, ControlRequestID: snapshot.ControlRequestID, ControlIdempotencyKey: snapshot.ControlIdempotencyKey, ControlAction: snapshot.ControlAction, ControlBackendRevision: snapshot.ControlBackendRevision, ControlCommitted: snapshot.ControlCommitted}, terminal, nil
 }

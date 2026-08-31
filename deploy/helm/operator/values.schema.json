@@ -11,6 +11,24 @@
           "description": "Immutable image digest. Required for production; an empty value permits the local-development tag fallback."
         }
       }
+    },
+    "controller": {
+      "type": "object",
+      "properties": {
+        "workerBootstrap": {
+          "type": "object",
+          "required": ["enabled", "installerImage", "registryURL", "registrySigningKeySecret", "registrySigningKeyKey", "verifyDeviceIdentities"],
+          "properties": {
+            "enabled": {"type": "boolean"},
+            "installerImage": {"type": "string", "pattern": "^(|[^@[:space:]]+@sha256:[a-f0-9]{64})$"},
+            "registryURL": {"type": "string", "pattern": "^(|https?://[^[:space:]]+)$"},
+            "registrySigningKeySecret": {"type": "string", "pattern": "^(|[a-z0-9](?:[-a-z0-9.]*[a-z0-9])?)$"},
+            "registrySigningKeyKey": {"type": "string", "minLength": 1},
+            "verifyDeviceIdentities": {"type": "boolean"}
+          },
+          "additionalProperties": false
+        }
+      }
     }
   }
 }

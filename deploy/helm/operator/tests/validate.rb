@@ -94,6 +94,12 @@ def assert_namespaced_rbac(role, binding, expected_namespace)
     rule["apiGroups"] == ["node.k8s.io"] && rule["resources"] == ["runtimeclasses"]
   end
   assert(runtimeclass_rule.nil?, "default namespaced RBAC must not include RuntimeClass write access")
+
+  pod_rule = role.fetch("rules").find do |rule|
+    rule["apiGroups"] == [""] && rule["resources"] == ["pods"]
+  end
+  assert(!pod_rule.nil?, "missing Pod readiness RBAC rule")
+  assert(pod_rule["verbs"] == %w[get list watch], "Pod readiness RBAC must remain read-only")
 end
 
 def assert_runtimeclass_rbac(cluster_role, cluster_binding, service_account_name, expected_namespace)
@@ -230,6 +236,9 @@ assert(values.dig("controller", "runtimeClassName") == "", "runtime class name m
 assert(values.dig("controller", "runtimeClassHandler") == "", "runtime class handler must default to empty")
 assert(values.dig("controller", "runtimeClassCreate") == false, "runtime class creation must default to disabled")
 assert(values.dig("controller", "nodeSelector") == {}, "node selector must default to empty")
+assert(values.dig("controller", "workerBootstrap", "enabled") == false, "worker bootstrap must be opt-in")
+assert(values.dig("controller", "workerBootstrap", "installerImage") == "", "worker bootstrap image must be explicit")
+assert(values.dig("controller", "workerBootstrap", "registrySigningKeyKey") == "signing-key", "worker registry signing-key Secret key default changed")
 assert(values.dig("podSecurityContext", "runAsNonRoot") == true, "pod security context must default to non-root")
 assert(values.dig("podSecurityContext", "seccompProfile", "type") == "RuntimeDefault", "pod security context must default to RuntimeDefault seccomp")
 assert(values.dig("securityContext", "allowPrivilegeEscalation") == false, "container must forbid privilege escalation by default")
@@ -259,6 +268,9 @@ deployment_template = File.read(File.join(CHART_DIR, "templates/deployment.yaml"
   "--runtime-class-handler={{ .Values.controller.runtimeClassHandler }}" => "runtime class handler is not configurable",
   "--runtime-class-create=true" => "runtime class creation flag is not configurable",
   "--node-selector={{ $key }}={{ $value }}" => "node selector entries are not configurable",
+  "--worker-bootstrap-image={{ .Values.controller.workerBootstrap.installerImage }}" => "worker bootstrap image is not configurable",
+  "--worker-registry-url={{ .Values.controller.workerBootstrap.registryURL }}" => "worker registry URL is not configurable",
+  "--worker-registry-signing-key-file=/var/run/secrets/tgsrl-worker-registry/signing-key" => "worker registry signing-key file is not configured",
   "--cursor-dir={{ .Values.persistence.mountPath }}" => "cursor directory is not configurable",
   "containerPort: {{ .Values.service.port }}" => "container port does not share the Service port value",
   "mountPath: {{ .Values.persistence.mountPath }}" => "cursor mount does not share the cursor-dir value",
@@ -272,6 +284,7 @@ assert(pvc_template.include?("storageClassName: {{ .Values.persistence.storageCl
 
 rbac_template = File.read(File.join(CHART_DIR, "templates/rbac.yaml"))
 assert(rbac_template.include?('resources: ["jobrunbundles"]'), "Helm RBAC does not isolate jobrunbundles")
+assert(rbac_template.include?('resources: ["pods"]'), "Helm RBAC must read Pod readiness for managed-worker workloads")
 assert(rbac_template.include?('resources: ["deviceclasses", "resourceslices"]'), "Helm discovery RBAC must cover DRA identity readback")
 assert(rbac_template.include?('verbs: ["get", "list", "watch", "create", "update", "patch"]'), "Helm RBAC lacks jobrunbundles create")
 assert(rbac_template.include?("kind: Role"), "Helm RBAC must default to a namespaced Role")
@@ -329,6 +342,35 @@ assert_runtimeclass_rbac(
 )
 assert_workload_contract(override_docs, "tgsrl-operator-precreated")
 assert_image_reference(override_docs, "#{OVERRIDE_REPOSITORY}@#{OVERRIDE_DIGEST}")
+
+bootstrap_docs = render_chart(
+  "--set", "controller.workerBootstrap.enabled=true",
+  "--set", "controller.workerBootstrap.installerImage=registry.example.test/tgsrl/bootstrap@sha256:#{'2' * 64}",
+  "--set", "controller.workerBootstrap.registryURL=http://tgsrl-scheduler:50091",
+  "--set", "controller.workerBootstrap.registrySigningKeySecret=tgsrl-worker-registry"
+)
+bootstrap_args = one(bootstrap_docs, "Deployment").dig("spec", "template", "spec", "containers").first.fetch("args")
+%w[
+  --worker-bootstrap=true
+  --worker-bootstrap-image=registry.example.test/tgsrl/bootstrap@sha256:2222222222222222222222222222222222222222222222222222222222222222
+  --worker-registry-url=http://tgsrl-scheduler:50091
+  --worker-registry-signing-key-file=/var/run/secrets/tgsrl-worker-registry/signing-key
+  --worker-verify-device-identities=false
+].each { |arg| assert(bootstrap_args.include?(arg), "missing worker bootstrap argument #{arg}") }
+bootstrap_deployment = one(bootstrap_docs, "Deployment")
+bootstrap_container = bootstrap_deployment.dig("spec", "template", "spec", "containers").first
+assert(bootstrap_container.fetch("volumeMounts").any? { |mount| mount["name"] == "worker-registry-signing-key" && mount["readOnly"] == true }, "operator must mount the registry signing key read-only")
+bootstrap_volume = bootstrap_deployment.dig("spec", "template", "spec", "volumes").find { |volume| volume["name"] == "worker-registry-signing-key" }
+assert(bootstrap_volume.dig("secret", "secretName") == "tgsrl-worker-registry", "operator signing-key volume uses the wrong Secret")
+missing_bootstrap_key_output, missing_bootstrap_key_status = run_chart(
+  HELM_RELEASE,
+  HELM_NAMESPACE,
+  "--set", "controller.workerBootstrap.enabled=true",
+  "--set", "controller.workerBootstrap.installerImage=registry.example.test/tgsrl/bootstrap@sha256:#{'2' * 64}",
+  "--set", "controller.workerBootstrap.registryURL=http://tgsrl-scheduler:50091"
+)
+assert(!missing_bootstrap_key_status.success?, "bootstrap render must require a registry signing-key Secret")
+assert(missing_bootstrap_key_output.include?("registrySigningKeySecret"), "missing signing-key Secret failure must identify the value")
 
 runtimeclass_args = [
   "--set", "controller.runtimeClassName=kata-gpu",

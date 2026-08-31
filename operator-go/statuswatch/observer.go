@@ -30,22 +30,24 @@ type Request struct {
 // Snapshot is the backend-independent subset of Kueue and Kubernetes status
 // needed to derive the externally visible runtime state.
 type Snapshot struct {
-	ObservedGeneration      uint64
-	WorkloadAdmitted        bool
-	ResourceClaimsAllocated bool
-	AllocatedDeviceIDs      []string
-	JobActive               uint32
-	JobSucceeded            uint32
-	JobFailed               uint32
-	JobPaused               bool
-	JobDeleted              bool
-	Reason                  string
-	ObservedAt              time.Time
-	ControlRequestID        string
-	ControlIdempotencyKey   string
-	ControlAction           tgsrlv1.JobCommandType
-	ControlBackendRevision  uint64
-	ControlCommitted        bool
+	ObservedGeneration         uint64
+	WorkloadAdmitted           bool
+	ResourceClaimsAllocated    bool
+	AllocatedDeviceIDs         []string
+	JobActive                  uint32
+	WorkerRegistrationRequired bool
+	PodReady                   bool
+	JobSucceeded               uint32
+	JobFailed                  uint32
+	JobPaused                  bool
+	JobDeleted                 bool
+	Reason                     string
+	ObservedAt                 time.Time
+	ControlRequestID           string
+	ControlIdempotencyKey      string
+	ControlAction              tgsrlv1.JobCommandType
+	ControlBackendRevision     uint64
+	ControlCommitted           bool
 }
 
 func snapshotFromAdapter(value *bundleadapter.Snapshot) *Snapshot {
@@ -53,22 +55,24 @@ func snapshotFromAdapter(value *bundleadapter.Snapshot) *Snapshot {
 		return nil
 	}
 	return &Snapshot{
-		ObservedGeneration:      value.ObservedGeneration,
-		WorkloadAdmitted:        value.WorkloadAdmitted,
-		ResourceClaimsAllocated: value.ResourceClaimsAllocated,
-		AllocatedDeviceIDs:      append([]string(nil), value.AllocatedDeviceIDs...),
-		JobActive:               value.JobActive,
-		JobSucceeded:            value.JobSucceeded,
-		JobFailed:               value.JobFailed,
-		JobPaused:               value.JobPaused,
-		JobDeleted:              value.JobDeleted,
-		Reason:                  value.Reason,
-		ObservedAt:              value.ObservedAt,
-		ControlRequestID:        value.ControlRequestID,
-		ControlIdempotencyKey:   value.ControlIdempotencyKey,
-		ControlAction:           value.ControlAction,
-		ControlBackendRevision:  value.ControlBackendRevision,
-		ControlCommitted:        value.ControlCommitted,
+		ObservedGeneration:         value.ObservedGeneration,
+		WorkloadAdmitted:           value.WorkloadAdmitted,
+		ResourceClaimsAllocated:    value.ResourceClaimsAllocated,
+		AllocatedDeviceIDs:         append([]string(nil), value.AllocatedDeviceIDs...),
+		JobActive:                  value.JobActive,
+		WorkerRegistrationRequired: value.WorkerRegistrationRequired,
+		PodReady:                   value.PodReady,
+		JobSucceeded:               value.JobSucceeded,
+		JobFailed:                  value.JobFailed,
+		JobPaused:                  value.JobPaused,
+		JobDeleted:                 value.JobDeleted,
+		Reason:                     value.Reason,
+		ObservedAt:                 value.ObservedAt,
+		ControlRequestID:           value.ControlRequestID,
+		ControlIdempotencyKey:      value.ControlIdempotencyKey,
+		ControlAction:              value.ControlAction,
+		ControlBackendRevision:     value.ControlBackendRevision,
+		ControlCommitted:           value.ControlCommitted,
 	}
 }
 
@@ -124,7 +128,7 @@ func Project(snapshot *Snapshot, claimRequired bool) Projection {
 		}
 	}
 	bound := snapshot.WorkloadAdmitted && (!claimRequired || snapshot.ResourceClaimsAllocated)
-	if bound && snapshot.JobActive > 0 {
+	if bound && snapshot.JobActive > 0 && (!snapshot.WorkerRegistrationRequired || snapshot.PodReady) {
 		return Projection{
 			EventType: tgsrlv1.SandboxEventType_SANDBOX_EVENT_TYPE_RUNNING,
 			State:     tgsrlv1.RuntimeState_RUNTIME_STATE_RUNNING,

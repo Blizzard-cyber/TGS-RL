@@ -101,3 +101,29 @@ func TestNewWithRuntimeConfigRejectsInvalidRuntimeClass(t *testing.T) {
 		}
 	}
 }
+
+func TestValidateRuntimeConfigRequiresCompleteBootstrapContract(t *testing.T) {
+	valid := WorkerBootstrapConfig{
+		Enabled:            true,
+		InstallerImage:     "registry.example.test/bootstrap@sha256:" + strings.Repeat("a", 64),
+		RegistryURL:        "https://scheduler.example.test:50091",
+		RegistrySigningKey: []byte(strings.Repeat("k", 32)),
+	}
+	if _, err := ValidateRuntimeConfig(RuntimeConfig{Bootstrap: valid}); err != nil {
+		t.Fatalf("valid bootstrap config error = %v", err)
+	}
+	for name, mutate := range map[string]func(*WorkerBootstrapConfig){
+		"mutable image":     func(value *WorkerBootstrapConfig) { value.InstallerImage = "bootstrap:latest" },
+		"missing URL":       func(value *WorkerBootstrapConfig) { value.RegistryURL = "" },
+		"invalid URL":       func(value *WorkerBootstrapConfig) { value.RegistryURL = "scheduler:50091" },
+		"short signing key": func(value *WorkerBootstrapConfig) { value.RegistrySigningKey = []byte("short") },
+	} {
+		t.Run(name, func(t *testing.T) {
+			candidate := valid
+			mutate(&candidate)
+			if _, err := ValidateRuntimeConfig(RuntimeConfig{Bootstrap: candidate}); err == nil {
+				t.Fatal("expected invalid bootstrap config")
+			}
+		})
+	}
+}

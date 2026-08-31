@@ -102,6 +102,51 @@ func TestKubernetesObserverMapsObservedStatus(t *testing.T) {
 	}
 }
 
+func TestKubernetesObserverWaitsForBootstrapReadiness(t *testing.T) {
+	ready := false
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/apis/kueue.x-k8s.io/v1/namespaces/test-ns/workloads/workload-a":
+			_ = json.NewEncoder(w).Encode(map[string]any{"metadata": map[string]any{"generation": 4}, "status": map[string]any{"admission": map[string]any{"clusterQueue": "queue"}, "conditions": []any{map[string]any{"type": "Admitted", "status": "True", "observedGeneration": 4}}}})
+		case "/apis/batch/v1/namespaces/test-ns/jobs/job-a":
+			_ = json.NewEncoder(w).Encode(map[string]any{"status": map[string]any{"active": 1}})
+		case "/api/v1/namespaces/test-ns/pods":
+			status := "False"
+			if ready {
+				status = "True"
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{"items": []any{map[string]any{"status": map[string]any{"conditions": []any{map[string]any{"type": "Ready", "status": status}}}}}})
+		default:
+			t.Fatalf("unexpected path %s", r.URL.RequestURI())
+		}
+	}))
+	defer server.Close()
+	observer, err := NewKubernetes(httpObserverClient{baseURL: server.URL, client: server.Client()}, time.Millisecond)
+	if err != nil {
+		t.Fatal(err)
+	}
+	bundle := &api.Bundle{Namespace: "test-ns", Generation: 4, RuntimeTargets: []api.RuntimeTarget{{DeviceIDs: []string{"GPU-a"}}}, Workload: api.Workload{TypeMeta: api.TypeMeta{APIVersion: "kueue.x-k8s.io/v1", Kind: "Workload"}, ObjectMeta: api.ObjectMeta{Name: "workload-a", Namespace: "test-ns"}}, Job: api.Job{ObjectMeta: api.ObjectMeta{Name: "job-a", Namespace: "test-ns"}, Spec: api.JobSpec{Template: api.PodTemplateSpec{Spec: api.PodSpec{Containers: []api.Container{{Command: []string{"/opt/tgsrl/tgsrl-worker-bootstrap"}}}}}}}}
+	stream, err := observer.Watch(context.Background(), Request{Bundle: bundle, Bindings: []*tgsrlv1.Binding{{BindingId: "binding-a"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	first, err := stream.Recv()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if projection := Project(first, false); projection.State != tgsrlv1.RuntimeState_RUNTIME_STATE_BOUND {
+		t.Fatalf("unregistered bootstrap state = %s, want BOUND", projection.State)
+	}
+	ready = true
+	second, err := stream.Recv()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if projection := Project(second, false); projection.State != tgsrlv1.RuntimeState_RUNTIME_STATE_RUNNING {
+		t.Fatalf("registered bootstrap state = %s, want RUNNING", projection.State)
+	}
+}
+
 func TestKubernetesObserverRejectsDRADeviceIdentityMismatch(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {

@@ -93,9 +93,26 @@ func buildAnnotations(input *normalizedInput) map[string]string {
 }
 
 func buildEnv(input *normalizedInput) []api.EnvVar {
-	values := make([]api.EnvVar, 0, len(input.Run.GetRuntime().GetEnvironment())+7)
-	for _, key := range sortedProtoLabelKeys(input.Run.GetRuntime().GetEnvironment()) {
-		values = append(values, api.EnvVar{Name: sanitizeEnvName(key), Value: input.Run.GetRuntime().GetEnvironment()[key]})
+	reserved := map[string]struct{}{
+		"TGSRL_JOB_ID": struct{}{}, "TGSRL_RUN_ID": struct{}{}, "TGSRL_TRACE_ID": struct{}{}, "TGSRL_PLAN_ID": struct{}{},
+		"TGSRL_GPU_PROFILE": struct{}{}, "TGSRL_SANDBOX_ID": struct{}{}, "TGSRL_BINDING_ID": struct{}{},
+		"TGSRL_RUNTIME_UNIT_ID": struct{}{}, "TGSRL_GENERATION": struct{}{}, "TGSRL_DEVICE_IDS": struct{}{},
+		"TGSRL_ACCELERATOR_SHARE": struct{}{}, "TGSRL_WORKER_REGISTRY_URL": struct{}{},
+		"TGSRL_WORKER_REGISTRY_TOKEN": struct{}{}, "TGSRL_POD_IP": struct{}{},
+		"TGSRL_POD_UID":           struct{}{},
+		"TGSRL_WORKING_DIRECTORY": struct{}{}, "TGSRL_VERIFY_DEVICE_IDENTITIES": struct{}{},
+	}
+	values := make([]api.EnvVar, 0, len(input.Manifest.GetEnvironment())+12)
+	for _, key := range sortedProtoLabelKeys(input.Manifest.GetEnvironment()) {
+		name := sanitizeEnvName(key)
+		if _, protected := reserved[name]; protected {
+			continue
+		}
+		values = append(values, api.EnvVar{Name: name, Value: input.Manifest.GetEnvironment()[key]})
+	}
+	acceleratorShare := input.resourcesPerUnit.GetAcceleratorUnits()
+	if input.GPUProfile == GPUProfileKubernetesDRA && acceleratorShare > 0 {
+		acceleratorShare = 1
 	}
 	values = append(values,
 		api.EnvVar{Name: "TGSRL_JOB_ID", Value: input.Run.GetJobId()},
@@ -103,6 +120,12 @@ func buildEnv(input *normalizedInput) []api.EnvVar {
 		api.EnvVar{Name: "TGSRL_TRACE_ID", Value: input.Run.GetTraceId()},
 		api.EnvVar{Name: "TGSRL_PLAN_ID", Value: input.Plan.GetPlanId()},
 		api.EnvVar{Name: "TGSRL_GPU_PROFILE", Value: input.GPUProfile},
+		api.EnvVar{Name: "TGSRL_SANDBOX_ID", Value: input.binding.GetSandboxId()},
+		api.EnvVar{Name: "TGSRL_BINDING_ID", Value: input.binding.GetBindingId()},
+		api.EnvVar{Name: "TGSRL_RUNTIME_UNIT_ID", Value: bindingRuntimeUnitID(input.binding)},
+		api.EnvVar{Name: "TGSRL_GENERATION", Value: fmt.Sprintf("%d", input.Generation)},
+		api.EnvVar{Name: "TGSRL_DEVICE_IDS", Value: strings.Join(input.binding.GetDeviceIds(), ",")},
+		api.EnvVar{Name: "TGSRL_ACCELERATOR_SHARE", Value: formatAcceleratorQuantity(acceleratorShare)},
 	)
 	sort.Slice(values, func(i, j int) bool { return values[i].Name < values[j].Name })
 	return values

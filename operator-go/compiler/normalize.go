@@ -83,6 +83,12 @@ func normalize(input CompileInput, runtimeConfig RuntimeConfig) (*normalizedInpu
 			return nil, fmt.Errorf("binding %q: DRA device identity count %d does not match accelerator count %d", binding.GetBindingId(), len(deviceIDs), int(accelerators))
 		}
 	}
+	if runtimeConfig.Bootstrap.Enabled && len(input.RuntimeManifest.GetCommand()) == 0 {
+		return nil, fmt.Errorf("worker bootstrap requires a non-empty manifest workload command")
+	}
+	if runtimeConfig.Bootstrap.Enabled && (binding.GetBindingId() == "" || binding.GetSandboxId() == "" || bindingRuntimeUnitID(binding) == "") {
+		return nil, fmt.Errorf("worker bootstrap requires binding, sandbox, and runtime unit identities")
+	}
 	return &normalizedInput{
 		Namespace:        namespace,
 		GPUProfile:       profile,
@@ -173,6 +179,20 @@ func ValidateRuntimeConfig(config RuntimeConfig) (RuntimeConfig, error) {
 		return RuntimeConfig{}, fmt.Errorf("runtime class creation requires runtime class handler")
 	}
 	normalized := normalizeRuntimeConfig(config)
+	if normalized.Bootstrap.Enabled {
+		if normalized.Bootstrap.InstallerImage == "" || normalized.Bootstrap.RegistryURL == "" {
+			return RuntimeConfig{}, fmt.Errorf("worker bootstrap requires installer image and registry URL")
+		}
+		if len(normalized.Bootstrap.RegistrySigningKey) < 32 {
+			return RuntimeConfig{}, fmt.Errorf("worker bootstrap registry signing key must contain at least 32 bytes")
+		}
+		if !strings.Contains(normalized.Bootstrap.InstallerImage, "@sha256:") {
+			return RuntimeConfig{}, fmt.Errorf("worker bootstrap installer image must use an immutable sha256 digest")
+		}
+		if !strings.HasPrefix(normalized.Bootstrap.RegistryURL, "http://") && !strings.HasPrefix(normalized.Bootstrap.RegistryURL, "https://") {
+			return RuntimeConfig{}, fmt.Errorf("worker bootstrap registry URL must use HTTP or HTTPS")
+		}
+	}
 	for key, value := range normalized.NodeSelector {
 		if err := validateNodeSelectorEntry(key, value); err != nil {
 			return RuntimeConfig{}, err

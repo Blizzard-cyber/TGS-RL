@@ -21,6 +21,7 @@ const (
 func cloneRuntimeConfig(config RuntimeConfig) RuntimeConfig {
 	cloned := config
 	cloned.NodeSelector = cloneStringMap(config.NodeSelector)
+	cloned.Bootstrap.RegistrySigningKey = append([]byte(nil), config.Bootstrap.RegistrySigningKey...)
 	return cloned
 }
 
@@ -32,6 +33,13 @@ func normalizeRuntimeConfig(config RuntimeConfig) RuntimeConfig {
 			Create:  config.RuntimeClass.Create,
 		},
 		NodeSelector: normalizeNodeSelector(config.NodeSelector),
+		Bootstrap: WorkerBootstrapConfig{
+			Enabled:            config.Bootstrap.Enabled,
+			InstallerImage:     strings.TrimSpace(config.Bootstrap.InstallerImage),
+			RegistryURL:        strings.TrimRight(strings.TrimSpace(config.Bootstrap.RegistryURL), "/"),
+			RegistrySigningKey: append([]byte(nil), config.Bootstrap.RegistrySigningKey...),
+			VerifyDeviceIDs:    config.Bootstrap.VerifyDeviceIDs,
+		},
 	}
 	if normalized.RuntimeClass.Name == "" {
 		normalized.RuntimeClass.Handler = ""

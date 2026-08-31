@@ -2,10 +2,14 @@ package compiler
 
 import (
 	"encoding/json"
+	"reflect"
+	"slices"
 	"strings"
 	"testing"
 
 	tgsrlv1 "github.com/Blizzard-cyber/TGS-RL/gen/go/tgsrl/v1"
+	"github.com/Blizzard-cyber/TGS-RL/internal/bootstrapauth"
+	"github.com/Blizzard-cyber/TGS-RL/operator-go/api"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -145,6 +149,85 @@ func TestCompileDRAGeneratesResourceClaim(t *testing.T) {
 	workloadClaims := bundle.Workload.Spec.PodSets[0].Template.Spec.ResourceClaims
 	if len(workloadClaims) != 1 || workloadClaims[0].ResourceClaimName != bundle.ResourceClaim.ObjectMeta.Name {
 		t.Fatalf("workload pod set did not receive DRA claim: %+v", workloadClaims)
+	}
+}
+
+func TestCompileWrapsWorkloadWithManagedWorkerBootstrap(t *testing.T) {
+	signingKey := []byte(strings.Repeat("registry-signing-key-", 2))
+	c, err := NewWithRuntimeConfig(RuntimeConfig{Bootstrap: WorkerBootstrapConfig{
+		Enabled:            true,
+		InstallerImage:     "registry.example.test/tgsrl/bootstrap@sha256:" + strings.Repeat("1", 64),
+		RegistryURL:        "https://scheduler.example.test:50091",
+		RegistrySigningKey: signingKey,
+		VerifyDeviceIDs:    true,
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	c.SetCapabilities(discoveredGPUCapabilities(GPUProfileKubernetesDRA))
+	input := singleBindingInput(testCompileInput(), 0)
+	input.GPUProfiles = []string{GPUProfileKubernetesDRA}
+	input.PlacementPlan.Bindings[0].SandboxId = "sandbox-1"
+	input.PlacementPlan.Bindings[0].RuntimeUnitId = "unit-1"
+	input.JobRun.Runtime.Command = []string{"must-not", "execute"}
+	input.JobRun.Runtime.Environment["JOB_ONLY"] = "stale"
+	input.JobRun.Runtime.Environment["TGSRL_GENERATION"] = "malicious"
+	input.RuntimeManifest.WorkingDirectory = "/workspace"
+	input.RuntimeManifest.Environment["MANIFEST_ONLY"] = "frozen"
+
+	bundle, err := c.compileBinding(input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pod := bundle.Job.Spec.Template.Spec
+	if bundle.Job.Spec.BackoffLimit == nil || *bundle.Job.Spec.BackoffLimit != 0 {
+		t.Fatalf("bootstrap Job backoff limit = %v, want 0", bundle.Job.Spec.BackoffLimit)
+	}
+	if len(pod.InitContainers) != 1 || pod.InitContainers[0].Name != "install-tgsrl-bootstrap" {
+		t.Fatalf("init containers = %+v", pod.InitContainers)
+	}
+	if pod.SecurityContext == nil || pod.SecurityContext.FSGroup != 65532 || pod.SecurityContext.FSGroupChangePolicy != "OnRootMismatch" {
+		t.Fatalf("bootstrap pod security context = %+v", pod.SecurityContext)
+	}
+	main := pod.Containers[0]
+	if len(main.Command) != 1 || main.Command[0] != "/opt/tgsrl/tgsrl-worker-bootstrap" {
+		t.Fatalf("bootstrap command = %+v", main.Command)
+	}
+	wantArgs := []string{"--listen", "0.0.0.0:50092", "--", "python", "train.py", "--steps", "10"}
+	if !slices.Equal(main.Args, wantArgs) {
+		t.Fatalf("bootstrap args = %+v, want %+v", main.Args, wantArgs)
+	}
+	environment := make(map[string]api.EnvVar, len(main.Env))
+	for _, value := range main.Env {
+		if _, duplicate := environment[value.Name]; duplicate {
+			t.Fatalf("duplicate environment variable %q", value.Name)
+		}
+		environment[value.Name] = value
+	}
+	if environment["TGSRL_GENERATION"].Value != "7" || environment["TGSRL_SANDBOX_ID"].Value != "sandbox-1" || environment["TGSRL_DEVICE_IDS"].Value != "GPU-aaaa" {
+		t.Fatalf("bootstrap identity environment = %+v", environment)
+	}
+	if environment["MANIFEST_ONLY"].Value != "frozen" {
+		t.Fatalf("manifest environment was not projected: %+v", environment)
+	}
+	if _, present := environment["JOB_ONLY"]; present {
+		t.Fatalf("mutable Job runtime environment leaked into the workload: %+v", environment)
+	}
+	if environment["TGSRL_WORKING_DIRECTORY"].Value != "/workspace" {
+		t.Fatalf("manifest working directory was not preserved: %+v", environment)
+	}
+	if environment["TGSRL_VERIFY_DEVICE_IDENTITIES"].Value != "true" {
+		t.Fatalf("DRA workload must verify visible device identities: %+v", environment)
+	}
+	if len(main.Ports) != 1 || main.Ports[0].ContainerPort != 50092 {
+		t.Fatalf("bootstrap control port = %+v", main.Ports)
+	}
+	registrationToken := environment["TGSRL_WORKER_REGISTRY_TOKEN"]
+	if registrationToken.ValueFrom != nil || !bootstrapauth.Verify(signingKey, bootstrapauth.Claims{RunID: input.JobRun.GetRunId(), JobID: input.JobRun.GetJobId(), RuntimeUnitID: "unit-1", SandboxID: "sandbox-1", BindingID: input.PlacementPlan.Bindings[0].GetBindingId(), Generation: 7, DeviceIDs: []string{"GPU-aaaa"}}, registrationToken.Value) {
+		t.Fatalf("registry token is not scoped to the compiled binding: %+v", registrationToken)
+	}
+	if !reflect.DeepEqual(bundle.Workload.Spec.PodSets[0].Template.Spec, pod) {
+		t.Fatal("Kueue pod set and Job template diverged after bootstrap injection")
 	}
 }
 
@@ -517,6 +600,9 @@ func testCompileInput() CompileInput {
 			ExecutionBackend: "kubernetes",
 			ImageDigests:     []string{"repo/image@sha256:abc"},
 			Annotations:      map[string]string{"team": "rl"},
+			Command:          []string{"python", "train.py"},
+			Args:             []string{"--steps", "10"},
+			Environment:      map[string]string{"alpha.beta/value": "1"},
 		},
 		PlacementPlan: &tgsrlv1.PlacementPlan{
 			PlanId:           "plan-1",
