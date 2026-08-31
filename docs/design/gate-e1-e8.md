@@ -21,8 +21,41 @@
 
 - `configs/gates/e1-e8.json`：实验、最低 evidence、动作、故障和规则；
 - `configs/scenarios/e1-*.yaml` 到 `e8-*.yaml`：每项独立拓扑与 workload/fault 合同；
-- `configs/gates/gate-gi-process.json`：所有实验复用的完整服务链 trace/report schema；
+- `configs/gates/gate-e1-e8-hardware.json`：所有实验复用的硬件 trace/report schema；
+- `scripts/hardware-campaign-executor.py`：仓库控制的 baseline/variant、迭代、动作、故障和 cleanup 编排；
 - `scripts/gate-tools.py`：单项 evidence ingest、验证、归档与 campaign 汇总。
+
+目标环境执行入口为 `campaign-run`。它按 E1 到 E8 的固定顺序运行仓库 executor，
+逐项校验并归档证据，最后执行 release evaluation：
+
+```bash
+make gate-campaign-run \
+  GATE_CAMPAIGN_DRIVER=/opt/tgsrl/bin/tgsrl-hardware-environment-driver
+```
+
+仓库内 executor 固定读取各 scenario 的 `execution_plan`，并对每个 baseline/variant 的
+warmup/measurement iteration 依次执行 `provision`、`launch`、`verify_device_identity`、
+`apply_action`、`inject_fault`、`recover_fault`、`measure`、`stop` 和 `cleanup` 中声明的步骤。
+失败后仍会单独执行 cleanup。目标集群只需要提供一个原子 environment driver；它接受：
+
+```text
+--request <absolute JSON request path>
+--response <absolute JSON response path>
+```
+
+request 包含 immutable campaign/scenario/workload lock、run key、step index、operation 和可选
+action/fault ID；response 必须使用 `tgsrl.io/hardware-driver-response/v1alpha1`，回显 request ID，
+并返回 `SUCCEEDED` 与该原子操作产生的 events/artifacts。driver 负责连接目标 Kubernetes/DRA
+环境、执行单个操作和读取事实，不得自行重排或省略实验步骤。主 runner 负责：
+
+- 校验 gate-tools、executor、driver、campaign、gate manifest 和 scenario 的 SHA-256；
+- 拒绝输出目录逃逸、缺失 artifact、错误 evidence 等级和旧 commit 报告；
+- 调用既有 ingest，复制成自包含 evidence bundle；
+- 保存 executor/driver stdout/stderr 摘要与失败进度；
+- 任一实验失败时停止后续实验；全部执行后使用 `--require-pass` 做发布准入。
+
+仓库不内置集群凭据、模型、数据或厂商环境命令。替换 environment driver 是部署环境配置，
+不要求修改场景顺序、Scheduler、Runtime、Operator 或 Gate 证据协议。
 
 ## 证据流
 

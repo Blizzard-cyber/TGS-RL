@@ -136,10 +136,14 @@ staleness/ESS、共置干扰、动作代价、故障恢复和跨节点收敛八�
 GPU evidence、执行模式、设备 profile、节点数、实际动作、故障注入/恢复配对和精确设备
 身份。缺少报告为 `NOT_RUN`，不合规证据为 `INVALID`；尚未从权威需求文档确认的数值阈值
 标记为 `calibration_required`，在补齐前保持 `BLOCKED`，不能形成发布 PASS。
-目标环境先用 `campaign-ingest E<n> --report <report.json>` 将每项报告与 trace、service/worker
-日志和 scenario 一并校验归档，再以 `campaign-evaluate --require-pass` 作为发布门禁。
-Hardware Validation workflow 的 `e1-e8-evaluate` 模式只消费名为 `gate-e1-e8-evidence` 的
-已采集 artifact，不在普通 GitHub runner 上伪造硬件执行。
+目标环境可用 `campaign-run --driver <path> --require-pass` 按顺序执行八项实验；仓库 executor
+拥有 baseline/variant、迭代、动作、故障与失败 cleanup 顺序，runner 锁定每项
+gate-tools/campaign/gate/scenario/executor/driver digest，拒绝旧 commit、目录逃逸和不完整 named evidence。
+环境 driver 只负责目标 Kubernetes/GPU 原子操作并返回结构化观察。也可用
+`campaign-ingest E<n> --report <report.json>` 单独导入已有
+证据，再以 `campaign-evaluate --require-pass` 作为发布门禁。Hardware Validation workflow
+的 `e1-e8-run` 模式执行 campaign；`e1-e8-evaluate` 模式只消费名为
+`gate-e1-e8-evidence` 的已采集 artifact，不在普通 GitHub runner 上伪造硬件执行。
 
 ## 明确不支持
 

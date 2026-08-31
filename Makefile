@@ -4,8 +4,9 @@ SHELL := /bin/sh
 BUF_VERSION := 1.72.0
 UV_VERSION := 0.12.7
 STATICCHECK_VERSION := 2026.1
+GATE_CAMPAIGN_DRIVER ?= tgsrl-hardware-environment-driver
 GO_PACKAGES := ./gen/go/... ./internal/... ./scheduler-go/... ./job-controller-go/... ./operator-go/... ./storage/... ./scripts ./cmd/...
-PYTHON_PATHS := adapters runtime-python gateway-python tests/python tests/api tests/storage tests/e2e tests/governance scripts/check-proto-roundtrip.py scripts/check-oci-platforms.py scripts/generate-sbom.py scripts/check-compatibility.py scripts/check-upstream-patches.py scripts/gate-tools.py scripts/verl-reference-workload.py scripts/gate-full-stack-workload.py scripts/gate-managed-workload.py
+PYTHON_PATHS := adapters runtime-python gateway-python tests/python tests/api tests/storage tests/e2e tests/governance scripts/check-proto-roundtrip.py scripts/check-oci-platforms.py scripts/generate-sbom.py scripts/check-compatibility.py scripts/check-upstream-patches.py scripts/gate-tools.py scripts/hardware-campaign-executor.py scripts/verl-reference-workload.py scripts/gate-full-stack-workload.py scripts/gate-managed-workload.py
 GO_FORMAT_PATHS := scheduler-go job-controller-go operator-go storage cmd internal
 SCHEDULER_PACKAGE := ./scheduler-go/cmd/scheduler
 NVIDIA_BINDING_PACKAGE := ./cmd/tgsrl-nvidia-binding
@@ -20,7 +21,7 @@ GATEWAY_LISTEN ?= 127.0.0.1:8080
 OPERATOR_LISTEN ?= 127.0.0.1:50081
 SCHEDULER_FALLBACK ?= noop
 
-.PHONY: help doctor proto check-generated check-openapi proto-roundtrip check-migrations check-compose check-deploy render-kubernetes check-public-content sbom check-governance gate-campaign test-go test-performance test-python test-api test-console test-console-browser lint staticcheck test race build-nvidia-binding build-nvidia-runtime build-nvidia-mig build-worker-bootstrap demo product-e2e gate-cpu-integration run-scheduler run-controller run-runtime run-gateway run-operator run-console
+.PHONY: help doctor proto check-generated check-openapi proto-roundtrip check-migrations check-compose check-deploy render-kubernetes check-public-content sbom check-governance gate-campaign gate-campaign-run test-go test-performance test-python test-api test-console test-console-browser lint staticcheck test race build-nvidia-binding build-nvidia-runtime build-nvidia-mig build-worker-bootstrap demo product-e2e gate-cpu-integration run-scheduler run-controller run-runtime run-gateway run-operator run-console
 
 help:
 	@printf '%s\n' \
@@ -39,6 +40,7 @@ help:
 	  '  make check-governance validate SBOM, compatibility evidence, and patch ledger' \
 	  '  make gate-cpu-integration run the full local process Gate path' \
 	  '  make gate-campaign     validate E1-E8 and summarize available evidence' \
+	  '  make gate-campaign-run execute E1-E8 with a target-environment driver' \
 	  '  make test-go          run all Go tests' \
 	  '  make test-performance run non-race Scheduler and Provider P95 budgets' \
 	  '  make test-python      sync the locked Python environment and run tests' \
@@ -124,6 +126,13 @@ check-governance:
 gate-campaign:
 	uv run --frozen python scripts/gate-tools.py campaign-plan --campaign configs/gates/e1-e8.json >/dev/null
 	uv run --frozen python scripts/gate-tools.py campaign-evaluate --campaign configs/gates/e1-e8.json
+
+gate-campaign-run:
+	uv run --frozen python scripts/gate-tools.py campaign-run \
+		--campaign configs/gates/e1-e8.json \
+		--reports-dir .cache/tgsrl/e1-e8 \
+		--driver "$(GATE_CAMPAIGN_DRIVER)" \
+		--require-pass
 
 test-go:
 	go test $(GO_PACKAGES)

@@ -94,6 +94,20 @@ def test_hardware_workflow_has_cpu_and_automated_self_hosted_gpu_entries() -> No
     assert "actions: read" in text
 
 
+def test_hardware_workflow_can_execute_the_complete_campaign() -> None:
+    text = HARDWARE_WORKFLOW.read_text(encoding="utf-8")
+
+    assert "e1-e8-run" in text
+    assert "campaign-runner:" in text
+    assert "runs-on: [self-hosted, gpu]" in text
+    assert "environment: hardware-validation" in text
+    assert "scripts/gate-tools.py campaign-run" in text
+    assert "--executor" not in text
+    assert '--driver "${CAMPAIGN_DRIVER}"' in text
+    assert "vars.TGSRL_CAMPAIGN_DRIVER" in text
+    assert "gate-e1-e8-evidence" in text
+
+
 def test_ci_enforces_static_analysis_proto_compatibility_and_browser_smoke() -> None:
     text = CI_WORKFLOW.read_text(encoding="utf-8")
 

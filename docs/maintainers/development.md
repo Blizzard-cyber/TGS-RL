@@ -16,6 +16,7 @@ make test-console-browser # Chromium 七路由 smoke（需先安装 Playwright b
 make demo             # Python → Scheduler → Mock Provider 最小进程演示
 make product-e2e      # 完整后端产品流与恢复检查
 make gate-campaign    # 校验 E1-E8 campaign 并汇总已有硬件证据
+make gate-campaign-run # 通过仓库 executor + 目标环境 driver 执行并严格验收 E1-E8
 make check-generated  # 验证 Proto 生成物
 make check-governance # 校验 SBOM、兼容性证据与 patch ledger
 make check-public-content # 扫描工作树与可达历史中的私有链接、路径和凭据样式
@@ -119,8 +120,11 @@ CI 分别验证：
 - SBOM、兼容性证据、patch ledger 与公开内容检查。
 
 这些检查证明本地契约和控制流，不代表真实 GPU、Kubernetes 集群或训练性能已经验证。
-E1-E8 campaign 的 CI 只验证 schema 和缺证据时的 fail-closed 行为；真实报告必须在目标
-GPU/Kubernetes 环境生成并使用 `campaign-evaluate --require-pass` 做发布准入。
+E1-E8 campaign 的普通 CI 验证 schema、runner contract 和 fail-closed 行为。目标 GPU/
+Kubernetes runner 安装原子环境 driver 后，使用 `make gate-campaign-run` 由仓库 executor 按
+scenario 的 execution plan 逐项生成、摄取和严格
+验收证据；也可通过 Hardware Validation workflow 的 `e1-e8-run` 模式执行。单独导入已有
+artifact 时，使用 `campaign-evaluate --require-pass` 做发布准入。
 
 ## 文档约定
 

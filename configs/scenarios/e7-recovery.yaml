@@ -4,6 +4,10 @@
   "title": "Failure injection and transactional recovery",
   "topology": {"minimum_nodes": 1, "minimum_accelerators": 1, "gpu_profiles": ["full-gpu", "mig"]},
   "workload": {"restart_components": ["runtime", "scheduler", "operator", "worker"]},
+  "execution_plan": {
+    "baseline": [{"operation": "provision"}, {"operation": "apply_action", "action": "bind"}, {"operation": "launch"}, {"operation": "verify_device_identity"}, {"operation": "measure"}, {"operation": "stop"}, {"operation": "cleanup"}],
+    "variant": [{"operation": "provision"}, {"operation": "apply_action", "action": "bind"}, {"operation": "launch"}, {"operation": "verify_device_identity"}, {"operation": "inject_fault", "fault_id": "worker-exit"}, {"operation": "apply_action", "action": "rollback"}, {"operation": "recover_fault", "fault_id": "worker-exit"}, {"operation": "inject_fault", "fault_id": "control-response-loss"}, {"operation": "apply_action", "action": "resume"}, {"operation": "recover_fault", "fault_id": "control-response-loss"}, {"operation": "measure"}, {"operation": "stop"}, {"operation": "cleanup"}]
+  },
   "faults": [{"fault_id": "worker-exit", "kind": "process-exit"}, {"fault_id": "control-response-loss", "kind": "response-drop"}],
   "required_evidence": ["fault-injected", "durable-receipt", "rollback", "fault-recovered"]
 }

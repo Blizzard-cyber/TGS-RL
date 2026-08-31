@@ -4,6 +4,10 @@
   "title": "Full GPU exact-device execution",
   "topology": {"minimum_nodes": 1, "minimum_accelerators": 1, "gpu_profiles": ["full-gpu"]},
   "workload": {"framework": "verl", "execution_backend": "ray", "trainer": "pytorch", "rollout_engine": "vllm"},
+  "execution_plan": {
+    "baseline": [{"operation": "provision"}, {"operation": "apply_action", "action": "bind"}, {"operation": "launch"}, {"operation": "verify_device_identity"}, {"operation": "measure"}, {"operation": "stop"}, {"operation": "cleanup"}],
+    "variant": [{"operation": "provision"}, {"operation": "apply_action", "action": "bind"}, {"operation": "launch"}, {"operation": "verify_device_identity"}, {"operation": "measure"}, {"operation": "stop"}, {"operation": "cleanup"}]
+  },
   "faults": [],
   "required_evidence": ["scheduler-binding", "dra-allocation", "worker-device-identity"]
 }

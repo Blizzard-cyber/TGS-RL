@@ -27,6 +27,10 @@ DEFAULT_MANIFEST = ROOT / "configs" / "gates" / "gate-gi.json"
 DEFAULT_OUTPUT_DIR = ROOT / ".cache" / "tgsrl" / "gate-gi"
 DEFAULT_CAMPAIGN = ROOT / "configs" / "gates" / "e1-e8.json"
 DEFAULT_CAMPAIGN_REPORTS = ROOT / ".cache" / "tgsrl" / "e1-e8"
+DEFAULT_CAMPAIGN_EXECUTOR = ROOT / "scripts" / "hardware-campaign-executor.py"
+MAX_CAMPAIGN_DIAGNOSTIC_FILES = 10_000
+MAX_CAMPAIGN_DIAGNOSTIC_BYTES = 512 << 20
+SENSITIVE_ENV_SUFFIXES = ("_API_KEY", "_AUTHORIZATION", "_PASSWORD", "_SECRET", "_TOKEN")
 
 STATUS_VALUES = {"NOT_RUN", "BLOCKED", "INVALID", "PASSED", "FAILED"}
 EVIDENCE_VALUES = {
@@ -42,6 +46,32 @@ EVIDENCE_RANK = {
     "CPU_INTEGRATION": 1,
     "GPU_SINGLE_NODE": 2,
     "GPU_MULTI_NODE": 3,
+}
+CAMPAIGN_EVIDENCE_REQUIREMENTS = {
+    "scheduler-binding",
+    "dra-allocation",
+    "worker-device-identity",
+    "mig-device-class",
+    "parent-uuid",
+    "throughput",
+    "gpu-active-time",
+    "useful-gpu-time",
+    "policy-lag",
+    "sample-staleness",
+    "effective-sample-size",
+    "interference-ratio",
+    "share-readback",
+    "priority-readback",
+    "action-start",
+    "action-receipt",
+    "readiness",
+    "fault-injected",
+    "durable-receipt",
+    "rollback",
+    "fault-recovered",
+    "node-identities",
+    "recovery",
+    "convergence-quality",
 }
 
 
@@ -162,6 +192,11 @@ def load_manifest(path: Path) -> LoadedManifest:
     for label, variant in variants.items():
         if not isinstance(variant, dict) or variant.get("control_mode") not in {"static", "tgsrl"}:
             raise GateToolError(f"manifest workload_runner.variants.{label} is invalid")
+    required_variant_actions = runner.get("required_variant_actions", ["pause", "resume"])
+    if not isinstance(required_variant_actions, list) or any(
+        not isinstance(action, str) or not action for action in required_variant_actions
+    ):
+        raise GateToolError("manifest workload_runner.required_variant_actions is invalid")
     artifacts = data.get("artifacts")
     if not isinstance(artifacts, dict):
         raise GateToolError("manifest artifacts must be an object")
@@ -373,18 +408,24 @@ def cmd_simulate(args: argparse.Namespace) -> int:
     run["notes"] = ["Simulator output is synthetic and must not claim a real GPU gate pass."]
     _write_json(paths.report, run)
     _archive_run(paths)
-    _print_artifacts(paths)
+    if not getattr(args, "quiet", False):
+        _print_artifacts(paths)
     return 0
 
 
 def _run_command(
-    argv: list[str], timeout_seconds: float
+    argv: list[str], timeout_seconds: float, *, environment: dict[str, str] | None = None
 ) -> tuple[dict[str, Any], bool, bytes, bytes]:
     if not argv or any(not value for value in argv):
         raise GateToolError("workload argv must not be empty")
     try:
         completed = subprocess.run(
-            argv, cwd=ROOT, capture_output=True, check=False, timeout=timeout_seconds
+            argv,
+            cwd=ROOT,
+            capture_output=True,
+            check=False,
+            timeout=timeout_seconds,
+            env=environment,
         )
         exit_code = completed.returncode
         stdout = completed.stdout
@@ -459,6 +500,7 @@ def _metrics_from_events(events: list[dict[str, Any]]) -> dict[str, float]:
     consumed = [event for event in measured if event.get("event_type") == "sample_consumed"]
     actions = [event for event in measured if event.get("event_type") == "decision_applied"]
     completed = [event for event in measured if event.get("event_type") == "workload_completed"]
+    recoveries = [event for event in measured if event.get("event_type") == "fault_recovered"]
     if not consumed or not completed:
         raise GateToolError("measurement trace requires consumed samples and completed iterations")
     latencies = [float(event.get("duration_ms", 0.0)) for event in consumed]
@@ -542,14 +584,17 @@ def _metrics_from_events(events: list[dict[str, Any]]) -> dict[str, float]:
         else sum(bool(event.get("rolled_back")) for event in actions) / action_count,
         "transaction_recovery_time_ms": sum(
             float(event.get("recovery_time_ms", 0.0)) for event in actions
-        ),
+        )
+        + sum(float(event.get("recovery_time_ms", 0.0)) for event in recoveries),
     }
     if any(not _is_finite_number(value) for value in metrics.values()):
         raise GateToolError("measurement trace produced a non-finite metric")
     return metrics
 
 
-def _validate_full_stack_events(events: list[dict[str, Any]], *, label: str) -> None:
+def _validate_full_stack_events(
+    events: list[dict[str, Any]], *, label: str, required_variant_actions: list[str]
+) -> None:
     grouped: dict[tuple[str, int], list[dict[str, Any]]] = {}
     for event in events:
         key = (str(event.get("phase", "")), int(event.get("iteration", 0)))
@@ -575,7 +620,7 @@ def _validate_full_stack_events(events: list[dict[str, Any]], *, label: str) -> 
             for event in worker_events
         ):
             raise GateToolError(f"{scope} requires managed-worker runtime identities")
-        if label == "variant":
+        if label == "variant" and required_variant_actions:
             operator_actions = {
                 str(event.get("action"))
                 for event in run_events
@@ -583,8 +628,11 @@ def _validate_full_stack_events(events: list[dict[str, Any]], *, label: str) -> 
                 and event.get("source") == "operator"
                 and event.get("succeeded") is True
             }
-            if not {"pause", "resume"}.issubset(operator_actions):
-                raise GateToolError(f"{scope} requires successful Operator pause/resume actions")
+            missing = set(required_variant_actions) - operator_actions
+            if missing:
+                raise GateToolError(
+                    f"{scope} requires successful Operator actions: " + ", ".join(sorted(missing))
+                )
 
 
 def _workload_argv(
@@ -647,7 +695,15 @@ def _execute_workloads(
                 _parse_workload_events(stdout, label=label, phase=phase, iteration=iteration)
             )
     if manifest.data["workload_runner"].get("evidence_mode") == "full_stack":
-        _validate_full_stack_events(events, label=label)
+        _validate_full_stack_events(
+            events,
+            label=label,
+            required_variant_actions=list(
+                manifest.data["workload_runner"].get(
+                    "required_variant_actions", ["pause", "resume"]
+                )
+            ),
+        )
     trace = {
         "schema_version": "tgsrl.io/gate-trace/v1alpha1",
         "suite_id": manifest.data["suite_id"],
@@ -940,7 +996,8 @@ def cmd_ingest(args: argparse.Namespace) -> int:
     if errors:
         raise GateToolError("; ".join(errors))
     _archive_run(paths)
-    _print_artifacts(paths)
+    if not getattr(args, "quiet", False):
+        _print_artifacts(paths)
     return 0
 
 
@@ -1058,7 +1115,15 @@ def _validate_report(
                 continue
             if manifest.data["workload_runner"].get("evidence_mode") == "full_stack":
                 try:
-                    _validate_full_stack_events(events, label=side)
+                    _validate_full_stack_events(
+                        events,
+                        label=side,
+                        required_variant_actions=list(
+                            manifest.data["workload_runner"].get(
+                                "required_variant_actions", ["pause", "resume"]
+                            )
+                        ),
+                    )
                 except GateToolError as error:
                     errors.append(str(error))
             if status == "PASSED" or (evidence == "CPU_INTEGRATION" and status == "NOT_RUN"):
@@ -1300,6 +1365,30 @@ def load_campaign(path: Path) -> dict[str, Any]:
             raise GateToolError(
                 f"campaign {experiment_id} scenario required_evidence must contain strings"
             )
+        if len(set(required_evidence)) != len(required_evidence):
+            raise GateToolError(
+                f"campaign {experiment_id} scenario required_evidence must be unique"
+            )
+        unknown_evidence = sorted(set(required_evidence) - CAMPAIGN_EVIDENCE_REQUIREMENTS)
+        if unknown_evidence:
+            raise GateToolError(
+                f"campaign {experiment_id} scenario required_evidence is unsupported: "
+                + ", ".join(unknown_evidence)
+            )
+        execution_plan = scenario.get("execution_plan")
+        if not isinstance(execution_plan, dict) or set(execution_plan) != {
+            "baseline",
+            "variant",
+        }:
+            raise GateToolError(
+                f"campaign {experiment_id} scenario execution_plan must define baseline and variant"
+            )
+        for label in ("baseline", "variant"):
+            steps = execution_plan[label]
+            if not isinstance(steps, list) or not steps:
+                raise GateToolError(
+                    f"campaign {experiment_id} scenario execution_plan.{label} must be non-empty"
+                )
         rules = experiment.get("rules")
         if not isinstance(rules, list) or not rules:
             raise GateToolError(f"campaign {experiment_id} rules must be non-empty")
@@ -1431,6 +1520,8 @@ def _validate_campaign_requirements(
     fingerprint = report.get("environment_fingerprint", {})
     if not isinstance(fingerprint, dict):
         fingerprint = {}
+    if fingerprint.get("git_commit") != git_commit():
+        errors.append("evidence git commit does not match the campaign checkout")
     if int(fingerprint.get("accelerator_count", 0) or 0) < int(
         requirements.get("minimum_accelerators", 0)
     ):
@@ -1454,31 +1545,57 @@ def _validate_campaign_requirements(
         for event in variant_events
         if event.get("event_type") in {"decision_applied", "control_completed"}
         and event.get("succeeded") is True
+        and event.get("source") == ("scheduler" if event.get("action") == "bind" else "operator")
     }
     for action in requirements.get("required_actions", []):
         if action not in observed_actions:
             errors.append(f"required action {action} is missing from variant evidence")
-    observed_event_types = {str(event.get("event_type")) for event in variant_events}
+    authoritative_sources = {
+        "device_identity_verified": "worker",
+        "fault_injected": "operator",
+        "fault_recovered": "operator",
+        "interference_observed": "worker",
+        "sample_consumed": "worker",
+        "worker_registered": "worker",
+        "workload_completed": "worker",
+    }
+    observed_event_types = {
+        str(event.get("event_type"))
+        for event in variant_events
+        if authoritative_sources.get(str(event.get("event_type")), event.get("source"))
+        == event.get("source")
+    }
     for event_type in requirements.get("required_events", []):
         if event_type not in observed_event_types:
             errors.append(f"required event {event_type} is missing from variant evidence")
     injected_faults = {
         str(event.get("fault_id"))
         for event in variant_events
-        if event.get("event_type") == "fault_injected" and event.get("fault_id")
+        if event.get("event_type") == "fault_injected"
+        and event.get("source") == "operator"
+        and event.get("fault_id")
     }
     recovered_faults = {
         str(event.get("fault_id"))
         for event in variant_events
-        if event.get("event_type") == "fault_recovered" and event.get("fault_id")
+        if event.get("event_type") == "fault_recovered"
+        and event.get("source") == "operator"
+        and event.get("fault_id")
     }
     for fault in requirements.get("required_faults", []):
         if fault not in injected_faults or fault not in recovered_faults:
             errors.append(f"required fault {fault} lacks injected and recovered evidence")
     if requirements.get("exact_device_identity") is True:
+        expected_device_class = {
+            "full-gpu": "gpu.nvidia.com",
+            "mig": "mig.nvidia.com",
+        }.get(str(fingerprint.get("gpu_profile", "")))
         for label, events in (("baseline", baseline_events), ("variant", variant_events)):
             identities = [
-                event for event in events if event.get("event_type") == "device_identity_verified"
+                event
+                for event in events
+                if event.get("event_type") == "device_identity_verified"
+                and event.get("source") == "worker"
             ]
             if not identities:
                 errors.append(f"{label} exact device identity evidence is missing")
@@ -1504,20 +1621,260 @@ def _validate_campaign_requirements(
                         f"{label} scheduler, allocation, and worker device identities differ"
                     )
                     break
+                if expected_device_class and event.get("device_class") != expected_device_class:
+                    errors.append(
+                        f"{label} device class does not match the environment GPU profile"
+                    )
+                    break
+            if int(requirements.get("minimum_nodes", 0)) > 1:
+                for iteration in sorted({int(event.get("iteration", 0)) for event in events}):
+                    by_node: dict[str, set[str]] = {}
+                    for event in identities:
+                        if int(event.get("iteration", 0)) != iteration:
+                            continue
+                        node_id = str(event.get("node_id", ""))
+                        by_node.setdefault(node_id, set()).update(
+                            str(value) for value in event.get("worker_device_ids", [])
+                        )
+                    if (
+                        "" in by_node
+                        or len(by_node) < int(requirements["minimum_nodes"])
+                        or any(not device_ids for device_ids in by_node.values())
+                        or sum(len(device_ids) for device_ids in by_node.values())
+                        != len(set().union(*by_node.values()))
+                    ):
+                        errors.append(
+                            f"{label} multi-node device identities are missing or overlap"
+                        )
+                        break
     experiment_id = experiment["experiment_id"]
     if any(event.get("experiment_id") != experiment_id for event in baseline_events):
         errors.append("baseline events do not match the campaign experiment identity")
     if any(event.get("experiment_id") != experiment_id for event in variant_events):
         errors.append("variant events do not match the campaign experiment identity")
+    errors.extend(
+        _validate_named_campaign_evidence(
+            experiment=experiment,
+            baseline_events=baseline_events,
+            variant_events=variant_events,
+            required_actions=requirements.get("required_actions", []),
+            minimum_nodes=int(requirements.get("minimum_nodes", 0)),
+        )
+    )
     return errors
 
 
+def _validate_named_campaign_evidence(
+    *,
+    experiment: dict[str, Any],
+    baseline_events: list[dict[str, Any]],
+    variant_events: list[dict[str, Any]],
+    required_actions: list[str],
+    minimum_nodes: int,
+) -> list[str]:
+    scenario = _read_json(ROOT / experiment["scenario_manifest"])
+    required = scenario.get("required_evidence", [])
+    if not isinstance(required, list):
+        return []
+
+    variant_actions = [
+        event
+        for event in variant_events
+        if event.get("event_type") in {"decision_applied", "control_completed"}
+        and event.get("succeeded") is True
+        and event.get("source") == ("scheduler" if event.get("action") == "bind" else "operator")
+    ]
+    injected = [
+        event
+        for event in variant_events
+        if event.get("event_type") == "fault_injected" and event.get("source") == "operator"
+    ]
+    recovered = [
+        event
+        for event in variant_events
+        if event.get("event_type") == "fault_recovered" and event.get("source") == "operator"
+    ]
+
+    def has_finite(events: list[dict[str, Any]], field: str) -> bool:
+        return any(_is_finite_number(event.get(field)) for event in events)
+
+    def both_sides(predicate: Any) -> bool:
+        return all(
+            any(predicate(event) for event in events)
+            for events in (baseline_events, variant_events)
+        )
+
+    def action_has(action: str, field: str, predicate: object | None = None) -> bool:
+        for event in variant_actions:
+            if event.get("action") != action:
+                continue
+            value = event.get(field)
+            if predicate is None and value is not None and value != "":
+                return True
+            if callable(predicate) and predicate(value):
+                return True
+        return False
+
+    checks = {
+        "scheduler-binding": both_sides(
+            lambda event: (
+                event.get("event_type") == "device_identity_verified"
+                and event.get("source") == "worker"
+                and bool(event.get("scheduler_device_ids"))
+            )
+        ),
+        "dra-allocation": both_sides(
+            lambda event: (
+                event.get("event_type") == "device_identity_verified"
+                and event.get("source") == "worker"
+                and bool(event.get("allocated_device_ids"))
+            )
+        ),
+        "worker-device-identity": both_sides(
+            lambda event: (
+                event.get("event_type") == "device_identity_verified"
+                and event.get("source") == "worker"
+                and bool(event.get("worker_device_ids"))
+            )
+        ),
+        "mig-device-class": both_sides(
+            lambda event: (
+                event.get("event_type") == "device_identity_verified"
+                and event.get("source") == "worker"
+                and event.get("device_class") == "mig.nvidia.com"
+            )
+        ),
+        "parent-uuid": both_sides(
+            lambda event: (
+                event.get("event_type") == "device_identity_verified"
+                and event.get("source") == "worker"
+                and bool(event.get("parent_uuid"))
+            )
+        ),
+        "throughput": both_sides(
+            lambda event: (
+                event.get("event_type") == "workload_completed"
+                and event.get("source") == "worker"
+                and _is_finite_number(event.get("elapsed_ms"))
+                and float(event["elapsed_ms"]) > 0
+                and isinstance(event.get("item_count"), int)
+                and not isinstance(event.get("item_count"), bool)
+                and int(event["item_count"]) > 0
+            )
+        ),
+        "gpu-active-time": both_sides(
+            lambda event: (
+                event.get("event_type") == "sample_consumed"
+                and event.get("source") == "worker"
+                and _is_finite_number(event.get("gpu_active_ms"))
+                and float(event["gpu_active_ms"]) > 0
+            )
+        ),
+        "useful-gpu-time": both_sides(
+            lambda event: (
+                event.get("event_type") == "sample_consumed"
+                and event.get("source") == "worker"
+                and _is_finite_number(event.get("useful_gpu_time_ms"))
+                and float(event["useful_gpu_time_ms"]) > 0
+            )
+        ),
+        "policy-lag": both_sides(
+            lambda event: (
+                event.get("event_type") == "sample_consumed"
+                and event.get("source") == "worker"
+                and isinstance(event.get("contract_observation"), dict)
+                and _is_finite_number(event["contract_observation"].get("policy_lag"))
+            )
+        ),
+        "sample-staleness": both_sides(
+            lambda event: (
+                event.get("event_type") == "sample_consumed"
+                and event.get("source") == "worker"
+                and isinstance(event.get("contract_observation"), dict)
+                and isinstance(event["contract_observation"].get("sample_stale"), bool)
+            )
+        ),
+        "effective-sample-size": both_sides(
+            lambda event: (
+                event.get("event_type") == "sample_consumed"
+                and event.get("source") == "worker"
+                and isinstance(event.get("contract_observation"), dict)
+                and _is_finite_number(event["contract_observation"].get("effective_sample_size"))
+            )
+        ),
+        "interference-ratio": has_finite(
+            [
+                event
+                for event in variant_events
+                if event.get("event_type") == "interference_observed"
+                and event.get("source") == "worker"
+            ],
+            "interference_ratio",
+        ),
+        "share-readback": action_has(
+            "set_share",
+            "observed_share",
+            lambda value: _is_finite_number(value) and 0 < float(value) <= 1,
+        ),
+        "priority-readback": action_has(
+            "set_priority",
+            "observed_priority",
+            lambda value: isinstance(value, int) and not isinstance(value, bool),
+        ),
+        "action-start": all(
+            any(
+                event.get("event_type") == "control_started"
+                and event.get("source") == "operator"
+                and event.get("action") == action
+                for event in variant_events
+            )
+            for action in required_actions
+        ),
+        "action-receipt": all(action_has(action, "receipt_id") for action in required_actions),
+        "readiness": any(
+            event.get("action") in {"reload", "resume"} and event.get("ready") is True
+            for event in variant_actions
+        ),
+        "fault-injected": bool(injected),
+        "durable-receipt": all(
+            action_has(action, "receipt_id") and action_has(action, "transaction_id")
+            for action in required_actions
+        ),
+        "rollback": any(event.get("action") == "rollback" for event in variant_actions),
+        "fault-recovered": bool(recovered),
+        "node-identities": all(
+            len({str(event.get("node_id")) for event in events if event.get("node_id")})
+            >= minimum_nodes
+            for events in (baseline_events, variant_events)
+        ),
+        "recovery": any(_is_finite_number(event.get("recovery_time_ms")) for event in recovered),
+        "convergence-quality": both_sides(
+            lambda event: (
+                event.get("event_type") == "workload_completed"
+                and event.get("source") == "worker"
+                and _is_finite_number(event.get("convergence_quality"))
+            )
+        ),
+    }
+    return [
+        f"required evidence {name} is missing or incomplete"
+        for name in required
+        if not checks[name]
+    ]
+
+
 def evaluate_campaign(campaign: dict[str, Any], reports_root: Path) -> dict[str, Any]:
+    reports_root = reports_root.expanduser().resolve()
+    if reports_root in {Path("/").resolve(), Path.home().resolve(), ROOT.resolve()}:
+        raise GateToolError("campaign reports directory is too broad")
     results: list[dict[str, Any]] = []
     for experiment in campaign["experiments"]:
         experiment_id = experiment["experiment_id"]
         gate_manifest = load_manifest(ROOT / experiment["gate_manifest"])
-        paths = artifact_paths(gate_manifest, reports_root / experiment["output_directory"])
+        paths = artifact_paths(
+            gate_manifest,
+            _campaign_output_directory(reports_root, str(experiment["output_directory"])),
+        )
         if not paths.report.is_file():
             results.append(
                 {
@@ -1548,8 +1905,11 @@ def evaluate_campaign(campaign: dict[str, Any], reports_root: Path) -> dict[str,
         if evidence_insufficient:
             blockers.append(f"requires at least {minimum_evidence} evidence")
         requirement_errors: list[str] = []
-        if not validation_errors and not evidence_insufficient:
-            requirement_errors = _validate_campaign_requirements(experiment, report, paths)
+        if report and not evidence_insufficient:
+            try:
+                requirement_errors = _validate_campaign_requirements(experiment, report, paths)
+            except GateToolError as error:
+                requirement_errors = [str(error)]
             blockers.extend(requirement_errors)
         rule_results: list[dict[str, Any]] = []
         rule_failed = False
@@ -1631,6 +1991,400 @@ def cmd_campaign_evaluate(args: argparse.Namespace) -> int:
     return 1 if args.require_pass and result["status"] != "PASSED" else 0
 
 
+def _campaign_executable(value: str, *, label: str) -> Path:
+    raw = value.strip()
+    if not raw:
+        raise GateToolError(f"{label} is required")
+    candidate = Path(raw).expanduser()
+    if candidate.is_absolute() or len(candidate.parts) > 1:
+        resolved = candidate.resolve() if candidate.is_absolute() else (ROOT / candidate).resolve()
+    else:
+        discovered = shutil.which(raw)
+        if discovered is None:
+            raise GateToolError(f"{label} is not available: {raw}")
+        resolved = Path(discovered).resolve()
+    if not resolved.is_file() or not os.access(resolved, os.X_OK):
+        raise GateToolError(f"{label} is not executable: {resolved}")
+    return resolved
+
+
+def _write_campaign_execution_log(
+    root: Path, record: dict[str, Any], stdout: bytes, stderr: bytes
+) -> list[dict[str, str]]:
+    log_root = root / "artifacts" / "services" / "campaign-executor"
+    log_root.mkdir(parents=True, exist_ok=True)
+    artifacts: list[dict[str, str]] = []
+    for name, payload in (("stdout.log", stdout), ("stderr.log", stderr)):
+        for key, value in os.environ.items():
+            if key.upper().endswith(SENSITIVE_ENV_SUFFIXES):
+                encoded = value.encode()
+                if len(encoded) >= 8:
+                    payload = payload.replace(encoded, b"[REDACTED]")
+        path = log_root / name
+        path.write_bytes(payload)
+        path.chmod(0o600)
+        artifacts.append(
+            {
+                "path": path.relative_to(root).as_posix(),
+                "sha256": hashlib.sha256(payload).hexdigest(),
+            }
+        )
+    record["stdout_artifact"] = artifacts[0]["path"]
+    record["stderr_artifact"] = artifacts[1]["path"]
+    return artifacts
+
+
+def _write_campaign_execution_summary(
+    campaign: dict[str, Any],
+    reports_root: Path,
+    executions: list[dict[str, Any]],
+    status: str,
+    *,
+    error: str = "",
+) -> Path:
+    output = reports_root / "campaign-execution.json"
+    payload = {
+        "schema_version": "tgsrl.io/gate-campaign-execution/v1alpha1",
+        "campaign_id": campaign["campaign_id"],
+        "status": status,
+        "executions": executions,
+    }
+    if error:
+        payload["error"] = error
+    _write_json(output, payload)
+    return output
+
+
+def _copy_campaign_failure_diagnostics(
+    source_root: Path, destination_root: Path
+) -> list[dict[str, str]]:
+    source = source_root / "artifacts" / "services" / "hardware-driver"
+    if not source.is_dir():
+        return []
+    destination = destination_root / "artifacts" / "services" / "hardware-driver"
+    allowed_names = {"request.json", "response.json", "stdout.log", "stderr.log"}
+    files = [
+        path
+        for path in source.rglob("*")
+        if path.name in allowed_names and (path.is_file() or path.is_symlink())
+    ]
+    if len(files) > MAX_CAMPAIGN_DIAGNOSTIC_FILES:
+        raise GateToolError("campaign failure diagnostics contain too many files")
+    total_bytes = 0
+    for path in files:
+        if path.is_symlink():
+            raise GateToolError("campaign failure diagnostics must not contain symbolic links")
+        resolved = path.resolve()
+        if source != resolved and source not in resolved.parents:
+            raise GateToolError("campaign failure diagnostic escapes its output directory")
+        total_bytes += path.stat().st_size
+        if total_bytes > MAX_CAMPAIGN_DIAGNOSTIC_BYTES:
+            raise GateToolError("campaign failure diagnostics exceed the size limit")
+    if destination.is_dir():
+        shutil.rmtree(destination)
+    copied: list[dict[str, str]] = []
+    for path in files:
+        target = destination / path.relative_to(source)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(path, target)
+        copied.append(
+            {
+                "path": target.relative_to(destination_root).as_posix(),
+                "sha256": hashlib.sha256(target.read_bytes()).hexdigest(),
+            }
+        )
+    return copied
+
+
+def _validate_campaign_executor_output(report: dict[str, Any], source_root: Path) -> None:
+    references: list[tuple[object, str]] = [
+        (report.get("baseline_trace"), "baseline_trace"),
+        (report.get("variant_trace"), "variant_trace"),
+    ]
+    service_logs = report.get("service_log_artifacts", [])
+    if not isinstance(service_logs, list):
+        raise GateToolError("campaign executor report service_log_artifacts must be a list")
+    for index, record in enumerate(service_logs):
+        if not isinstance(record, dict):
+            raise GateToolError(f"campaign executor service log {index} must be an object")
+        references.append((record.get("path"), f"service_log_artifacts[{index}].path"))
+    for value, field in references:
+        relative = _relative_path(value, f"campaign executor {field}")
+        resolved = (source_root / relative).resolve()
+        if source_root != resolved and source_root not in resolved.parents:
+            raise GateToolError(f"campaign executor {field} escapes its output directory")
+        if not resolved.is_file():
+            raise GateToolError(f"campaign executor artifact is missing: {field}")
+
+
+def _validate_campaign_orchestrator(
+    report: dict[str, Any],
+    *,
+    executor_digest: str,
+    gate_tools_digest: str,
+    driver_digest: str,
+    campaign_digest: str,
+    gate_manifest_digest: str,
+    scenario_digest: str,
+) -> None:
+    orchestrator = report.get("orchestrator")
+    expected = {
+        "schema_version": "tgsrl.io/hardware-orchestrator/v1alpha1",
+        "executor_sha256": executor_digest,
+        "gate_tools_sha256": gate_tools_digest,
+        "driver_sha256": driver_digest,
+        "campaign_sha256": campaign_digest,
+        "gate_manifest_sha256": gate_manifest_digest,
+        "scenario_sha256": scenario_digest,
+    }
+    if not isinstance(orchestrator, dict) or any(
+        orchestrator.get(field) != value for field, value in expected.items()
+    ):
+        raise GateToolError("campaign executor report does not match the locked execution inputs")
+
+
+def _campaign_output_directory(reports_root: Path, relative: str) -> Path:
+    candidate = reports_root / relative
+    if candidate.is_symlink():
+        raise GateToolError("campaign output directory must not be a symbolic link")
+    resolved = candidate.resolve()
+    if reports_root != resolved and reports_root not in resolved.parents:
+        raise GateToolError("campaign output directory escapes the reports directory")
+    return resolved
+
+
+def cmd_campaign_run(args: argparse.Namespace) -> int:
+    """Execute E1-E8 through the repository orchestrator and an environment driver."""
+    campaign_path = Path(args.campaign).expanduser().resolve()
+    campaign = load_campaign(campaign_path)
+    reports_root = Path(args.reports_dir).expanduser().resolve()
+    if reports_root in {Path("/").resolve(), Path.home().resolve(), ROOT.resolve()}:
+        raise GateToolError("campaign reports directory is too broad")
+    reports_root.mkdir(parents=True, exist_ok=True)
+    execution_summary = reports_root / "campaign-execution.json"
+    campaign_summary = reports_root / "campaign-report.json"
+    execution_summary.unlink(missing_ok=True)
+    campaign_summary.unlink(missing_ok=True)
+    try:
+        executor = _campaign_executable(
+            str(DEFAULT_CAMPAIGN_EXECUTOR), label="repository campaign executor"
+        )
+        driver = _campaign_executable(args.driver, label="campaign environment driver")
+    except GateToolError as error:
+        _write_campaign_execution_summary(campaign, reports_root, [], "FAILED", error=str(error))
+        raise
+    requested = args.experiment or [item["experiment_id"] for item in campaign["experiments"]]
+    if args.require_pass and args.experiment:
+        error = "--require-pass requires executing the complete E1-E8 campaign"
+        _write_campaign_execution_summary(campaign, reports_root, [], "FAILED", error=error)
+        raise GateToolError(error)
+    if len(set(requested)) != len(requested):
+        raise GateToolError("campaign experiments must not be repeated")
+    selected = set(requested)
+    experiments = [item for item in campaign["experiments"] if item["experiment_id"] in selected]
+    if len(experiments) != len(selected):
+        raise GateToolError("campaign selection contains an unknown experiment")
+    timeout = float(args.timeout_seconds)
+    if not math.isfinite(timeout) or timeout <= 0:
+        raise GateToolError("campaign executor timeout must be positive and finite")
+
+    executions: list[dict[str, Any]] = []
+    campaign_digest = hashlib.sha256(campaign_path.read_bytes()).hexdigest()
+    gate_tools_path = Path(__file__).resolve()
+    gate_tools_digest = hashlib.sha256(gate_tools_path.read_bytes()).hexdigest()
+    executor_digest = hashlib.sha256(executor.read_bytes()).hexdigest()
+    driver_digest = hashlib.sha256(driver.read_bytes()).hexdigest()
+    campaign_inputs = {
+        campaign_path: campaign_digest,
+        gate_tools_path: gate_tools_digest,
+        executor: executor_digest,
+        driver: driver_digest,
+    }
+    for experiment in campaign["experiments"]:
+        for field in ("gate_manifest", "scenario_manifest"):
+            path = (ROOT / experiment[field]).resolve()
+            campaign_inputs[path] = hashlib.sha256(path.read_bytes()).hexdigest()
+    for experiment in experiments:
+        experiment_id = str(experiment["experiment_id"])
+        gate_manifest_path = (ROOT / experiment["gate_manifest"]).resolve()
+        scenario_path = (ROOT / experiment["scenario_manifest"]).resolve()
+        destination = _campaign_output_directory(reports_root, str(experiment["output_directory"]))
+        gate_manifest = load_manifest(gate_manifest_path)
+        _reset_managed_artifacts(artifact_paths(gate_manifest, destination))
+        with tempfile.TemporaryDirectory(prefix=f"tgsrl-{experiment_id.lower()}-") as directory:
+            source_root = Path(directory).resolve()
+            argv = [
+                str(executor),
+                "--experiment",
+                experiment_id,
+                "--campaign",
+                str(campaign_path),
+                "--gate-manifest",
+                str(gate_manifest_path),
+                "--scenario",
+                str(scenario_path),
+                "--output-dir",
+                str(source_root),
+                "--evidence",
+                str(experiment["minimum_evidence"]),
+                "--driver",
+                str(driver),
+            ]
+            environment = dict(os.environ)
+            environment.update(
+                {
+                    "TGSRL_CAMPAIGN_ID": str(campaign["campaign_id"]),
+                    "TGSRL_EXPERIMENT_ID": experiment_id,
+                    "TGSRL_GATE_MANIFEST": str(gate_manifest_path),
+                    "TGSRL_SCENARIO_MANIFEST": str(scenario_path),
+                    "TGSRL_GATE_OUTPUT_DIR": str(source_root),
+                    "TGSRL_GATE_EVIDENCE": str(experiment["minimum_evidence"]),
+                    "TGSRL_CAMPAIGN_DRIVER": str(driver),
+                }
+            )
+            record, succeeded, stdout, stderr = _run_command(argv, timeout, environment=environment)
+            record.update(
+                {
+                    "experiment_id": experiment_id,
+                    "evidence": experiment["minimum_evidence"],
+                    "output_directory": experiment["output_directory"],
+                    "executor_sha256": executor_digest,
+                    "driver_sha256": driver_digest,
+                    "campaign_sha256": campaign_digest,
+                    "gate_tools_sha256": gate_tools_digest,
+                    "gate_manifest_sha256": campaign_inputs[gate_manifest_path],
+                    "scenario_sha256": campaign_inputs[scenario_path],
+                    "status": "SUCCEEDED" if succeeded else "FAILED",
+                }
+            )
+            changed_input = next(
+                (
+                    path
+                    for path, digest in campaign_inputs.items()
+                    if not path.is_file() or hashlib.sha256(path.read_bytes()).hexdigest() != digest
+                ),
+                None,
+            )
+            if changed_input is not None:
+                record["status"] = "FAILED"
+                record["error"] = f"campaign input changed during execution: {changed_input.name}"
+                record["log_artifacts"] = _write_campaign_execution_log(
+                    destination, record, stdout, stderr
+                )
+                executions.append(record)
+                _write_campaign_execution_summary(campaign, reports_root, executions, "FAILED")
+                raise GateToolError(record["error"])
+            if not succeeded:
+                try:
+                    record["driver_diagnostics"] = _copy_campaign_failure_diagnostics(
+                        source_root, destination
+                    )
+                except GateToolError as diagnostic_error:
+                    record["diagnostic_error"] = str(diagnostic_error)
+                record["log_artifacts"] = _write_campaign_execution_log(
+                    destination, record, stdout, stderr
+                )
+                executions.append(record)
+                _write_campaign_execution_summary(campaign, reports_root, executions, "FAILED")
+                raise GateToolError(
+                    f"campaign executor failed for {experiment_id} with exit {record['exit_code']}"
+                )
+            source_paths = artifact_paths(gate_manifest, source_root)
+            report_path = source_paths.report.resolve()
+            if source_root != report_path and source_root not in report_path.parents:
+                record["status"] = "FAILED"
+                executions.append(record)
+                _write_campaign_execution_summary(campaign, reports_root, executions, "FAILED")
+                raise GateToolError(
+                    f"campaign executor report escapes its output directory for {experiment_id}"
+                )
+            if not report_path.is_file():
+                record["status"] = "FAILED"
+                executions.append(record)
+                _write_campaign_execution_summary(campaign, reports_root, executions, "FAILED")
+                raise GateToolError(f"campaign executor produced no report for {experiment_id}")
+            try:
+                source_report = _read_json(source_paths.report)
+                _validate_campaign_executor_output(source_report, source_root)
+                _validate_campaign_orchestrator(
+                    source_report,
+                    executor_digest=executor_digest,
+                    gate_tools_digest=gate_tools_digest,
+                    driver_digest=driver_digest,
+                    campaign_digest=campaign_digest,
+                    gate_manifest_digest=campaign_inputs[gate_manifest_path],
+                    scenario_digest=campaign_inputs[scenario_path],
+                )
+                cmd_campaign_ingest(
+                    argparse.Namespace(
+                        campaign=str(campaign_path),
+                        reports_dir=str(reports_root),
+                        experiment=experiment_id,
+                        report=str(source_paths.report),
+                        quiet=True,
+                    )
+                )
+            except (GateToolError, OSError) as error:
+                record["status"] = "FAILED"
+                record["error"] = str(error)
+                try:
+                    record["driver_diagnostics"] = _copy_campaign_failure_diagnostics(
+                        source_root, destination
+                    )
+                except GateToolError as diagnostic_error:
+                    record["diagnostic_error"] = str(diagnostic_error)
+                record["log_artifacts"] = _write_campaign_execution_log(
+                    destination, record, stdout, stderr
+                )
+                executions.append(record)
+                _write_campaign_execution_summary(campaign, reports_root, executions, "FAILED")
+                raise GateToolError(
+                    f"campaign evidence was rejected for {experiment_id}: {error}"
+                ) from error
+            target_paths = artifact_paths(gate_manifest, destination)
+            record["log_artifacts"] = _write_campaign_execution_log(
+                destination, record, stdout, stderr
+            )
+            ingested_report = _read_json(target_paths.report)
+            service_logs = ingested_report.setdefault("service_log_artifacts", [])
+            if not isinstance(service_logs, list):
+                raise GateToolError("campaign executor report service_log_artifacts must be a list")
+            service_logs.extend(record["log_artifacts"])
+            ingested_report["campaign_execution"] = record
+            _write_json(target_paths.report, ingested_report)
+            validation_errors = _validate_report(gate_manifest, target_paths, ingested_report)
+            validation_errors.extend(
+                _validate_campaign_requirements(experiment, ingested_report, target_paths)
+            )
+            if validation_errors:
+                record["status"] = "FAILED"
+                record["error"] = "; ".join(validation_errors)
+                executions.append(record)
+                _write_campaign_execution_summary(campaign, reports_root, executions, "FAILED")
+                raise GateToolError(record["error"])
+            _archive_run(target_paths)
+            executions.append(record)
+            _write_campaign_execution_summary(campaign, reports_root, executions, "RUNNING")
+
+    result = evaluate_campaign(campaign, reports_root)
+    _write_json(campaign_summary, result)
+    _write_campaign_execution_summary(campaign, reports_root, executions, result["status"])
+    print(
+        json.dumps(
+            {
+                "campaign_id": campaign["campaign_id"],
+                "status": result["status"],
+                "report": str(campaign_summary),
+                "execution_report": str(execution_summary),
+            },
+            sort_keys=True,
+        )
+    )
+    if result["status"] in {"INVALID", "FAILED"}:
+        return 1
+    return 1 if args.require_pass and result["status"] != "PASSED" else 0
+
+
 def cmd_campaign_ingest(args: argparse.Namespace) -> int:
     campaign = load_campaign(Path(args.campaign))
     experiment = next(
@@ -1650,7 +2404,10 @@ def cmd_campaign_ingest(args: argparse.Namespace) -> int:
             f"campaign experiment {args.experiment} requires at least {minimum_evidence} evidence"
         )
     reports_root = Path(args.reports_dir).expanduser().resolve()
-    target_root = reports_root / experiment["output_directory"]
+    if reports_root in {Path("/").resolve(), Path.home().resolve(), ROOT.resolve()}:
+        raise GateToolError("campaign reports directory is too broad")
+    reports_root.mkdir(parents=True, exist_ok=True)
+    target_root = _campaign_output_directory(reports_root, str(experiment["output_directory"]))
     with tempfile.TemporaryDirectory(prefix="tgsrl-campaign-ingest-") as directory:
         temporary_root = Path(directory)
         result = cmd_ingest(
@@ -1688,9 +2445,12 @@ def cmd_campaign_ingest(args: argparse.Namespace) -> int:
                 destination = target_root / artifact.relative_to(temporary_root)
                 destination.parent.mkdir(parents=True, exist_ok=True)
                 shutil.copy2(artifact, destination)
-    print(
-        json.dumps({"experiment_id": args.experiment, "report": str(target_root / "report.json")})
-    )
+    if not getattr(args, "quiet", False):
+        print(
+            json.dumps(
+                {"experiment_id": args.experiment, "report": str(target_root / "report.json")}
+            )
+        )
     return 0
 
 
@@ -1813,6 +2573,22 @@ def build_parser() -> argparse.ArgumentParser:
     campaign_evaluate.add_argument("--output", default="-")
     campaign_evaluate.add_argument("--require-pass", action="store_true")
     campaign_evaluate.set_defaults(func=cmd_campaign_evaluate)
+    campaign_run = subparsers.add_parser(
+        "campaign-run", help="Execute E1-E8 through the repository orchestrator"
+    )
+    campaign_run.add_argument("--campaign", default=str(DEFAULT_CAMPAIGN))
+    campaign_run.add_argument("--reports-dir", default=str(DEFAULT_CAMPAIGN_REPORTS))
+    campaign_run.add_argument(
+        "--driver",
+        default=os.environ.get("TGSRL_CAMPAIGN_DRIVER", ""),
+        help="target-environment atomic operation driver",
+    )
+    campaign_run.add_argument(
+        "--experiment", action="append", choices=[f"E{index}" for index in range(1, 9)]
+    )
+    campaign_run.add_argument("--timeout-seconds", type=float, default=7200.0)
+    campaign_run.add_argument("--require-pass", action="store_true")
+    campaign_run.set_defaults(func=cmd_campaign_run)
     campaign_ingest = subparsers.add_parser(
         "campaign-ingest", help="Validate and store one E1-E8 evidence report"
     )

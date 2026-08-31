@@ -8,16 +8,27 @@ import sys
 from pathlib import Path
 from typing import Any, cast
 
+import pytest
+
 ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = ROOT / "scripts" / "gate-tools.py"
+HARDWARE_EXECUTOR = ROOT / "scripts" / "hardware-campaign-executor.py"
 MANIFEST = ROOT / "configs" / "gates" / "gate-gi.json"
 FULL_STACK_MANIFEST = ROOT / "configs" / "gates" / "gate-gi-process.json"
+HARDWARE_MANIFEST = ROOT / "configs" / "gates" / "gate-e1-e8-hardware.json"
 CAMPAIGN = ROOT / "configs" / "gates" / "e1-e8.json"
 SPEC = importlib.util.spec_from_file_location("tgsrl_gate_tools", SCRIPT)
 assert SPEC is not None and SPEC.loader is not None
 GATE_TOOLS = importlib.util.module_from_spec(SPEC)
 sys.modules[SPEC.name] = GATE_TOOLS
 SPEC.loader.exec_module(GATE_TOOLS)
+EXECUTOR_SPEC = importlib.util.spec_from_file_location(
+    "tgsrl_hardware_campaign_executor", HARDWARE_EXECUTOR
+)
+assert EXECUTOR_SPEC is not None and EXECUTOR_SPEC.loader is not None
+HARDWARE_TOOLS = importlib.util.module_from_spec(EXECUTOR_SPEC)
+sys.modules[EXECUTOR_SPEC.name] = HARDWARE_TOOLS
+EXECUTOR_SPEC.loader.exec_module(HARDWARE_TOOLS)
 
 
 def run_tool(output_dir: Path, *arguments: str) -> subprocess.CompletedProcess[str]:
@@ -69,10 +80,20 @@ def campaign_result(reports_dir: Path) -> subprocess.CompletedProcess[str]:
     )
 
 
-def _write_full_stack_gpu_report(output: Path, experiment_id: str, profile: str) -> None:
-    manifest = GATE_TOOLS.load_manifest(FULL_STACK_MANIFEST)
+def _write_full_stack_gpu_report(
+    output: Path, experiment_id: str, profile: str, *, complete_requirements: bool = False
+) -> None:
+    manifest = GATE_TOOLS.load_manifest(HARDWARE_MANIFEST)
     paths = GATE_TOOLS.artifact_paths(manifest, output)
     paths.baseline_trace.parent.mkdir(parents=True)
+    campaign = json.loads(CAMPAIGN.read_text(encoding="utf-8"))
+    experiment = next(
+        item for item in campaign["experiments"] if item["experiment_id"] == experiment_id
+    )
+    requirements = experiment["requirements"]
+    node_count = requirements["minimum_nodes"] if complete_requirements else 1
+    nodes = [f"gpu-node-{index}" for index in range(1, node_count + 1)]
+    device_id = "MIG-1/1/0" if profile == "mig" else "GPU-1"
     traces: dict[str, dict[str, Any]] = {}
     for label in ("baseline", "variant"):
         events: list[dict[str, Any]] = []
@@ -84,7 +105,7 @@ def _write_full_stack_gpu_report(output: Path, experiment_id: str, profile: str)
                     "phase": phase,
                     "iteration": iteration,
                     "device": "cuda",
-                    "node_id": "gpu-node-1",
+                    "node_id": nodes[0],
                     "service_job_id": f"job-{label}-{phase}-{iteration}",
                     "service_run_id": f"run-{label}-{phase}-{iteration}",
                 }
@@ -142,13 +163,39 @@ def _write_full_stack_gpu_report(output: Path, experiment_id: str, profile: str)
                             "source": "worker",
                             "runtime_unit_id": "unit-1",
                             "worker_id": "worker-1",
-                            "scheduler_device_ids": ["GPU-1"],
-                            "allocated_device_ids": ["GPU-1"],
-                            "worker_device_ids": ["GPU-1"],
+                            "scheduler_device_ids": [device_id],
+                            "allocated_device_ids": [device_id],
+                            "worker_device_ids": [device_id],
+                            "device_class": (
+                                "mig.nvidia.com" if profile == "mig" else "gpu.nvidia.com"
+                            ),
+                            "parent_uuid": "GPU-parent" if profile == "mig" else "",
                         },
                     ]
                 )
+                for node_index, node_id in enumerate(nodes[1:], start=2):
+                    extra_device_id = f"GPU-{node_index}"
+                    events.append(
+                        common
+                        | {
+                            "event_type": "device_identity_verified",
+                            "source": "worker",
+                            "runtime_unit_id": f"unit-{node_index}",
+                            "worker_id": f"worker-{node_index}",
+                            "node_id": node_id,
+                            "scheduler_device_ids": [extra_device_id],
+                            "allocated_device_ids": [extra_device_id],
+                            "worker_device_ids": [extra_device_id],
+                            "device_class": "gpu.nvidia.com",
+                            "parent_uuid": "",
+                        }
+                    )
                 if label == "variant":
+                    actions = (
+                        sorted({"pause", "resume", *requirements["required_actions"]})
+                        if complete_requirements
+                        else ["pause", "resume"]
+                    )
                     events.extend(
                         common
                         | {
@@ -157,9 +204,64 @@ def _write_full_stack_gpu_report(output: Path, experiment_id: str, profile: str)
                             "action": action,
                             "duration_ms": 1.0,
                             "succeeded": True,
+                            "receipt_id": f"receipt-{action}" if complete_requirements else "",
+                            "transaction_id": (
+                                f"transaction-{iteration}" if complete_requirements else ""
+                            ),
+                            "ready": complete_requirements,
+                            "observed_share": 0.5 if action == "set_share" else None,
+                            "observed_priority": 1 if action == "set_priority" else None,
                         }
-                        for action in ("pause", "resume")
+                        for action in actions
                     )
+                    if complete_requirements:
+                        events.extend(
+                            common
+                            | {
+                                "event_type": "control_started",
+                                "source": "operator",
+                                "action": action,
+                            }
+                            for action in requirements["required_actions"]
+                        )
+                        for event_type in requirements["required_events"]:
+                            if event_type in {
+                                "sample_consumed",
+                                "workload_completed",
+                                "worker_registered",
+                                "device_identity_verified",
+                                "fault_injected",
+                                "fault_recovered",
+                            }:
+                                continue
+                            events.append(
+                                common
+                                | {
+                                    "event_type": event_type,
+                                    "source": "worker",
+                                    "runtime_unit_id": "unit-1",
+                                    "worker_id": "worker-1",
+                                    "interference_ratio": 0.1,
+                                }
+                            )
+                        for fault_id in requirements["required_faults"]:
+                            events.extend(
+                                [
+                                    common
+                                    | {
+                                        "event_type": "fault_injected",
+                                        "source": "operator",
+                                        "fault_id": fault_id,
+                                    },
+                                    common
+                                    | {
+                                        "event_type": "fault_recovered",
+                                        "source": "operator",
+                                        "fault_id": fault_id,
+                                        "recovery_time_ms": 1.0,
+                                    },
+                                ]
+                            )
         metrics = GATE_TOOLS._metrics_from_events(events)
         trace = {
             "schema_version": "tgsrl.io/gate-trace/v1alpha1",
@@ -176,7 +278,9 @@ def _write_full_stack_gpu_report(output: Path, experiment_id: str, profile: str)
         "schema_version": "tgsrl.io/gate-run-record/v1alpha1",
         "suite_id": manifest.data["suite_id"],
         "experiment_id": experiment_id,
-        "evidence": "GPU_SINGLE_NODE",
+        "evidence": (
+            experiment["minimum_evidence"] if complete_requirements else "GPU_SINGLE_NODE"
+        ),
         "status": "PASSED",
         "simulated": False,
         "workload_lock": manifest.data["workload_lock"],
@@ -184,11 +288,13 @@ def _write_full_stack_gpu_report(output: Path, experiment_id: str, profile: str)
             "host_hash": "host-digest",
             "platform": "linux",
             "python_version": "3.12",
-            "git_commit": "abc123",
+            "git_commit": GATE_TOOLS.git_commit(),
             "git_dirty": False,
             "execution_mode": "kubernetes-dra",
             "gpu_profile": profile,
-            "accelerator_count": 1,
+            "accelerator_count": (
+                requirements["minimum_accelerators"] if complete_requirements else 1
+            ),
             "accelerator_inventory_digest": "gpu-inventory-digest",
         },
         "warmup_runs": manifest.data["comparisons"]["warmup_runs"],
@@ -201,6 +307,14 @@ def _write_full_stack_gpu_report(output: Path, experiment_id: str, profile: str)
             "variant_digest": hashlib.sha256(paths.variant_trace.read_bytes()).hexdigest(),
         },
         "executions": [{"executed": True, "exit_code": 0, "timed_out": False} for _ in range(8)],
+        "orchestrator": {
+            "schema_version": "tgsrl.io/hardware-orchestrator/v1alpha1",
+            "executor_sha256": "fixture-executor",
+            "driver_sha256": "fixture-driver",
+            "scenario_sha256": hashlib.sha256(
+                (ROOT / experiment["scenario_manifest"]).read_bytes()
+            ).hexdigest(),
+        },
     }
     service_log = output / "artifacts/services/control-plane/scheduler.log"
     service_log.parent.mkdir(parents=True)
@@ -211,10 +325,6 @@ def _write_full_stack_gpu_report(output: Path, experiment_id: str, profile: str)
             "sha256": hashlib.sha256(service_log.read_bytes()).hexdigest(),
         }
     ]
-    campaign = json.loads(CAMPAIGN.read_text(encoding="utf-8"))
-    experiment = next(
-        item for item in campaign["experiments"] if item["experiment_id"] == experiment_id
-    )
     scenario_source = ROOT / experiment["scenario_manifest"]
     scenario = output / "artifacts/config" / scenario_source.name
     scenario.parent.mkdir(parents=True, exist_ok=True)
@@ -224,6 +334,142 @@ def _write_full_stack_gpu_report(output: Path, experiment_id: str, profile: str)
         "sha256": hashlib.sha256(scenario.read_bytes()).hexdigest(),
     }
     paths.report.write_text(json.dumps(report), encoding="utf-8")
+
+
+def _write_hardware_driver(
+    path: Path,
+    calls: Path,
+    *,
+    fail_operation: str = "",
+    fail_experiment: str = "",
+    invalid_cleanup: bool = False,
+    preflight_inventory_digest: str = "gpu-inventory-digest",
+    preflight_accelerator_count: object = 2,
+) -> None:
+    path.write_text(
+        f"""#!/usr/bin/env python3
+import argparse
+import hashlib
+import json
+from pathlib import Path
+
+parser = argparse.ArgumentParser()
+parser.add_argument("--request", required=True)
+parser.add_argument("--response", required=True)
+args = parser.parse_args()
+request = json.loads(Path(args.request).read_text(encoding="utf-8"))
+with Path({str(calls)!r}).open("a", encoding="utf-8") as handle:
+    handle.write(json.dumps(request, sort_keys=True) + "\\n")
+if (
+    request["operation"] == {fail_operation!r}
+    and (not {fail_experiment!r} or request["experiment_id"] == {fail_experiment!r})
+):
+    raise SystemExit(7)
+operation = request["operation"]
+events = []
+if operation == "preflight":
+    profile = "mig" if request["experiment_id"] == "E2" else "full-gpu"
+    response = {{
+        "schema_version": "tgsrl.io/hardware-driver-response/v1alpha1",
+        "request_id": request["request_id"], "status": "SUCCEEDED", "events": [],
+        "environment_fingerprint": {{
+            "host_hash": "host-digest", "platform": "linux",
+            "python_version": "3.12", "git_commit": {str(GATE_TOOLS.git_commit())!r},
+            "git_dirty": False, "execution_mode": "kubernetes-dra",
+            "gpu_profile": profile, "accelerator_count": {preflight_accelerator_count!r},
+            "accelerator_inventory_digest": {preflight_inventory_digest!r},
+        }},
+    }}
+    Path(args.response).write_text(json.dumps(response), encoding="utf-8")
+    raise SystemExit(0)
+common = {{
+    "service_job_id": "job-" + request["run_key"],
+    "service_run_id": "run-" + request["run_key"],
+    "device": "cuda",
+    "node_id": "gpu-node-1",
+    "runtime_unit_id": "unit-1",
+    "worker_id": "worker-1",
+}}
+if request["experiment_id"] == "E8":
+    nodes = ["gpu-node-1", "gpu-node-2"]
+else:
+    nodes = ["gpu-node-1"]
+def for_nodes(event):
+    return [event | {{"node_id": node}} for node in nodes]
+if operation == "launch":
+    events.extend(for_nodes(common | {{"event_type": "worker_registered", "source": "worker"}}))
+elif operation == "verify_device_identity":
+    profile = "mig" if request["experiment_id"] == "E2" else "full-gpu"
+    for node_index, node in enumerate(nodes, start=1):
+        device = f"MIG-{{node_index}}/1/0" if profile == "mig" else f"GPU-{{node_index}}"
+        events.append(common | {{
+            "event_type": "device_identity_verified", "source": "worker",
+            "node_id": node,
+            "scheduler_device_ids": [device], "allocated_device_ids": [device],
+            "worker_device_ids": [device],
+            "device_class": "mig.nvidia.com" if profile == "mig" else "gpu.nvidia.com",
+            "parent_uuid": f"GPU-parent-{{node_index}}" if profile == "mig" else "",
+        }})
+elif operation == "apply_action":
+    events.append(common | {{
+        "event_type": "decision_applied",
+        "source": "scheduler" if request["action"] == "bind" else "operator",
+        "action": request["action"], "duration_ms": 1.0, "succeeded": True,
+        "decision_id": "decision-" + request["request_id"],
+        "plan_id": "plan-" + request["request_id"],
+        "receipt_id": "receipt-" + request["request_id"],
+        "transaction_id": "transaction-" + request["run_key"], "ready": True,
+        "observed_share": 0.5 if request["action"] == "set_share" else None,
+        "observed_priority": 1 if request["action"] == "set_priority" else None,
+    }})
+    events.append(common | {{
+        "event_type": "control_started", "source": "operator",
+        "action": request["action"],
+    }})
+elif operation == "inject_fault":
+    events.append(common | {{
+        "event_type": "fault_injected", "source": "operator",
+        "fault_id": request["fault_id"],
+    }})
+    if request["fault_id"] == "colocation-interference":
+        events.append(common | {{
+            "event_type": "interference_observed", "source": "worker",
+            "interference_ratio": 0.1,
+        }})
+elif operation == "recover_fault":
+    events.append(common | {{
+        "event_type": "fault_recovered", "source": "operator",
+        "fault_id": request["fault_id"], "recovery_time_ms": 1.0,
+    }})
+elif operation == "measure":
+    for node in nodes:
+        events.extend([
+        common | {{
+            "event_type": "sample_consumed", "source": "worker",
+            "node_id": node,
+            "duration_ms": 1.0, "gpu_active_ms": 2.0, "useful_gpu_time_ms": 1.5,
+            "contract_observation": {{
+                "policy_lag": 0, "sample_stale": False,
+                "effective_sample_size": 1.0,
+            }},
+        }},
+        common | {{
+            "event_type": "workload_completed", "source": "worker",
+            "node_id": node, "elapsed_ms": 10.0, "item_count": 1,
+            "convergence_quality": 1.0,
+        }},
+        ])
+response = {{
+    "schema_version": "tgsrl.io/hardware-driver-response/v1alpha1",
+    "request_id": request["request_id"],
+    "status": ("FAILED" if {invalid_cleanup!r} and operation == "cleanup" else "SUCCEEDED"),
+    "events": events,
+}}
+Path(args.response).write_text(json.dumps(response), encoding="utf-8")
+""",
+        encoding="utf-8",
+    )
+    path.chmod(0o755)
 
 
 def test_simulator_generates_ephemeral_artifacts_without_gpu_claim(tmp_path: Path) -> None:
@@ -448,6 +694,706 @@ def test_campaign_ingest_copies_self_contained_evidence(tmp_path: Path) -> None:
     evaluated = campaign_result(reports)
     assert evaluated.returncode == 0, evaluated.stderr
     assert json.loads(evaluated.stdout)["experiments"][0]["status"] == "PASSED"
+
+
+def test_campaign_run_executes_all_scenarios_and_ingests_evidence(tmp_path: Path) -> None:
+    reports = tmp_path / "reports"
+    campaign = json.loads(CAMPAIGN.read_text(encoding="utf-8"))
+    driver, calls = tmp_path / "driver.py", tmp_path / "calls.ndjson"
+    _write_hardware_driver(driver, calls)
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(SCRIPT),
+            "campaign-run",
+            "--campaign",
+            str(CAMPAIGN),
+            "--reports-dir",
+            str(reports),
+            "--driver",
+            str(driver),
+            "--timeout-seconds",
+            "10",
+        ],
+        cwd=ROOT,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    summary = json.loads(result.stdout)
+    assert summary["status"] == "BLOCKED"
+    called = [json.loads(line) for line in calls.read_text(encoding="utf-8").splitlines()]
+    assert list(dict.fromkeys(record["experiment_id"] for record in called)) == [
+        f"E{index}" for index in range(1, 9)
+    ]
+    measurement_plans: dict[str, list[str]] = {}
+    for experiment_id in ("E2", "E4", "E5", "E6", "E7", "E8"):
+        measurement_plans[experiment_id] = [
+            (
+                f"{record['operation']}:{record['action']}"
+                if record.get("action")
+                else f"{record['operation']}:{record['fault_id']}"
+                if record.get("fault_id")
+                else str(record["operation"])
+            )
+            for record in called
+            if record.get("experiment_id") == experiment_id
+            and record.get("label") == "variant"
+            and record.get("phase") == "measurement"
+            and record.get("iteration") == 1
+        ]
+    assert measurement_plans == {
+        "E2": [
+            "provision",
+            "apply_action:bind",
+            "launch",
+            "apply_action:rebind",
+            "verify_device_identity",
+            "measure",
+            "stop",
+            "cleanup",
+        ],
+        "E4": [
+            "provision",
+            "apply_action:bind",
+            "launch",
+            "verify_device_identity",
+            "inject_fault:staleness-pressure",
+            "apply_action:set_share",
+            "measure",
+            "recover_fault:staleness-pressure",
+            "stop",
+            "cleanup",
+        ],
+        "E5": [
+            "provision",
+            "apply_action:bind",
+            "launch",
+            "verify_device_identity",
+            "inject_fault:colocation-interference",
+            "apply_action:set_share",
+            "apply_action:set_priority",
+            "measure",
+            "recover_fault:colocation-interference",
+            "stop",
+            "cleanup",
+        ],
+        "E6": [
+            "provision",
+            "apply_action:bind",
+            "launch",
+            "verify_device_identity",
+            "apply_action:pause",
+            "apply_action:checkpoint",
+            "apply_action:offload",
+            "apply_action:reload",
+            "apply_action:resume",
+            "measure",
+            "stop",
+            "cleanup",
+        ],
+        "E7": [
+            "provision",
+            "apply_action:bind",
+            "launch",
+            "verify_device_identity",
+            "inject_fault:worker-exit",
+            "apply_action:rollback",
+            "recover_fault:worker-exit",
+            "inject_fault:control-response-loss",
+            "apply_action:resume",
+            "recover_fault:control-response-loss",
+            "measure",
+            "stop",
+            "cleanup",
+        ],
+        "E8": [
+            "provision",
+            "apply_action:bind",
+            "launch",
+            "verify_device_identity",
+            "inject_fault:node-loss",
+            "apply_action:pause",
+            "recover_fault:node-loss",
+            "apply_action:resume",
+            "measure",
+            "stop",
+            "cleanup",
+        ],
+    }
+    execution = json.loads((reports / "campaign-execution.json").read_text(encoding="utf-8"))
+    assert len(execution["executions"]) == 8
+    assert execution["status"] == "BLOCKED"
+    assert all(record["status"] == "SUCCEEDED" for record in execution["executions"])
+    evaluated = json.loads((reports / "campaign-report.json").read_text(encoding="utf-8"))
+    by_id = {item["experiment_id"]: item for item in evaluated["experiments"]}
+    assert by_id["E1"]["status"] == "PASSED"
+    assert by_id["E2"]["status"] == "PASSED"
+    assert by_id["E3"]["status"] == "BLOCKED"
+    assert {item["status"] for item in evaluated["experiments"]} <= {"PASSED", "BLOCKED"}
+    for experiment in campaign["experiments"]:
+        output = reports / experiment["output_directory"]
+        report = read_report(output)
+        assert report["campaign_execution"]["status"] == "SUCCEEDED"
+        assert (output / "artifacts/services/campaign-executor/stdout.log").is_file()
+        assert (output / "artifacts/raw/archive.tar.gz").is_file()
+
+    strict = subprocess.run(
+        [
+            sys.executable,
+            str(SCRIPT),
+            "campaign-run",
+            "--campaign",
+            str(CAMPAIGN),
+            "--reports-dir",
+            str(reports),
+            "--experiment",
+            "E1",
+            "--driver",
+            str(driver),
+            "--timeout-seconds",
+            "10",
+            "--require-pass",
+        ],
+        cwd=ROOT,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    assert strict.returncode == 1
+    assert "--require-pass requires executing the complete E1-E8 campaign" in strict.stderr
+    strict_execution = json.loads((reports / "campaign-execution.json").read_text(encoding="utf-8"))
+    assert strict_execution["status"] == "FAILED"
+
+
+def test_campaign_run_stops_on_executor_failure_and_keeps_diagnostics(tmp_path: Path) -> None:
+    reports = tmp_path / "reports"
+    driver, calls = tmp_path / "driver.py", tmp_path / "calls.ndjson"
+    _write_hardware_driver(driver, calls, fail_operation="preflight", fail_experiment="E2")
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(SCRIPT),
+            "campaign-run",
+            "--campaign",
+            str(CAMPAIGN),
+            "--reports-dir",
+            str(reports),
+            "--driver",
+            str(driver),
+            "--timeout-seconds",
+            "10",
+        ],
+        cwd=ROOT,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 1
+    assert "campaign executor failed for E2 with exit 1" in result.stderr
+    called = [json.loads(line) for line in calls.read_text(encoding="utf-8").splitlines()]
+    assert list(dict.fromkeys(record["experiment_id"] for record in called)) == ["E1", "E2"]
+    execution = json.loads((reports / "campaign-execution.json").read_text(encoding="utf-8"))
+    assert execution["status"] == "FAILED"
+    assert execution["executions"][-1]["status"] == "FAILED"
+    assert execution["executions"][-1]["driver_diagnostics"]
+    assert all(
+        (reports / "e2-mig" / record["path"]).is_file()
+        for record in execution["executions"][-1]["driver_diagnostics"]
+    )
+    assert (reports / "e2-mig/artifacts/services/campaign-executor/stderr.log").is_file()
+    assert (reports / "e2-mig/artifacts/services/hardware-driver/preflight/request.json").is_file()
+    assert (reports / "e2-mig/artifacts/services/hardware-driver/preflight/stderr.log").is_file()
+
+
+def test_campaign_run_missing_driver_writes_preflight_failure(tmp_path: Path) -> None:
+    reports = tmp_path / "reports"
+    missing = tmp_path / "missing-executor"
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(SCRIPT),
+            "campaign-run",
+            "--campaign",
+            str(CAMPAIGN),
+            "--reports-dir",
+            str(reports),
+            "--driver",
+            str(missing),
+        ],
+        cwd=ROOT,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 1
+    assert "campaign environment driver is not executable" in result.stderr
+    execution = json.loads((reports / "campaign-execution.json").read_text(encoding="utf-8"))
+    assert execution["status"] == "FAILED"
+    assert execution["executions"] == []
+    assert "campaign environment driver is not executable" in execution["error"]
+
+
+def test_repository_hardware_executor_owns_scenario_order_and_cleanup(
+    tmp_path: Path,
+) -> None:
+    driver, calls = tmp_path / "driver.py", tmp_path / "calls.ndjson"
+    _write_hardware_driver(driver, calls)
+    output = tmp_path / "hardware-output"
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(HARDWARE_EXECUTOR),
+            "--experiment",
+            "E1",
+            "--campaign",
+            str(CAMPAIGN),
+            "--gate-manifest",
+            str(HARDWARE_MANIFEST),
+            "--scenario",
+            str(ROOT / "configs/scenarios/e1-full-gpu.yaml"),
+            "--output-dir",
+            str(output),
+            "--evidence",
+            "GPU_SINGLE_NODE",
+            "--driver",
+            str(driver),
+        ],
+        cwd=ROOT,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    requests = [json.loads(line) for line in calls.read_text(encoding="utf-8").splitlines()]
+    assert requests[0]["operation"] == "preflight"
+    runs: dict[tuple[str, str, int], list[str]] = {}
+    for request in requests[1:]:
+        key = (request["label"], request["phase"], request["iteration"])
+        runs.setdefault(key, []).append(request["operation"])
+    expected = [
+        "provision",
+        "apply_action",
+        "launch",
+        "verify_device_identity",
+        "measure",
+        "stop",
+        "cleanup",
+    ]
+    assert len(runs) == 8
+    assert all(operations == expected for operations in runs.values())
+    report = read_report(output)
+    assert report["status"] == "PASSED"
+    assert (
+        report["orchestrator"]["driver_sha256"] == hashlib.sha256(driver.read_bytes()).hexdigest()
+    )
+    assert (
+        report["orchestrator"]["gate_tools_sha256"]
+        == hashlib.sha256(SCRIPT.read_bytes()).hexdigest()
+    )
+    assert (
+        report["orchestrator"]["campaign_sha256"]
+        == hashlib.sha256(CAMPAIGN.read_bytes()).hexdigest()
+    )
+    assert (
+        report["orchestrator"]["gate_manifest_sha256"]
+        == hashlib.sha256(HARDWARE_MANIFEST.read_bytes()).hexdigest()
+    )
+
+
+def test_repository_hardware_executor_runs_cleanup_after_driver_failure(
+    tmp_path: Path,
+) -> None:
+    driver, calls = tmp_path / "driver.py", tmp_path / "calls.ndjson"
+    _write_hardware_driver(driver, calls, fail_operation="measure")
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(HARDWARE_EXECUTOR),
+            "--experiment",
+            "E1",
+            "--campaign",
+            str(CAMPAIGN),
+            "--gate-manifest",
+            str(HARDWARE_MANIFEST),
+            "--scenario",
+            str(ROOT / "configs/scenarios/e1-full-gpu.yaml"),
+            "--output-dir",
+            str(tmp_path / "failed-output"),
+            "--evidence",
+            "GPU_SINGLE_NODE",
+            "--driver",
+            str(driver),
+        ],
+        cwd=ROOT,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 1
+    operations = [
+        json.loads(line)["operation"] for line in calls.read_text(encoding="utf-8").splitlines()
+    ]
+    assert operations[-2:] == ["measure", "cleanup"]
+
+
+def test_repository_hardware_executor_reports_cleanup_failure(tmp_path: Path) -> None:
+    driver, calls = tmp_path / "driver.py", tmp_path / "calls.ndjson"
+    _write_hardware_driver(driver, calls, fail_operation="measure", invalid_cleanup=True)
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(HARDWARE_EXECUTOR),
+            "--experiment",
+            "E1",
+            "--campaign",
+            str(CAMPAIGN),
+            "--gate-manifest",
+            str(HARDWARE_MANIFEST),
+            "--scenario",
+            str(ROOT / "configs/scenarios/e1-full-gpu.yaml"),
+            "--output-dir",
+            str(tmp_path / "failed-output"),
+            "--evidence",
+            "GPU_SINGLE_NODE",
+            "--driver",
+            str(driver),
+        ],
+        cwd=ROOT,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 1
+    assert "cleanup failed" in result.stderr
+    assert "hardware driver cleanup failed" in result.stderr
+
+
+def test_repository_hardware_executor_rejects_unsafe_scenario_order() -> None:
+    campaign = GATE_TOOLS.load_campaign(CAMPAIGN)
+    experiment = campaign["experiments"][0]
+    scenario = json.loads((ROOT / experiment["scenario_manifest"]).read_text(encoding="utf-8"))
+    scenario["execution_plan"]["variant"][-3:] = [
+        {"operation": "stop"},
+        {"operation": "measure"},
+        {"operation": "cleanup"},
+    ]
+
+    with pytest.raises(HARDWARE_TOOLS.ExecutionError, match="unsafe ordering"):
+        HARDWARE_TOOLS._scenario_plan(scenario, experiment)
+
+
+def test_repository_hardware_executor_rejects_nested_credentials() -> None:
+    response = {
+        "schema_version": HARDWARE_TOOLS.DRIVER_RESPONSE_SCHEMA,
+        "request_id": "request-1",
+        "status": "SUCCEEDED",
+        "events": [
+            {
+                "event_type": "worker_registered",
+                "metadata": {"accessToken": "must-not-be-archived"},
+            }
+        ],
+    }
+
+    with pytest.raises(HARDWARE_TOOLS.ExecutionError, match="credential-like fields"):
+        HARDWARE_TOOLS._validate_driver_response(
+            response, request_id="request-1", operation="launch"
+        )
+
+
+def test_repository_hardware_executor_rejects_device_class_mismatch() -> None:
+    response = {
+        "schema_version": HARDWARE_TOOLS.DRIVER_RESPONSE_SCHEMA,
+        "request_id": "request-1",
+        "status": "SUCCEEDED",
+        "events": [
+            {
+                "event_type": "device_identity_verified",
+                "source": "worker",
+                "node_id": "gpu-node-1",
+                "scheduler_device_ids": ["MIG-1/1/0"],
+                "allocated_device_ids": ["MIG-1/1/0"],
+                "worker_device_ids": ["MIG-1/1/0"],
+                "device_class": "gpu.nvidia.com",
+                "parent_uuid": "GPU-parent",
+            }
+        ],
+    }
+
+    with pytest.raises(HARDWARE_TOOLS.ExecutionError, match="preflight GPU profile"):
+        HARDWARE_TOOLS._validate_driver_response(
+            response,
+            request_id="request-1",
+            operation="verify_device_identity",
+            gpu_profile="mig",
+        )
+
+
+def test_repository_hardware_executor_rejects_bad_artifact_digest(tmp_path: Path) -> None:
+    driver = tmp_path / "driver.py"
+    driver.write_text(
+        """#!/usr/bin/env python3
+import argparse
+import json
+from pathlib import Path
+
+parser = argparse.ArgumentParser()
+parser.add_argument("--request", required=True)
+parser.add_argument("--response", required=True)
+args = parser.parse_args()
+request = json.loads(Path(args.request).read_text(encoding="utf-8"))
+artifact = Path(args.response).parent / "driver.log"
+artifact.write_text("evidence\\n", encoding="utf-8")
+Path(args.response).write_text(json.dumps({
+    "schema_version": "tgsrl.io/hardware-driver-response/v1alpha1",
+    "request_id": request["request_id"],
+    "status": "SUCCEEDED",
+    "events": [],
+    "artifacts": [{"path": "driver.log", "sha256": "wrong"}],
+}), encoding="utf-8")
+""",
+        encoding="utf-8",
+    )
+    driver.chmod(0o755)
+
+    with pytest.raises(HARDWARE_TOOLS.DriverFailure, match="missing or changed"):
+        HARDWARE_TOOLS._run_driver(
+            driver,
+            {"request_id": "request-1", "operation": "cleanup"},
+            tmp_path / "operation",
+            10.0,
+        )
+
+
+def test_repository_hardware_executor_redacts_sensitive_driver_response(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    driver = tmp_path / "driver.py"
+    driver.write_text(
+        """#!/usr/bin/env python3
+import argparse
+import json
+import os
+from pathlib import Path
+
+parser = argparse.ArgumentParser()
+parser.add_argument("--request", required=True)
+parser.add_argument("--response", required=True)
+args = parser.parse_args()
+request = json.loads(Path(args.request).read_text(encoding="utf-8"))
+Path(args.response).write_text(json.dumps({
+    "schema_version": "tgsrl.io/hardware-driver-response/v1alpha1",
+    "request_id": request["request_id"],
+    "status": "SUCCEEDED",
+    "detail": os.environ["TARGET_ACCESS_TOKEN"],
+    "events": [],
+}), encoding="utf-8")
+""",
+        encoding="utf-8",
+    )
+    driver.chmod(0o755)
+    monkeypatch.setenv("TARGET_ACCESS_TOKEN", "sensitive-value-123")
+    operation_root = tmp_path / "operation"
+
+    with pytest.raises(HARDWARE_TOOLS.DriverFailure, match="sensitive environment values"):
+        HARDWARE_TOOLS._run_driver(
+            driver,
+            {"request_id": "request-1", "operation": "cleanup"},
+            operation_root,
+            10.0,
+        )
+
+    stored = (operation_root / "response.json").read_text(encoding="utf-8")
+    assert "sensitive-value-123" not in stored
+    assert "REJECTED" in stored
+
+
+@pytest.mark.parametrize(
+    ("accelerator_count", "inventory_digest", "message"),
+    [
+        (True, "gpu-inventory-digest", "accelerator inventory is insufficient"),
+        (2, "", "omitted fingerprint fields: accelerator_inventory_digest"),
+    ],
+)
+def test_repository_hardware_executor_rejects_invalid_preflight_fingerprint(
+    tmp_path: Path, accelerator_count: object, inventory_digest: str, message: str
+) -> None:
+    driver, calls = tmp_path / "driver.py", tmp_path / "calls.ndjson"
+    _write_hardware_driver(
+        driver,
+        calls,
+        preflight_accelerator_count=accelerator_count,
+        preflight_inventory_digest=inventory_digest,
+    )
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(HARDWARE_EXECUTOR),
+            "--experiment",
+            "E1",
+            "--campaign",
+            str(CAMPAIGN),
+            "--gate-manifest",
+            str(HARDWARE_MANIFEST),
+            "--scenario",
+            str(ROOT / "configs/scenarios/e1-full-gpu.yaml"),
+            "--output-dir",
+            str(tmp_path / "hardware-output"),
+            "--evidence",
+            "GPU_SINGLE_NODE",
+            "--driver",
+            str(driver),
+        ],
+        cwd=ROOT,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 1
+    assert message in result.stderr
+    requests = [json.loads(line) for line in calls.read_text(encoding="utf-8").splitlines()]
+    assert [request["operation"] for request in requests] == ["preflight"]
+
+
+def test_campaign_rejects_missing_named_evidence_and_stale_commit(tmp_path: Path) -> None:
+    output = tmp_path / "e2-mig"
+    _write_full_stack_gpu_report(output, "E2", "mig", complete_requirements=True)
+    report = read_report(output)
+    variant_path = output / report["variant_trace"]
+    variant = json.loads(variant_path.read_text(encoding="utf-8"))
+    for event in variant["events"]:
+        if event.get("event_type") == "device_identity_verified":
+            event["parent_uuid"] = ""
+    variant_path.write_text(json.dumps(variant), encoding="utf-8")
+    report["trace_capture"]["variant_digest"] = hashlib.sha256(
+        variant_path.read_bytes()
+    ).hexdigest()
+    report["environment_fingerprint"]["git_commit"] = "stale-commit"
+    (output / "report.json").write_text(json.dumps(report), encoding="utf-8")
+
+    evaluated = campaign_result(tmp_path)
+
+    assert evaluated.returncode == 0, evaluated.stderr
+    e2 = json.loads(evaluated.stdout)["experiments"][1]
+    assert e2["status"] == "INVALID"
+    assert "evidence git commit does not match the campaign checkout" in e2["blockers"]
+    assert "required evidence parent-uuid is missing or incomplete" in e2["blockers"]
+
+
+def test_campaign_rejects_overlapping_multi_node_device_identity(tmp_path: Path) -> None:
+    output = tmp_path / "e8-multi-node-convergence"
+    _write_full_stack_gpu_report(output, "E8", "full-gpu", complete_requirements=True)
+    report = read_report(output)
+    variant_path = output / report["variant_trace"]
+    variant = json.loads(variant_path.read_text(encoding="utf-8"))
+    for event in variant["events"]:
+        if (
+            event.get("phase") == "measurement"
+            and event.get("event_type") == "device_identity_verified"
+        ):
+            event["scheduler_device_ids"] = ["GPU-overlap"]
+            event["allocated_device_ids"] = ["GPU-overlap"]
+            event["worker_device_ids"] = ["GPU-overlap"]
+    variant_path.write_text(json.dumps(variant), encoding="utf-8")
+    report["trace_capture"]["variant_digest"] = hashlib.sha256(
+        variant_path.read_bytes()
+    ).hexdigest()
+    report["metrics"]["variant"] = GATE_TOOLS._metrics_from_events(variant["events"])
+    (output / "report.json").write_text(json.dumps(report), encoding="utf-8")
+
+    evaluated = campaign_result(tmp_path)
+
+    assert evaluated.returncode == 0, evaluated.stderr
+    e8 = json.loads(evaluated.stdout)["experiments"][-1]
+    assert e8["status"] == "INVALID"
+    assert "variant multi-node device identities are missing or overlap" in e8["blockers"]
+
+
+def test_recovery_metric_includes_fault_recovery_events() -> None:
+    common = {"phase": "measurement", "iteration": 1}
+    metrics = GATE_TOOLS._metrics_from_events(
+        [
+            common
+            | {
+                "event_type": "sample_consumed",
+                "duration_ms": 1.0,
+                "contract_observation": {},
+            },
+            common | {"event_type": "workload_completed", "elapsed_ms": 10, "item_count": 1},
+            common
+            | {
+                "event_type": "decision_applied",
+                "action": "rollback",
+                "succeeded": True,
+                "recovery_time_ms": 2.0,
+            },
+            common | {"event_type": "fault_recovered", "recovery_time_ms": 3.0},
+        ]
+    )
+
+    assert metrics["transaction_recovery_time_ms"] == 5.0
+
+
+def test_campaign_executor_output_rejects_symlink_escape(tmp_path: Path) -> None:
+    source = tmp_path / "source"
+    source.mkdir()
+    outside = tmp_path / "outside.json"
+    outside.write_text("{}", encoding="utf-8")
+    escaped = source / "baseline.json"
+    escaped.symlink_to(outside)
+
+    with pytest.raises(GATE_TOOLS.GateToolError, match="escapes its output directory"):
+        GATE_TOOLS._validate_campaign_executor_output(
+            {
+                "baseline_trace": escaped.name,
+                "variant_trace": escaped.name,
+                "service_log_artifacts": [],
+            },
+            source.resolve(),
+        )
+
+
+def test_campaign_rejects_mismatched_orchestrator_digest() -> None:
+    expected = {
+        "executor_digest": "executor",
+        "gate_tools_digest": "gate-tools",
+        "driver_digest": "driver",
+        "campaign_digest": "campaign",
+        "gate_manifest_digest": "gate-manifest",
+        "scenario_digest": "scenario",
+    }
+    report = {
+        "orchestrator": {
+            "schema_version": "tgsrl.io/hardware-orchestrator/v1alpha1",
+            "executor_sha256": "executor",
+            "gate_tools_sha256": "gate-tools",
+            "driver_sha256": "driver",
+            "campaign_sha256": "campaign",
+            "gate_manifest_sha256": "gate-manifest",
+            "scenario_sha256": "scenario",
+        }
+    }
+    GATE_TOOLS._validate_campaign_orchestrator(report, **expected)
+    report["orchestrator"]["gate_tools_sha256"] = "changed"
+
+    with pytest.raises(GATE_TOOLS.GateToolError, match="locked execution inputs"):
+        GATE_TOOLS._validate_campaign_orchestrator(report, **expected)
 
 
 def test_invalid_manifest_rules_are_rejected(tmp_path: Path) -> None:

@@ -7,7 +7,7 @@
     {
       "experiment_id": "E1",
       "title": "Full GPU exact-device execution",
-      "gate_manifest": "configs/gates/gate-gi-process.json",
+      "gate_manifest": "configs/gates/gate-e1-e8-hardware.json",
       "scenario_manifest": "configs/scenarios/e1-full-gpu.yaml",
       "output_directory": "e1-full-gpu",
       "minimum_evidence": "GPU_SINGLE_NODE",
@@ -28,7 +28,7 @@
     {
       "experiment_id": "E2",
       "title": "MIG exact-device execution",
-      "gate_manifest": "configs/gates/gate-gi-process.json",
+      "gate_manifest": "configs/gates/gate-e1-e8-hardware.json",
       "scenario_manifest": "configs/scenarios/e2-mig.yaml",
       "output_directory": "e2-mig",
       "minimum_evidence": "GPU_SINGLE_NODE",
@@ -49,7 +49,7 @@
     {
       "experiment_id": "E3",
       "title": "Throughput and valuable-useful-GPU gain",
-      "gate_manifest": "configs/gates/gate-gi-process.json",
+      "gate_manifest": "configs/gates/gate-e1-e8-hardware.json",
       "scenario_manifest": "configs/scenarios/e3-throughput-vug.yaml",
       "output_directory": "e3-throughput-vug",
       "minimum_evidence": "GPU_SINGLE_NODE",
@@ -71,7 +71,7 @@
     {
       "experiment_id": "E4",
       "title": "Policy lag, staleness, and ESS safety",
-      "gate_manifest": "configs/gates/gate-gi-process.json",
+      "gate_manifest": "configs/gates/gate-e1-e8-hardware.json",
       "scenario_manifest": "configs/scenarios/e4-staleness-ess.yaml",
       "output_directory": "e4-staleness-ess",
       "minimum_evidence": "GPU_SINGLE_NODE",
@@ -93,7 +93,7 @@
     {
       "experiment_id": "E5",
       "title": "Co-location interference isolation",
-      "gate_manifest": "configs/gates/gate-gi-process.json",
+      "gate_manifest": "configs/gates/gate-e1-e8-hardware.json",
       "scenario_manifest": "configs/scenarios/e5-interference.yaml",
       "output_directory": "e5-interference",
       "minimum_evidence": "GPU_SINGLE_NODE",
@@ -114,7 +114,7 @@
     {
       "experiment_id": "E6",
       "title": "Lifecycle action cost",
-      "gate_manifest": "configs/gates/gate-gi-process.json",
+      "gate_manifest": "configs/gates/gate-e1-e8-hardware.json",
       "scenario_manifest": "configs/scenarios/e6-action-cost.yaml",
       "output_directory": "e6-action-cost",
       "minimum_evidence": "GPU_SINGLE_NODE",
@@ -137,7 +137,7 @@
     {
       "experiment_id": "E7",
       "title": "Failure injection and transactional recovery",
-      "gate_manifest": "configs/gates/gate-gi-process.json",
+      "gate_manifest": "configs/gates/gate-e1-e8-hardware.json",
       "scenario_manifest": "configs/scenarios/e7-recovery.yaml",
       "output_directory": "e7-recovery",
       "minimum_evidence": "GPU_SINGLE_NODE",
@@ -159,7 +159,7 @@
     {
       "experiment_id": "E8",
       "title": "Multi-node convergence and stability",
-      "gate_manifest": "configs/gates/gate-gi-process.json",
+      "gate_manifest": "configs/gates/gate-e1-e8-hardware.json",
       "scenario_manifest": "configs/scenarios/e8-multi-node-convergence.yaml",
       "output_directory": "e8-multi-node-convergence",
       "minimum_evidence": "GPU_MULTI_NODE",

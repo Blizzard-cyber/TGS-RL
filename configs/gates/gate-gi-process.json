@@ -16,6 +16,7 @@
   },
   "workload_runner": {
     "evidence_mode": "full_stack",
+    "required_variant_actions": ["pause", "resume"],
     "argv": [
       "{python}",
       "scripts/gate-full-stack-workload.py"

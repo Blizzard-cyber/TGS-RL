@@ -1,0 +1,60 @@
+{
+  "schema_version": "tgsrl.io/gate-suite/v1alpha1",
+  "suite_id": "gate-e1-e8-hardware",
+  "suite_revision": 1,
+  "title": "E1-E8 full-stack hardware validation",
+  "scenario_manifest": "configs/scenarios/gate-gi.yaml",
+  "workload_lock": {
+    "algorithm": "grpo",
+    "rollout_mode": "partially_async",
+    "seed": 20260829,
+    "version_lock": {
+      "policy": "static",
+      "scenario_revision": 1,
+      "compatibility_profile": "verl-ray-pytorch-vllm-nvidia"
+    }
+  },
+  "workload_runner": {
+    "evidence_mode": "full_stack",
+    "required_variant_actions": [],
+    "argv": ["{python}", "scripts/hardware-campaign-executor.py"],
+    "items_per_run": 64,
+    "timeout_seconds": 7200,
+    "variants": {
+      "baseline": {"control_mode": "static"},
+      "variant": {"control_mode": "tgsrl"}
+    }
+  },
+  "environment_fingerprint": {
+    "required_fields": ["host_hash", "platform", "python_version", "git_commit", "git_dirty", "execution_mode", "gpu_profile", "accelerator_count", "accelerator_inventory_digest"]
+  },
+  "artifacts": {
+    "archive": "artifacts/raw/archive.tar.gz",
+    "baseline_trace": "artifacts/traces/baseline-trace.json",
+    "variant_trace": "artifacts/traces/variant-trace.json",
+    "report": "report.json"
+  },
+  "metrics_schema": {
+    "required_metrics": [
+      "latency_ms_p50", "latency_ms_p95", "latency_ms_p99",
+      "throughput_items_per_s", "decision_count",
+      "end_to_end_iteration_ms_p50", "scheduling_latency_ms_p95",
+      "gpu_active_time_ms", "valuable_useful_gpu_ratio", "interference_ratio",
+      "convergence_quality", "queue_depth_max", "policy_lag_p95",
+      "sample_staleness_ratio", "effective_sample_size_mean",
+      "pause_latency_ms", "checkpoint_latency_ms", "reload_latency_ms",
+      "action_success_rate", "rollback_rate", "transaction_recovery_time_ms"
+    ]
+  },
+  "comparisons": {
+    "baseline": "baseline",
+    "variant": "variant",
+    "warmup_runs": 1,
+    "measurement_runs": 3
+  },
+  "rules": [
+    {"rule_id": "hardware-control-path-present", "gate": "G", "metric": "decision_count", "operator": ">=", "threshold": 1, "requires_trace": true}
+  ],
+  "status_values": ["NOT_RUN", "BLOCKED", "INVALID", "PASSED", "FAILED"],
+  "evidence_values": ["SIMULATED", "CPU_INTEGRATION", "GPU_SINGLE_NODE", "GPU_MULTI_NODE"]
+}
