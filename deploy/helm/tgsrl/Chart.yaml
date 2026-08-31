@@ -1,0 +1,11 @@
+apiVersion: v2
+name: tgsrl
+description: Full TGS-RL control-plane deployment chart
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
+dependencies:
+  - name: tgsrl-operator
+    alias: operator
+    version: 0.1.0
+    repository: file://../operator

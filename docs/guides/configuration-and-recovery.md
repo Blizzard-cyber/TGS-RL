@@ -161,15 +161,17 @@ Kubernetes 凭据解析顺序为：显式 `-kubeconfig`、`KUBECONFIG`、用户�
 读取器只解析 API server、静态 bearer token、内嵌 CA data 和 namespace，不执行
 exec/auth-provider 插件，也不合并多文件 `KUBECONFIG`。
 
-随附 Kubernetes YAML 与 Helm chart 为 Operator 建立 `50081` Service，传入 Scheduler、
-Job Controller 和 Runtime 的 service address，并默认把 `/var/lib/tgsrl-operator` 挂载到
-`ReadWriteOnce` PVC。默认 RBAC 将 `JobRunBundle`、`Workload`、`Job` 和
+`deploy/helm/tgsrl` 为 Scheduler、Runtime/Experiment、Job Controller、Operator、Gateway
+和 Console 建立完整控制面 Deployment、Service、健康探针与持久卷，并默认用 NetworkPolicy
+限制控制面入口。`deploy/helm/operator` 与原生 YAML 仍支持只部署 Operator。Operator chart
+传入 Scheduler、Job Controller 和 Runtime 的 service address，并默认把
+`/var/lib/tgsrl-operator` 挂载到 `ReadWriteOnce` PVC。默认 RBAC 将 `JobRunBundle`、`Workload`、`Job` 和
 `ResourceClaim` 权限限制在目标 namespace 的 `Role` / `RoleBinding`，CRD 的 `spec`
 使用单一 `bundle` envelope；Node、RuntimeClass、DeviceClass 和 ResourceSlice discovery 使用只读
 `list` ClusterRole。Helm 可覆盖依赖地址、现有 PVC、storage class、容量和
 保留策略；仅当显式启用 `runtimeClassCreate=true` 时，才追加最小 cluster-scoped
-RuntimeClass 写权限。这些工件不部署 Scheduler、Job Controller、Runtime、Kueue 或
-GPU/DRA 控制器。使用 Kubernetes backend 前，部署者必须提供这些依赖，并确认目标集群
+RuntimeClass 写权限。全栈 chart 包含 `JobRunBundle` CRD，但不部署 Kueue 或 GPU/DRA
+控制器。使用 Kubernetes backend 前，部署者必须提供这些外部依赖，并确认目标集群
 支持通过 API discovery 选择 Kueue `v1beta2`/`v1beta1` 与 DRA
 `resource.k8s.io/v1`/`v1beta2`/`v1beta1`。`kubernetes-dra` 不是通用 driver 模式：它固定
 使用 NVIDIA `gpu.nvidia.com` driver，根据 ResourceSlice 的 typed metadata 为 Full GPU 选择

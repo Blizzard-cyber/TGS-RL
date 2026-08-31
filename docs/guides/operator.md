@@ -164,6 +164,26 @@ kubectl rollout status deployment/tgsrl-operator \
   --namespace tgsrl-system --timeout=90s
 ```
 
+要一次安装 Scheduler、Runtime/Experiment、Job Controller、Operator、Gateway 和 Console，
+使用 umbrella chart。部署脚本会在临时目录构建本地依赖；通过 values 文件用不可变镜像
+digest 覆盖各组件镜像：
+
+```bash
+scripts/deploy-full-stack.sh render ./values.production.yaml
+scripts/deploy-full-stack.sh install ./values.production.yaml
+```
+
+生产部署必须为六个服务及 bootstrap 分别设置真实 registry digest；示例只展示一个字段。
+全栈 chart 包含 `JobRunBundle` CRD 和 TGS-RL 控制面，但不安装 Kueue、NVIDIA DRA、
+Device Plugin 或 HAMi。默认 NetworkPolicy 只允许 TGS-RL/managed-workload Pod 访问控制面，
+并开放 Console Service；入口控制器或代理仍需由部署方配置 TLS、认证和授权。
+Scheduler 与 Runtime 默认使用镜像内的锁定配置图；`config.existingConfigMap` 可把同一份
+外部配置只读挂载给两者。worker registry signing key 不放入通用 ConfigMap 或全局环境，
+只通过同名 Secret 挂载给 Scheduler 与 Operator。
+`scripts/deploy-full-stack.sh upgrade ./values.production.yaml` 使用 Helm 原子升级与等待；
+`scripts/deploy-full-stack.sh rollback REVISION` 回退到已有 release revision。CRD 仍需在升级前
+单独审查，因为 Helm 不会通过普通 upgrade 更新 `crds/`。
+
 默认 `gpuProfile=none`，所以该流程不会声称 GPU 可用。Operator 启动日志会记录 discovery
 选择的 Kueue 和 DRA API 版本。若显式选择的 GPU profile、Kueue API 或 RBAC 不可用，
 启动前置检查会失败。
@@ -196,7 +216,7 @@ Helm 中非空的 `image.digest` 优先于 `image.tag`；tag 默认值仅保留�
 
 ### CRD 所有权与安装顺序
 
-`JobRunBundle` CRD 是**集群级外部前置条件**。Helm chart 和原生 Operator manifest 都
+对独立 Operator chart 和原生 Operator manifest，`JobRunBundle` CRD 是**集群级外部前置条件**，它们
 不会安装、升级或删除它；这样卸载某个 namespaced Operator release 时不会连带删除所有
 namespace 中的 `JobRunBundle` 实例。由集群管理员在首次安装 Operator 前显式执行：
 
@@ -206,6 +226,7 @@ kubectl wait --for=condition=Established \
   crd/jobrunbundles.tgsrl.io --timeout=60s
 ```
 
+umbrella chart 的 `crds/` 会在首次安装时创建 CRD，但 Helm 不会自动升级或删除 CRD。
 升级时应先审查并应用兼容的 CRD 版本，再升级 Operator。卸载 Operator 不会删除 CRD；
 只有在确认所有 release、实例和数据都不再需要后，才应由集群管理员单独删除它。Kueue
 以及所选 GPU/DRA 资源的 CRD 和 controller 同样由集群平台侧管理。
@@ -229,9 +250,10 @@ kubectl wait --for=condition=Established \
   `/var/lib/tgsrl-operator`；Helm 可配置现有 claim、storage class、容量和保留策略；
 - 可选挂载含 `signing-key` 的 Secret 到 Operator，并要求 bootstrap installer 使用不可变 digest；
 
-这些工件只部署 Operator，并假定 Scheduler、Job Controller、Runtime、上述外部 CRD、
-Kueue 和所选 GPU/DRA 依赖已经由部署者提供。它们不构成真实集群兼容性、可用性或
-性能证明。
+这些独立 Operator 工件假定 Scheduler、Job Controller、Runtime、上述外部 CRD、
+Kueue 和所选 GPU/DRA 依赖已经由部署者提供；umbrella chart 补齐前三个控制面依赖，
+但 Kueue 与 GPU/DRA 依赖仍由平台侧提供。所有 Kubernetes 工件当前只有模板和镜像
+契约验证，不构成真实集群兼容性、可用性或性能证明。
 
 ## Lifecycle control
 

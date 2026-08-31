@@ -1,0 +1,22 @@
+{{- range $name, $config := dict "scheduler" .Values.scheduler.persistence "runtime" .Values.runtime.persistence "job-controller" .Values.jobController.persistence }}
+{{- if and $config.enabled (not $config.existingClaim) }}
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: tgsrl-{{ $name }}-state
+{{- if $config.retain }}
+  annotations:
+    helm.sh/resource-policy: keep
+{{- end }}
+spec:
+  accessModes:
+{{ toYaml $config.accessModes | indent 4 }}
+  resources:
+    requests:
+      storage: {{ $config.size }}
+{{- if $config.storageClass }}
+  storageClassName: {{ $config.storageClass | quote }}
+{{- end }}
+---
+{{- end }}
+{{- end }}

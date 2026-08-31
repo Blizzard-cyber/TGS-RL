@@ -19,7 +19,7 @@ GATEWAY_LISTEN ?= 127.0.0.1:8080
 OPERATOR_LISTEN ?= 127.0.0.1:50081
 SCHEDULER_FALLBACK ?= noop
 
-.PHONY: help doctor proto check-generated check-openapi proto-roundtrip check-migrations check-compose check-deploy check-public-content sbom check-governance test-go test-python test-api test-console lint test race build-nvidia-binding build-nvidia-runtime build-nvidia-mig build-worker-bootstrap demo product-e2e gate-cpu-integration run-scheduler run-controller run-runtime run-gateway run-operator run-console
+.PHONY: help doctor proto check-generated check-openapi proto-roundtrip check-migrations check-compose check-deploy render-kubernetes check-public-content sbom check-governance test-go test-python test-api test-console lint test race build-nvidia-binding build-nvidia-runtime build-nvidia-mig build-worker-bootstrap demo product-e2e gate-cpu-integration run-scheduler run-controller run-runtime run-gateway run-operator run-console
 
 help:
 	@printf '%s\n' \
@@ -31,7 +31,8 @@ help:
 	  '  make proto-roundtrip  verify Go/Python deterministic protobuf compatibility' \
 	  '  make check-migrations validate the runtime SQLite schema' \
 	  '  make check-compose    validate the complete local Compose stack' \
-	  '  make check-deploy     validate Operator Kubernetes and Helm contracts' \
+	  '  make check-deploy     validate full-stack and Operator Kubernetes/Helm contracts' \
+	  '  make render-kubernetes render the complete Kubernetes control plane' \
 	  '  make check-public-content reject private links, paths, and credential-like content' \
 	  '  make sbom             regenerate the deterministic lockfile SBOM' \
 	  '  make check-governance validate SBOM, compatibility evidence, and patch ledger' \
@@ -98,6 +99,10 @@ check-deploy:
 	  exit 1; \
 	}
 	ruby deploy/helm/operator/tests/validate.rb
+	ruby deploy/helm/tgsrl/tests/validate.rb
+
+render-kubernetes:
+	./scripts/deploy-full-stack.sh render
 
 check-public-content:
 	./scripts/check-public-content.sh

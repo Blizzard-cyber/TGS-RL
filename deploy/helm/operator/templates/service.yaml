@@ -3,6 +3,8 @@ kind: Service
 metadata:
   name: {{ .Values.serviceAccount.name }}
   namespace: {{ default .Release.Namespace .Values.namespaceOverride }}
+  labels:
+    app.kubernetes.io/part-of: tgsrl
 spec:
   type: {{ .Values.service.type }}
   selector:

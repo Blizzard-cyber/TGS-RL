@@ -1,0 +1,69 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: tgsrl-runtime
+spec:
+  replicas: 1
+  strategy: {type: Recreate}
+  selector:
+    matchLabels: {app.kubernetes.io/name: tgsrl-runtime}
+  template:
+    metadata:
+      labels: {app.kubernetes.io/name: tgsrl-runtime, app.kubernetes.io/part-of: tgsrl}
+    spec:
+      serviceAccountName: tgsrl-control-plane
+      automountServiceAccountToken: false
+      securityContext:
+{{ include "tgsrl.podSecurityContext" . | indent 8 }}
+{{- with .Values.global.imagePullSecrets }}
+      imagePullSecrets:
+{{ toYaml . | indent 8 }}
+{{- end }}
+      containers:
+        - name: runtime
+          image: {{ include "tgsrl.image" (list .Values.runtime.image) | quote }}
+          imagePullPolicy: {{ .Values.global.imagePullPolicy }}
+          securityContext:
+{{ include "tgsrl.securityContext" . | indent 12 }}
+          args:
+            - --bind=0.0.0.0:{{ .Values.runtime.service.grpcPort }}
+            - --state-db=/var/lib/tgsrl-runtime/runtime.db
+            - --scheduler-target=tgsrl-scheduler:{{ .Values.scheduler.service.grpcPort }}
+            - --job-control-target=tgsrl-job-controller:{{ .Values.jobController.service.grpcPort }}
+            - --operator-target=tgsrl-operator:{{ .Values.operator.service.port }}
+            - --config-root={{ ternary .Values.config.mountPath "/opt/tgsrl/config" (ne .Values.config.existingConfigMap "") }}
+            - --manifest={{ .Values.scheduler.manifest }}
+          ports:
+            - {name: grpc, containerPort: {{ .Values.runtime.service.grpcPort }}, protocol: TCP}
+          readinessProbe:
+            tcpSocket: {port: grpc}
+            periodSeconds: 5
+          livenessProbe:
+            tcpSocket: {port: grpc}
+            periodSeconds: 10
+          volumeMounts:
+            - {name: state, mountPath: /var/lib/tgsrl-runtime}
+{{- if .Values.config.existingConfigMap }}
+            - {name: config, mountPath: {{ .Values.config.mountPath }}, readOnly: true}
+{{- end }}
+      volumes:
+        - name: state
+{{ include "tgsrl.stateVolume" (list . "tgsrl-runtime" .Values.runtime.persistence) | indent 10 }}
+{{- if .Values.config.existingConfigMap }}
+        - name: config
+          configMap:
+            name: {{ .Values.config.existingConfigMap }}
+{{- with .Values.config.items }}
+            items:
+{{ toYaml . | indent 14 }}
+{{- end }}
+{{- end }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: tgsrl-runtime
+spec:
+  selector: {app.kubernetes.io/name: tgsrl-runtime}
+  ports:
+    - {name: grpc, port: {{ .Values.runtime.service.grpcPort }}, targetPort: grpc}

@@ -1,0 +1,9 @@
+{{- if and .Values.operator.controller.workerBootstrap.enabled (not .Values.scheduler.workerRegistry.enabled) -}}
+{{- fail "operator worker bootstrap requires scheduler.workerRegistry.enabled=true" -}}
+{{- end -}}
+{{- if and .Values.operator.namespaceOverride (ne .Values.operator.namespaceOverride .Release.Namespace) -}}
+{{- fail "operator.namespaceOverride must be empty or match the umbrella release namespace" -}}
+{{- end -}}
+{{- if and .Values.operator.controller.workerBootstrap.enabled (ne .Values.operator.controller.workerBootstrap.registrySigningKeySecret .Values.scheduler.workerRegistry.signingKeySecret) -}}
+{{- fail "operator and scheduler must reference the same worker registry signing-key Secret" -}}
+{{- end -}}

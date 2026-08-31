@@ -1,0 +1,93 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: tgsrl-scheduler
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels: {app.kubernetes.io/name: tgsrl-scheduler}
+  template:
+    metadata:
+      labels: {app.kubernetes.io/name: tgsrl-scheduler, app.kubernetes.io/part-of: tgsrl}
+    spec:
+      serviceAccountName: tgsrl-control-plane
+      automountServiceAccountToken: false
+      securityContext:
+{{ include "tgsrl.podSecurityContext" . | indent 8 }}
+{{- with .Values.global.imagePullSecrets }}
+      imagePullSecrets:
+{{ toYaml . | indent 8 }}
+{{- end }}
+      containers:
+        - name: scheduler
+          image: {{ include "tgsrl.image" (list .Values.scheduler.image) | quote }}
+          imagePullPolicy: {{ .Values.global.imagePullPolicy }}
+          securityContext:
+{{ include "tgsrl.securityContext" . | indent 12 }}
+          args:
+            - --listen=0.0.0.0:{{ .Values.scheduler.service.grpcPort }}
+            - --metrics-listen=0.0.0.0:{{ .Values.scheduler.service.metricsPort }}
+            - --config-root={{ ternary .Values.config.mountPath "/opt/tgsrl/config" (ne .Values.config.existingConfigMap "") }}
+            - --manifest={{ .Values.scheduler.manifest }}
+            - --fallback={{ .Values.scheduler.fallback }}
+            - --state-dir=/var/lib/tgsrl-scheduler
+{{- if .Values.scheduler.workerRegistry.enabled }}
+            - --worker-registry-listen=0.0.0.0:{{ .Values.scheduler.service.registryPort }}
+            - --worker-registry-runtime-target=tgsrl-runtime:{{ .Values.runtime.service.grpcPort }}
+            - --worker-registry-signing-key-file=/var/run/secrets/tgsrl-worker-registry/signing-key
+            - --worker-registry-state=/var/lib/tgsrl-scheduler/worker-registry.json
+{{- end }}
+          ports:
+            - {name: grpc, containerPort: {{ .Values.scheduler.service.grpcPort }}, protocol: TCP}
+            - {name: metrics, containerPort: {{ .Values.scheduler.service.metricsPort }}, protocol: TCP}
+{{- if .Values.scheduler.workerRegistry.enabled }}
+            - {name: registry, containerPort: {{ .Values.scheduler.service.registryPort }}, protocol: TCP}
+{{- end }}
+          readinessProbe:
+            tcpSocket: {port: grpc}
+            periodSeconds: 5
+          livenessProbe:
+            tcpSocket: {port: grpc}
+            periodSeconds: 10
+          volumeMounts:
+            - {name: state, mountPath: /var/lib/tgsrl-scheduler}
+{{- if .Values.config.existingConfigMap }}
+            - {name: config, mountPath: {{ .Values.config.mountPath }}, readOnly: true}
+{{- end }}
+{{- if .Values.scheduler.workerRegistry.enabled }}
+            - {name: worker-registry-signing-key, mountPath: /var/run/secrets/tgsrl-worker-registry, readOnly: true}
+{{- end }}
+      volumes:
+        - name: state
+{{ include "tgsrl.stateVolume" (list . "tgsrl-scheduler" .Values.scheduler.persistence) | indent 10 }}
+{{- if .Values.config.existingConfigMap }}
+        - name: config
+          configMap:
+            name: {{ .Values.config.existingConfigMap }}
+{{- with .Values.config.items }}
+            items:
+{{ toYaml . | indent 14 }}
+{{- end }}
+{{- end }}
+{{- if .Values.scheduler.workerRegistry.enabled }}
+        - name: worker-registry-signing-key
+          secret:
+            secretName: {{ required "scheduler.workerRegistry.signingKeySecret is required when the registry is enabled" .Values.scheduler.workerRegistry.signingKeySecret }}
+            items:
+              - {key: {{ .Values.scheduler.workerRegistry.signingKeyKey }}, path: signing-key}
+{{- end }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: tgsrl-scheduler
+spec:
+  selector: {app.kubernetes.io/name: tgsrl-scheduler}
+  ports:
+    - {name: grpc, port: {{ .Values.scheduler.service.grpcPort }}, targetPort: grpc}
+    - {name: metrics, port: {{ .Values.scheduler.service.metricsPort }}, targetPort: metrics}
+{{- if .Values.scheduler.workerRegistry.enabled }}
+    - {name: registry, port: {{ .Values.scheduler.service.registryPort }}, targetPort: registry}
+{{- end }}

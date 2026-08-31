@@ -24,7 +24,7 @@
 | NVIDIA Provider（默认） | **有条件（Conditional）** | `LocalDriver` 可通过 `nvidia-smi` 形成设备快照 | 需要 NVIDIA 驱动和 `nvidia-smi`；默认不声明资源动作 |
 | NVIDIA Driver v2 | **有条件（Conditional）** | 已实现 inventory、MPS `set_share` 写入与读回，以及 binding/runtime/MIG helper、Scheduler worker registry 和 workload bootstrap 的 generation fence、scoped registration、幂等 durable receipt、原子落盘、进程监管、PID 信号控制和 managed-worker lifecycle | DRA/CDI 负责设备注入；offload/reload 需要训练 worker 实现 Unix socket 协议；signal pause 不释放 GPU 显存；MPS PID 自动发布需要 host PID 可见性和共享目录；MIG 仅在已存在实例间切换；现有证据为真实本地子进程 + fake-command/CPU conformance，尚无真实 NVIDIA/CUDA 证据 |
 | 外部 Runtime Adapter | **已实现，待硬件验证** | veRL 已有第一方 lifecycle/observation bridge，以及面向 veRL 0.9 trainer/worker-group/checkpoint-manager 公共接口的 callback adapter；支持显式 safe-point hook、checkpoint、rollout abort/sleep/wake、actor/critic offload/reload、policy update、durable receipt 与 typed TraceEvent | 当前验证使用 CPU 对象替身和 reference workload；真实 veRL/Ray/PyTorch/vLLM 依赖组合、分布式 collective 和 GPU 资源释放仍待目标环境验证；SGLang 与 OpenRLHF 仍只有通用 adapter 边界 |
-| Kubernetes Operator | **有条件支持** | 编译和调和 `JobRunBundle`、Kueue `Workload`、Kubernetes `Job`、可选 `ResourceClaim`/`RuntimeClass`；typed NVIDIA DRA inventory 精确兑现 Full GPU/MIG UUID；可选 bootstrap 包装 RuntimeManifest command，自动注册真实 PID/control endpoint，并用 Pod readiness 阻止提前发布 RUNNING | 精确 UUID 仅适用于 NVIDIA DRA 的整数个完整 GPU/MIG；worker bootstrap 与 registry 仅完成 CPU/HTTP/fake-process 契约验证，尚无真实 Kubernetes/DRA/Pod 证据；MPS 仍需节点侧 PID namespace/shared mount；随附工件只部署 Operator |
+| Kubernetes Operator | **有条件支持** | 编译和调和 `JobRunBundle`、Kueue `Workload`、Kubernetes `Job`、可选 `ResourceClaim`/`RuntimeClass`；typed NVIDIA DRA inventory 精确兑现 Full GPU/MIG UUID；可选 bootstrap 包装 RuntimeManifest command，自动注册真实 PID/control endpoint，并用 Pod readiness 阻止提前发布 RUNNING；全栈 Helm chart 部署六个控制面服务 | 精确 UUID 仅适用于 NVIDIA DRA 的整数个完整 GPU/MIG；镜像、Helm render、worker bootstrap 与 registry 已完成 CPU/HTTP/fake-process 契约验证，尚无真实 Kubernetes/DRA/Pod 证据；MPS 仍需节点侧 PID namespace/shared mount；Kueue 和 GPU 管理组件由平台侧提供 |
 
 ## 单机方案
 
@@ -70,7 +70,8 @@ trainer，并由训练循环显式调用 safe-point hook；其余 adapter 需要
   `gpu.nvidia.com` DeviceClass、MIG 使用 `mig.nvidia.com` DeviceClass，并要求 ResourceSlice
   提供 `type`、`uuid` 以及 MIG 的 `profile`、`parentUUID` typed metadata；
 - 所选 GPU profile 所需的 Device Plugin、DRA 或 HAMi 组件；
-- 独立部署且可从 Operator 访问的 Scheduler、Job Controller 和 Runtime；
+- 可从 Operator 访问的 Scheduler、Job Controller 和 Runtime；可由 `deploy/helm/tgsrl`
+  一并部署，也可使用 `deploy/helm/operator` 接入已有服务；
 - Operator cursor 目录的持久卷。
 - 使用 managed-worker bootstrap 时，已发布的不可变 bootstrap 镜像、workload 可访问的 registry
   URL，以及同时挂载给 Operator/Scheduler 的至少 32 bytes HMAC signing key；Pod 只获得 scoped token。

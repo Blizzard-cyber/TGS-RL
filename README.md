@@ -182,6 +182,11 @@ Gateway、Job Controller、Runtime、Scheduler、Operator process backend 与 ma
 进程，并归档 service/worker trace；输出仍为 `CPU_INTEGRATION/NOT_RUN`，不能作为真实
 veRL package、Kubernetes 或 GPU Gate 通过的证据。
 
+发布镜像由 `Dockerfile.services` 的 `scheduler`、`job-controller`、`runtime`、
+`gateway`、`console` targets，以及独立的 Operator/worker-bootstrap Dockerfile 构建。
+完整 Kubernetes 控制面可从 `deploy/helm/tgsrl` 渲染；安装前需要为所有镜像配置目标
+registry 的不可变 digest，并预装 Kueue 与所选 GPU 资源控制器。
+
 ## 数据与恢复
 
 | 组件 | 持久化方式 | 重启后的行为 |
@@ -204,14 +209,15 @@ generation 和 cursor，并在恢复后核对 Decision、Provider 与 backend �
 | HTTP、CLI、SDK、Console | **支持** | Gateway 必须能访问对应 gRPC 服务；内存模式和浏览器 Mock 仅用于无持久化预览 |
 | NVIDIA | **有条件** | 默认 `LocalDriver` 只做 `nvidia-smi` 发现；仓库内 binding/runtime/MIG helper、worker registry 和 bootstrap 提供可恢复状态、scoped registration、PID/managed-worker lifecycle，以及已存在 MIG 实例间的安全 rebind/recreate；真实 GPU/CUDA 验证仍待目标环境补齐 |
 | 外部训练框架 | **已实现，待硬件验证** | veRL 提供第一方 lifecycle/observation bridge 和面向 0.9 trainer 公共接口的 callback adapter；CPU 对象契约与 reference workload 已通过。实际 veRL/Ray/PyTorch/vLLM 组合、分布式 collective 和 GPU 资源控制仍需目标环境验证；SGLang/OpenRLHF 仍为有条件支持 |
-| Kubernetes Operator | **有条件支持** | 每个 binding 物化独立 generation-scoped workload；NVIDIA DRA profile 精确兑现并回读 UUID；可选 bootstrap 自动启动和注册 worker，Pod Ready 前不发布 RUNNING。当前仅有 CPU/HTTP/fake-process 契约证据，部署工件只安装 Operator，还需部署其余服务、Kueue 与 GPU/DRA 组件 |
+| Kubernetes Operator | **有条件支持** | 每个 binding 物化独立 generation-scoped workload；NVIDIA DRA profile 精确兑现并回读 UUID；可选 bootstrap 自动启动和注册 worker，Pod Ready 前不发布 RUNNING。当前仅有 Helm render、镜像构建和 CPU/HTTP/fake-process 契约证据；全栈 chart 不安装 Kueue 或 GPU/DRA 组件，真实集群仍待验证 |
 | 公网或多租户服务 | **不支持直接部署** | HTTP/gRPC/metrics 无 TLS、认证、授权、租户隔离和限流；必须通过受控网络与外部安全层访问 |
 | 性能与训练效果承诺 | **不提供** | Mock、Synthetic 和 Replay 结果不能用于推断真实 GPU 吞吐、利用率、收敛质量、成本或 wall-clock 收益 |
 
-随附 Kubernetes YAML 和 Helm chart 只覆盖 Operator，业务对象使用 namespace 范围的
-RBAC；Pod readiness 使用 namespace 内只读权限，Node、RuntimeClass、DeviceClass 和 ResourceSlice
-的能力发现使用只读集群权限。创建 RuntimeClass
-需要显式启用相应选项及额外的 cluster-scoped 写权限。
+`deploy/helm/tgsrl` 可部署 Scheduler、Runtime/Experiment、Job Controller、Operator、Gateway
+与 Console；`deploy/helm/operator` 和 `deploy/kubernetes/operator.yaml` 保留为只部署 Operator
+的集成方式。全栈 chart 默认使用 namespace 内服务发现、持久卷、non-root/read-only 容器、
+健康探针和 NetworkPolicy，并包含 `JobRunBundle` CRD。Kueue、NVIDIA DRA/Device Plugin/HAMi
+以及真实训练 workload 镜像仍由平台侧提供。
 
 ## 文档
 

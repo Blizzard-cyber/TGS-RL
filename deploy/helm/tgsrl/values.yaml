@@ -1,0 +1,139 @@
+global:
+  imagePullPolicy: IfNotPresent
+  imagePullSecrets: []
+  podSecurityContext:
+    runAsNonRoot: true
+    runAsUser: 65532
+    runAsGroup: 65532
+    fsGroup: 65532
+    fsGroupChangePolicy: OnRootMismatch
+    seccompProfile:
+      type: RuntimeDefault
+  securityContext:
+    runAsNonRoot: true
+    allowPrivilegeEscalation: false
+    readOnlyRootFilesystem: true
+    capabilities:
+      drop:
+        - ALL
+
+config:
+  # Leave empty to use the immutable configuration graph embedded in the
+  # Scheduler and Runtime images. When set, the ConfigMap is mounted read-only
+  # into both services; items may map flat ConfigMap keys to nested paths.
+  existingConfigMap: ""
+  mountPath: /etc/tgsrl/config
+  items: []
+
+scheduler:
+  image:
+    repository: tgsrl-scheduler
+    tag: "0.1.0"
+    digest: ""
+  manifest: compatibility/manifests/cpu-mock.yaml
+  fallback: noop
+  service:
+    grpcPort: 50051
+    metricsPort: 9090
+    registryPort: 50091
+  persistence:
+    enabled: true
+    existingClaim: ""
+    storageClass: ""
+    accessModes: [ReadWriteOnce]
+    size: 2Gi
+    retain: true
+  workerRegistry:
+    enabled: false
+    signingKeySecret: ""
+    signingKeyKey: signing-key
+
+runtime:
+  image:
+    repository: tgsrl-runtime
+    tag: "0.1.0"
+    digest: ""
+  service:
+    grpcPort: 50071
+  persistence:
+    enabled: true
+    existingClaim: ""
+    storageClass: ""
+    accessModes: [ReadWriteOnce]
+    size: 2Gi
+    retain: true
+
+jobController:
+  image:
+    repository: tgsrl-job-controller
+    tag: "0.1.0"
+    digest: ""
+  service:
+    grpcPort: 50061
+  persistence:
+    enabled: true
+    existingClaim: ""
+    storageClass: ""
+    accessModes: [ReadWriteOnce]
+    size: 1Gi
+    retain: true
+
+gateway:
+  image:
+    repository: tgsrl-gateway
+    tag: "0.1.0"
+    digest: ""
+  service:
+    type: ClusterIP
+    port: 8080
+
+console:
+  image:
+    repository: tgsrl-console
+    tag: "0.1.0"
+    digest: ""
+  service:
+    type: ClusterIP
+    port: 8080
+
+networkPolicy:
+  enabled: true
+
+operator:
+  image:
+    repository: tgsrl-operator
+    tag: "0.1.0"
+    digest: ""
+    pullPolicy: IfNotPresent
+  serviceAccount:
+    create: true
+    name: tgsrl-operator
+  controller:
+    fakeBackend: false
+    schedulerAddress: tgsrl-scheduler:50051
+    controlAddress: tgsrl-job-controller:50061
+    runtimeAddress: tgsrl-runtime:50071
+    listenHost: 0.0.0.0
+    gpuProfile: none
+    runtimeClassName: ""
+    runtimeClassHandler: ""
+    runtimeClassCreate: false
+    nodeSelector: {}
+    workerBootstrap:
+      enabled: false
+      installerImage: ""
+      registryURL: ""
+      registrySigningKeySecret: ""
+      registrySigningKeyKey: signing-key
+      verifyDeviceIdentities: false
+  service:
+    type: ClusterIP
+    port: 50081
+  persistence:
+    enabled: true
+    existingClaim: ""
+    mountPath: /var/lib/tgsrl-operator
+    storageClass: ""
+    accessModes: [ReadWriteOnce]
+    size: 1Gi
+    retain: true

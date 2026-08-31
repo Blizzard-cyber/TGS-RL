@@ -31,6 +31,28 @@ docker compose down
 docker compose down --volumes
 ```
 
+### Kubernetes 全栈工件
+
+`Dockerfile.services` 提供 Scheduler、Job Controller、Runtime、Gateway 和 Console 的
+production image targets；Operator 与 worker-bootstrap 使用各自 Dockerfile。部署脚本会在
+临时目录构建本地 Operator 子 chart 依赖：
+
+```bash
+scripts/deploy-full-stack.sh render
+scripts/deploy-full-stack.sh install ./values.production.yaml
+```
+
+默认 tag 只用于本地镜像验证。真实环境必须为六个服务和 bootstrap 配置已推送的不可变
+digest，并预先安装 Kueue 与所选 GPU/DRA 控制器。当前验证范围是镜像构建与 Helm 合同；
+尚不代表真实 Kubernetes、DRA、MIG、MPS 或训练负载通过。
+Scheduler 与 Runtime 默认读取镜像内的锁定配置图；如需环境配置，可用
+`config.existingConfigMap` 和 `config.items` 将经审查的 ConfigMap 挂载到两者的同一
+`config.mountPath`。Secret 不通过全局环境变量广播；worker registry key 只挂载到
+Scheduler 和 Operator。
+升级使用 `scripts/deploy-full-stack.sh upgrade ./values.production.yaml`；回滚到已存在的
+Helm revision 使用 `scripts/deploy-full-stack.sh rollback REVISION`。脚本在临时目录构建
+本地 chart dependency，不会把 `Chart.lock` 或子 chart 归档写入仓库。
+
 ### 从源码运行
 
 从源码运行需要：
@@ -43,7 +65,7 @@ docker compose down --volumes
 | Node.js | 24.20.0 LTS | Web Console |
 | Buf | 1.72.0 | Protobuf lint 与代码生成 |
 | Docker | Compose v2；已验证 Engine 29.6.1 / Compose 5.2.0 | 完整六服务本地栈和镜像构建 |
-| Helm | 4.2.4 | Operator chart 校验与安装 |
+| Helm | 4.2.4 | 全栈与 Operator chart 校验和安装 |
 | kubectl / minikube | kubectl 与集群相差不超过一个 minor；minikube 1.38.1 | 本地 Kubernetes 集成验证 |
 
 从项目根目录准备依赖与私有状态目录：
@@ -111,7 +133,8 @@ go run ./cmd/operator \
 但 backend 对象只保存在 Operator 进程内。它不会连接 Kubernetes API Server。
 
 如需使用 `-mode kubernetes`，必须提供可访问的集群凭据、Kueue 与所选 GPU/DRA
-依赖，并部署其余 TGS-RL 服务。随附 YAML/Helm 只部署 Operator。具体要求见
+依赖。`deploy/helm/tgsrl` 可安装六个 TGS-RL 控制面服务；只把 Operator 接入已有
+控制面时可继续使用 `deploy/helm/operator` 或原生 YAML。具体要求见
 [Operator 指南](guides/operator.md)。
 
 ### Gateway
