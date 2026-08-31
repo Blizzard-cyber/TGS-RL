@@ -19,7 +19,7 @@ GATEWAY_LISTEN ?= 127.0.0.1:8080
 OPERATOR_LISTEN ?= 127.0.0.1:50081
 SCHEDULER_FALLBACK ?= noop
 
-.PHONY: help doctor proto check-generated check-openapi proto-roundtrip check-migrations check-compose check-deploy render-kubernetes check-public-content sbom check-governance test-go test-python test-api test-console lint test race build-nvidia-binding build-nvidia-runtime build-nvidia-mig build-worker-bootstrap demo product-e2e gate-cpu-integration run-scheduler run-controller run-runtime run-gateway run-operator run-console
+.PHONY: help doctor proto check-generated check-openapi proto-roundtrip check-migrations check-compose check-deploy render-kubernetes check-public-content sbom check-governance test-go test-performance test-python test-api test-console lint test race build-nvidia-binding build-nvidia-runtime build-nvidia-mig build-worker-bootstrap demo product-e2e gate-cpu-integration run-scheduler run-controller run-runtime run-gateway run-operator run-console
 
 help:
 	@printf '%s\n' \
@@ -38,6 +38,7 @@ help:
 	  '  make check-governance validate SBOM, compatibility evidence, and patch ledger' \
 	  '  make gate-cpu-integration run the full local process Gate path' \
 	  '  make test-go          run all Go tests' \
+	  '  make test-performance run non-race Scheduler and Provider P95 budgets' \
 	  '  make test-python      sync the locked Python environment and run tests' \
 	  '  make lint             run Go vet and Python Ruff/mypy checks' \
 	  '  make test-api         run northbound API tests' \
@@ -118,6 +119,9 @@ check-governance:
 
 test-go:
 	go test $(GO_PACKAGES)
+
+test-performance:
+	go test -tags performance ./scheduler-go/scheduler ./scheduler-go/provider/nvidia -run '^TestPerformanceBudgets$$' -count=1 -v
 
 test-python:
 	@command -v uv >/dev/null 2>&1 || { \

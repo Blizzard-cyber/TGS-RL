@@ -10,6 +10,7 @@
 make test             # Go、Python、API、Console 与 Proto round-trip
 make lint             # Go vet、Buf lint、Ruff 与 mypy
 make race             # Go race detector
+make test-performance # 非 race Scheduler/Provider P95 回归预算
 make demo             # Python → Scheduler → Mock Provider 最小进程演示
 make product-e2e      # 完整后端产品流与恢复检查
 make check-generated  # 验证 Proto 生成物
@@ -17,14 +18,15 @@ make check-governance # 校验 SBOM、兼容性证据与 patch ledger
 make check-public-content # 扫描工作树与可达历史中的私有链接、路径和凭据样式
 ```
 
-Scheduler benchmark 不属于普通单测门禁，需要观察算法变化时显式运行：
+Scheduler benchmark 可用于分析算法变化：
 
 ```bash
 go test ./scheduler-go/scheduler -run '^$' -bench BenchmarkEvaluateSimulation -benchmem
 ```
 
-不要把本机 p95 或固定毫秒阈值写进 `go test`。普通测试只检查结果、顺序、不变量和规模正确性；
-真实性能结论由锁定 workload 的 Gate runner 产生。
+`make test-performance` 通过 `performance` build tag 在独立、非 race 进程中执行稳定的
+Scheduler 与 Provider P95 回归预算。它只用于阻断明显代码退化，不是产品 SLA，也不能替代
+锁定 workload 的真实环境 Gate 数据。普通 `make test`/`make race` 不执行墙钟断言。
 
 完整本地回归：
 
@@ -33,6 +35,7 @@ git diff --check
 make lint
 make test
 make race
+make test-performance
 make demo > /tmp/tgsrl-demo.json
 make product-e2e
 make check-generated
@@ -103,6 +106,7 @@ CI 分别验证：
 
 - Proto lint、生成物一致性和兼容性；
 - Scheduler、Job Controller、Operator、共享 storage 的 Go 测试与 race；
+- 独立非 race Scheduler/Provider P95 回归预算；
 - Runtime、Adapter、Gateway/SDK/HTTP API 的 Python lint、类型检查与测试；
 - Console 的类型检查、lint、测试和构建；
 - 跨语言 Proto round-trip 与最小进程演示；

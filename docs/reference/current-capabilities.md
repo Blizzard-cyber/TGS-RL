@@ -20,6 +20,7 @@
 | Job、Runtime 与 Experiment 控制 | **支持** | JobControl、RuntimeControl、RuntimeBackendControl 和 Experiment gRPC 服务 | Runtime `start` 发布 Intent；workload 必须由 Operator/backend 启动并通过观察事件回报 |
 | HTTP Gateway | **支持** | Job、Run、Timeline、DAG、Topology、Sandbox、Decision、Replay、Experiment、OpenAPI、CLI 与 Python SDK | gRPC 模式要求四个逻辑后端可达；内存模式不持久化 |
 | Web Console | **支持** | 概览、任务详情、时间线、拓扑、Sandbox、Decision、实验比较，以及 Job/Run 准入和生命周期操作 | 静态 `mock` adapter 不访问 Gateway；静态部署需自行提供同源 API 代理 |
+| 性能回归门禁 | **支持（CI 回归）** | 独立非 race CI 检查 Scheduler 8 devices/100 units、1000 devices/1000 units 与 NVIDIA Provider observation apply 的 P95 预算 | 预算只约束固定 CPU fixture 的代码回退，不是生产 SLA、GPU 性能或训练收益证明 |
 | CPU Mock Provider | **支持** | 能力匹配、逻辑资源绑定、L1–L4 逻辑模拟动作、故障注入、generation fence 和逐动作 rollback | Adaptive Planner 会在满足观测、能力与安全条件时生成 L1–L4 动作；这些结果只验证控制逻辑，不代表真实硬件行为或性能 |
 | NVIDIA Provider（默认） | **有条件（Conditional）** | `LocalDriver` 可通过 `nvidia-smi` 形成设备快照 | 需要 NVIDIA 驱动和 `nvidia-smi`；默认不声明资源动作 |
 | NVIDIA Driver v2 | **有条件（Conditional）** | 已实现 inventory、MPS `set_share` 写入与读回，以及 binding/runtime/MIG helper、Scheduler worker registry 和 workload bootstrap 的 generation fence、scoped registration、幂等 durable receipt、原子落盘、进程监管、PID 信号控制和 managed-worker lifecycle | DRA/CDI 负责设备注入；offload/reload 需要训练 worker 实现 Unix socket 协议；signal pause 不释放 GPU 显存；MPS PID 自动发布需要 host PID 可见性和共享目录；MIG 仅在已存在实例间切换；现有证据为真实本地子进程 + fake-command/CPU conformance，尚无真实 NVIDIA/CUDA 证据 |
