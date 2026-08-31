@@ -22,9 +22,9 @@
 | Web Console | **支持** | 概览、任务详情、时间线、拓扑、Sandbox、Decision、实验比较，以及 Job/Run 准入和生命周期操作 | 静态 `mock` adapter 不访问 Gateway；静态部署需自行提供同源 API 代理 |
 | CPU Mock Provider | **支持** | 能力匹配、逻辑资源绑定、L1–L4 逻辑模拟动作、故障注入、generation fence 和逐动作 rollback | Adaptive Planner 会在满足观测、能力与安全条件时生成 L1–L4 动作；这些结果只验证控制逻辑，不代表真实硬件行为或性能 |
 | NVIDIA Provider（默认） | **有条件（Conditional）** | `LocalDriver` 可通过 `nvidia-smi` 形成设备快照 | 需要 NVIDIA 驱动和 `nvidia-smi`；默认不声明资源动作 |
-| NVIDIA Driver v2 | **有条件（Conditional）** | 已实现 inventory、MPS `set_share` 写入与读回，以及仓库内 binding/runtime/MIG helper 的 generation fence、幂等 durable receipt、原子落盘、重启发现、PID 信号控制和 managed-worker lifecycle | binding helper 不改变已运行进程的 GPU 可见性；offload/reload 需要训练 worker 实现 Unix socket 协议；MIG 仅在已存在、已发现的实例间切换，不自动改变节点 MIG 拓扑；现有测试为真实本地进程 + fake-command/CPU conformance，尚无真实 NVIDIA/CUDA 证据 |
+| NVIDIA Driver v2 | **有条件（Conditional）** | 已实现 inventory、MPS `set_share` 写入与读回，以及 binding/runtime/MIG helper、Scheduler worker registry 和 workload bootstrap 的 generation fence、scoped registration、幂等 durable receipt、原子落盘、进程监管、PID 信号控制和 managed-worker lifecycle | DRA/CDI 负责设备注入；offload/reload 需要训练 worker 实现 Unix socket 协议；signal pause 不释放 GPU 显存；MPS PID 自动发布需要 host PID 可见性和共享目录；MIG 仅在已存在实例间切换；现有证据为真实本地子进程 + fake-command/CPU conformance，尚无真实 NVIDIA/CUDA 证据 |
 | 外部 Runtime Adapter | **有条件支持** | veRL 已有第一方 lifecycle/observation bridge、durable worker receipt、typed TraceEvent 和 CPU reference workload；其余 adapter 提供依赖检查、manifest 校验和 typed bridge 边界 | 真实 veRL worker、Ray/PyTorch/vLLM/SGLang、分布式环境和 GPU 资源控制仍需目标环境验证 |
-| Kubernetes Operator | **有条件支持** | 编译和调和 `JobRunBundle`、Kueue `Workload`、Kubernetes `Job`、可选 `ResourceClaim`/`RuntimeClass`，并观察状态；typed NVIDIA DRA inventory 为 Full GPU/MIG 分别选择 `gpu.nvidia.com`/`mig.nvidia.com` DeviceClass，并回读 allocation/ResourceSlice 身份；Kubernetes 1.35.1 + Kueue 0.19.2 的本地 CPU API/RBAC/重启验证通过 | 精确 UUID 仅适用于 NVIDIA DRA 的整数个完整 GPU/MIG；MPS sharing 尚未接线；不能兑现具体 UUID 的 Device Plugin/HAMi profile 会 fail closed；本地 CPU 证据不代表生产集群或 GPU 验证，随附工件只部署 Operator |
+| Kubernetes Operator | **有条件支持** | 编译和调和 `JobRunBundle`、Kueue `Workload`、Kubernetes `Job`、可选 `ResourceClaim`/`RuntimeClass`；typed NVIDIA DRA inventory 精确兑现 Full GPU/MIG UUID；可选 bootstrap 包装 RuntimeManifest command，自动注册真实 PID/control endpoint，并用 Pod readiness 阻止提前发布 RUNNING | 精确 UUID 仅适用于 NVIDIA DRA 的整数个完整 GPU/MIG；worker bootstrap 与 registry 仅完成 CPU/HTTP/fake-process 契约验证，尚无真实 Kubernetes/DRA/Pod 证据；MPS 仍需节点侧 PID namespace/shared mount；随附工件只部署 Operator |
 
 ## 单机方案
 
@@ -72,6 +72,8 @@ bridge callback 并提供 control socket；其余 adapter 需要显式 bridge。
 - 所选 GPU profile 所需的 Device Plugin、DRA 或 HAMi 组件；
 - 独立部署且可从 Operator 访问的 Scheduler、Job Controller 和 Runtime；
 - Operator cursor 目录的持久卷。
+- 使用 managed-worker bootstrap 时，已发布的不可变 bootstrap 镜像、workload 可访问的 registry
+  URL，以及同时挂载给 Operator/Scheduler 的至少 32 bytes HMAC signing key；Pod 只获得 scoped token。
 
 Helm 默认将业务对象写权限限制在 namespace，并为 Node、RuntimeClass、DeviceClass、ResourceSlice
 discovery 提供只读 `list` 集群权限。只有在设置 `runtimeClassCreate=true` 时才授予
@@ -90,15 +92,18 @@ Sandbox observation；通用 `resize` 当前不由 MPS 暴露。MIG `rebind/recr
 
 仓库内 helper 可用 `make build-nvidia-binding` 构建到 `bin/tgsrl-nvidia-binding`。Scheduler
 通过 `-nvidia-binding-helper` 指定二进制，通过 `-nvidia-binding-state` 指定持久化文件；
-未指定时状态文件位于 `-state-dir` 下。`-nvidia-mps-pid-dir` 指向由 Runtime/容器集成维护的
-`<sandbox>.pid` 目录。只有 PID 仍存活时 helper 才声明 `mps_profile_pid`，从而允许 MPS
+未指定时状态文件位于 `-state-dir` 下。bootstrap 可在显式配置 `TGSRL_NVIDIA_MPS_PID_DIR`、
+且容器能看到唯一宿主 MPS server PID 时维护 generation-fenced `<sandbox>.pid`；普通 Pod
+默认不具备该 PID 可见性。只有 PID identity 仍匹配时 helper 才声明 `mps_profile_pid`，从而允许 MPS
 `set_share`；binding receipt 只表示该步骤已落盘，Provider commit 仍由事务执行器完成。
 helper 的持久化 binding 需要由创建进程或容器的执行层消费，不能用它替代 CUDA/container
 级设备隔离验证。
 
-`make build-nvidia-runtime` 构建 `bin/tgsrl-nvidia-runtime`。Runtime 或进程管理器先用
-`register --sandbox ... --generation ... --pid ...` 注册 worker；无 control socket 时仅支持在
-safe-point 标记为真后使用 SIGSTOP/SIGCONT 完成 pause/resume/sleep。offload 必须由 Unix
+`make build-nvidia-runtime` 构建 `bin/tgsrl-nvidia-runtime`，`make build-worker-bootstrap` 构建
+容器内 supervisor。Kubernetes 路径由 bootstrap 自动注册 PID、Pod UID、process token、binding、
+generation、device IDs 和 control endpoint；本机兼容路径仍可手工 `register`。无 cooperative
+control socket 时，进程存活即可注册，但 pause/sleep 仍要求 safe-point marker，且只使用
+SIGSTOP/SIGCONT。offload 必须由 Unix
 socket worker 显式确认 `prepare_pause → checkpoint → offload`，resume 会执行
 `reload → resume` 并等待 readiness。状态文件由 `-nvidia-runtime-state` 指定，所有成功和
 不确定结果都保留用于重启调和。
@@ -123,6 +128,7 @@ baseline/variant 节点集合一致的外部运行证据。证据包包含原始
 - 内置 TLS、身份认证、授权、多租户隔离、CORS 策略、限流或密钥管理；
 - 在未验证仓库内 binding/runtime/MIG helper 与目标环境时执行 GPU 分配、
   MIG/MPS 管理或 Runtime lifecycle；
+- 把 bootstrap 的 CPU/真实子进程验证解释为真实 Kubernetes Pod、DRA/CDI 或 veRL callback 证据；
 - 把 `nvidia-smi` 设备发现、Mock 行为或单元测试解释为真实 GPU 调度与执行验证；
 - 依靠 fake backend 在进程重启后恢复 workload 对象；
 - 跨服务原子事务、自动故障转移、HA 或灾备；

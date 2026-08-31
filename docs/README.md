@@ -23,6 +23,8 @@ Docker Compose 启动单机栈，再根据需要选择 Console、CLI、Python SD
 ## 理解系统
 
 - [系统架构](design/system-design.md)：组件职责、端到端控制流、状态权威和部署边界。
+- [Managed-worker bootstrap](design/managed-worker-bootstrap.md)：Pod 内进程监管、身份、注册、
+  生命周期控制、安全边界与真实环境验证要求。
 - [源码导读与维护边界](maintainers/code-walkthrough.md)：按真实调用链理解状态、事务、
   恢复、NVIDIA/veRL 执行和 Gate 证据。
 - [维护者开发指南](maintainers/development.md)：测试分层、性能 benchmark、完整门禁和提交边界。

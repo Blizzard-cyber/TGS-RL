@@ -251,6 +251,15 @@ ResourceClaim。GPU 身份由 Scheduler 选择：NVIDIA Driver v2 的 device ID 
 `driver/pool/device` 和最新 ResourceSlice 回读 UUID，完全一致后才发布收敛状态。传统
 Device Plugin/HAMi 只承诺数量，不能用于证明精确 UUID 落点。
 
+启用 managed-worker 后，compiler 以不可变 `RuntimeManifest` 的 command/args/environment/
+working directory 包装主容器，并通过 init container 安装 `tgsrl-worker-bootstrap`。Operator
+使用控制面主 key 为每个 binding 派生 scoped HMAC；Pod 不得到主 key。bootstrap fork 真实
+进程、生成 PID token/control token、发布 HTTP control endpoint，并向 Scheduler registry 注册。
+registry 再验证当前 Provider binding、Runtime BOUND generation 与来源 IP，注册成功后 readiness
+才允许 Operator 投影 RUNNING。退出上报由注册 token hash、Pod UID、process token 与 generation
+共同 fence。signal-only 路径只能在 safe point 上 pause/resume；checkpoint/offload/reload 必须由
+cooperative worker socket 确认。
+
 Gateway 不保存业务状态，只做 Proto/JSON 转换、分页 token 封装、RPC 转发和错误映射。
 Console 的 `HttpApiClient` 再把 Gateway JSON 映射为页面模型。前端判断 Sandbox 是否使用
 accelerator 时，应以 binding resource 为主、设备标识为辅；MIG UUID 不包含普通 `gpu`
@@ -292,6 +301,7 @@ stdout/stderr 和 trace，再从事件重新计算指标。校验器不信任外
 | 测试 fake 与仅测试使用的查询方法位于生产源码 | 扩大公开表面，并让读者误判其为产品能力 | 将 NVIDIA driver/command fake 移入既有 `_test.go`，删除未使用的 `Guard.Snapshot` | NVIDIA、Protection 与 Provider 测试集 |
 | 硬件 workflow 约束单独占用一个极小测试文件 | 增加碎片化，但与治理门禁属于同一职责 | 合并到既有 governance 测试；继续禁止 CPU/模拟证据冒充 GPU | `tests/governance/test_governance.py` |
 | Scheduler UUID 只进入 RuntimeTarget，且 MIG class 无法区分 | 调度账本与训练进程可能分别使用 GPU-A/GPU-B，MIG claim 可能永远无法满足 | typed DRA inventory 区分 Full GPU/MIG class；claim 使用 UUID selector；allocation 回读不一致时 fail closed | Operator Compiler、Kube client、BundleAdapter 与 StatusWatch 测试 |
+| Kubernetes Job 直接执行用户命令，无 PID/control 注册与退出回报 | Scheduler 动作没有真实进程对象可控，Pod active 可能被误报为 Runtime running | 增加 workload bootstrap、scoped registry、PID/Pod UID/process token fence、readiness gate 与 exit observation；manifest 成为执行输入权威 | bootstrap、runtimehelper、Scheduler registry、Operator compiler/statuswatch 测试 |
 
 ## 12. 测试和提交边界
 
@@ -350,6 +360,7 @@ make check-public-content
 - NVIDIA CUDA、MPS share 写入与读回；
 - 真实 MIG 实例 rebind/recreate 与故障恢复；
 - 真实 veRL/Ray/PyTorch/vLLM/SGLang 训练进程；
+- bootstrap registry/control endpoint 在真实 Kubernetes 网络、Pod restart 与 NetworkPolicy 下的行为；
 - Kubernetes、Kueue、DRA 与 GPU 控制器的目标集群联调；
 - 单节点和多节点吞吐、延迟、恢复时间与训练质量。
 

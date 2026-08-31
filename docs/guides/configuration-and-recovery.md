@@ -78,6 +78,9 @@ Scheduler 还支持以下启动覆盖：
 | `-fallback` | 空 | 覆盖 Policy，只接受 `noop`/`no_op` 或 `static` |
 | `-state-dir` | `.tmp/scheduler-state` | 持久化根目录 |
 | `-metrics-listen` | `127.0.0.1:9090` | Prometheus 地址；空字符串关闭 |
+| `-worker-registry-listen` | 空 | managed-worker registry HTTP 监听地址；启用时要求 NVIDIA Driver v2 |
+| `-worker-registry-runtime-target` | 空 | registry 发布 SandboxEvent 使用的 Runtime gRPC target |
+| `-worker-registry-signing-key-file` | 空 | 至少 32 bytes 的 HMAC 主签名 key；也可用 `TGSRL_WORKER_REGISTRY_SIGNING_KEY` |
 
 `-fallback` 的优先级高于 Policy；provider、strategy、top-k 和三个调度周期则可由
 对应的 `TGSRL_CONFIG_*` 变量覆盖。fast/medium/slow 队列本身是进程内状态；重启时
@@ -144,6 +147,11 @@ export TGSRL_GATEWAY_EXPERIMENT_TARGET=127.0.0.1:50071
 | `-namespace` | `default` | `JobRunBundle` namespace |
 | `-cursor-dir` | 系统临时目录 | Decision cursor 目录 |
 | `-kubeconfig` | 空 | 显式 kubeconfig；仅 `kubernetes` 模式使用 |
+| `-worker-bootstrap` | `false` | 包装 Kubernetes workload 并自动注册真实子进程；DRA 必须启用 |
+| `-worker-bootstrap-image` | 空 | bootstrap installer 的不可变 digest 镜像 |
+| `-worker-registry-url` | 空 | workload 可访问的 Scheduler registry URL |
+| `-worker-registry-signing-key-file` | 空 | 与 Scheduler 相同的主签名 key，仅供 Operator 派生 scoped token |
+| `-worker-verify-device-identities` | `false` | 注册前核对容器可见设备 UUID；DRA 会强制启用 |
 
 Kubernetes 凭据解析顺序为：显式 `-kubeconfig`、`KUBECONFIG`、用户默认
 `.kube/config`；没有可用文件路径时使用集群内 ServiceAccount 配置。kubeconfig
@@ -166,6 +174,12 @@ GPU/DRA 控制器。使用 Kubernetes backend 前，部署者必须提供这些�
 以及 MIG 的 `profile`、`parentUUID`。Operator 将 Scheduler `device_ids` 编译为 CEL selector，
 并在 allocation 后通过最新 ResourceSlice 回读 UUID 与 DeviceClass 一致性。Device Plugin/HAMi
 仍只提供数量语义。
+
+启用 bootstrap 时，Helm 的 `controller.workerBootstrap.registrySigningKeySecret` 必须指向已有
+Secret，默认 key 为 `signing-key`。同一主 key 还必须以文件或 Secret 挂载给 Scheduler。Pod 不会
+引用这个 Secret；Operator 只把按 binding 派生的 scoped token 写入 Pod 环境。Operator 和
+Scheduler 的状态目录均包含敏感 worker control material。helper 会把目录和文件限制为
+`0700`/`0600`；部署层仍须保证私有挂载和受限备份。
 
 ## 本地数据目录
 
@@ -256,5 +270,7 @@ gRPC、HTTP 和 Prometheus 端点没有 TLS、认证、授权、租户隔离或�
 - 新创建的核心状态文件使用 `0600`，状态目录使用 `0700`；已有目录权限、SQLite 旁路文件、
   挂载卷 ACL 和备份介质仍需部署者核查，文件权限不能替代加密或密钥管理。
 - `/metrics` 没有访问控制，指标也可能泄露运行信息。
+- worker registry、bootstrap control endpoint 与 gRPC 一样没有内建 TLS；只绑定受控网络，
+  并使用 NetworkPolicy 或外部 mTLS/TLS 代理隔离。
 - Manifest 及其引用文件属于可信输入；只加载经过审查、权限受控的配置图。
 - Gateway 的 `memory` backend 只提供无持久化演示数据；需要连接完整调用链时使用 `grpc`。

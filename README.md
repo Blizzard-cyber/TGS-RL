@@ -20,6 +20,8 @@ Kubernetes，适合体验完整控制链、集成客户端以及评估调度语�
   ActionLevel 授权下生成 admission、动态 share/priority/resize、生命周期和重配置动作，
   并保留有界的候选与 Planner 证据。
 - 通过 Provider 执行资源动作，并由 Operator 将成功决策编译为 workload 对象。
+- 可选 workload bootstrap 在 Kubernetes 容器内启动并监管真实子进程，按 binding/generation/
+  device identity 自动注册 control endpoint，并在退出时回报终态。
 - 通过 HTTP/OpenAPI、Python SDK、CLI 和 Web Console 查询任务、拓扑、时间线、Sandbox
   与调度决策。
 - 为 Scheduler、Job Controller、Runtime/Experiment 和 Operator 保存单机恢复状态。
@@ -195,14 +197,15 @@ generation 和 cursor，并在恢复后核对 Decision、Provider 与 backend �
 |---|---|---|
 | 单机完整控制链 | **支持** | 使用 CPU Mock Provider 与 fake Operator backend；不创建真实 GPU 或 Kubernetes 资源 |
 | HTTP、CLI、SDK、Console | **支持** | Gateway 必须能访问对应 gRPC 服务；内存模式和浏览器 Mock 仅用于无持久化预览 |
-| NVIDIA | **有条件** | 默认 `LocalDriver` 只做 `nvidia-smi` 发现；仓库内 binding/runtime/MIG helper 提供可恢复状态、fence、幂等 receipt、PID/managed-worker lifecycle，以及已存在 MIG 实例间的安全 rebind/recreate；真实 GPU/CUDA 验证仍待目标环境补齐 |
+| NVIDIA | **有条件** | 默认 `LocalDriver` 只做 `nvidia-smi` 发现；仓库内 binding/runtime/MIG helper、worker registry 和 bootstrap 提供可恢复状态、scoped registration、PID/managed-worker lifecycle，以及已存在 MIG 实例间的安全 rebind/recreate；真实 GPU/CUDA 验证仍待目标环境补齐 |
 | 外部训练框架 | **有条件支持** | veRL 提供仓库内第一方 lifecycle/observation bridge 和 CPU reference workload；实际 veRL、Ray、PyTorch、vLLM、SGLang 训练仍需对应环境、执行后端和 GPU 资源控制 |
-| Kubernetes Operator | **有条件支持** | 每个 binding 物化独立 generation-scoped workload；NVIDIA DRA profile 用 UUID selector 强制兑现 Scheduler 设备选择并回读 allocation 身份；部署工件只安装 Operator，还需部署其余服务、Kueue 与 GPU/DRA 组件。不能兑现具体 UUID 的 Device Plugin/HAMi profile 会 fail closed |
+| Kubernetes Operator | **有条件支持** | 每个 binding 物化独立 generation-scoped workload；NVIDIA DRA profile 精确兑现并回读 UUID；可选 bootstrap 自动启动和注册 worker，Pod Ready 前不发布 RUNNING。当前仅有 CPU/HTTP/fake-process 契约证据，部署工件只安装 Operator，还需部署其余服务、Kueue 与 GPU/DRA 组件 |
 | 公网或多租户服务 | **不支持直接部署** | HTTP/gRPC/metrics 无 TLS、认证、授权、租户隔离和限流；必须通过受控网络与外部安全层访问 |
 | 性能与训练效果承诺 | **不提供** | Mock、Synthetic 和 Replay 结果不能用于推断真实 GPU 吞吐、利用率、收敛质量、成本或 wall-clock 收益 |
 
 随附 Kubernetes YAML 和 Helm chart 只覆盖 Operator，业务对象使用 namespace 范围的
-RBAC；Node、RuntimeClass、DeviceClass 和 ResourceSlice 的能力发现使用只读集群权限。创建 RuntimeClass
+RBAC；Pod readiness 使用 namespace 内只读权限，Node、RuntimeClass、DeviceClass 和 ResourceSlice
+的能力发现使用只读集群权限。创建 RuntimeClass
 需要显式启用相应选项及额外的 cluster-scoped 写权限。
 
 ## 文档

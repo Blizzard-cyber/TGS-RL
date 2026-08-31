@@ -39,6 +39,11 @@ Operator 同时运行两个长期服务：它订阅 Scheduler Decision，并在 
 | `-runtime-class-name` | 空 | 引用已有 RuntimeClass；默认不设置 |
 | `-runtime-class-create` | `false` | 是否由 Operator 创建 RuntimeClass；启用时还需 handler 和额外集群权限 |
 | `-node-selector` | 空 | Pod node selector，使用可重复的 `key=value` 参数 |
+| `-worker-bootstrap` | `false` | 用 managed-worker bootstrap 包装 Kubernetes workload；DRA 模式必须启用 |
+| `-worker-bootstrap-image` | 空 | 只接受 `repository@sha256:...` 的 bootstrap installer 镜像 |
+| `-worker-registry-url` | 空 | workload 可访问的 Scheduler registry HTTP(S) base URL |
+| `-worker-registry-signing-key-file` | 空 | 派生 scoped registration token 的主 HMAC key；至少 32 bytes |
+| `-worker-verify-device-identities` | `false` | 注册前用 `nvidia-smi -L` 核对 UUID；DRA claim 会强制开启 |
 
 ## 决策处理
 
@@ -91,8 +96,9 @@ Kubernetes wire payload 根据 API discovery 选择当前集群实际提供的�
 
 Operator ServiceAccount 通过只读 ClusterRole 列举 Node、RuntimeClass、DeviceClass 和 ResourceSlice，
 用于上述能力发现；JobRunBundle、Workload、Job 与 ResourceClaim 的写权限仍限制在目标
-namespace。Kubernetes observer 通过轮询读取 Workload、Job 和可选 ResourceClaim，在准入、claim
-分配及 Job active 条件满足后发布 Bound/Running；失败和完成也由观察状态投影。仓库的
+namespace，并具有 namespaced Pod `get/list/watch` 权限以读取 managed-worker readiness。
+Kubernetes observer 轮询 Workload、Job、Pod 和可选 ResourceClaim：先发布 `BOUND`，只有
+bootstrap 注册成功、Pod Ready 后才允许 `RUNNING`；失败和完成也由观察状态投影。仓库的
 本地 HTTP 合同测试覆盖这些 JSON 约定，但仍没有真实 Kubernetes/Kueue/DRA 集群 E2E。
 Scheduler binding 中的 `device_ids` 代表 NVIDIA GPU/MIG UUID。`kubernetes-dra` profile 根据
 ResourceSlice 的 typed inventory 选择 Full GPU 或 MIG DeviceClass，把这些 UUID 编译进
@@ -107,6 +113,28 @@ GPU/MIG 设备；分数 share 会在编译时 fail closed。
 鉴于当前 `Binding` 的资源所有权属于 Scheduler，Operator 不会在 Device Plugin/HAMi 模式下
 丢弃 `device_ids` 后继续创建 Pod；这两种 count-only profile 会在启动预检或编译时被拒绝，
 直到实现可验证的身份映射。
+
+## Managed-worker bootstrap
+
+bootstrap 不改变 DRA/CDI 设备分配，只消费 Operator 编译出的身份和容器已经获得的设备：
+
+```text
+RuntimeManifest command → init container 安装 bootstrap → 启动 workload 进程组
+→ 核对可见设备（DRA 必须）→ Scheduler registry 验证 scoped token + 当前 Binding
+→ Runtime BOUND → RUNNING → lifecycle control → exit observation
+```
+
+Operator 与 Scheduler 必须读取同一个至少 32 bytes 的主签名 key；该 key 只挂载到控制面，
+不会进入 workload。Operator 为每个 binding 生成 scoped HMAC token，Pod 中只保存这个令牌。
+Scheduler registry 和 bootstrap control endpoint 都没有内建 TLS；明文 HTTP 只允许受控 Pod
+网络，跨节点或跨信任域必须使用 HTTPS/TLS 终止层和 NetworkPolicy。
+
+普通进程无需 marker 即可按进程存活完成注册；若配置 `TGSRL_WORKER_READINESS_FILE`，文件值
+必须确认 Ready 后才注册。signal pause/sleep 还需要 `TGSRL_WORKER_SAFE_POINT_FILE` 为真，且
+只会执行 `SIGSTOP/SIGCONT`，不会释放 CUDA context 或显存。`TGSRL_VERL_CONTROL_SOCKET` 或
+`TGSRL_WORKER_CONTROL_SOCKET` 存在时才可进入 checkpoint/offload/reload 等 cooperative 路径。
+`TGSRL_NVIDIA_MPS_PID_DIR` 是显式 opt-in：容器还必须能从同一 PID namespace 看到唯一的
+`nvidia-cuda-mps-server`，并把目录共享给节点侧 helper；否则启动会 fail closed。
 
 ## Kubernetes 部署工件
 
@@ -190,11 +218,13 @@ kubectl wait --for=condition=Established \
   才追加只含 `get/create` 的 `ClusterRole` / `ClusterRoleBinding`。已有 RuntimeClass
   只读取并校验 handler，不覆盖管理员维护的字段。集群级 RBAC 名称
   由 Helm release 与 release namespace 共同派生，避免不同 namespace 的 release 争用；
+- 为读取 bootstrap Pod readiness 授予目标 namespace 内 Pod `get/list/watch`；
 - Pod 默认以 UID/GID `65532` 非 root 运行，使用 `RuntimeDefault` seccomp；容器禁止提权、
   丢弃全部 Linux capabilities，并使用只读 root filesystem。`cursor-dir` 始终挂载独立
   可写 volume：默认是保留的 PVC，关闭持久化时则是仅供本次 Pod 使用的 `emptyDir`；
 - 默认启用的 `ReadWriteOnce` PVC，将整个 Operator 状态目录挂载到
   `/var/lib/tgsrl-operator`；Helm 可配置现有 claim、storage class、容量和保留策略；
+- 可选挂载含 `signing-key` 的 Secret 到 Operator，并要求 bootstrap installer 使用不可变 digest；
 
 这些工件只部署 Operator，并假定 Scheduler、Job Controller、Runtime、上述外部 CRD、
 Kueue 和所选 GPU/DRA 依赖已经由部署者提供。它们不构成真实集群兼容性、可用性或

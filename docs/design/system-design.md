@@ -170,6 +170,21 @@ ResourceClaim allocation 可通过最新 ResourceSlice 反查到完全相同的 
 Device Plugin/HAMi profile 会在 Operator capability preflight/compile 阶段 fail closed；它们
 保留为已识别但尚不可执行的兼容 profile。
 
+显式启用 managed-worker bootstrap 后，Operator 以不可变 `RuntimeManifest` 作为容器命令、
+参数、环境和工作目录的权威来源，并为每个 binding 派生只覆盖 run/job/unit/sandbox/
+binding/generation/device 集合的 HMAC 注册令牌。init container 从不可变 digest 镜像安装
+`tgsrl-worker-bootstrap`；main container 由 bootstrap 启动真实子进程、维护进程组、PID token、
+Pod UID、私有 control token 与 HTTP control endpoint。Scheduler registry 先验证 scoped token、
+请求来源 IP、当前 Provider binding 和 Runtime 已观察到的 `BOUND` generation，再持久化注册并
+发布 `RUNNING` observation。Pod readiness 在注册成功且 worker 仍 Ready 前不会通过。worker
+退出后按 registration credential、instance、process token 和 generation 上报终态，旧进程不能
+覆盖替代进程。
+
+没有 cooperative Unix socket 时，进程存活足以完成启动注册，但 pause/sleep 仍必须有
+safe-point marker；offload、checkpoint、reload 与安全 rebind 继续 fail closed。MPS PID 自动发布
+只有在容器可见宿主 MPS server PID 且挂载了共享 PID 目录时成立；普通 Kubernetes PID namespace
+并不满足该条件，因此还需要节点侧集成或 host PID/shared mount。
+
 ## 状态权威与恢复
 
 | 状态 | 权威组件 | 持久化 | 重启边界 |
@@ -178,7 +193,7 @@ Device Plugin/HAMi profile 会在 Operator capability preflight/compile 阶段 f
 | RuntimeManifest、RuntimeUnit、Sandbox、RuntimeEvent、Trace、Intent、Checkpoint | Runtime | SQLite，WAL + `synchronous=FULL` | 分页恢复状态与水位；仅补投未确认的 Start Intent |
 | Replay、Experiment | Runtime / Experiment | 同一 SQLite 数据库 | 分页恢复并提供查询 |
 | Snapshot、Intent、reservation、Decision、ActionResult、cursor | Scheduler | checkpoint + 校验 journal | 对外监听前恢复；先调和未完成 reservation，再重新排队 Intent |
-| Provider 动作状态 | ResourceProvider | 由 Provider 决定 | Scheduler checkpoint 不能替代外部 Provider 的状态 |
+| Provider 动作与 managed-worker 状态 | ResourceProvider / NVIDIA runtime helper | Provider 状态 + `nvidia-runtime.json`；control token 与 registration token hash 位于私有状态文件 | Scheduler checkpoint 不能替代外部 Provider 或 worker endpoint 的状态；重启后主动 status/readback 调和 |
 | delivery、观察注册、lifecycle control | Operator | `decision-cursor.json`、`delivery.json`、`backend-controls.json` | 恢复消费位置、未完成 delivery、注册和幂等记录 |
 | workload 对象 | Operator backend | fake 为进程内；Kubernetes 由 API Server 保存 | fake 对象丢失；Kubernetes 可从已有 bundle 恢复观察注册 |
 | HTTP 与页面状态 | Gateway、Console | 无业务状态 | 从后端重新查询 |
