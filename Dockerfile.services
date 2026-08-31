@@ -1,0 +1,91 @@
+FROM --platform=$BUILDPLATFORM golang:1.26.4-bookworm@sha256:b305420a68d0f229d91eb3b3ed9e519fcf2cf5461da4bef997bf927e8c0bfd2b AS go-build
+
+ARG TARGETOS
+ARG TARGETARCH
+
+WORKDIR /src
+COPY go.mod go.sum ./
+RUN go mod download
+COPY cmd ./cmd
+COPY gen/go ./gen/go
+COPY internal ./internal
+COPY job-controller-go ./job-controller-go
+COPY scheduler-go ./scheduler-go
+COPY storage ./storage
+
+RUN CGO_ENABLED=0 GOOS="${TARGETOS}" GOARCH="${TARGETARCH}" \
+    go build -trimpath -ldflags='-s -w' -o /out/tgsrl-scheduler ./scheduler-go/cmd/scheduler && \
+    CGO_ENABLED=0 GOOS="${TARGETOS}" GOARCH="${TARGETARCH}" \
+    go build -trimpath -ldflags='-s -w' -o /out/tgsrl-job-controller ./job-controller-go/cmd/job-controller && \
+    CGO_ENABLED=0 GOOS="${TARGETOS}" GOARCH="${TARGETARCH}" \
+    go build -trimpath -ldflags='-s -w' -o /out/tgsrl-nvidia-binding ./cmd/tgsrl-nvidia-binding && \
+    CGO_ENABLED=0 GOOS="${TARGETOS}" GOARCH="${TARGETARCH}" \
+    go build -trimpath -ldflags='-s -w' -o /out/tgsrl-nvidia-runtime ./cmd/tgsrl-nvidia-runtime && \
+    CGO_ENABLED=0 GOOS="${TARGETOS}" GOARCH="${TARGETARCH}" \
+    go build -trimpath -ldflags='-s -w' -o /out/tgsrl-nvidia-mig ./cmd/tgsrl-nvidia-mig
+
+FROM gcr.io/distroless/static-debian12:nonroot@sha256:afa5c872c891853ca7fcf1f12c3edb23f7eeef36189728842dd51042ff57f7ab AS scheduler
+COPY --from=go-build /out/tgsrl-scheduler /usr/local/bin/tgsrl-scheduler
+COPY --from=go-build /out/tgsrl-nvidia-binding /usr/local/bin/tgsrl-nvidia-binding
+COPY --from=go-build /out/tgsrl-nvidia-runtime /usr/local/bin/tgsrl-nvidia-runtime
+COPY --from=go-build /out/tgsrl-nvidia-mig /usr/local/bin/tgsrl-nvidia-mig
+COPY compatibility /opt/tgsrl/config/compatibility
+COPY configs /opt/tgsrl/config/configs
+COPY upstream /opt/tgsrl/config/upstream
+WORKDIR /opt/tgsrl/config
+ENTRYPOINT ["/usr/local/bin/tgsrl-scheduler"]
+
+FROM gcr.io/distroless/static-debian12:nonroot@sha256:afa5c872c891853ca7fcf1f12c3edb23f7eeef36189728842dd51042ff57f7ab AS job-controller
+COPY --from=go-build /out/tgsrl-job-controller /usr/local/bin/tgsrl-job-controller
+ENTRYPOINT ["/usr/local/bin/tgsrl-job-controller"]
+
+FROM python:3.12.14-slim-bookworm@sha256:0f5b26b9518d002b6173fd61daad821fa340635ebfec5bba471013f9ca114579 AS python-build
+ARG UV_VERSION=0.12.7
+RUN python -m pip install --disable-pip-version-check --no-cache-dir "uv==${UV_VERSION}"
+ENV UV_PROJECT_ENVIRONMENT=/opt/tgsrl/venv
+WORKDIR /src
+COPY pyproject.toml uv.lock ./
+COPY adapters ./adapters
+COPY gateway-python ./gateway-python
+COPY gen/python ./gen/python
+COPY runtime-python ./runtime-python
+RUN uv sync --frozen --no-dev --no-editable
+
+FROM python:3.12.14-slim-bookworm@sha256:0f5b26b9518d002b6173fd61daad821fa340635ebfec5bba471013f9ca114579 AS runtime
+ENV PATH=/opt/tgsrl/venv/bin:$PATH \
+    PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1
+COPY --from=python-build /opt/tgsrl/venv /opt/tgsrl/venv
+COPY compatibility /opt/tgsrl/config/compatibility
+COPY configs /opt/tgsrl/config/configs
+COPY upstream /opt/tgsrl/config/upstream
+WORKDIR /opt/tgsrl/config
+USER 65532:65532
+ENTRYPOINT ["tgsrl-runtime"]
+
+FROM python:3.12.14-slim-bookworm@sha256:0f5b26b9518d002b6173fd61daad821fa340635ebfec5bba471013f9ca114579 AS gateway
+ENV PATH=/opt/tgsrl/venv/bin:$PATH \
+    PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1
+COPY --from=python-build /opt/tgsrl/venv /opt/tgsrl/venv
+WORKDIR /opt/tgsrl
+USER 65532:65532
+ENTRYPOINT ["tgsrl-gateway", "serve"]
+
+FROM --platform=$BUILDPLATFORM node:24.20.0-bookworm-slim@sha256:ba849c60be29959425b8734d57b8b4b7d56f98edd9504c9af091d5281095a71e AS console-build
+WORKDIR /src/console
+COPY console/package.json console/package-lock.json ./
+RUN npm ci
+COPY console ./
+RUN npm run build
+
+FROM node:24.20.0-bookworm-slim@sha256:ba849c60be29959425b8734d57b8b4b7d56f98edd9504c9af091d5281095a71e AS console
+ENV HOST=0.0.0.0 \
+    PORT=8080 \
+    TGSRL_GATEWAY_URL=http://tgsrl-gateway:8080
+WORKDIR /opt/tgsrl/console
+COPY --from=console-build /src/console/dist ./dist
+COPY console/server.mjs ./server.mjs
+USER 65532:65532
+EXPOSE 8080
+ENTRYPOINT ["node", "server.mjs"]

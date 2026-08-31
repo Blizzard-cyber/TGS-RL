@@ -139,7 +139,7 @@ jobs:
         run: make check-public-content
 
   deploy:
-    name: Deploy contracts and operator image
+    name: Deploy contracts and release images
     runs-on: ubuntu-24.04
     steps:
       - name: Check out repository
@@ -170,6 +170,18 @@ jobs:
             --output type=oci,dest=/tmp/tgsrl-worker-bootstrap.oci .
           python3 scripts/check-oci-platforms.py \
             /tmp/tgsrl-worker-bootstrap.oci linux/amd64 linux/arm64
+      - name: Build multi-platform control-plane images
+        run: |
+          for target in scheduler job-controller runtime gateway console; do
+            docker buildx build \
+              --platform linux/amd64,linux/arm64 \
+              --file Dockerfile.services \
+              --target "${target}" \
+              --tag "tgsrl-${target}:ci" \
+              --output "type=oci,dest=/tmp/tgsrl-${target}.oci" .
+            python3 scripts/check-oci-platforms.py \
+              "/tmp/tgsrl-${target}.oci" linux/amd64 linux/arm64
+          done
       - name: Load amd64 operator image
         run: |
           docker buildx build \
@@ -187,6 +199,39 @@ jobs:
             --tag tgsrl-worker-bootstrap:ci \
             --load .
           docker run --rm tgsrl-worker-bootstrap:ci || test $? -eq 1
+      - name: Load and smoke test control-plane images
+        run: |
+          for target in scheduler job-controller runtime gateway console; do
+            docker buildx build \
+              --platform linux/amd64 \
+              --file Dockerfile.services \
+              --target "${target}" \
+              --tag "tgsrl-${target}:ci" \
+              --load .
+          done
+          docker run --rm tgsrl-scheduler:ci -h >/tmp/tgsrl-scheduler-help 2>&1 || test $? -eq 2
+          grep -F -- '-worker-registry-listen' /tmp/tgsrl-scheduler-help
+          docker run --rm tgsrl-job-controller:ci -h >/tmp/tgsrl-job-controller-help 2>&1 || test $? -eq 2
+          grep -F -- '-runtime-target' /tmp/tgsrl-job-controller-help
+          docker run --rm tgsrl-runtime:ci --help | grep -F -- '--scheduler-target'
+          docker run --rm tgsrl-gateway:ci --help | grep -F -- '--backend-mode'
+          console_id=$(docker run --detach --rm --publish 127.0.0.1::8080 tgsrl-console:ci)
+          trap 'docker stop "${console_id}" >/dev/null 2>&1 || true' EXIT
+          console_port=$(docker port "${console_id}" 8080/tcp | sed 's/.*://')
+          console_ready=0
+          for attempt in $(seq 1 30); do
+            if curl --fail --silent --show-error "http://127.0.0.1:${console_port}/healthz"; then
+              console_ready=1
+              break
+            fi
+            if ! docker inspect "${console_id}" --format '{{.State.Running}}' | grep -qx true; then
+              docker logs "${console_id}"
+              exit 1
+            fi
+            sleep 1
+          done
+          test "${console_ready}" -eq 1
+          curl --fail --silent --show-error "http://127.0.0.1:${console_port}/" | grep -F '<title>TGS-RL Console</title>'
 
   demo:
     name: Process E2E
