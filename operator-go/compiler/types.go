@@ -41,6 +41,7 @@ type RuntimeConfig struct {
 
 type CapabilityProfile struct {
 	GPUProfile     string
+	DRADeviceIDs   map[string]bool
 	RuntimeClass   RuntimeClassConfig
 	NodeSelector   map[string]string
 	KubernetesAPIs KubernetesAPIVersions
@@ -58,6 +59,7 @@ type normalizedInput struct {
 	priority         int32
 	resourcesPerUnit *tgsrlv1.ResourceVector
 	workloadUnitID   string
+	binding          *tgsrlv1.Binding
 }
 
 func (in CompileInput) ManifestHasNoImageDigests() bool {

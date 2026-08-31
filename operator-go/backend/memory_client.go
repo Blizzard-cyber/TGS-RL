@@ -131,11 +131,13 @@ func (c *MemoryClient) DiscoverCapabilities(_ context.Context) (compiler.Capabil
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	return compiler.CapabilitySet{
-		GPUProfiles:         cloneBoolMap(c.capabilities.GPUProfiles),
-		RuntimeClasses:      cloneStringMap(c.capabilities.RuntimeClasses),
-		NodeSelectors:       cloneNestedStringMap(c.capabilities.NodeSelectors),
-		DefaultNodeSelector: cloneStringMap(c.capabilities.DefaultNodeSelector),
-		KubernetesAPIs:      c.capabilities.KubernetesAPIs,
+		GPUProfiles:          cloneBoolMap(c.capabilities.GPUProfiles),
+		ExactDevicePlacement: cloneBoolMap(c.capabilities.ExactDevicePlacement),
+		DRADeviceIDs:         cloneBoolMap(c.capabilities.DRADeviceIDs),
+		RuntimeClasses:       cloneStringMap(c.capabilities.RuntimeClasses),
+		NodeSelectors:        cloneNestedStringMap(c.capabilities.NodeSelectors),
+		DefaultNodeSelector:  cloneStringMap(c.capabilities.DefaultNodeSelector),
+		KubernetesAPIs:       c.capabilities.KubernetesAPIs,
 	}, nil
 }
 
@@ -148,12 +150,17 @@ func (c *MemoryClient) SetCapabilities(values compiler.CapabilitySet) {
 	if values.KubernetesAPIs.DRAResourceClaim == "" {
 		values.KubernetesAPIs.DRAResourceClaim = compiler.DRAResourceClaimV1
 	}
+	if values.ExactDevicePlacement == nil {
+		values.ExactDevicePlacement = cloneBoolMap(values.GPUProfiles)
+	}
 	c.capabilities = compiler.CapabilitySet{
-		GPUProfiles:         cloneBoolMap(values.GPUProfiles),
-		RuntimeClasses:      cloneStringMap(values.RuntimeClasses),
-		NodeSelectors:       cloneNestedStringMap(values.NodeSelectors),
-		DefaultNodeSelector: cloneStringMap(values.DefaultNodeSelector),
-		KubernetesAPIs:      values.KubernetesAPIs,
+		GPUProfiles:          cloneBoolMap(values.GPUProfiles),
+		ExactDevicePlacement: cloneBoolMap(values.ExactDevicePlacement),
+		DRADeviceIDs:         cloneBoolMap(values.DRADeviceIDs),
+		RuntimeClasses:       cloneStringMap(values.RuntimeClasses),
+		NodeSelectors:        cloneNestedStringMap(values.NodeSelectors),
+		DefaultNodeSelector:  cloneStringMap(values.DefaultNodeSelector),
+		KubernetesAPIs:       values.KubernetesAPIs,
 	}
 }
 
@@ -243,7 +250,16 @@ func (c *MemoryClient) setInitialJobState(bundle *api.Bundle) {
 		if claim, ok := c.objects[claimObject.Key]; ok {
 			var storedClaim api.ResourceClaim
 			if json.Unmarshal(claim.Payload, &storedClaim) == nil {
-				storedClaim.Status.Allocation = &api.AllocationResult{Devices: map[string]any{"allocated": true}}
+				results := make([]api.DeviceRequestAllocationResult, 0)
+				if len(bundle.RuntimeTargets) == 1 {
+					for index := range bundle.RuntimeTargets[0].DeviceIDs {
+						results = append(results, api.DeviceRequestAllocationResult{Request: "accelerator", Driver: compiler.NVIDIADRADriver, Pool: "fake-pool", Device: fmt.Sprintf("device-%d", index)})
+					}
+				}
+				if len(results) == 0 && bundle.GPUProfile != compiler.GPUProfileKubernetesDRA {
+					results = append(results, api.DeviceRequestAllocationResult{Request: "accelerator", Driver: "fake", Pool: "fake-pool", Device: "fake-device"})
+				}
+				storedClaim.Status.Allocation = &api.AllocationResult{Devices: api.DeviceAllocationResult{Results: results}}
 				if payload, err := json.Marshal(storedClaim); err == nil {
 					claim.Payload = payload
 					claim = c.withResourceVersionLocked(claim)

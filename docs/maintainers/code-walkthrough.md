@@ -245,7 +245,10 @@ Decision
 ```
 
 fake backend 用于本地控制链，Kubernetes backend 管理 CRD、Kueue Workload、Job 和可选
-ResourceClaim。通用编译目前不保证把 Scheduler device ID 精确映射成 DRA 物理设备。
+ResourceClaim。GPU 身份由 Scheduler 选择：NVIDIA Driver v2 的 device ID 就是 GPU/MIG UUID；
+`kubernetes-dra` 将它编译为 NVIDIA DRA `uuid` CEL selector。Operator 从 ResourceClaim 的
+`driver/pool/device` 和最新 ResourceSlice 回读 UUID，完全一致后才发布收敛状态。传统
+Device Plugin/HAMi 只承诺数量，不能用于证明精确 UUID 落点。
 
 Gateway 不保存业务状态，只做 Proto/JSON 转换、分页 token 封装、RPC 转发和错误映射。
 Console 的 `HttpApiClient` 再把 Gateway JSON 映射为页面模型。前端判断 Sandbox 是否使用
@@ -287,6 +290,7 @@ stdout/stderr 和 trace，再从事件重新计算指标。校验器不信任外
 | 手写 Proto 描述符与 Gate JSON 常量测试重复正式门禁 | 生成面或配置每次变化都要维护第二份影子契约 | 依赖 Buf、跨语言 round-trip、Gate loader 与治理验证 | `make check-generated`、`make proto-roundtrip`、`tests/governance/test_gate_tools.py` |
 | 测试 fake 与仅测试使用的查询方法位于生产源码 | 扩大公开表面，并让读者误判其为产品能力 | 将 NVIDIA driver/command fake 移入既有 `_test.go`，删除未使用的 `Guard.Snapshot` | NVIDIA、Protection 与 Provider 测试集 |
 | 硬件 workflow 约束单独占用一个极小测试文件 | 增加碎片化，但与治理门禁属于同一职责 | 合并到既有 governance 测试；继续禁止 CPU/模拟证据冒充 GPU | `tests/governance/test_governance.py` |
+| Scheduler UUID 只进入 RuntimeTarget，未约束实际 Pod 设备 | 调度账本与训练进程可能分别使用 GPU-A/GPU-B | DRA claim 使用 NVIDIA UUID selector，能力发现读取 ResourceSlice，allocation 回读不一致时 fail closed | Operator Compiler、Kube client 与 StatusWatch 测试 |
 
 ## 12. 测试和提交边界
 

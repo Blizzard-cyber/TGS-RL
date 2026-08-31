@@ -2,10 +2,12 @@ package compiler
 
 import (
 	"fmt"
+	"math"
 	"sort"
 	"strings"
 
 	tgsrlv1 "github.com/Blizzard-cyber/TGS-RL/gen/go/tgsrl/v1"
+	"google.golang.org/protobuf/proto"
 )
 
 func normalize(input CompileInput, runtimeConfig RuntimeConfig) (*normalizedInput, error) {
@@ -69,6 +71,18 @@ func normalize(input CompileInput, runtimeConfig RuntimeConfig) (*normalizedInpu
 	if accelerators == 0 && profile != GPUProfileNone {
 		return nil, fmt.Errorf("gpu profile %q requires accelerator demand", profile)
 	}
+	if profile == GPUProfileKubernetesDRA {
+		if accelerators != math.Trunc(accelerators) {
+			return nil, fmt.Errorf("binding %q: kubernetes-dra requires an integer accelerator count until NVIDIA sharing configuration is wired", binding.GetBindingId())
+		}
+		deviceIDs, err := concreteDeviceIDs(binding.GetDeviceIds())
+		if err != nil {
+			return nil, fmt.Errorf("binding %q: %w", binding.GetBindingId(), err)
+		}
+		if len(deviceIDs) != int(accelerators) {
+			return nil, fmt.Errorf("binding %q: DRA device identity count %d does not match accelerator count %d", binding.GetBindingId(), len(deviceIDs), int(accelerators))
+		}
+	}
 	return &normalizedInput{
 		Namespace:        namespace,
 		GPUProfile:       profile,
@@ -80,7 +94,29 @@ func normalize(input CompileInput, runtimeConfig RuntimeConfig) (*normalizedInpu
 		priority:         derivePriority(input.JobRun, input.PlacementPlan),
 		resourcesPerUnit: cloneResourceVector(resourcesPerUnit),
 		workloadUnitID:   binding.GetPendingUnitId(),
+		binding:          proto.Clone(binding).(*tgsrlv1.Binding),
 	}, nil
+}
+
+func concreteDeviceIDs(values []string) ([]string, error) {
+	if len(values) == 0 {
+		return nil, fmt.Errorf("DRA binding requires concrete device_ids")
+	}
+	seen := make(map[string]struct{}, len(values))
+	result := make([]string, 0, len(values))
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			return nil, fmt.Errorf("DRA binding device_ids must not contain empty values")
+		}
+		if _, duplicate := seen[value]; duplicate {
+			return nil, fmt.Errorf("DRA binding device_ids contains duplicate %q", value)
+		}
+		seen[value] = struct{}{}
+		result = append(result, value)
+	}
+	sort.Strings(result)
+	return result, nil
 }
 
 func validateGPUProfiles(profiles []string) (string, error) {

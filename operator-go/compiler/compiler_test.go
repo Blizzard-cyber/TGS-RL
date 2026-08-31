@@ -12,6 +12,13 @@ func discoveredGPUCapabilities(profiles ...string) CapabilitySet {
 	set := DefaultCapabilitySet()
 	for _, profile := range profiles {
 		set.GPUProfiles[profile] = true
+		if set.ExactDevicePlacement == nil {
+			set.ExactDevicePlacement = make(map[string]bool)
+		}
+		set.ExactDevicePlacement[profile] = true
+		if profile == GPUProfileKubernetesDRA {
+			set.DRADeviceIDs = map[string]bool{"GPU-aaaa": true, "GPU-bbbb": true}
+		}
 	}
 	return set
 }
@@ -109,11 +116,14 @@ func TestCompileDRAGeneratesResourceClaim(t *testing.T) {
 	if request.Exactly == nil {
 		t.Fatal("stable DRA API must use requests[].exactly")
 	}
-	if got := request.Exactly.DeviceClassName; got != "gpu.resource.k8s.io" {
+	if got := request.Exactly.DeviceClassName; got != NVIDIADRADeviceClass {
 		t.Fatalf("unexpected device class: %q", got)
 	}
 	if request.Name != "accelerator" || request.Exactly.AllocationMode != "ExactCount" || request.Exactly.Count != 1 {
 		t.Fatalf("unexpected DRA request: %+v", request)
+	}
+	if len(request.Exactly.Selectors) != 1 || request.Exactly.Selectors[0].CEL == nil || request.Exactly.Selectors[0].CEL.Expression != `device.driver == "gpu.nvidia.com" && device.attributes["gpu.nvidia.com"].uuid in ["GPU-aaaa"]` {
+		t.Fatalf("unexpected DRA UUID selector: %+v", request.Exactly.Selectors)
 	}
 	if len(bundle.Job.Spec.Template.Spec.ResourceClaims) != 1 {
 		t.Fatalf("expected exactly one pod resource claim reference")
@@ -127,6 +137,10 @@ func TestCompileDRAGeneratesResourceClaim(t *testing.T) {
 	claims := bundle.Job.Spec.Template.Spec.Containers[0].Resources.Claims
 	if len(claims) != 1 || claims[0].Name != "accelerator" || claims[0].Request != "accelerator" {
 		t.Fatalf("unexpected container DRA claims: %+v", claims)
+	}
+	workloadClaims := bundle.Workload.Spec.PodSets[0].Template.Spec.ResourceClaims
+	if len(workloadClaims) != 1 || workloadClaims[0].ResourceClaimName != bundle.ResourceClaim.ObjectMeta.Name {
+		t.Fatalf("workload pod set did not receive DRA claim: %+v", workloadClaims)
 	}
 }
 
@@ -149,8 +163,52 @@ func TestCompileDRAV1Beta1UsesLegacyFlatRequest(t *testing.T) {
 	if bundle.ResourceClaim.APIVersion != DRAResourceClaimV1Beta1 || bundle.Workload.APIVersion != KueueWorkloadV1Beta1 {
 		t.Fatalf("selected APIs were not projected: claim=%s workload=%s", bundle.ResourceClaim.APIVersion, bundle.Workload.APIVersion)
 	}
-	if request.Exactly != nil || request.DeviceClassName != "gpu.resource.k8s.io" || request.Count != 1 {
+	if request.Exactly != nil || request.DeviceClassName != NVIDIADRADeviceClass || request.Count != 1 || len(request.Selectors) != 1 || request.Selectors[0].CEL == nil {
 		t.Fatalf("unexpected legacy DRA request: %+v", request)
+	}
+}
+
+func TestCompileDRASelectsEveryConcreteBindingUUID(t *testing.T) {
+	c := New()
+	c.SetCapabilities(discoveredGPUCapabilities(GPUProfileKubernetesDRA))
+	input := singleBindingInput(testCompileInput(), 0)
+	input.GPUProfiles = []string{GPUProfileKubernetesDRA}
+	input.PlacementPlan.Bindings[0].DeviceIds = []string{"GPU-bbbb", "GPU-aaaa"}
+	input.PlacementPlan.Bindings[0].Resources.AcceleratorUnits = 2
+
+	bundle, err := c.compileBinding(input)
+	if err != nil {
+		t.Fatalf("compile failed: %v", err)
+	}
+	request := bundle.ResourceClaim.Spec.Devices.Requests[0].Exactly
+	if request == nil || request.Count != 2 {
+		t.Fatalf("DRA request = %+v, want two exact devices", request)
+	}
+	want := `device.driver == "gpu.nvidia.com" && device.attributes["gpu.nvidia.com"].uuid in ["GPU-aaaa", "GPU-bbbb"]`
+	if got := request.Selectors[0].CEL.Expression; got != want {
+		t.Fatalf("DRA selector = %q, want %q", got, want)
+	}
+}
+
+func TestCompileDRARejectsUndiscoveredOrIncompleteDeviceIdentity(t *testing.T) {
+	c := New()
+	c.SetCapabilities(discoveredGPUCapabilities(GPUProfileKubernetesDRA))
+	input := testCompileInput()
+	input.GPUProfiles = []string{GPUProfileKubernetesDRA}
+	input.PlacementPlan.Bindings[0].DeviceIds = []string{"GPU-missing"}
+	if _, err := c.compileBinding(singleBindingInput(input, 0)); err == nil {
+		t.Fatal("expected undiscovered DRA device identity to fail closed")
+	}
+
+	input.PlacementPlan.Bindings[0].DeviceIds = nil
+	if _, err := c.compileBinding(singleBindingInput(input, 0)); err == nil {
+		t.Fatal("expected missing DRA device identity to fail closed")
+	}
+
+	input.PlacementPlan.Bindings[0].DeviceIds = []string{"GPU-aaaa"}
+	input.PlacementPlan.Bindings[0].Resources.AcceleratorUnits = 0.5
+	if _, err := c.compileBinding(singleBindingInput(input, 0)); err == nil {
+		t.Fatal("expected fractional DRA request without sharing configuration to fail closed")
 	}
 }
 
@@ -256,9 +314,10 @@ func TestCompileReferencesPreconfiguredRuntimeClassAndNodeSelector(t *testing.T)
 		t.Fatalf("NewWithRuntimeConfig() error = %v", err)
 	}
 	c.SetCapabilities(CapabilitySet{
-		GPUProfiles:    map[string]bool{GPUProfileNone: true, GPUProfileNVIDIADevicePlugin: true},
-		RuntimeClasses: map[string]string{"kata-gpu": "kata-qemu"},
-		KubernetesAPIs: DefaultCapabilitySet().KubernetesAPIs,
+		GPUProfiles:          map[string]bool{GPUProfileNone: true, GPUProfileNVIDIADevicePlugin: true},
+		ExactDevicePlacement: map[string]bool{GPUProfileNVIDIADevicePlugin: true},
+		RuntimeClasses:       map[string]string{"kata-gpu": "kata-qemu"},
+		KubernetesAPIs:       DefaultCapabilitySet().KubernetesAPIs,
 	})
 	bundle, err := c.compileBinding(singleBindingInput(testCompileInput(), 0))
 	if err != nil {
@@ -305,7 +364,9 @@ func TestCompileSelectsOnlyDiscoveredGPUCapability(t *testing.T) {
 			GPUProfileNone:          true,
 			GPUProfileKubernetesDRA: true,
 		},
-		KubernetesAPIs: DefaultCapabilitySet().KubernetesAPIs,
+		ExactDevicePlacement: map[string]bool{GPUProfileKubernetesDRA: true},
+		DRADeviceIDs:         map[string]bool{"GPU-aaaa": true, "GPU-bbbb": true},
+		KubernetesAPIs:       DefaultCapabilitySet().KubernetesAPIs,
 	})
 	input := testCompileInput()
 	input.GPUProfiles = []string{GPUProfileNVIDIADevicePlugin, GPUProfileKubernetesDRA}
@@ -403,6 +464,7 @@ func testCompileInput() CompileInput {
 				{
 					BindingId:     "binding-1",
 					PendingUnitId: "unit-1",
+					DeviceIds:     []string{"GPU-aaaa"},
 					Resources: &tgsrlv1.ResourceVector{
 						CpuMillis:        2000,
 						MemoryBytes:      4096,
@@ -412,6 +474,7 @@ func testCompileInput() CompileInput {
 				{
 					BindingId:     "binding-2",
 					PendingUnitId: "unit-2",
+					DeviceIds:     []string{"GPU-bbbb"},
 					Resources: &tgsrlv1.ResourceVector{
 						CpuMillis:        2000,
 						MemoryBytes:      4096,

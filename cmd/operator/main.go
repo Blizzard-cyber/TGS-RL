@@ -210,8 +210,14 @@ func preflightBackend(ctx context.Context, selectedBackend backend.Backend, gpuP
 	if !capabilities.GPUProfiles[profile] {
 		return fmt.Errorf("GPU profile %q is not available", profile)
 	}
+	if profile != compiler.GPUProfileNone && !capabilities.ExactDevicePlacement[profile] {
+		return fmt.Errorf("GPU profile %q cannot enforce scheduler-selected device identities", profile)
+	}
 	if capabilities.KubernetesAPIs.KueueWorkload == "" {
 		return fmt.Errorf("Kueue Workload API is not available")
+	}
+	if profile == compiler.GPUProfileKubernetesDRA && len(capabilities.DRADeviceIDs) == 0 {
+		return fmt.Errorf("NVIDIA DRA device UUID inventory is not available")
 	}
 	slog.Info("backend capability preflight passed",
 		"gpu_profile", profile,

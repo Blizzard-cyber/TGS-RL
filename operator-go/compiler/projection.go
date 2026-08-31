@@ -154,7 +154,7 @@ func requiresResourceClaim(profile string, accelerators float64) bool {
 func deviceClass(profile string) string {
 	switch profile {
 	case GPUProfileKubernetesDRA:
-		return "gpu.resource.k8s.io"
+		return NVIDIADRADeviceClass
 	case GPUProfileVolcanoHAMI:
 		return "volcano.sh/gpu"
 	case GPUProfileNVIDIADevicePlugin:

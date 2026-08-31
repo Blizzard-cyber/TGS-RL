@@ -72,6 +72,7 @@ type ObservationSnapshot struct {
 	ObservedGeneration      uint64
 	WorkloadAdmitted        bool
 	ResourceClaimsAllocated bool
+	AllocatedDeviceIDs      []string
 	JobActive               uint32
 	JobSucceeded            uint32
 	JobFailed               uint32

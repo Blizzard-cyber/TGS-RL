@@ -520,6 +520,10 @@ func (m *ObservationManager) publishSnapshot(ctx context.Context, registration *
 		}
 	}
 	for _, binding := range registration.Decision.GetSelectedPlan().GetBindings() {
+		if len(snapshot.AllocatedDeviceIDs) > 0 {
+			binding = proto.Clone(binding).(*tgsrlv1.Binding)
+			binding.DeviceIds = append([]string(nil), snapshot.AllocatedDeviceIDs...)
+		}
 		event := runtimepub.BuildSandboxEvent(registration.Decision, registration.JobRun, binding, projection.EventType, projection.State, registration.PendingDetail)
 		if registration.PendingControlKey != "" {
 			event.IdempotencyKey = registration.PendingControlKey

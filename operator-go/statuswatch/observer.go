@@ -33,6 +33,7 @@ type Snapshot struct {
 	ObservedGeneration      uint64
 	WorkloadAdmitted        bool
 	ResourceClaimsAllocated bool
+	AllocatedDeviceIDs      []string
 	JobActive               uint32
 	JobSucceeded            uint32
 	JobFailed               uint32
@@ -55,6 +56,7 @@ func snapshotFromAdapter(value *bundleadapter.Snapshot) *Snapshot {
 		ObservedGeneration:      value.ObservedGeneration,
 		WorkloadAdmitted:        value.WorkloadAdmitted,
 		ResourceClaimsAllocated: value.ResourceClaimsAllocated,
+		AllocatedDeviceIDs:      append([]string(nil), value.AllocatedDeviceIDs...),
 		JobActive:               value.JobActive,
 		JobSucceeded:            value.JobSucceeded,
 		JobFailed:               value.JobFailed,

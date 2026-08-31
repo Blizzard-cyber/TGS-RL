@@ -135,14 +135,24 @@ type DeviceRequest struct {
 	Name            string              `json:"name"`
 	Exactly         *ExactDeviceRequest `json:"exactly,omitempty"`
 	DeviceClassName string              `json:"deviceClassName,omitempty"`
+	Selectors       []DeviceSelector    `json:"selectors,omitempty"`
 	AllocationMode  string              `json:"allocationMode,omitempty"`
 	Count           int64               `json:"count,omitempty"`
 }
 
 type ExactDeviceRequest struct {
-	DeviceClassName string `json:"deviceClassName"`
-	AllocationMode  string `json:"allocationMode,omitempty"`
-	Count           int64  `json:"count,omitempty"`
+	DeviceClassName string           `json:"deviceClassName"`
+	Selectors       []DeviceSelector `json:"selectors,omitempty"`
+	AllocationMode  string           `json:"allocationMode,omitempty"`
+	Count           int64            `json:"count,omitempty"`
+}
+
+type DeviceSelector struct {
+	CEL *CELDeviceSelector `json:"cel,omitempty"`
+}
+
+type CELDeviceSelector struct {
+	Expression string `json:"expression"`
 }
 
 type DeviceClaim struct {
@@ -156,8 +166,19 @@ type ResourceClaimSpec struct {
 	Count uint32 `json:"-"`
 }
 
+type DeviceRequestAllocationResult struct {
+	Request string `json:"request"`
+	Driver  string `json:"driver"`
+	Pool    string `json:"pool"`
+	Device  string `json:"device"`
+}
+
+type DeviceAllocationResult struct {
+	Results []DeviceRequestAllocationResult `json:"results,omitempty"`
+}
+
 type AllocationResult struct {
-	Devices map[string]any `json:"devices,omitempty"`
+	Devices DeviceAllocationResult `json:"devices,omitempty"`
 }
 
 type ResourceClaimStatus struct {

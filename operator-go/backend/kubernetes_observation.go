@@ -4,10 +4,12 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"sort"
 	"time"
 
 	"github.com/Blizzard-cyber/TGS-RL/operator-go/api"
 	"github.com/Blizzard-cyber/TGS-RL/operator-go/bundleadapter"
+	"github.com/Blizzard-cyber/TGS-RL/operator-go/compiler"
 )
 
 func (b *KubernetesBackend) Snapshot(ctx context.Context, bundle *api.Bundle) (*ObservationSnapshot, bool, error) {
@@ -54,6 +56,7 @@ func (b *KubernetesBackend) fakeSnapshots(ctx context.Context, bundle *api.Bundl
 		return nil, err
 	}
 	claimAllocated := true
+	deviceIDs := []string(nil)
 	if bundle.ResourceClaim != nil {
 		claimAllocated = false
 		claimObject, found, err := b.client.Get(ctx, metaObject(bundle.ResourceClaim.TypeMeta.APIVersion, bundle.ResourceClaim.TypeMeta.Kind, bundle.ResourceClaim.ObjectMeta))
@@ -65,7 +68,15 @@ func (b *KubernetesBackend) fakeSnapshots(ctx context.Context, bundle *api.Bundl
 			if err := json.Unmarshal(claimObject.Payload, &claim); err != nil {
 				return nil, err
 			}
-			claimAllocated = claim.Status.Allocation != nil
+			if bundle.GPUProfile == compiler.GPUProfileKubernetesDRA {
+				claimAllocated = claim.Status.Allocation != nil && len(claim.Status.Allocation.Devices.Results) > 0
+				if claimAllocated && len(bundle.RuntimeTargets) == 1 && len(claim.Status.Allocation.Devices.Results) == len(bundle.RuntimeTargets[0].DeviceIDs) {
+					deviceIDs = append([]string(nil), bundle.RuntimeTargets[0].DeviceIDs...)
+					sort.Strings(deviceIDs)
+				}
+			} else {
+				claimAllocated = claim.Status.Allocation != nil
+			}
 		}
 	}
 	metadata, hasMetadata, err := b.controlMetadataForBundle(ctx, bundle.Key)
@@ -73,8 +84,8 @@ func (b *KubernetesBackend) fakeSnapshots(ctx context.Context, bundle *api.Bundl
 		return nil, err
 	}
 	workloadAdmitted := workload.Status.Admitted
-	bound := &ObservationSnapshot{ObservedGeneration: bundle.Generation, WorkloadAdmitted: workloadAdmitted, ResourceClaimsAllocated: claimAllocated, Reason: "fake backend observed workload admission", ObservedAt: time.Now().UTC()}
-	observed := &ObservationSnapshot{ObservedGeneration: bundle.Generation, WorkloadAdmitted: workloadAdmitted, ResourceClaimsAllocated: claimAllocated, JobActive: job.Status.Active, JobSucceeded: job.Status.Succeeded, JobFailed: job.Status.Failed, JobPaused: job.Status.Paused, JobDeleted: job.Status.Deleted, Reason: "fake backend observed job state", ObservedAt: time.Now().UTC()}
+	bound := &ObservationSnapshot{ObservedGeneration: bundle.Generation, WorkloadAdmitted: workloadAdmitted, ResourceClaimsAllocated: claimAllocated, AllocatedDeviceIDs: deviceIDs, Reason: "fake backend observed workload admission", ObservedAt: time.Now().UTC()}
+	observed := &ObservationSnapshot{ObservedGeneration: bundle.Generation, WorkloadAdmitted: workloadAdmitted, ResourceClaimsAllocated: claimAllocated, AllocatedDeviceIDs: append([]string(nil), deviceIDs...), JobActive: job.Status.Active, JobSucceeded: job.Status.Succeeded, JobFailed: job.Status.Failed, JobPaused: job.Status.Paused, JobDeleted: job.Status.Deleted, Reason: "fake backend observed job state", ObservedAt: time.Now().UTC()}
 	if hasMetadata {
 		applyControlMetadata(bound, metadata)
 		applyControlMetadata(observed, metadata)
@@ -97,5 +108,5 @@ func snapshotFromAdapter(snapshot *bundleadapter.Snapshot, terminal bool, err er
 	if err != nil || snapshot == nil {
 		return nil, terminal, err
 	}
-	return &ObservationSnapshot{ObservedGeneration: snapshot.ObservedGeneration, WorkloadAdmitted: snapshot.WorkloadAdmitted, ResourceClaimsAllocated: snapshot.ResourceClaimsAllocated, JobActive: snapshot.JobActive, JobSucceeded: snapshot.JobSucceeded, JobFailed: snapshot.JobFailed, JobPaused: snapshot.JobPaused, JobDeleted: snapshot.JobDeleted, Reason: snapshot.Reason, ObservedAt: snapshot.ObservedAt, ControlRequestID: snapshot.ControlRequestID, ControlIdempotencyKey: snapshot.ControlIdempotencyKey, ControlAction: snapshot.ControlAction, ControlBackendRevision: snapshot.ControlBackendRevision, ControlCommitted: snapshot.ControlCommitted}, terminal, nil
+	return &ObservationSnapshot{ObservedGeneration: snapshot.ObservedGeneration, WorkloadAdmitted: snapshot.WorkloadAdmitted, ResourceClaimsAllocated: snapshot.ResourceClaimsAllocated, AllocatedDeviceIDs: append([]string(nil), snapshot.AllocatedDeviceIDs...), JobActive: snapshot.JobActive, JobSucceeded: snapshot.JobSucceeded, JobFailed: snapshot.JobFailed, JobPaused: snapshot.JobPaused, JobDeleted: snapshot.JobDeleted, Reason: snapshot.Reason, ObservedAt: snapshot.ObservedAt, ControlRequestID: snapshot.ControlRequestID, ControlIdempotencyKey: snapshot.ControlIdempotencyKey, ControlAction: snapshot.ControlAction, ControlBackendRevision: snapshot.ControlBackendRevision, ControlCommitted: snapshot.ControlCommitted}, terminal, nil
 }

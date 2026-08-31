@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -577,7 +578,7 @@ func TestClientDiscoverCapabilitiesFallsClosedWhenEndpointAndProbeMissing(t *tes
 	}
 }
 
-func TestClientDiscoverCapabilitiesProbesDRAWhenEndpointMissing(t *testing.T) {
+func TestClientDiscoverCapabilitiesRequiresNVIDIADRAUUIDInventory(t *testing.T) {
 	var paths []string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		paths = append(paths, r.URL.Path)
@@ -591,7 +592,9 @@ func TestClientDiscoverCapabilitiesProbesDRAWhenEndpointMissing(t *testing.T) {
 		case "/api/v1/nodes":
 			_ = json.NewEncoder(w).Encode(map[string]any{"items": []any{}})
 		case "/apis/resource.k8s.io/v1beta1/deviceclasses":
-			_ = json.NewEncoder(w).Encode(map[string]any{"items": []any{map[string]any{"metadata": map[string]any{"name": "gpu.example.io"}}}})
+			_ = json.NewEncoder(w).Encode(map[string]any{"items": []any{map[string]any{"metadata": map[string]any{"name": compiler.NVIDIADRADeviceClass}}}})
+		case "/apis/resource.k8s.io/v1beta1/resourceslices":
+			_ = json.NewEncoder(w).Encode(nvidiaDRAResourceSliceList(true, "GPU-aaaa"))
 		default:
 			t.Fatalf("unexpected request %s", r.URL.Path)
 		}
@@ -608,14 +611,77 @@ func TestClientDiscoverCapabilitiesProbesDRAWhenEndpointMissing(t *testing.T) {
 	if !capabilities.GPUProfiles["none"] || !capabilities.GPUProfiles["kubernetes-dra"] {
 		t.Fatalf("capabilities = %+v", capabilities)
 	}
+	if !capabilities.DRADeviceIDs["GPU-aaaa"] {
+		t.Fatalf("DRA device IDs = %+v, want GPU-aaaa", capabilities.DRADeviceIDs)
+	}
 	if strings.Join(paths, "|") != strings.Join([]string{
 		"/apis/kueue.x-k8s.io",
 		"/apis/resource.k8s.io",
 		"/apis/node.k8s.io/v1/runtimeclasses",
 		"/api/v1/nodes",
 		"/apis/resource.k8s.io/v1beta1/deviceclasses",
+		"/apis/resource.k8s.io/v1beta1/resourceslices",
 	}, "|") {
 		t.Fatalf("paths = %v", paths)
+	}
+}
+
+func TestClientDiscoverCapabilitiesRejectsDRAClassWithoutUUIDInventory(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/apis/kueue.x-k8s.io":
+			_ = json.NewEncoder(w).Encode(apiGroupDiscovery("v1", "v1"))
+		case "/apis/resource.k8s.io":
+			_ = json.NewEncoder(w).Encode(apiGroupDiscovery("v1", "v1"))
+		case "/apis/node.k8s.io/v1/runtimeclasses", "/api/v1/nodes", "/apis/resource.k8s.io/v1/resourceslices":
+			_ = json.NewEncoder(w).Encode(map[string]any{"items": []any{}})
+		case "/apis/resource.k8s.io/v1/deviceclasses":
+			_ = json.NewEncoder(w).Encode(map[string]any{"items": []any{map[string]any{"metadata": map[string]any{"name": compiler.NVIDIADRADeviceClass}}}})
+		default:
+			t.Fatalf("unexpected request %s", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+	client, err := NewClient(&Config{Host: server.URL, Namespace: "test", HTTPClient: server.Client()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	capabilities, err := client.DiscoverCapabilities(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if capabilities.GPUProfiles[compiler.GPUProfileKubernetesDRA] || len(capabilities.DRADeviceIDs) != 0 {
+		t.Fatalf("capabilities = %+v, want DRA disabled without UUID inventory", capabilities)
+	}
+}
+
+func TestClientDiscoverCapabilitiesDoesNotClaimExactPlacementForCountOnlyGPUAPIs(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/apis/kueue.x-k8s.io":
+			_ = json.NewEncoder(w).Encode(apiGroupDiscovery("v1beta2", "v1beta2"))
+		case "/apis/resource.k8s.io", "/apis/node.k8s.io/v1/runtimeclasses", "/apis/resource.k8s.io/v1/resourceslices":
+			http.NotFound(w, r)
+		case "/api/v1/nodes":
+			_ = json.NewEncoder(w).Encode(map[string]any{"items": []any{map[string]any{"status": map[string]any{"allocatable": map[string]any{"nvidia.com/gpu": "2", "volcano.sh/gpu": "2"}}}}})
+		default:
+			t.Fatalf("unexpected request %s", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+	client, err := NewClient(&Config{Host: server.URL, Namespace: "test", HTTPClient: server.Client()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	capabilities, err := client.DiscoverCapabilities(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !capabilities.GPUProfiles[compiler.GPUProfileNVIDIADevicePlugin] || !capabilities.GPUProfiles[compiler.GPUProfileVolcanoHAMI] {
+		t.Fatalf("GPU profiles = %+v, want discovered count-only profiles", capabilities.GPUProfiles)
+	}
+	if capabilities.ExactDevicePlacement[compiler.GPUProfileNVIDIADevicePlugin] || capabilities.ExactDevicePlacement[compiler.GPUProfileVolcanoHAMI] {
+		t.Fatalf("exact placement = %+v, count-only profiles must not claim UUID enforcement", capabilities.ExactDevicePlacement)
 	}
 }
 
@@ -643,9 +709,11 @@ func TestClientDiscoverCapabilitiesProbesNodeAndRuntimeClassSurfaces(t *testing.
 		case "/apis/resource.k8s.io/v1/deviceclasses":
 			_ = json.NewEncoder(w).Encode(map[string]any{
 				"items": []any{
-					map[string]any{"metadata": map[string]any{"name": "gpu.resource.k8s.io"}},
+					map[string]any{"metadata": map[string]any{"name": compiler.NVIDIADRADeviceClass}},
 				},
 			})
+		case "/apis/resource.k8s.io/v1/resourceslices":
+			_ = json.NewEncoder(w).Encode(nvidiaDRAResourceSliceList(false, "GPU-bbbb"))
 		default:
 			t.Fatalf("unexpected request %s", r.URL.Path)
 		}
@@ -668,6 +736,22 @@ func TestClientDiscoverCapabilitiesProbesNodeAndRuntimeClassSurfaces(t *testing.
 	if capabilities.KubernetesAPIs.KueueWorkload != compiler.KueueWorkloadV1Beta2 || capabilities.KubernetesAPIs.DRAResourceClaim != compiler.DRAResourceClaimV1 {
 		t.Fatalf("API versions = %+v", capabilities.KubernetesAPIs)
 	}
+	if !capabilities.DRADeviceIDs["GPU-bbbb"] {
+		t.Fatalf("DRA device IDs = %+v, want GPU-bbbb", capabilities.DRADeviceIDs)
+	}
+}
+
+func nvidiaDRAResourceSliceList(legacy bool, deviceIDs ...string) map[string]any {
+	devices := make([]any, 0, len(deviceIDs))
+	for index, deviceID := range deviceIDs {
+		attributes := map[string]any{"uuid": map[string]any{"string": deviceID}}
+		device := map[string]any{"name": fmt.Sprintf("gpu-%d", index), "attributes": attributes}
+		if legacy {
+			device = map[string]any{"name": fmt.Sprintf("gpu-%d", index), "basic": map[string]any{"attributes": attributes}}
+		}
+		devices = append(devices, device)
+	}
+	return map[string]any{"items": []any{map[string]any{"spec": map[string]any{"driver": compiler.NVIDIADRADriver, "pool": map[string]any{"name": "node-a", "generation": 1}, "devices": devices}}}}
 }
 
 func apiGroupDiscovery(preferred string, served ...string) map[string]any {

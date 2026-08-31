@@ -52,10 +52,13 @@ def assert_discovery_rbac(role, binding, service_account_name, expected_namespac
   expected = {
     ["", "nodes"] => ["list"],
     ["node.k8s.io", "runtimeclasses"] => ["list"],
-    ["resource.k8s.io", "deviceclasses"] => ["list"]
+    ["resource.k8s.io", "deviceclasses"] => ["list"],
+    ["resource.k8s.io", "resourceslices"] => ["list"]
   }
-  actual = role.fetch("rules").to_h do |rule|
-    [[rule.fetch("apiGroups").first, rule.fetch("resources").first], rule.fetch("verbs")]
+  actual = role.fetch("rules").each_with_object({}) do |rule, entries|
+    rule.fetch("resources").each do |resource|
+      entries[[rule.fetch("apiGroups").first, resource]] = rule.fetch("verbs")
+    end
   end
   assert(actual == expected, "discovery ClusterRole exceeds or misses the read contract")
   assert(binding.dig("roleRef", "name") == role.dig("metadata", "name"), "discovery binding targets the wrong role")
@@ -269,6 +272,7 @@ assert(pvc_template.include?("storageClassName: {{ .Values.persistence.storageCl
 
 rbac_template = File.read(File.join(CHART_DIR, "templates/rbac.yaml"))
 assert(rbac_template.include?('resources: ["jobrunbundles"]'), "Helm RBAC does not isolate jobrunbundles")
+assert(rbac_template.include?('resources: ["deviceclasses", "resourceslices"]'), "Helm discovery RBAC must cover DRA identity readback")
 assert(rbac_template.include?('verbs: ["get", "list", "watch", "create", "update", "patch"]'), "Helm RBAC lacks jobrunbundles create")
 assert(rbac_template.include?("kind: Role"), "Helm RBAC must default to a namespaced Role")
 assert(rbac_template.include?("kind: RoleBinding"), "Helm RBAC must default to a namespaced RoleBinding")

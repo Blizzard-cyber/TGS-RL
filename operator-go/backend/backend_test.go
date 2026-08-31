@@ -81,6 +81,7 @@ func TestFakeBackendSnapshotsReflectObservedAdmissionAndClaimAllocation(t *testi
 	})
 	bundle := testBundle()
 	bundle.GPUProfile = compiler.GPUProfileKubernetesDRA
+	bundle.RuntimeTargets = []api.RuntimeTarget{{RuntimeUnitID: "unit-a", SandboxID: "sandbox-a", DeviceIDs: []string{"GPU-aaaa"}, Generation: bundle.Generation}}
 	if _, err := b.Apply(context.Background(), bundle); err != nil {
 		t.Fatalf("Apply() error = %v", err)
 	}
@@ -91,7 +92,7 @@ func TestFakeBackendSnapshotsReflectObservedAdmissionAndClaimAllocation(t *testi
 	if len(snapshots) != 2 {
 		t.Fatalf("snapshots = %+v, want two-step observed stream", snapshots)
 	}
-	if !snapshots[0].WorkloadAdmitted || !snapshots[0].ResourceClaimsAllocated {
+	if !snapshots[0].WorkloadAdmitted || !snapshots[0].ResourceClaimsAllocated || len(snapshots[0].AllocatedDeviceIDs) == 0 {
 		t.Fatalf("bound snapshot = %+v, want admitted and claim allocated", snapshots[0])
 	}
 	if !snapshots[1].WorkloadAdmitted || !snapshots[1].ResourceClaimsAllocated || snapshots[1].JobActive == 0 {

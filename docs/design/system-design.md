@@ -160,8 +160,13 @@ Operator backend 决定 workload 对象的落点：
 Kubernetes wire contract 通过 discovery 选择 Kueue `v1beta2`/`v1beta1` 和 DRA
 `resource.k8s.io/v1`/`v1beta2`/`v1beta1`，并生成带 `restartPolicy` 的 Job pod spec。部署者必须提供
 Scheduler、Job Controller、Runtime、Kueue 以及所选 GPU/DRA 控制器，并确认目标集群
-支持这些 API。当前通用对象编译不保证把 Scheduler device ID 映射为 DRA
-driver/pool/device 或精确物理 GPU 落点。随附部署工件不会安装这些依赖。
+支持这些 API。GPU 设备身份采用单一权威模型：Scheduler 选择并保留 NVIDIA GPU/MIG UUID，
+`kubernetes-dra` profile 将 UUID 编译为 NVIDIA DRA `uuid` CEL selector；Operator 只有在
+ResourceClaim allocation 可通过最新 ResourceSlice 反查到完全相同的 UUID 集合后，才发布
+`BOUND`/`RUNNING`。Device Plugin 与 HAMi 只表达数量，不宣称精确 UUID 一致。随附部署工件
+不会安装这些依赖。由于当前 Binding 语义始终包含具体设备身份，不能执行该身份约束的
+Device Plugin/HAMi profile 会在 Operator capability preflight/compile 阶段 fail closed；它们
+保留为已识别但尚不可执行的兼容 profile。
 
 ## 状态权威与恢复
 

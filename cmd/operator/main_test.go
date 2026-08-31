@@ -151,6 +151,26 @@ func TestPreflightBackendValidatesSelectedProfileAndKueue(t *testing.T) {
 	if err := preflightBackend(context.Background(), missingKueue, compiler.GPUProfileNone); err == nil || !strings.Contains(err.Error(), "Kueue Workload API") {
 		t.Fatalf("preflightBackend() error = %v, want missing Kueue API", err)
 	}
+
+	draWithoutInventory := capabilityBackend{
+		Backend: backend.NewFake(),
+		capabilities: compiler.CapabilitySet{
+			GPUProfiles:          map[string]bool{compiler.GPUProfileKubernetesDRA: true},
+			ExactDevicePlacement: map[string]bool{compiler.GPUProfileKubernetesDRA: true},
+			KubernetesAPIs: compiler.KubernetesAPIVersions{
+				KueueWorkload:    compiler.KueueWorkloadV1Beta2,
+				DRAResourceClaim: compiler.DRAResourceClaimV1,
+			},
+		},
+	}
+	if err := preflightBackend(context.Background(), draWithoutInventory, compiler.GPUProfileKubernetesDRA); err == nil || !strings.Contains(err.Error(), "UUID inventory") {
+		t.Fatalf("preflightBackend() error = %v, want missing DRA UUID inventory", err)
+	}
+
+	countOnly := capabilityBackend{Backend: backend.NewFake(), capabilities: compiler.CapabilitySet{GPUProfiles: map[string]bool{compiler.GPUProfileNVIDIADevicePlugin: true}, KubernetesAPIs: compiler.KubernetesAPIVersions{KueueWorkload: compiler.KueueWorkloadV1Beta2}}}
+	if err := preflightBackend(context.Background(), countOnly, compiler.GPUProfileNVIDIADevicePlugin); err == nil || !strings.Contains(err.Error(), "cannot enforce") {
+		t.Fatalf("preflightBackend() error = %v, want exact-placement failure", err)
+	}
 }
 
 func TestStringMapFlagSet(t *testing.T) {

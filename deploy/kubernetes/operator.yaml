@@ -1,6 +1,8 @@
 # Prerequisite: a cluster administrator must install
 # deploy/crds/tgsrl_jobrunbundles.yaml before applying this manifest.
 # This manifest deliberately does not own the cluster-scoped CRD lifecycle.
+# ResourceSlice list access verifies that NVIDIA DRA allocations resolve to
+# the exact GPU/MIG UUIDs selected by the scheduler.
 apiVersion: v1
 kind: Namespace
 metadata:
@@ -24,7 +26,7 @@ rules:
     resources: ["runtimeclasses"]
     verbs: ["list"]
   - apiGroups: ["resource.k8s.io"]
-    resources: ["deviceclasses"]
+    resources: ["deviceclasses", "resourceslices"]
     verbs: ["list"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1

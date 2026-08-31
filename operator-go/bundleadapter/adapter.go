@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"sort"
 	"strings"
 	"time"
 
@@ -33,6 +34,7 @@ type Snapshot struct {
 	ObservedGeneration      uint64
 	WorkloadAdmitted        bool
 	ResourceClaimsAllocated bool
+	AllocatedDeviceIDs      []string
 	JobActive               uint32
 	JobSucceeded            uint32
 	JobFailed               uint32
@@ -70,6 +72,107 @@ type JobControlMutation struct {
 
 type Reader interface {
 	GetPath(ctx context.Context, path string) ([]byte, error)
+}
+
+// DRADeviceAllocation is the stable identity tuple returned by a ResourceClaim.
+type draAttribute struct {
+	StringValue *string `json:"string"`
+}
+
+type draSliceDevice struct {
+	Name       string                  `json:"name"`
+	Attributes map[string]draAttribute `json:"attributes"`
+	Basic      *struct {
+		Attributes map[string]draAttribute `json:"attributes"`
+	} `json:"basic"`
+}
+
+type draResourceSlice struct {
+	Spec struct {
+		Driver string `json:"driver"`
+		Pool   struct {
+			Name       string `json:"name"`
+			Generation int64  `json:"generation"`
+		} `json:"pool"`
+		Devices []draSliceDevice `json:"devices"`
+	} `json:"spec"`
+}
+
+// DiscoverDRADeviceUUIDs returns UUID attributes from each current pool generation.
+func DiscoverDRADeviceUUIDs(payload []byte, driver string) (map[string]bool, error) {
+	index, err := draDeviceUUIDIndex(payload, driver)
+	if err != nil {
+		return nil, err
+	}
+	result := make(map[string]bool, len(index))
+	for _, uuid := range index {
+		result[uuid] = true
+	}
+	return result, nil
+}
+
+// ResolveDRAAllocationUUIDs maps allocation driver/pool/device tuples to UUIDs.
+func ResolveDRAAllocationUUIDs(payload []byte, driver string, allocations []api.DeviceRequestAllocationResult) ([]string, error) {
+	index, err := draDeviceUUIDIndex(payload, driver)
+	if err != nil {
+		return nil, err
+	}
+	result := make([]string, 0, len(allocations))
+	for _, allocation := range allocations {
+		uuid := index[allocation.Pool+"\x00"+allocation.Device]
+		if uuid == "" {
+			return nil, fmt.Errorf("allocated DRA device %s/%s has no UUID in the current resource-slice generation", allocation.Pool, allocation.Device)
+		}
+		result = append(result, uuid)
+	}
+	sort.Strings(result)
+	return result, nil
+}
+
+func draDeviceUUIDIndex(payload []byte, driver string) (map[string]string, error) {
+	var list struct {
+		Items []draResourceSlice `json:"items"`
+	}
+	if err := json.Unmarshal(payload, &list); err != nil {
+		return nil, fmt.Errorf("decode DRA resource slices: %w", err)
+	}
+	latest := make(map[string]int64)
+	for _, slice := range list.Items {
+		current, seen := latest[slice.Spec.Pool.Name]
+		if slice.Spec.Driver == driver && (!seen || slice.Spec.Pool.Generation > current) {
+			latest[slice.Spec.Pool.Name] = slice.Spec.Pool.Generation
+		}
+	}
+	identities := make(map[string]string)
+	uuidOwners := make(map[string]string)
+	for _, slice := range list.Items {
+		if slice.Spec.Driver != driver || slice.Spec.Pool.Generation != latest[slice.Spec.Pool.Name] {
+			continue
+		}
+		for _, device := range slice.Spec.Devices {
+			attributes := device.Attributes
+			if device.Basic != nil {
+				attributes = device.Basic.Attributes
+			}
+			uuid := ""
+			if value, ok := attributes["uuid"]; ok && value.StringValue != nil {
+				uuid = strings.TrimSpace(*value.StringValue)
+			}
+			if uuid == "" {
+				continue
+			}
+			key := slice.Spec.Pool.Name + "\x00" + device.Name
+			if previous, duplicate := identities[key]; duplicate && previous != uuid {
+				return nil, fmt.Errorf("DRA device %s/%s has conflicting UUIDs", slice.Spec.Pool.Name, device.Name)
+			}
+			if owner, duplicate := uuidOwners[uuid]; duplicate && owner != key {
+				return nil, fmt.Errorf("DRA UUID %q is published by multiple devices", uuid)
+			}
+			identities[key] = uuid
+			uuidOwners[uuid] = key
+		}
+	}
+	return identities, nil
 }
 
 type Stream interface {

@@ -2,7 +2,8 @@ package compiler
 
 import (
 	"fmt"
-	"math"
+	"strconv"
+	"strings"
 
 	"github.com/Blizzard-cyber/TGS-RL/operator-go/api"
 )
@@ -88,17 +89,24 @@ func buildBundle(input *normalizedInput) (*api.Bundle, error) {
 
 	var resourceClaim *api.ResourceClaim
 	if requiresResourceClaim(input.GPUProfile, input.resourcesPerUnit.GetAcceleratorUnits()) {
+		deviceIDs, err := concreteDeviceIDs(input.binding.GetDeviceIds())
+		if err != nil {
+			return nil, err
+		}
+		selectors := []api.DeviceSelector{{CEL: &api.CELDeviceSelector{Expression: nvidiaDRADeviceSelector(deviceIDs)}}}
 		request := api.DeviceRequest{Name: "accelerator"}
 		if input.KubernetesAPIs.DRAResourceClaim != DRAResourceClaimV1Beta1 {
 			request.Exactly = &api.ExactDeviceRequest{
 				DeviceClassName: deviceClass(input.GPUProfile),
+				Selectors:       selectors,
 				AllocationMode:  "ExactCount",
-				Count:           int64(math.Ceil(input.resourcesPerUnit.GetAcceleratorUnits())),
+				Count:           int64(len(deviceIDs)),
 			}
 		} else {
 			request.DeviceClassName = deviceClass(input.GPUProfile)
+			request.Selectors = selectors
 			request.AllocationMode = "ExactCount"
-			request.Count = int64(math.Ceil(input.resourcesPerUnit.GetAcceleratorUnits()))
+			request.Count = int64(len(deviceIDs))
 		}
 		resourceClaim = &api.ResourceClaim{
 			TypeMeta: api.TypeMeta{APIVersion: input.KubernetesAPIs.DRAResourceClaim, Kind: "ResourceClaim"},
@@ -110,7 +118,7 @@ func buildBundle(input *normalizedInput) (*api.Bundle, error) {
 			},
 			Spec: api.ResourceClaimSpec{
 				Devices: api.DeviceClaim{Requests: []api.DeviceRequest{request}},
-				Count:   uint32(math.Ceil(input.resourcesPerUnit.GetAcceleratorUnits())),
+				Count:   uint32(len(deviceIDs)),
 			},
 		}
 		job.Spec.Template.Spec.ResourceClaims = []api.PodResourceClaim{{
@@ -121,6 +129,10 @@ func buildBundle(input *normalizedInput) (*api.Bundle, error) {
 			Name:    "accelerator",
 			Request: "accelerator",
 		}}
+		// Kueue admission evaluates the Workload pod set, while Kubernetes runs
+		// the Job template. Keep both projections byte-for-byte aligned after
+		// adding the DRA claim so admission and execution use the same device.
+		workload.Spec.PodSets[0].Template = job.Spec.Template
 	}
 
 	return &api.Bundle{
@@ -161,6 +173,14 @@ func buildBundle(input *normalizedInput) (*api.Bundle, error) {
 	}, nil
 }
 
+func nvidiaDRADeviceSelector(deviceIDs []string) string {
+	quoted := make([]string, 0, len(deviceIDs))
+	for _, deviceID := range deviceIDs {
+		quoted = append(quoted, strconv.Quote(deviceID))
+	}
+	return `device.driver == "` + NVIDIADRADriver + `" && device.attributes["` + NVIDIADRADriver + `"].uuid in [` + strings.Join(quoted, ", ") + `]`
+}
+
 func validateBundle(bundle *api.Bundle) error {
 	if bundle.Key == "" {
 		return fmt.Errorf("bundle key is required")
@@ -194,6 +214,13 @@ func validateBundle(bundle *api.Bundle) error {
 	if bundle.ResourceClaim != nil && bundle.ResourceClaim.ObjectMeta.Namespace != bundle.Namespace {
 		return fmt.Errorf("resource claim namespace mismatch")
 	}
+	if bundle.GPUProfile == GPUProfileKubernetesDRA {
+		if err := validateDRAResourceClaim(bundle); err != nil {
+			return err
+		}
+	} else if bundle.ResourceClaim != nil {
+		return fmt.Errorf("resource claim requires kubernetes-dra GPU profile")
+	}
 	if bundle.Admission.Queue == "" || bundle.Admission.QuotaGroup == "" {
 		return fmt.Errorf("admission metadata is incomplete")
 	}
@@ -225,6 +252,40 @@ runtimeClassValidated:
 	}
 	if len(bundle.Job.ObjectMeta.OwnerReferences) != 0 || bundle.ResourceClaim != nil && len(bundle.ResourceClaim.ObjectMeta.OwnerReferences) != 0 {
 		return fmt.Errorf("materialized objects must not contain unresolved owner references")
+	}
+	return nil
+}
+
+func validateDRAResourceClaim(bundle *api.Bundle) error {
+	if bundle.ResourceClaim == nil {
+		return fmt.Errorf("kubernetes-dra profile requires resource claim")
+	}
+	if len(bundle.RuntimeTargets) != 1 {
+		return fmt.Errorf("kubernetes-dra bundle requires exactly one runtime target")
+	}
+	deviceIDs, err := concreteDeviceIDs(bundle.RuntimeTargets[0].DeviceIDs)
+	if err != nil {
+		return err
+	}
+	requests := bundle.ResourceClaim.Spec.Devices.Requests
+	if len(requests) != 1 {
+		return fmt.Errorf("kubernetes-dra resource claim requires exactly one device request")
+	}
+	request := requests[0]
+	class, selectors, mode, count := request.DeviceClassName, request.Selectors, request.AllocationMode, request.Count
+	if bundle.ResourceClaim.APIVersion != DRAResourceClaimV1Beta1 {
+		if request.Exactly == nil {
+			return fmt.Errorf("kubernetes-dra resource claim requires an exact device request")
+		}
+		class, selectors, mode, count = request.Exactly.DeviceClassName, request.Exactly.Selectors, request.Exactly.AllocationMode, request.Exactly.Count
+	} else if request.Exactly != nil {
+		return fmt.Errorf("resource.k8s.io/v1beta1 requires a flat device request")
+	}
+	if request.Name != "accelerator" || class != NVIDIADRADeviceClass || mode != "ExactCount" || count != int64(len(deviceIDs)) {
+		return fmt.Errorf("kubernetes-dra resource request does not match the concrete binding")
+	}
+	if len(selectors) != 1 || selectors[0].CEL == nil || selectors[0].CEL.Expression != nvidiaDRADeviceSelector(deviceIDs) {
+		return fmt.Errorf("kubernetes-dra resource request must select the binding device UUIDs")
 	}
 	return nil
 }

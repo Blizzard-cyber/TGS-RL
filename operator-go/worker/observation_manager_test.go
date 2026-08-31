@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"path/filepath"
+	"slices"
 	"sync"
 	"testing"
 	"time"
@@ -312,6 +313,36 @@ func countState(events []*tgsrlv1.SandboxEvent, state tgsrlv1.RuntimeState) int 
 		}
 	}
 	return count
+}
+
+func TestObservationManagerPublishesVerifiedDRADeviceIdentity(t *testing.T) {
+	decision := decisionForSequence(9)
+	bundle := bundleForDecision(decision)
+	bundle.GPUProfile = compiler.GPUProfileKubernetesDRA
+	bundle.RuntimeTargets = bundle.RuntimeTargets[:1]
+	registration := ObservationRegistration{BundleKey: bundle.Key, Bundle: bundle, Decision: decisionForBundle(decision, bundle), JobRun: testJobRun(), PublishedEventIDs: map[string]bool{}}
+	wantDeviceIDs := []string{"GPU-aaaa"}
+	publisher := &fakePublisher{}
+	manager, err := NewObservationManager(&scriptedObserver{snapshots: []*statuswatch.Snapshot{{
+		ObservedGeneration:      decisionGeneration(registration.Decision),
+		WorkloadAdmitted:        true,
+		ResourceClaimsAllocated: true,
+		AllocatedDeviceIDs:      wantDeviceIDs,
+	}}}, publisher, NewFileDeliveryRepository(filepath.Join(t.TempDir(), "delivery.json")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	done, cancel := startObservationManager(t, manager)
+	if err := manager.Register(context.Background(), registration); err != nil {
+		t.Fatal(err)
+	}
+	publisher.waitForCount(t, len(registration.Decision.GetSelectedPlan().GetBindings()), 2*time.Second)
+	stopObservationManager(t, cancel, done)
+	for _, event := range publisher.snapshot() {
+		if !slices.Equal(event.GetBinding().GetDeviceIds(), wantDeviceIDs) {
+			t.Fatalf("published device IDs = %v, want verified allocation %v", event.GetBinding().GetDeviceIds(), wantDeviceIDs)
+		}
+	}
 }
 
 func registerCurrentBundle(t *testing.T, manager *ObservationManager, source BundleSource, bundleKey string, decision *tgsrlv1.DecisionRecord) {

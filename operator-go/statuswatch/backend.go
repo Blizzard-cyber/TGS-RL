@@ -75,5 +75,5 @@ func snapshotFromBackend(value *backend.ObservationSnapshot) *Snapshot {
 	if value == nil {
 		return nil
 	}
-	return &Snapshot{ObservedGeneration: value.ObservedGeneration, WorkloadAdmitted: value.WorkloadAdmitted, ResourceClaimsAllocated: value.ResourceClaimsAllocated, JobActive: value.JobActive, JobSucceeded: value.JobSucceeded, JobFailed: value.JobFailed, JobPaused: value.JobPaused, JobDeleted: value.JobDeleted, Reason: value.Reason, ObservedAt: value.ObservedAt, ControlRequestID: value.ControlRequestID, ControlIdempotencyKey: value.ControlIdempotencyKey, ControlAction: value.ControlAction, ControlBackendRevision: value.ControlBackendRevision, ControlCommitted: value.ControlCommitted}
+	return &Snapshot{ObservedGeneration: value.ObservedGeneration, WorkloadAdmitted: value.WorkloadAdmitted, ResourceClaimsAllocated: value.ResourceClaimsAllocated, AllocatedDeviceIDs: append([]string(nil), value.AllocatedDeviceIDs...), JobActive: value.JobActive, JobSucceeded: value.JobSucceeded, JobFailed: value.JobFailed, JobPaused: value.JobPaused, JobDeleted: value.JobDeleted, Reason: value.Reason, ObservedAt: value.ObservedAt, ControlRequestID: value.ControlRequestID, ControlIdempotencyKey: value.ControlIdempotencyKey, ControlAction: value.ControlAction, ControlBackendRevision: value.ControlBackendRevision, ControlCommitted: value.ControlCommitted}
 }

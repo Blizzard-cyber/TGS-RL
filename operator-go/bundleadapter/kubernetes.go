@@ -6,12 +6,14 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
 
 	tgsrlv1 "github.com/Blizzard-cyber/TGS-RL/gen/go/tgsrl/v1"
 	"github.com/Blizzard-cyber/TGS-RL/operator-go/api"
+	"github.com/Blizzard-cyber/TGS-RL/operator-go/compiler"
 )
 
 type KubernetesAdapter struct {
@@ -323,19 +325,96 @@ func (a *KubernetesAdapter) observeOnce(ctx context.Context, reader Reader, bund
 	if bundle.ResourceClaim == nil {
 		snapshot.ResourceClaimsAllocated = true
 	} else {
-		var claim struct {
-			Status struct {
-				Allocation json.RawMessage `json:"allocation"`
-			} `json:"status"`
+		if bundle.GPUProfile == compiler.GPUProfileKubernetesDRA {
+			allocated, deviceIDs, err := observeDRAAllocation(ctx, reader, bundle, claimBody)
+			if err != nil {
+				return nil, false, err
+			}
+			snapshot.ResourceClaimsAllocated = allocated
+			snapshot.AllocatedDeviceIDs = deviceIDs
+		} else {
+			var claim struct {
+				Status struct {
+					Allocation json.RawMessage `json:"allocation"`
+				} `json:"status"`
+			}
+			if err := json.Unmarshal(claimBody, &claim); err != nil {
+				return nil, false, fmt.Errorf("decode resourceclaim status: %w", err)
+			}
+			snapshot.ResourceClaimsAllocated = len(claim.Status.Allocation) > 0 && string(claim.Status.Allocation) != "null"
 		}
-		if err := json.Unmarshal(claimBody, &claim); err != nil {
-			return nil, false, fmt.Errorf("decode resourceclaim status: %w", err)
-		}
-		snapshot.ResourceClaimsAllocated = len(claim.Status.Allocation) > 0 && string(claim.Status.Allocation) != "null"
 	}
 
 	terminal := snapshot.JobSucceeded > 0 || snapshot.JobFailed > 0
 	return snapshot, terminal, nil
+}
+
+func observeDRAAllocation(ctx context.Context, reader Reader, bundle *api.Bundle, claimBody []byte) (bool, []string, error) {
+	var claim struct {
+		Status struct {
+			Allocation *struct {
+				Devices struct {
+					Results []api.DeviceRequestAllocationResult `json:"results"`
+				} `json:"devices"`
+			} `json:"allocation"`
+		} `json:"status"`
+	}
+	if err := json.Unmarshal(claimBody, &claim); err != nil {
+		return false, nil, fmt.Errorf("decode resourceclaim status: %w", err)
+	}
+	if claim.Status.Allocation == nil || len(claim.Status.Allocation.Devices.Results) == 0 {
+		return false, nil, nil
+	}
+	expected := expectedDRADeviceIDs(bundle)
+	if len(expected) == 0 {
+		return false, nil, fmt.Errorf("resourceclaim has an allocation but bundle has no expected device identities")
+	}
+	results := claim.Status.Allocation.Devices.Results
+	if len(results) != len(expected) {
+		return false, nil, fmt.Errorf("resourceclaim allocated %d devices, want %d", len(results), len(expected))
+	}
+	for _, result := range results {
+		if result.Request != "accelerator" || result.Driver != compiler.NVIDIADRADriver || result.Pool == "" || result.Device == "" {
+			return false, nil, fmt.Errorf("resourceclaim returned an invalid NVIDIA DRA allocation result")
+		}
+	}
+	claimAPI := defaultAPIVersion(bundle.ResourceClaim.APIVersion, compiler.DRAResourceClaimV1Beta1)
+	sliceBody, err := reader.GetPath(ctx, "/apis/"+claimAPI+"/resourceslices")
+	if err != nil {
+		return false, nil, fmt.Errorf("read DRA resource slices: %w", err)
+	}
+	actual, err := ResolveDRAAllocationUUIDs(sliceBody, compiler.NVIDIADRADriver, results)
+	if err != nil {
+		return false, nil, err
+	}
+	if !equalStrings(actual, expected) {
+		return false, nil, fmt.Errorf("resourceclaim allocated device UUIDs %v, want binding device_ids %v", actual, expected)
+	}
+	return true, actual, nil
+}
+
+func expectedDRADeviceIDs(bundle *api.Bundle) []string {
+	if bundle == nil || len(bundle.RuntimeTargets) != 1 {
+		return nil
+	}
+	result := append([]string(nil), bundle.RuntimeTargets[0].DeviceIDs...)
+	for index := range result {
+		result[index] = strings.TrimSpace(result[index])
+	}
+	sort.Strings(result)
+	return result
+}
+
+func equalStrings(left, right []string) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	for index := range left {
+		if left[index] != right[index] {
+			return false
+		}
+	}
+	return true
 }
 
 func confirmBundlePresent(ctx context.Context, reader Reader, object Object, defaultNamespace string) error {

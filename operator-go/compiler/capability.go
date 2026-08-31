@@ -3,11 +3,13 @@ package compiler
 import "fmt"
 
 type CapabilitySet struct {
-	GPUProfiles         map[string]bool
-	RuntimeClasses      map[string]string
-	NodeSelectors       map[string]map[string]string
-	DefaultNodeSelector map[string]string
-	KubernetesAPIs      KubernetesAPIVersions
+	GPUProfiles          map[string]bool
+	ExactDevicePlacement map[string]bool
+	DRADeviceIDs         map[string]bool
+	RuntimeClasses       map[string]string
+	NodeSelectors        map[string]map[string]string
+	DefaultNodeSelector  map[string]string
+	KubernetesAPIs       KubernetesAPIVersions
 }
 
 // KubernetesAPIVersions records the concrete wire contracts selected from API
@@ -44,6 +46,7 @@ func SelectCapabilityProfile(requested RuntimeConfig, preferredGPUProfiles []str
 	}
 	selected := CapabilityProfile{
 		GPUProfile:     GPUProfileNone,
+		DRADeviceIDs:   cloneBoolMap(discovered.DRADeviceIDs),
 		RuntimeClass:   requested.RuntimeClass,
 		NodeSelector:   cloneStringMap(requested.NodeSelector),
 		KubernetesAPIs: discovered.KubernetesAPIs,
@@ -56,6 +59,9 @@ func SelectCapabilityProfile(requested RuntimeConfig, preferredGPUProfiles []str
 	}
 	if selected.GPUProfile == "" {
 		selected.GPUProfile = GPUProfileNone
+	}
+	if selected.GPUProfile != GPUProfileNone && !discovered.ExactDevicePlacement[selected.GPUProfile] {
+		return CapabilityProfile{}, fmt.Errorf("GPU profile %q cannot enforce scheduler-selected device identities", selected.GPUProfile)
 	}
 	if selected.KubernetesAPIs.KueueWorkload == "" {
 		return CapabilityProfile{}, fmt.Errorf("Kueue Workload API is not discoverable")
@@ -88,6 +94,17 @@ func SelectCapabilityProfile(requested RuntimeConfig, preferredGPUProfiles []str
 		}
 	}
 	return selected, nil
+}
+
+func cloneBoolMap(src map[string]bool) map[string]bool {
+	if len(src) == 0 {
+		return nil
+	}
+	dst := make(map[string]bool, len(src))
+	for key, value := range src {
+		dst[key] = value
+	}
+	return dst
 }
 
 func supportedKueueWorkloadAPI(value string) bool {

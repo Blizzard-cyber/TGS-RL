@@ -282,8 +282,38 @@ func (c *Client) discoverCapabilitiesByProbe(ctx context.Context) (compiler.Capa
 	for profile := range gpuProfiles {
 		capabilities.GPUProfiles[profile] = true
 	}
+	if capabilities.GPUProfiles[compiler.GPUProfileKubernetesDRA] {
+		deviceIDs, err := c.discoverNVIDIADRADeviceIDs(ctx, apiVersions.DRAResourceClaim)
+		if err != nil {
+			return compiler.CapabilitySet{}, err
+		}
+		if len(deviceIDs) == 0 {
+			delete(capabilities.GPUProfiles, compiler.GPUProfileKubernetesDRA)
+		} else {
+			capabilities.DRADeviceIDs = deviceIDs
+			capabilities.ExactDevicePlacement = map[string]bool{compiler.GPUProfileKubernetesDRA: true}
+		}
+	}
 
 	return capabilities, nil
+}
+
+func (c *Client) discoverNVIDIADRADeviceIDs(ctx context.Context, apiVersion string) (map[string]bool, error) {
+	if apiVersion == "" {
+		return nil, nil
+	}
+	body, statusCode, err := c.getURL(ctx, c.host+"/apis/"+apiVersion+"/resourceslices")
+	if err != nil {
+		return nil, err
+	}
+	if statusCode == http.StatusNotFound {
+		return nil, nil
+	}
+	result, err := bundleadapter.DiscoverDRADeviceUUIDs(body, compiler.NVIDIADRADriver)
+	if err != nil {
+		return nil, fmt.Errorf("discover NVIDIA DRA device UUIDs: %w", err)
+	}
+	return result, nil
 }
 
 func (c *Client) discoverKubernetesAPIVersions(ctx context.Context) (compiler.KubernetesAPIVersions, error) {
@@ -439,7 +469,7 @@ func (c *Client) discoverDRAGPUByProbe(ctx context.Context, apiVersion string) (
 	}
 	for _, item := range list.Items {
 		name := strings.ToLower(strings.TrimSpace(item.Metadata.Name))
-		if strings.Contains(name, "gpu") || strings.Contains(name, "nvidia") {
+		if name == compiler.NVIDIADRADeviceClass {
 			return true, nil
 		}
 	}

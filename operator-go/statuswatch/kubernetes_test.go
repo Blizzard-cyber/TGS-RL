@@ -6,12 +6,14 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
 	tgsrlv1 "github.com/Blizzard-cyber/TGS-RL/gen/go/tgsrl/v1"
 	"github.com/Blizzard-cyber/TGS-RL/operator-go/api"
 	"github.com/Blizzard-cyber/TGS-RL/operator-go/bundleadapter"
+	"github.com/Blizzard-cyber/TGS-RL/operator-go/compiler"
 )
 
 type httpObserverClient struct {
@@ -52,8 +54,10 @@ func TestKubernetesObserverMapsObservedStatus(t *testing.T) {
 			})
 		case "/apis/resource.k8s.io/v1beta1/namespaces/test-ns/resourceclaims/claim-a":
 			_ = json.NewEncoder(w).Encode(map[string]any{
-				"status": map[string]any{"allocation": map[string]any{"devices": map[string]any{"results": []any{}}}},
+				"status": map[string]any{"allocation": map[string]any{"devices": map[string]any{"results": []any{map[string]any{"request": "accelerator", "driver": compiler.NVIDIADRADriver, "pool": "node-a", "device": "gpu-0"}}}}},
 			})
+		case "/apis/resource.k8s.io/v1beta1/resourceslices":
+			_ = json.NewEncoder(w).Encode(map[string]any{"items": []any{map[string]any{"spec": map[string]any{"driver": compiler.NVIDIADRADriver, "pool": map[string]any{"name": "node-a", "generation": 1}, "devices": []any{map[string]any{"name": "gpu-0", "basic": map[string]any{"attributes": map[string]any{"uuid": map[string]any{"string": "GPU-aaaa"}}}}}}}}})
 		default:
 			t.Fatalf("unexpected path %s", r.URL.Path)
 		}
@@ -66,8 +70,10 @@ func TestKubernetesObserverMapsObservedStatus(t *testing.T) {
 	}
 	stream, err := observer.Watch(context.Background(), Request{
 		Bundle: &api.Bundle{
-			Namespace:  "test-ns",
-			Generation: 4,
+			Namespace:      "test-ns",
+			Generation:     4,
+			GPUProfile:     compiler.GPUProfileKubernetesDRA,
+			RuntimeTargets: []api.RuntimeTarget{{DeviceIDs: []string{"GPU-aaaa"}}},
 			Workload: api.Workload{
 				ObjectMeta: api.ObjectMeta{Name: "workload-a", Namespace: "test-ns"},
 			},
@@ -87,8 +93,42 @@ func TestKubernetesObserverMapsObservedStatus(t *testing.T) {
 	if err != nil {
 		t.Fatalf("recv failed: %v", err)
 	}
-	if !snapshot.WorkloadAdmitted || !snapshot.ResourceClaimsAllocated || snapshot.JobActive != 1 {
+	if !snapshot.WorkloadAdmitted || !snapshot.ResourceClaimsAllocated || len(snapshot.AllocatedDeviceIDs) == 0 || snapshot.JobActive != 1 {
 		t.Fatalf("unexpected snapshot: %+v", snapshot)
+	}
+	if len(snapshot.AllocatedDeviceIDs) != 1 || snapshot.AllocatedDeviceIDs[0] != "GPU-aaaa" {
+		t.Fatalf("allocated device IDs = %v, want GPU-aaaa", snapshot.AllocatedDeviceIDs)
+	}
+}
+
+func TestKubernetesObserverRejectsDRADeviceIdentityMismatch(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/apis/kueue.x-k8s.io/v1/namespaces/test-ns/workloads/workload-a":
+			_ = json.NewEncoder(w).Encode(map[string]any{"metadata": map[string]any{"generation": 4}, "status": map[string]any{"admission": map[string]any{"clusterQueue": "queue"}, "conditions": []any{map[string]any{"type": "Admitted", "status": "True", "observedGeneration": 4}}}})
+		case "/apis/batch/v1/namespaces/test-ns/jobs/job-a":
+			_ = json.NewEncoder(w).Encode(map[string]any{"status": map[string]any{"active": 1}})
+		case "/apis/resource.k8s.io/v1/namespaces/test-ns/resourceclaims/claim-a":
+			_ = json.NewEncoder(w).Encode(map[string]any{"status": map[string]any{"allocation": map[string]any{"devices": map[string]any{"results": []any{map[string]any{"request": "accelerator", "driver": compiler.NVIDIADRADriver, "pool": "node-a", "device": "gpu-0"}}}}}})
+		case "/apis/resource.k8s.io/v1/resourceslices":
+			_ = json.NewEncoder(w).Encode(map[string]any{"items": []any{map[string]any{"spec": map[string]any{"driver": compiler.NVIDIADRADriver, "pool": map[string]any{"name": "node-a", "generation": 1}, "devices": []any{map[string]any{"name": "gpu-0", "attributes": map[string]any{"uuid": map[string]any{"string": "GPU-other"}}}}}}}})
+		default:
+			t.Fatalf("unexpected path %s", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+
+	observer, err := NewKubernetes(httpObserverClient{baseURL: server.URL, client: server.Client()}, time.Millisecond)
+	if err != nil {
+		t.Fatal(err)
+	}
+	bundle := &api.Bundle{Namespace: "test-ns", Generation: 4, GPUProfile: compiler.GPUProfileKubernetesDRA, RuntimeTargets: []api.RuntimeTarget{{DeviceIDs: []string{"GPU-expected"}}}, Workload: api.Workload{TypeMeta: api.TypeMeta{APIVersion: "kueue.x-k8s.io/v1", Kind: "Workload"}, ObjectMeta: api.ObjectMeta{Name: "workload-a", Namespace: "test-ns"}}, Job: api.Job{ObjectMeta: api.ObjectMeta{Name: "job-a", Namespace: "test-ns"}}, ResourceClaim: &api.ResourceClaim{TypeMeta: api.TypeMeta{APIVersion: "resource.k8s.io/v1", Kind: "ResourceClaim"}, ObjectMeta: api.ObjectMeta{Name: "claim-a", Namespace: "test-ns"}}}
+	stream, err := observer.Watch(context.Background(), Request{Bundle: bundle, Bindings: []*tgsrlv1.Binding{{BindingId: "binding-a"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := stream.Recv(); err == nil || !strings.Contains(err.Error(), "want binding device_ids") {
+		t.Fatalf("Recv() error = %v, want device identity mismatch", err)
 	}
 }
 
