@@ -542,8 +542,10 @@ func (s *supervisor) apply(ctx context.Context, request runtimehelper.ControlReq
 		}
 		s.worker.State, s.worker.SafePoint, s.worker.Ready = "running", false, true
 	case "stop":
-		if err := signalGroup(s.worker.PID, syscall.SIGTERM); err != nil {
-			return s.response(false, err.Error())
+		if !request.PreserveProcess {
+			if err := signalGroup(s.worker.PID, syscall.SIGTERM); err != nil {
+				return s.response(false, err.Error())
+			}
 		}
 		s.worker.State, s.worker.Ready = "terminated", false
 	default:

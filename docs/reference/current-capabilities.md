@@ -23,7 +23,7 @@
 | CPU Mock Provider | **支持** | 能力匹配、逻辑资源绑定、L1–L4 逻辑模拟动作、故障注入、generation fence 和逐动作 rollback | Adaptive Planner 会在满足观测、能力与安全条件时生成 L1–L4 动作；这些结果只验证控制逻辑，不代表真实硬件行为或性能 |
 | NVIDIA Provider（默认） | **有条件（Conditional）** | `LocalDriver` 可通过 `nvidia-smi` 形成设备快照 | 需要 NVIDIA 驱动和 `nvidia-smi`；默认不声明资源动作 |
 | NVIDIA Driver v2 | **有条件（Conditional）** | 已实现 inventory、MPS `set_share` 写入与读回，以及 binding/runtime/MIG helper、Scheduler worker registry 和 workload bootstrap 的 generation fence、scoped registration、幂等 durable receipt、原子落盘、进程监管、PID 信号控制和 managed-worker lifecycle | DRA/CDI 负责设备注入；offload/reload 需要训练 worker 实现 Unix socket 协议；signal pause 不释放 GPU 显存；MPS PID 自动发布需要 host PID 可见性和共享目录；MIG 仅在已存在实例间切换；现有证据为真实本地子进程 + fake-command/CPU conformance，尚无真实 NVIDIA/CUDA 证据 |
-| 外部 Runtime Adapter | **有条件支持** | veRL 已有第一方 lifecycle/observation bridge、durable worker receipt、typed TraceEvent 和 CPU reference workload；其余 adapter 提供依赖检查、manifest 校验和 typed bridge 边界 | 真实 veRL worker、Ray/PyTorch/vLLM/SGLang、分布式环境和 GPU 资源控制仍需目标环境验证 |
+| 外部 Runtime Adapter | **已实现，待硬件验证** | veRL 已有第一方 lifecycle/observation bridge，以及面向 veRL 0.9 trainer/worker-group/checkpoint-manager 公共接口的 callback adapter；支持显式 safe-point hook、checkpoint、rollout abort/sleep/wake、actor/critic offload/reload、policy update、durable receipt 与 typed TraceEvent | 当前验证使用 CPU 对象替身和 reference workload；真实 veRL/Ray/PyTorch/vLLM 依赖组合、分布式 collective 和 GPU 资源释放仍待目标环境验证；SGLang 与 OpenRLHF 仍只有通用 adapter 边界 |
 | Kubernetes Operator | **有条件支持** | 编译和调和 `JobRunBundle`、Kueue `Workload`、Kubernetes `Job`、可选 `ResourceClaim`/`RuntimeClass`；typed NVIDIA DRA inventory 精确兑现 Full GPU/MIG UUID；可选 bootstrap 包装 RuntimeManifest command，自动注册真实 PID/control endpoint，并用 Pod readiness 阻止提前发布 RUNNING | 精确 UUID 仅适用于 NVIDIA DRA 的整数个完整 GPU/MIG；worker bootstrap 与 registry 仅完成 CPU/HTTP/fake-process 契约验证，尚无真实 Kubernetes/DRA/Pod 证据；MPS 仍需节点侧 PID namespace/shared mount；随附工件只部署 Operator |
 
 ## 单机方案
@@ -52,8 +52,8 @@ Runtime 可以选择以下 Adapter：
 | Rollout engine | vLLM、SGLang | `vllm`、`sglang` |
 
 Adapter 将 manifest 转换为结构化 `LaunchSpec`，并支持 direct command、Python module
-hook 或 API hook。veRL 默认使用仓库内 `adapters.frameworks.verl_bridge`，worker 仍必须嵌入
-bridge callback 并提供 control socket；其余 adapter 需要显式 bridge。要运行训练，还必须提供
+hook 或 API hook。veRL 可使用 `adapters.frameworks.verl_runtime.install_verl_control` 连接 0.9
+trainer，并由训练循环显式调用 safe-point hook；其余 adapter 需要显式 bridge。要运行训练，还必须提供
 与所选组合匹配的镜像、命令、资源后端、网络和分布式配置。缺少执行条件时请求会明确失败，
 不会回退为成功。
 

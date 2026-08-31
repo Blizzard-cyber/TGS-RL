@@ -173,7 +173,10 @@ func TestCompileWrapsWorkloadWithManagedWorkerBootstrap(t *testing.T) {
 	input.JobRun.Runtime.Environment["JOB_ONLY"] = "stale"
 	input.JobRun.Runtime.Environment["TGSRL_GENERATION"] = "malicious"
 	input.RuntimeManifest.WorkingDirectory = "/workspace"
+	input.RuntimeManifest.Framework = "verl"
 	input.RuntimeManifest.Environment["MANIFEST_ONLY"] = "frozen"
+	input.RuntimeManifest.PolicyVersion = "policy-7"
+	input.RuntimeManifest.Annotations["algorithm"] = "grpo"
 
 	bundle, err := c.compileBinding(input)
 	if err != nil {
@@ -207,6 +210,9 @@ func TestCompileWrapsWorkloadWithManagedWorkerBootstrap(t *testing.T) {
 	if environment["TGSRL_GENERATION"].Value != "7" || environment["TGSRL_SANDBOX_ID"].Value != "sandbox-1" || environment["TGSRL_DEVICE_IDS"].Value != "GPU-aaaa" {
 		t.Fatalf("bootstrap identity environment = %+v", environment)
 	}
+	if environment["TGSRL_POLICY_VERSION"].Value != input.RuntimeManifest.GetPolicyVersion() || environment["TGSRL_ALGORITHM"].Value != input.RuntimeManifest.GetAnnotations()["algorithm"] {
+		t.Fatalf("veRL execution environment = %+v", environment)
+	}
 	if environment["MANIFEST_ONLY"].Value != "frozen" {
 		t.Fatalf("manifest environment was not projected: %+v", environment)
 	}
@@ -215,6 +221,9 @@ func TestCompileWrapsWorkloadWithManagedWorkerBootstrap(t *testing.T) {
 	}
 	if environment["TGSRL_WORKING_DIRECTORY"].Value != "/workspace" {
 		t.Fatalf("manifest working directory was not preserved: %+v", environment)
+	}
+	if environment["TGSRL_VERL_CONTROL_SOCKET"].Value != "/tmp/tgsrl/verl.sock" || environment["TGSRL_VERL_TRACE_PATH"].Value == "" || environment["TGSRL_VERL_STATE_PATH"].Value == "" {
+		t.Fatalf("veRL bridge paths were not projected: %+v", environment)
 	}
 	if environment["TGSRL_VERIFY_DEVICE_IDENTITIES"].Value != "true" {
 		t.Fatalf("DRA workload must verify visible device identities: %+v", environment)

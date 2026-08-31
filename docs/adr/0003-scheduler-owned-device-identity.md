@@ -42,5 +42,7 @@ top-level 和 v1beta1 `basic` attributes 会合并，相同字段冲突时拒绝
 最小集群级 `list` 权限。未来若支持其他 DRA driver，必须新增明确的 identity adapter 和
 readback 规则，不能复用 NVIDIA 属性名称。
 
-本决策只关闭资源身份从 Scheduler 到 Pod 的一致性。worker 启动、PID/control socket 注册、
-MPS server PID 管理和真实 veRL callback 仍属于后续执行层工作。
+本决策只关闭资源身份从 Scheduler 到 Pod 的一致性。后续 workload bootstrap 已实现
+PID/control endpoint 注册和 generation-fenced MPS PID 发布；
+veRL 0.9 callback adapter 也已接到 trainer/worker-group/checkpoint-manager 公共接口。真实
+Kubernetes PID namespace、NVIDIA MPS 和分布式 veRL/GPU 行为仍属于后续环境验证。

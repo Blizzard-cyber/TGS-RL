@@ -42,7 +42,7 @@ class WorkerCallbacks(Protocol):
 
     def reload(self, checkpoint_ref: str, device_id: str, profile: str) -> None: ...
 
-    def stop(self) -> None: ...
+    def stop(self, preserve_process: bool = False) -> None: ...
 
     def resume(self) -> None: ...
 
@@ -80,7 +80,8 @@ class ReferenceCallbacks:
         if checkpoint_ref and not Path(checkpoint_ref).is_file():
             raise FileNotFoundError(checkpoint_ref)
 
-    def stop(self) -> None:
+    def stop(self, preserve_process: bool = False) -> None:
+        del preserve_process
         return None
 
     def resume(self) -> None:
@@ -284,7 +285,7 @@ class VerlWorkerBridge:
             self.callbacks.resume()
             self.state, self.safe_point, self.offloaded, self.ready = "running", False, False, True
         elif action == "stop":
-            self.callbacks.stop()
+            self.callbacks.stop(bool(request.get("preserve_process", False)))
             self.state, self.ready = "terminated", False
         elif action == "weight_update":
             policy_version = str(request.get("policy_version", "")).strip()
@@ -652,7 +653,7 @@ def _control_worker(request: ControlRequest) -> CommandResult:
     actions = {
         "launch": ("status",),
         "pause": ("prepare_pause", "pause"),
-        "checkpoint": ("prepare_pause", "checkpoint"),
+        "checkpoint": ("prepare_pause", "checkpoint", "resume"),
         "sleep": ("prepare_pause", "checkpoint", "offload"),
         "wake": ("reload", "resume"),
         "terminate": ("stop",),

@@ -6,6 +6,7 @@ import json
 import threading
 import time
 from collections.abc import Callable
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -38,6 +39,13 @@ from adapters.frameworks.verl_bridge import (
     ReferenceCallbacks,
     VerlWorkerBridge,
     WorkerIdentity,
+    request_worker,
+)
+from adapters.frameworks.verl_runtime import (
+    install_verl_control,
+    install_verl_control_from_environment,
+    observation_from_metrics,
+    worker_identity_from_environment,
 )
 from adapters.rollout_engines import SGLangRolloutEngineAdapter, VLLMRolloutEngineAdapter
 from adapters.runtime_registry import runtime_manifest_from_job
@@ -672,6 +680,455 @@ def test_verl_worker_bridge_recovers_completed_idempotency_state(tmp_path: Path)
     assert restarted.safe_point
     assert len(restarted.trace_path.read_text().splitlines()) == event_count
     assert state_path.stat().st_mode & 0o777 == 0o600
+
+
+@dataclass
+class _VerlWorkerGroupDouble:
+    calls: list[tuple[str, tuple[object, ...], dict[str, object]]] = field(default_factory=list)
+
+    def save_checkpoint(self, *args: object, **kwargs: object) -> None:
+        self.calls.append(("save_checkpoint", args, kwargs))
+        Path(str(args[0])).mkdir(parents=True, exist_ok=True)
+
+    def load_checkpoint(self, *args: object, **kwargs: object) -> None:
+        self.calls.append(("load_checkpoint", args, kwargs))
+
+    def to(self, *args: object, **kwargs: object) -> None:
+        self.calls.append(("to", args, kwargs))
+
+
+@dataclass
+class _VerlCheckpointManagerDouble:
+    calls: list[tuple[str, tuple[object, ...]]] = field(default_factory=list)
+
+    async def abort_replicas(self) -> None:
+        self.calls.append(("abort_replicas", ()))
+
+    async def sleep_replicas(self) -> None:
+        self.calls.append(("sleep_replicas", ()))
+
+    async def wake_up_replicas(self) -> None:
+        self.calls.append(("wake_up_replicas", ()))
+
+    async def resume_generation_replicas(self) -> None:
+        self.calls.append(("resume_generation_replicas", ()))
+
+    async def update_weights(self, global_steps: int) -> None:
+        self.calls.append(("update_weights", (global_steps,)))
+
+
+@dataclass
+class _VerlTrainerDouble:
+    global_steps: int
+    actor_rollout_wg: _VerlWorkerGroupDouble
+    critic_wg: _VerlWorkerGroupDouble
+    checkpoint_manager: _VerlCheckpointManagerDouble
+    use_critic: bool = True
+    replay_buffer: object = field(
+        default_factory=lambda: type(
+            "ReplayBufferDouble", (), {"partitions": {"train": {"a": {}, "b": {}}}}
+        )()
+    )
+
+
+def test_verl_runtime_adapter_drives_real_trainer_surface() -> None:
+    temporary = TemporaryDirectory(prefix="verl-runtime-", dir="/tmp")
+    root = Path(temporary.name)
+    actor, critic, manager = (
+        _VerlWorkerGroupDouble(),
+        _VerlWorkerGroupDouble(),
+        _VerlCheckpointManagerDouble(),
+    )
+    trainer = _VerlTrainerDouble(7, actor, critic, manager)
+    hook = install_verl_control(
+        trainer,
+        identity=WorkerIdentity(
+            run_id="run-1",
+            job_id="job-1",
+            trace_id="trace-1",
+            sandbox_id="sandbox-1",
+            role="actor-rollout",
+            generation=1,
+            policy_version="policy-7",
+            binding_id="binding-1",
+            device_id="GPU-a",
+            share=1,
+        ),
+        socket_path=root / "worker.sock",
+        trace_path=root / "trace.ndjson",
+        checkpoint_root=root / "checkpoints",
+        safe_point_timeout_seconds=1,
+        verify_version=False,
+    )
+    hook.start()
+    try:
+        deadline = time.monotonic() + 2
+        while not hook.bridge.socket_path.exists() and time.monotonic() < deadline:
+            time.sleep(0.01)
+        pause_result: dict[str, object] = {}
+        responses: list[dict[str, object]] = []
+
+        def pause_worker() -> None:
+            checkpoint_ref = ""
+            for index, action in enumerate(
+                ("prepare_pause", "checkpoint", "offload", "reload", "resume")
+            ):
+                generation = 2 if action in {"reload", "resume"} else 1
+                response = request_worker(
+                    hook.bridge.socket_path,
+                    {
+                        "action": action,
+                        "sandbox_id": "sandbox-1",
+                        "generation": generation,
+                        "idempotency_key": f"runtime:{action}:{index}",
+                        "checkpoint_ref": checkpoint_ref,
+                        "device_id": "GPU-a",
+                        "binding_id": "binding-1",
+                        "share": 1.0,
+                    },
+                )
+                responses.append(response)
+                if not response["accepted"]:
+                    return
+                pause_result.update(response)
+                checkpoint_ref = str(response.get("checkpoint_ref", "")) or checkpoint_ref
+
+        controller = threading.Thread(target=pause_worker)
+        controller.start()
+        deadline = time.monotonic() + 2
+        while not hook.callbacks._pause_requested.is_set() and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert hook.callbacks._pause_requested.is_set()
+        hook.safe_point(
+            event_type="sample_consumed",
+            items=4,
+            policy_lag=2,
+            sample_stale=True,
+            effective_sample_size=3.5,
+            accepted_samples=3,
+            expected_samples=4,
+        )
+        controller.join(timeout=2)
+        assert not controller.is_alive()
+        assert all(response["accepted"] for response in responses), responses
+        assert pause_result["state"] == "running"
+        checkpoint_ref = str(pause_result["checkpoint_ref"])
+        assert actor.calls[0][0] == "save_checkpoint"
+        assert critic.calls[0][0] == "save_checkpoint"
+        assert [call[0] for call in manager.calls[:2]] == ["abort_replicas", "sleep_replicas"]
+
+        assert checkpoint_ref.endswith("global_step_7")
+        assert hook.bridge.identity.binding_id == "binding-1"
+        assert hook.bridge.identity.device_id == "GPU-a"
+        assert hook.bridge.identity.share == 1.0
+        assert [call[0] for call in actor.calls] == [
+            "save_checkpoint",
+            "to",
+            "load_checkpoint",
+        ]
+        assert [call[0] for call in critic.calls] == [
+            "save_checkpoint",
+            "to",
+            "load_checkpoint",
+        ]
+        assert [call[0] for call in manager.calls] == [
+            "abort_replicas",
+            "sleep_replicas",
+            "wake_up_replicas",
+            "resume_generation_replicas",
+        ]
+        event = next(
+            json.loads(line)
+            for line in hook.bridge.trace_path.read_text().splitlines()
+            if json.loads(line)["event_type"] == "sample_consumed"
+        )
+        assert event["buffer_level"] == 2
+        assert event["contract_observation"]["policy_lag"] == 2
+        assert event["contract_observation"]["effective_sample_size"] == 3.5
+    finally:
+        hook.close()
+        temporary.cleanup()
+
+
+def test_verl_runtime_adapter_fails_closed_on_missing_capability(tmp_path: Path) -> None:
+    trainer = type("IncompleteTrainer", (), {"global_steps": 1})()
+    hook = install_verl_control(
+        trainer,
+        identity=WorkerIdentity(
+            run_id="run-1",
+            job_id="job-1",
+            trace_id="trace-1",
+            sandbox_id="sandbox-1",
+            role="actor",
+            generation=1,
+            policy_version="policy-1",
+        ),
+        socket_path=tmp_path / "worker.sock",
+        trace_path=tmp_path / "trace.ndjson",
+        checkpoint_root=tmp_path / "checkpoints",
+        verify_version=False,
+    )
+    hook.callbacks.safe_point_event.set()
+    prepared = hook.bridge.handle(
+        {
+            "action": "prepare_pause",
+            "sandbox_id": "sandbox-1",
+            "generation": 1,
+            "idempotency_key": "prepare",
+        }
+    )
+    assert prepared["accepted"] is True
+    response = hook.bridge.handle(
+        {
+            "action": "checkpoint",
+            "sandbox_id": "sandbox-1",
+            "generation": 1,
+            "idempotency_key": "checkpoint",
+        }
+    )
+    assert response["accepted"] is False
+    assert "actor_rollout_wg is unavailable" in response["error"]
+    assert "outcome is not confirmed" in response["error"]
+    assert hook.callbacks._pause_requested.is_set()
+    assert not hook.callbacks._resume_allowed.is_set()
+    hook.close()
+
+
+def test_verl_runtime_adapter_updates_policy_and_stops(tmp_path: Path) -> None:
+    trainer = _VerlTrainerDouble(
+        3,
+        _VerlWorkerGroupDouble(),
+        _VerlWorkerGroupDouble(),
+        _VerlCheckpointManagerDouble(),
+        use_critic=False,
+    )
+    hook = install_verl_control(
+        trainer,
+        identity=WorkerIdentity(
+            run_id="run-1",
+            job_id="job-1",
+            trace_id="trace-1",
+            sandbox_id="sandbox-1",
+            role="rollout",
+            generation=1,
+            policy_version="policy-3",
+        ),
+        socket_path=tmp_path / "worker.sock",
+        trace_path=tmp_path / "trace.ndjson",
+        checkpoint_root=tmp_path / "checkpoints",
+        verify_version=False,
+    )
+    updated = hook.bridge.handle(
+        {
+            "action": "weight_update",
+            "sandbox_id": "sandbox-1",
+            "generation": 1,
+            "idempotency_key": "update",
+            "policy_version": "policy-4",
+        }
+    )
+    assert updated["accepted"] is True
+    assert trainer.checkpoint_manager.calls == [("update_weights", (4,))]
+    stopped = hook.bridge.handle(
+        {"action": "stop", "sandbox_id": "sandbox-1", "generation": 1, "idempotency_key": "stop"}
+    )
+    assert stopped["accepted"] is True
+    assert stopped["state"] == "terminated"
+    assert hook.should_stop()
+    assert [call[0] for call in trainer.checkpoint_manager.calls] == [
+        "update_weights",
+        "abort_replicas",
+        "sleep_replicas",
+    ]
+
+
+def test_verl_runtime_identity_comes_from_bootstrap_environment() -> None:
+    identity = worker_identity_from_environment(
+        {
+            "TGSRL_RUN_ID": "run-1",
+            "TGSRL_JOB_ID": "job-1",
+            "TGSRL_TRACE_ID": "trace-1",
+            "TGSRL_SANDBOX_ID": "sandbox-1",
+            "TGSRL_BINDING_ID": "binding-1",
+            "TGSRL_GENERATION": "4",
+            "TGSRL_DEVICE_IDS": "GPU-a",
+            "TGSRL_ACCELERATOR_SHARE": "0.5",
+            "TGSRL_POLICY_VERSION": "policy-9",
+        }
+    )
+    assert identity.generation == 4
+    assert identity.device_id == "GPU-a"
+    assert identity.share == 0.5
+    assert identity.policy_version == "policy-9"
+    assert identity.role == "actor_rollout"
+    with pytest.raises(ValueError, match="TGSRL_TRACE_ID"):
+        worker_identity_from_environment({"TGSRL_RUN_ID": "run-1"})
+    with pytest.raises(ValueError, match=r"within \[0,1\]"):
+        worker_identity_from_environment(
+            {
+                "TGSRL_RUN_ID": "run-1",
+                "TGSRL_JOB_ID": "job-1",
+                "TGSRL_TRACE_ID": "trace-1",
+                "TGSRL_SANDBOX_ID": "sandbox-1",
+                "TGSRL_BINDING_ID": "binding-1",
+                "TGSRL_GENERATION": "4",
+                "TGSRL_ACCELERATOR_SHARE": "NaN",
+            }
+        )
+
+
+def test_verl_runtime_installs_from_bootstrap_environment(tmp_path: Path) -> None:
+    trainer = _VerlTrainerDouble(
+        2,
+        _VerlWorkerGroupDouble(),
+        _VerlWorkerGroupDouble(),
+        _VerlCheckpointManagerDouble(),
+        use_critic=False,
+    )
+    environment = {
+        "TGSRL_RUN_ID": "run-1",
+        "TGSRL_JOB_ID": "job-1",
+        "TGSRL_TRACE_ID": "trace-1",
+        "TGSRL_SANDBOX_ID": "sandbox-1",
+        "TGSRL_BINDING_ID": "binding-1",
+        "TGSRL_GENERATION": "2",
+        "TGSRL_DEVICE_IDS": "GPU-a",
+        "TGSRL_ACCELERATOR_SHARE": "1",
+        "TGSRL_VERL_CONTROL_SOCKET": str(tmp_path / "worker.sock"),
+        "TGSRL_VERL_TRACE_PATH": str(tmp_path / "trace.ndjson"),
+        "TGSRL_VERL_CHECKPOINT_ROOT": str(tmp_path / "checkpoints"),
+    }
+    hook = install_verl_control_from_environment(
+        trainer, environment=environment, verify_version=False
+    )
+    assert hook.bridge.identity.generation == 2
+    assert hook.bridge.socket_path == tmp_path / "worker.sock"
+    assert hook.callbacks.checkpoint_root == tmp_path / "checkpoints"
+
+
+def test_verl_runtime_restores_paused_callback_gate(tmp_path: Path) -> None:
+    identity = WorkerIdentity(
+        run_id="run-1",
+        job_id="job-1",
+        trace_id="trace-1",
+        sandbox_id="sandbox-1",
+        role="actor",
+        generation=1,
+        policy_version="policy-1",
+    )
+    state_path = tmp_path / "worker-state.json"
+    first = VerlWorkerBridge(
+        socket_path=tmp_path / "first.sock",
+        trace_path=tmp_path / "trace.ndjson",
+        state_path=state_path,
+        identity=identity,
+        callbacks=ReferenceCallbacks(tmp_path / "reference"),
+    )
+    first.safe_point, first.state, first.offloaded, first.ready = True, "sleeping", True, False
+    first._persist_state()
+    trainer = _VerlTrainerDouble(
+        1,
+        _VerlWorkerGroupDouble(),
+        _VerlWorkerGroupDouble(),
+        _VerlCheckpointManagerDouble(),
+        use_critic=False,
+    )
+    restored = install_verl_control(
+        trainer,
+        identity=identity,
+        socket_path=tmp_path / "second.sock",
+        trace_path=tmp_path / "trace.ndjson",
+        state_path=state_path,
+        checkpoint_root=tmp_path / "checkpoints",
+        verify_version=False,
+    )
+    assert restored.callbacks._paused
+    assert restored.callbacks._offloaded
+    assert not restored.callbacks._resume_allowed.is_set()
+
+
+def test_verl_runtime_rejects_wrong_installed_version(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import importlib.metadata
+
+    monkeypatch.setattr(importlib.metadata, "version", lambda _name: "0.8.0")
+    trainer = _VerlTrainerDouble(
+        1,
+        _VerlWorkerGroupDouble(),
+        _VerlWorkerGroupDouble(),
+        _VerlCheckpointManagerDouble(),
+        use_critic=False,
+    )
+    with pytest.raises(RuntimeError, match=r"expected 0\.9\.0"):
+        install_verl_control(
+            trainer,
+            identity=WorkerIdentity(
+                run_id="run-1",
+                job_id="job-1",
+                trace_id="trace-1",
+                sandbox_id="sandbox-1",
+                role="actor",
+                generation=1,
+                policy_version="policy-1",
+            ),
+            socket_path=tmp_path / "worker.sock",
+            trace_path=tmp_path / "trace.ndjson",
+        )
+
+
+def test_verl_runtime_rejects_in_process_device_replacement(tmp_path: Path) -> None:
+    actor, manager = _VerlWorkerGroupDouble(), _VerlCheckpointManagerDouble()
+    trainer = _VerlTrainerDouble(1, actor, _VerlWorkerGroupDouble(), manager, use_critic=False)
+    hook = install_verl_control(
+        trainer,
+        identity=WorkerIdentity(
+            run_id="run-1",
+            job_id="job-1",
+            trace_id="trace-1",
+            sandbox_id="sandbox-1",
+            role="actor",
+            generation=1,
+            policy_version="policy-1",
+            device_id="GPU-a",
+        ),
+        socket_path=tmp_path / "worker.sock",
+        trace_path=tmp_path / "trace.ndjson",
+        checkpoint_root=tmp_path,
+        verify_version=False,
+    )
+    response = hook.bridge.handle(
+        {
+            "action": "reload",
+            "sandbox_id": "sandbox-1",
+            "generation": 2,
+            "idempotency_key": "reload",
+            "checkpoint_ref": str(tmp_path / "global_step_1"),
+            "device_id": "GPU-b",
+        }
+    )
+    assert response["accepted"] is False
+    assert "new DRA/CDI workload generation" in response["error"]
+    assert actor.calls == []
+
+
+def test_verl_runtime_maps_native_metrics_without_guessing() -> None:
+    observation = observation_from_metrics(
+        {
+            "training/off_policy/trajectory_staleness/max": 3,
+            "rollout_is_eff_sample_size": 7.5,
+            "accepted_samples": 7,
+            "expected_samples": 8,
+            "perf/time_per_step_ms": 12.5,
+        },
+        items=8,
+    )
+    assert observation.policy_lag == 3
+    assert observation.sample_stale
+    assert observation.effective_sample_size == 7.5
+    assert observation.accepted_samples == 7
+    assert observation.expected_samples == 8
+    assert observation.duration_ms == 12.5
 
 
 def test_fake_framework_exposes_executable_lifecycle_contract() -> None:

@@ -460,6 +460,9 @@ func TestControllerReconfigureOrdersLifecycleAndPersistsReplacement(t *testing.T
 		case "checkpoint":
 			return ControlResponse{Accepted: true, Generation: 4, CheckpointRef: "checkpoint-a"}, nil
 		case "stop":
+			if !request.PreserveProcess {
+				t.Fatal("MIG rebind stop must preserve the bootstrap process")
+			}
 			return ControlResponse{Accepted: true, Generation: 4, State: "terminated"}, nil
 		case "reload":
 			if request.Generation != 5 || request.DeviceID != "MIG-target/2/0" || request.Profile != "1g.10gb" {

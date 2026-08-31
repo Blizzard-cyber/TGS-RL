@@ -113,16 +113,63 @@ bridge、分布式环境、镜像/命令和 GPU 资源控制；veRL 使用仓库
 control socket 和实际训练 callback。缺少依赖或执行条件时请求明确失败。详细要求见
 [支持范围与限制](../reference/current-capabilities.md)。
 
-veRL 的第一方 bridge 位于 `adapters.frameworks.verl_bridge`。训练 worker 嵌入
-`VerlWorkerBridge` 并提供 checkpoint/offload/reload/stop/resume callback 后，可通过 Unix
+veRL 的第一方协议 bridge 位于 `adapters.frameworks.verl_bridge`；
+`adapters.frameworks.verl_runtime.install_verl_control` 连接 veRL `0.9.0` 已初始化的 trainer、
+`actor_rollout_wg`、可选 `critic_wg` 与 `checkpoint_manager`。训练入口必须在 batch/rollout 边界
+显式调用返回 hook 的 `safe_point(...)`，并在主循环检查 `should_stop()`；hook 不会 monkey-patch
+上游训练循环。worker 随后可通过 Unix
 socket 接收 generation-fenced、幂等的生命周期请求；bridge 同时写出 policy version、buffer
 level、policy lag、staleness、ESS、sample coverage、safe-point 和 action latency 的原始事件。
 `TGSRL_VERL_CONTROL_SOCKET` 指定 worker socket；Runtime 会向 bridge 传递实际 generation 和
 调用幂等键。worker state/receipt 默认持久化在 trace 文件旁，重启后不会重复执行已确认动作，
 未确认动作会保持 fail-closed。可通过 `trace_sink` 将 typed `TraceEvent` 直接接入 Runtime
 ingestion。
+
+适配器使用 veRL 0.9 的公开对象接口：`save_checkpoint`/`load_checkpoint`、worker-group
+`to("cpu")`，以及 checkpoint manager 的 `abort_replicas`、`sleep_replicas`、
+`wake_up_replicas`、`resume_generation_replicas` 和 `update_weights`。任一必需对象或方法缺失时
+动作明确失败；checkpoint 路径固定为 `global_step_<trainer.global_steps>`。CPU contract test
+使用结构相同的对象替身验证调用顺序，但尚未加载真实 veRL/Ray/PyTorch/vLLM 运行时。
 `scripts/verl-reference-workload.py` 使用同一 bridge 执行无 GPU 的进程级 conformance workload；
 它只证明协议和执行链，不代表真实 veRL 训练或 GPU 性能。
+
+最小接入示例（在 veRL trainer 完成 worker 初始化后执行）：
+
+```python
+from adapters.frameworks import install_verl_control, worker_identity_from_environment
+
+control = install_verl_control(
+    trainer,
+    identity=worker_identity_from_environment(),
+    socket_path="/run/tgsrl/verl.sock",
+    trace_path="/var/lib/tgsrl/verl.ndjson",
+)
+control.start()
+try:
+    while not control.should_stop():
+        run_one_training_step()
+        control.safe_point(
+            event_type="phase_completed",
+            policy_lag=step_metrics["training/off_policy/trajectory_staleness/max"],
+            effective_sample_size=step_metrics["rollout_is_eff_sample_size"],
+        )
+finally:
+    control.close()
+```
+
+`safe_point()` 只能放在没有进行 collective、optimizer mutation 或在途 rollout 请求的边界。
+`prepare_pause` 会等待该 hook；`pause` 调用 `abort_replicas`，`offload` 再调用
+`sleep_replicas` 和 actor/critic worker-group 的 `to("cpu")`，`reload` 调用对应
+`load_checkpoint` 与 `wake_up_replicas`（veRL engine 自行处理 checkpoint device staging），
+`resume` 最后调用
+`resume_generation_replicas`。这些接口按锁定的 veRL `0.9.0` 检查；版本或方法不匹配时
+fail closed。设备 UUID 发生变化不能在同一个进程内 reload，必须由 DRA/CDI 创建新 workload
+generation。
+
+也可使用 `install_verl_control_from_environment()` 直接读取 Operator 注入的 run、sandbox、
+binding、generation、device、policy version 和 socket/trace 路径。`observation_from_metrics()`
+识别 veRL 0.9 的 trajectory staleness 与 rollout IS ESS 指标；调用方仍须从本次真实 batch
+传入 accepted/expected sample 数，缺少的指标不会被推测成 GPU 证据。
 
 ## 生成与规范化 Trace
 

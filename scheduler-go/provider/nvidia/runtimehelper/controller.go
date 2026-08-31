@@ -22,15 +22,16 @@ import (
 const WorkerControlTokenHeader = "X-TGSRL-Worker-Control-Token"
 
 type ControlRequest struct {
-	Action         string  `json:"action"`
-	SandboxID      string  `json:"sandbox_id"`
-	Generation     uint64  `json:"generation"`
-	IdempotencyKey string  `json:"idempotency_key"`
-	CheckpointRef  string  `json:"checkpoint_ref,omitempty"`
-	DeviceID       string  `json:"device_id,omitempty"`
-	Profile        string  `json:"profile,omitempty"`
-	BindingID      string  `json:"binding_id,omitempty"`
-	Share          float64 `json:"share,omitempty"`
+	Action          string  `json:"action"`
+	SandboxID       string  `json:"sandbox_id"`
+	Generation      uint64  `json:"generation"`
+	IdempotencyKey  string  `json:"idempotency_key"`
+	CheckpointRef   string  `json:"checkpoint_ref,omitempty"`
+	DeviceID        string  `json:"device_id,omitempty"`
+	Profile         string  `json:"profile,omitempty"`
+	BindingID       string  `json:"binding_id,omitempty"`
+	Share           float64 `json:"share,omitempty"`
+	PreserveProcess bool    `json:"preserve_process,omitempty"`
 }
 
 type ControlResponse struct {
@@ -531,7 +532,7 @@ func (c *Controller) apply(ctx context.Context, worker Worker, request ActionReq
 }
 
 func (c *Controller) call(ctx context.Context, worker Worker, request ActionRequest, action, checkpointRef string) (ControlResponse, error) {
-	controlRequest := ControlRequest{Action: action, SandboxID: worker.SandboxID, Generation: worker.Generation, IdempotencyKey: request.IdempotencyKey + ":" + action, CheckpointRef: checkpointRef, DeviceID: request.TargetDeviceID, Profile: request.TargetProfile, BindingID: request.TargetBindingID, Share: request.TargetShare}
+	controlRequest := ControlRequest{Action: action, SandboxID: worker.SandboxID, Generation: worker.Generation, IdempotencyKey: request.IdempotencyKey + ":" + action, CheckpointRef: checkpointRef, DeviceID: request.TargetDeviceID, Profile: request.TargetProfile, BindingID: request.TargetBindingID, Share: request.TargetShare, PreserveProcess: action == "stop" && (request.Operation == "rebind" || request.Operation == "recreate")}
 	var response ControlResponse
 	var err error
 	if worker.ControlURL != "" {

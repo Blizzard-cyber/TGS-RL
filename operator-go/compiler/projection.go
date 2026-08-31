@@ -101,6 +101,9 @@ func buildEnv(input *normalizedInput) []api.EnvVar {
 		"TGSRL_WORKER_REGISTRY_TOKEN": struct{}{}, "TGSRL_POD_IP": struct{}{},
 		"TGSRL_POD_UID":           struct{}{},
 		"TGSRL_WORKING_DIRECTORY": struct{}{}, "TGSRL_VERIFY_DEVICE_IDENTITIES": struct{}{},
+		"TGSRL_POLICY_VERSION": struct{}{}, "TGSRL_ALGORITHM": struct{}{},
+		"TGSRL_VERL_CONTROL_SOCKET": struct{}{}, "TGSRL_VERL_TRACE_PATH": struct{}{},
+		"TGSRL_VERL_STATE_PATH": struct{}{},
 	}
 	values := make([]api.EnvVar, 0, len(input.Manifest.GetEnvironment())+12)
 	for _, key := range sortedProtoLabelKeys(input.Manifest.GetEnvironment()) {
@@ -126,7 +129,16 @@ func buildEnv(input *normalizedInput) []api.EnvVar {
 		api.EnvVar{Name: "TGSRL_GENERATION", Value: fmt.Sprintf("%d", input.Generation)},
 		api.EnvVar{Name: "TGSRL_DEVICE_IDS", Value: strings.Join(input.binding.GetDeviceIds(), ",")},
 		api.EnvVar{Name: "TGSRL_ACCELERATOR_SHARE", Value: formatAcceleratorQuantity(acceleratorShare)},
+		api.EnvVar{Name: "TGSRL_POLICY_VERSION", Value: input.Manifest.GetPolicyVersion()},
+		api.EnvVar{Name: "TGSRL_ALGORITHM", Value: input.Manifest.GetAnnotations()["algorithm"]},
 	)
+	if strings.EqualFold(input.Manifest.GetFramework(), "verl") {
+		values = append(values,
+			api.EnvVar{Name: "TGSRL_VERL_CONTROL_SOCKET", Value: "/tmp/tgsrl/verl.sock"},
+			api.EnvVar{Name: "TGSRL_VERL_TRACE_PATH", Value: "/tmp/tgsrl/verl.ndjson"},
+			api.EnvVar{Name: "TGSRL_VERL_STATE_PATH", Value: "/tmp/tgsrl/verl-state.json"},
+		)
+	}
 	sort.Slice(values, func(i, j int) bool { return values[i].Name < values[j].Name })
 	return values
 }

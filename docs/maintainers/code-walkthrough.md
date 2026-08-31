@@ -212,9 +212,13 @@ helper 状态通过 `helperstate.Store` 使用文件锁、临时文件、`fsync`
 
 ## 8. veRL Bridge
 
-`adapters/frameworks/verl.py` 声明 veRL adapter，`verl_bridge.py` 提供仓库内第一方 bridge。
-bridge 本身不侵入 veRL 内部：训练 worker 需要嵌入 `VerlWorkerBridge`，实现 callback，并开放
-Unix socket。
+`adapters/frameworks/verl.py` 声明 veRL adapter，`verl_bridge.py` 提供协议与持久化状态机，
+`verl_runtime.py` 则把 callback 显式接到 veRL 0.9 trainer 的 actor/critic worker groups 和
+checkpoint manager。训练循环仍须在 batch/rollout 边界调用 `VerlControlHook.safe_point()`，
+从而让控制线程只在真实安全点执行 checkpoint/offload/reload，并开放 Unix socket。
+该适配器锁定 veRL `0.9.0` 的 `save_checkpoint`/`load_checkpoint`、worker-group `to()`，以及
+checkpoint manager 的 replica sleep/wake/abort 和 weight update 接口；它不通过反射猜测其他
+方法，也不会自动 monkey-patch trainer。
 
 生命周期映射为：
 
