@@ -181,6 +181,8 @@ HTTP 路由、分页、错误、CLI 和 Console 说明见
 Gateway、Job Controller、Runtime、Scheduler、Operator process backend 与 managed worker
 进程，并归档 service/worker trace；输出仍为 `CPU_INTEGRATION/NOT_RUN`，不能作为真实
 veRL package、Kubernetes 或 GPU Gate 通过的证据。
+`make gate-campaign` 校验并汇总 E1–E8 硬件实验合同；没有目标环境报告时八项均保持
+`NOT_RUN`，未校准的数值门槛保持 `BLOCKED`。
 
 发布镜像由 `Dockerfile.services` 的 `scheduler`、`job-controller`、`runtime`、
 `gateway`、`console` targets，以及独立的 Operator/worker-bootstrap Dockerfile 构建。

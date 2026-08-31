@@ -130,6 +130,17 @@ service job/run identity、Scheduler decision/plan identity、worker/runtime-uni
 stdout/stderr、服务日志、worker 日志、trace、锁定配置、环境指纹、digest 和汇总报告，报告
 指标必须与原始 trace 重算一致。
 
+`configs/gates/e1-e8.json` 将正式验证拆成 Full GPU identity、MIG identity、吞吐/VUG、
+staleness/ESS、共置干扰、动作代价、故障恢复和跨节点收敛八个独立实验。
+`python scripts/gate-tools.py campaign-evaluate` 会校验每个报告的 experiment identity、最低
+GPU evidence、执行模式、设备 profile、节点数、实际动作、故障注入/恢复配对和精确设备
+身份。缺少报告为 `NOT_RUN`，不合规证据为 `INVALID`；尚未从权威需求文档确认的数值阈值
+标记为 `calibration_required`，在补齐前保持 `BLOCKED`，不能形成发布 PASS。
+目标环境先用 `campaign-ingest E<n> --report <report.json>` 将每项报告与 trace、service/worker
+日志和 scenario 一并校验归档，再以 `campaign-evaluate --require-pass` 作为发布门禁。
+Hardware Validation workflow 的 `e1-e8-evaluate` 模式只消费名为 `gate-e1-e8-evidence` 的
+已采集 artifact，不在普通 GitHub runner 上伪造硬件执行。
+
 ## 明确不支持
 
 - 直接把 Gateway、gRPC 或 Prometheus 端点暴露到公网或不可信共享网络；

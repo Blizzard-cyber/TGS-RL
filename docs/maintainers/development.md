@@ -13,6 +13,7 @@ make race             # Go race detector
 make test-performance # 非 race Scheduler/Provider P95 回归预算
 make demo             # Python → Scheduler → Mock Provider 最小进程演示
 make product-e2e      # 完整后端产品流与恢复检查
+make gate-campaign    # 校验 E1-E8 campaign 并汇总已有硬件证据
 make check-generated  # 验证 Proto 生成物
 make check-governance # 校验 SBOM、兼容性证据与 patch ledger
 make check-public-content # 扫描工作树与可达历史中的私有链接、路径和凭据样式
@@ -114,6 +115,8 @@ CI 分别验证：
 - SBOM、兼容性证据、patch ledger 与公开内容检查。
 
 这些检查证明本地契约和控制流，不代表真实 GPU、Kubernetes 集群或训练性能已经验证。
+E1-E8 campaign 的 CI 只验证 schema 和缺证据时的 fail-closed 行为；真实报告必须在目标
+GPU/Kubernetes 环境生成并使用 `campaign-evaluate --require-pass` 做发布准入。
 
 ## 文档约定
 

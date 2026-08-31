@@ -19,7 +19,7 @@ GATEWAY_LISTEN ?= 127.0.0.1:8080
 OPERATOR_LISTEN ?= 127.0.0.1:50081
 SCHEDULER_FALLBACK ?= noop
 
-.PHONY: help doctor proto check-generated check-openapi proto-roundtrip check-migrations check-compose check-deploy render-kubernetes check-public-content sbom check-governance test-go test-performance test-python test-api test-console lint test race build-nvidia-binding build-nvidia-runtime build-nvidia-mig build-worker-bootstrap demo product-e2e gate-cpu-integration run-scheduler run-controller run-runtime run-gateway run-operator run-console
+.PHONY: help doctor proto check-generated check-openapi proto-roundtrip check-migrations check-compose check-deploy render-kubernetes check-public-content sbom check-governance gate-campaign test-go test-performance test-python test-api test-console lint test race build-nvidia-binding build-nvidia-runtime build-nvidia-mig build-worker-bootstrap demo product-e2e gate-cpu-integration run-scheduler run-controller run-runtime run-gateway run-operator run-console
 
 help:
 	@printf '%s\n' \
@@ -37,6 +37,7 @@ help:
 	  '  make sbom             regenerate the deterministic lockfile SBOM' \
 	  '  make check-governance validate SBOM, compatibility evidence, and patch ledger' \
 	  '  make gate-cpu-integration run the full local process Gate path' \
+	  '  make gate-campaign     validate E1-E8 and summarize available evidence' \
 	  '  make test-go          run all Go tests' \
 	  '  make test-performance run non-race Scheduler and Provider P95 budgets' \
 	  '  make test-python      sync the locked Python environment and run tests' \
@@ -116,6 +117,10 @@ check-governance:
 	python3 scripts/check-compatibility.py
 	python3 scripts/check-upstream-patches.py
 	bash scripts/check-openapi.sh
+
+gate-campaign:
+	uv run --frozen python scripts/gate-tools.py campaign-plan --campaign configs/gates/e1-e8.json >/dev/null
+	uv run --frozen python scripts/gate-tools.py campaign-evaluate --campaign configs/gates/e1-e8.json
 
 test-go:
 	go test $(GO_PACKAGES)

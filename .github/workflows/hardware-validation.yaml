@@ -12,8 +12,14 @@ on:
           - ci-simulator
           - cpu-integration
           - gpu-single-node
+          - e1-e8-evaluate
+      evidence_run_id:
+        description: "Workflow run ID containing gate-e1-e8-evidence (campaign mode only)"
+        required: false
+        type: string
 
 permissions:
+  actions: read
   contents: read
 
 jobs:
@@ -121,3 +127,41 @@ jobs:
             .cache/tgsrl/gate-gi/report.json
             .cache/tgsrl/gate-gi/artifacts/raw/archive.tar.gz
             .cache/tgsrl/gate-gi/artifacts/traces/*.json
+
+  campaign:
+    name: E1-E8 campaign evidence evaluation
+    if: ${{ github.event.inputs.mode == 'e1-e8-evaluate' }}
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Install Python 3.12.14
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12.14"
+      - name: Validate evidence source
+        env:
+          EVIDENCE_RUN_ID: ${{ github.event.inputs.evidence_run_id }}
+        run: |
+          case "${EVIDENCE_RUN_ID}" in
+            ''|*[!0-9]*) echo 'evidence_run_id must be a numeric workflow run ID' >&2; exit 1 ;;
+          esac
+      - name: Download E1-E8 evidence artifact
+        uses: actions/download-artifact@3c213e43f68338c8b4d0a2e01e7f4f741d787faf # v8.0.1
+        with:
+          name: gate-e1-e8-evidence
+          path: .cache/tgsrl/e1-e8
+          run-id: ${{ github.event.inputs.evidence_run_id }}
+          github-token: ${{ github.token }}
+      - name: Require the complete E1-E8 campaign to pass
+        run: |
+          python3 scripts/gate-tools.py campaign-evaluate \
+            --campaign configs/gates/e1-e8.json \
+            --reports-dir .cache/tgsrl/e1-e8 \
+            --output .cache/tgsrl/e1-e8/campaign-report.json \
+            --require-pass
+      - name: Upload campaign summary
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: gate-e1-e8-summary
+          path: .cache/tgsrl/e1-e8/campaign-report.json

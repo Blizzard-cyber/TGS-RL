@@ -1,0 +1,9 @@
+{
+  "schema_version": "tgsrl.io/hardware-scenario/v1alpha1",
+  "experiment_id": "E2",
+  "title": "MIG exact-device execution",
+  "topology": {"minimum_nodes": 1, "minimum_accelerators": 1, "gpu_profiles": ["mig"]},
+  "workload": {"framework": "verl", "execution_backend": "ray", "trainer": "pytorch", "rollout_engine": "vllm"},
+  "faults": [],
+  "required_evidence": ["mig-device-class", "parent-uuid", "worker-device-identity"]
+}

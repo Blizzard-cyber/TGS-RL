@@ -287,6 +287,14 @@ stdout/stderr 和 trace，再从事件重新计算指标。校验器不信任外
 
 `SIMULATED` 与 `CPU_INTEGRATION` 永远不能生成真实 GPU PASS。
 
+`configs/gates/e1-e8.json` 在单次 Gate report 之上增加 release campaign：E1 Full GPU
+identity、E2 MIG identity、E3 throughput/VUG、E4 staleness/ESS、E5 共置干扰、E6 动作
+代价、E7 故障恢复、E8 多节点收敛。每个 experiment 都绑定独立 scenario、最低证据等级、
+执行模式、GPU profile、节点/设备数量、必需动作与故障事件。使用
+`campaign-ingest E<n> --report ...` 导入单项外部证据，使用 `campaign-evaluate` 汇总。缺失报告、
+CPU 证据、身份不一致或故障未恢复都不能通过；`calibration_required` 阈值补齐前结果为
+`BLOCKED`。
+
 ## 11. 全仓源码审查发现并修复的问题
 
 | 问题 | 风险 | 修复 | 回归位置 |

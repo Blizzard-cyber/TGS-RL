@@ -1,0 +1,182 @@
+{
+  "schema_version": "tgsrl.io/gate-campaign/v1alpha1",
+  "campaign_id": "tgsrl-e1-e8",
+  "campaign_revision": 1,
+  "description": "Release validation matrix. Null thresholds are intentionally blocked until the authoritative requirement values are supplied.",
+  "experiments": [
+    {
+      "experiment_id": "E1",
+      "title": "Full GPU exact-device execution",
+      "gate_manifest": "configs/gates/gate-gi-process.json",
+      "scenario_manifest": "configs/scenarios/e1-full-gpu.yaml",
+      "output_directory": "e1-full-gpu",
+      "minimum_evidence": "GPU_SINGLE_NODE",
+      "requirements": {
+        "minimum_nodes": 1,
+        "minimum_accelerators": 1,
+        "gpu_profiles": ["full-gpu"],
+        "execution_modes": ["kubernetes-dra"],
+        "exact_device_identity": true,
+        "required_actions": ["bind"],
+        "required_events": ["worker_registered", "device_identity_verified"],
+        "required_faults": []
+      },
+      "rules": [
+        {"rule_id": "e1-actions-succeed", "metric": "action_success_rate", "comparison": "variant", "operator": ">=", "threshold": 1}
+      ]
+    },
+    {
+      "experiment_id": "E2",
+      "title": "MIG exact-device execution",
+      "gate_manifest": "configs/gates/gate-gi-process.json",
+      "scenario_manifest": "configs/scenarios/e2-mig.yaml",
+      "output_directory": "e2-mig",
+      "minimum_evidence": "GPU_SINGLE_NODE",
+      "requirements": {
+        "minimum_nodes": 1,
+        "minimum_accelerators": 1,
+        "gpu_profiles": ["mig"],
+        "execution_modes": ["kubernetes-dra"],
+        "exact_device_identity": true,
+        "required_actions": ["bind", "rebind"],
+        "required_events": ["worker_registered", "device_identity_verified"],
+        "required_faults": []
+      },
+      "rules": [
+        {"rule_id": "e2-actions-succeed", "metric": "action_success_rate", "comparison": "variant", "operator": ">=", "threshold": 1}
+      ]
+    },
+    {
+      "experiment_id": "E3",
+      "title": "Throughput and valuable-useful-GPU gain",
+      "gate_manifest": "configs/gates/gate-gi-process.json",
+      "scenario_manifest": "configs/scenarios/e3-throughput-vug.yaml",
+      "output_directory": "e3-throughput-vug",
+      "minimum_evidence": "GPU_SINGLE_NODE",
+      "requirements": {
+        "minimum_nodes": 1,
+        "minimum_accelerators": 1,
+        "gpu_profiles": ["full-gpu", "mig"],
+        "execution_modes": ["kubernetes-dra"],
+        "exact_device_identity": true,
+        "required_actions": ["bind"],
+        "required_events": ["sample_consumed", "workload_completed", "device_identity_verified"],
+        "required_faults": []
+      },
+      "rules": [
+        {"rule_id": "e3-throughput-ratio", "metric": "throughput_items_per_s", "comparison": "variant_over_baseline_ratio", "operator": ">=", "threshold": 0.95},
+        {"rule_id": "e3-vug-ratio", "metric": "valuable_useful_gpu_ratio", "comparison": "variant_over_baseline_ratio", "operator": ">=", "threshold": null, "calibration_required": true}
+      ]
+    },
+    {
+      "experiment_id": "E4",
+      "title": "Policy lag, staleness, and ESS safety",
+      "gate_manifest": "configs/gates/gate-gi-process.json",
+      "scenario_manifest": "configs/scenarios/e4-staleness-ess.yaml",
+      "output_directory": "e4-staleness-ess",
+      "minimum_evidence": "GPU_SINGLE_NODE",
+      "requirements": {
+        "minimum_nodes": 1,
+        "minimum_accelerators": 1,
+        "gpu_profiles": ["full-gpu", "mig"],
+        "execution_modes": ["kubernetes-dra"],
+        "exact_device_identity": true,
+        "required_actions": ["set_share"],
+        "required_events": ["sample_consumed", "device_identity_verified"],
+        "required_faults": ["staleness-pressure"]
+      },
+      "rules": [
+        {"rule_id": "e4-staleness-bound", "metric": "sample_staleness_ratio", "comparison": "variant", "operator": "<=", "threshold": null, "calibration_required": true},
+        {"rule_id": "e4-ess-floor", "metric": "effective_sample_size_mean", "comparison": "variant", "operator": ">=", "threshold": null, "calibration_required": true}
+      ]
+    },
+    {
+      "experiment_id": "E5",
+      "title": "Co-location interference isolation",
+      "gate_manifest": "configs/gates/gate-gi-process.json",
+      "scenario_manifest": "configs/scenarios/e5-interference.yaml",
+      "output_directory": "e5-interference",
+      "minimum_evidence": "GPU_SINGLE_NODE",
+      "requirements": {
+        "minimum_nodes": 1,
+        "minimum_accelerators": 1,
+        "gpu_profiles": ["full-gpu", "mig"],
+        "execution_modes": ["kubernetes-dra"],
+        "exact_device_identity": true,
+        "required_actions": ["set_share", "set_priority"],
+        "required_events": ["interference_observed", "device_identity_verified"],
+        "required_faults": ["colocation-interference"]
+      },
+      "rules": [
+        {"rule_id": "e5-interference-bound", "metric": "interference_ratio", "comparison": "variant", "operator": "<=", "threshold": null, "calibration_required": true}
+      ]
+    },
+    {
+      "experiment_id": "E6",
+      "title": "Lifecycle action cost",
+      "gate_manifest": "configs/gates/gate-gi-process.json",
+      "scenario_manifest": "configs/scenarios/e6-action-cost.yaml",
+      "output_directory": "e6-action-cost",
+      "minimum_evidence": "GPU_SINGLE_NODE",
+      "requirements": {
+        "minimum_nodes": 1,
+        "minimum_accelerators": 1,
+        "gpu_profiles": ["full-gpu", "mig"],
+        "execution_modes": ["kubernetes-dra"],
+        "exact_device_identity": true,
+        "required_actions": ["pause", "checkpoint", "offload", "reload", "resume"],
+        "required_events": ["device_identity_verified"],
+        "required_faults": []
+      },
+      "rules": [
+        {"rule_id": "e6-pause-latency", "metric": "pause_latency_ms", "comparison": "variant", "operator": "<=", "threshold": null, "calibration_required": true},
+        {"rule_id": "e6-checkpoint-latency", "metric": "checkpoint_latency_ms", "comparison": "variant", "operator": "<=", "threshold": null, "calibration_required": true},
+        {"rule_id": "e6-reload-latency", "metric": "reload_latency_ms", "comparison": "variant", "operator": "<=", "threshold": null, "calibration_required": true}
+      ]
+    },
+    {
+      "experiment_id": "E7",
+      "title": "Failure injection and transactional recovery",
+      "gate_manifest": "configs/gates/gate-gi-process.json",
+      "scenario_manifest": "configs/scenarios/e7-recovery.yaml",
+      "output_directory": "e7-recovery",
+      "minimum_evidence": "GPU_SINGLE_NODE",
+      "requirements": {
+        "minimum_nodes": 1,
+        "minimum_accelerators": 1,
+        "gpu_profiles": ["full-gpu", "mig"],
+        "execution_modes": ["kubernetes-dra"],
+        "exact_device_identity": true,
+        "required_actions": ["rollback", "resume"],
+        "required_events": ["fault_injected", "fault_recovered", "device_identity_verified"],
+        "required_faults": ["worker-exit", "control-response-loss"]
+      },
+      "rules": [
+        {"rule_id": "e7-action-success", "metric": "action_success_rate", "comparison": "variant", "operator": ">=", "threshold": 1},
+        {"rule_id": "e7-recovery-time", "metric": "transaction_recovery_time_ms", "comparison": "variant", "operator": "<=", "threshold": null, "calibration_required": true}
+      ]
+    },
+    {
+      "experiment_id": "E8",
+      "title": "Multi-node convergence and stability",
+      "gate_manifest": "configs/gates/gate-gi-process.json",
+      "scenario_manifest": "configs/scenarios/e8-multi-node-convergence.yaml",
+      "output_directory": "e8-multi-node-convergence",
+      "minimum_evidence": "GPU_MULTI_NODE",
+      "requirements": {
+        "minimum_nodes": 2,
+        "minimum_accelerators": 2,
+        "gpu_profiles": ["full-gpu", "mig"],
+        "execution_modes": ["kubernetes-dra"],
+        "exact_device_identity": true,
+        "required_actions": ["bind", "pause", "resume"],
+        "required_events": ["fault_injected", "fault_recovered", "workload_completed", "device_identity_verified"],
+        "required_faults": ["node-loss"]
+      },
+      "rules": [
+        {"rule_id": "e8-throughput-ratio", "metric": "throughput_items_per_s", "comparison": "variant_over_baseline_ratio", "operator": ">=", "threshold": 0.95},
+        {"rule_id": "e8-convergence-quality", "metric": "convergence_quality", "comparison": "variant_over_baseline_ratio", "operator": ">=", "threshold": null, "calibration_required": true}
+      ]
+    }
+  ]
+}

@@ -1,0 +1,9 @@
+{
+  "schema_version": "tgsrl.io/hardware-scenario/v1alpha1",
+  "experiment_id": "E8",
+  "title": "Multi-node convergence and stability",
+  "topology": {"minimum_nodes": 2, "minimum_accelerators": 2, "gpu_profiles": ["full-gpu", "mig"]},
+  "workload": {"comparison": "same-model-data-seed-and-nodes"},
+  "faults": [{"fault_id": "node-loss", "kind": "node-unavailable"}],
+  "required_evidence": ["node-identities", "recovery", "throughput", "convergence-quality"]
+}

@@ -86,3 +86,8 @@ def test_hardware_workflow_has_cpu_and_automated_self_hosted_gpu_entries() -> No
     assert "gpu-runner:" in text
     assert "runs-on: [self-hosted, gpu]" in text
     assert "hardware-run --evidence" in text
+    assert "e1-e8-evaluate" in text
+    assert "evidence_run_id" in text
+    assert "campaign-evaluate" in text
+    assert "--require-pass" in text
+    assert "actions: read" in text

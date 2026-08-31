@@ -12,6 +12,7 @@ ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = ROOT / "scripts" / "gate-tools.py"
 MANIFEST = ROOT / "configs" / "gates" / "gate-gi.json"
 FULL_STACK_MANIFEST = ROOT / "configs" / "gates" / "gate-gi-process.json"
+CAMPAIGN = ROOT / "configs" / "gates" / "e1-e8.json"
 SPEC = importlib.util.spec_from_file_location("tgsrl_gate_tools", SCRIPT)
 assert SPEC is not None and SPEC.loader is not None
 GATE_TOOLS = importlib.util.module_from_spec(SPEC)
@@ -50,6 +51,181 @@ def read_report(output_dir: Path) -> dict[str, Any]:
     )
 
 
+def campaign_result(reports_dir: Path) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        [
+            sys.executable,
+            str(SCRIPT),
+            "campaign-evaluate",
+            "--campaign",
+            str(CAMPAIGN),
+            "--reports-dir",
+            str(reports_dir),
+        ],
+        cwd=ROOT,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+
+def _write_full_stack_gpu_report(output: Path, experiment_id: str, profile: str) -> None:
+    manifest = GATE_TOOLS.load_manifest(FULL_STACK_MANIFEST)
+    paths = GATE_TOOLS.artifact_paths(manifest, output)
+    paths.baseline_trace.parent.mkdir(parents=True)
+    traces: dict[str, dict[str, Any]] = {}
+    for label in ("baseline", "variant"):
+        events: list[dict[str, Any]] = []
+        for phase, count in (("warmup", 1), ("measurement", 3)):
+            for iteration in range(1, count + 1):
+                common = {
+                    "experiment_id": experiment_id,
+                    "label": label,
+                    "phase": phase,
+                    "iteration": iteration,
+                    "device": "cuda",
+                    "node_id": "gpu-node-1",
+                    "service_job_id": f"job-{label}-{phase}-{iteration}",
+                    "service_run_id": f"run-{label}-{phase}-{iteration}",
+                }
+                events.extend(
+                    [
+                        common
+                        | {
+                            "event_type": "sample_consumed",
+                            "source": "worker",
+                            "runtime_unit_id": "unit-1",
+                            "worker_id": "worker-1",
+                            "duration_ms": 1.0,
+                            "gpu_active_ms": 2.0,
+                            "useful_gpu_time_ms": 1.5,
+                            "contract_observation": {
+                                "policy_lag": 0,
+                                "sample_stale": False,
+                                "effective_sample_size": 1.0,
+                            },
+                        },
+                        common
+                        | {
+                            "event_type": "workload_completed",
+                            "source": "worker",
+                            "runtime_unit_id": "unit-1",
+                            "worker_id": "worker-1",
+                            "elapsed_ms": 10.0,
+                            "item_count": 1,
+                            "convergence_quality": 1.0,
+                        },
+                        common
+                        | {
+                            "event_type": "decision_applied",
+                            "source": "scheduler",
+                            "action": "bind",
+                            "decision_id": "decision-1",
+                            "plan_id": "plan-1",
+                            "duration_ms": 1.0,
+                            "succeeded": True,
+                        },
+                    ]
+                )
+                events.extend(
+                    [
+                        common
+                        | {
+                            "event_type": "worker_registered",
+                            "source": "worker",
+                            "runtime_unit_id": "unit-1",
+                            "worker_id": "worker-1",
+                        },
+                        common
+                        | {
+                            "event_type": "device_identity_verified",
+                            "source": "worker",
+                            "runtime_unit_id": "unit-1",
+                            "worker_id": "worker-1",
+                            "scheduler_device_ids": ["GPU-1"],
+                            "allocated_device_ids": ["GPU-1"],
+                            "worker_device_ids": ["GPU-1"],
+                        },
+                    ]
+                )
+                if label == "variant":
+                    events.extend(
+                        common
+                        | {
+                            "event_type": "decision_applied",
+                            "source": "operator",
+                            "action": action,
+                            "duration_ms": 1.0,
+                            "succeeded": True,
+                        }
+                        for action in ("pause", "resume")
+                    )
+        metrics = GATE_TOOLS._metrics_from_events(events)
+        trace = {
+            "schema_version": "tgsrl.io/gate-trace/v1alpha1",
+            "suite_id": manifest.data["suite_id"],
+            "label": label,
+            "seed": manifest.data["workload_lock"]["seed"],
+            "events": events,
+            "metrics": metrics,
+        }
+        path = paths.baseline_trace if label == "baseline" else paths.variant_trace
+        path.write_text(json.dumps(trace), encoding="utf-8")
+        traces[label] = trace
+    report = {
+        "schema_version": "tgsrl.io/gate-run-record/v1alpha1",
+        "suite_id": manifest.data["suite_id"],
+        "experiment_id": experiment_id,
+        "evidence": "GPU_SINGLE_NODE",
+        "status": "PASSED",
+        "simulated": False,
+        "workload_lock": manifest.data["workload_lock"],
+        "environment_fingerprint": {
+            "host_hash": "host-digest",
+            "platform": "linux",
+            "python_version": "3.12",
+            "git_commit": "abc123",
+            "git_dirty": False,
+            "execution_mode": "kubernetes-dra",
+            "gpu_profile": profile,
+            "accelerator_count": 1,
+            "accelerator_inventory_digest": "gpu-inventory-digest",
+        },
+        "warmup_runs": manifest.data["comparisons"]["warmup_runs"],
+        "measurement_runs": manifest.data["comparisons"]["measurement_runs"],
+        "baseline_trace": paths.baseline_trace.relative_to(output).as_posix(),
+        "variant_trace": paths.variant_trace.relative_to(output).as_posix(),
+        "metrics": {label: trace["metrics"] for label, trace in traces.items()},
+        "trace_capture": {
+            "baseline_digest": hashlib.sha256(paths.baseline_trace.read_bytes()).hexdigest(),
+            "variant_digest": hashlib.sha256(paths.variant_trace.read_bytes()).hexdigest(),
+        },
+        "executions": [{"executed": True, "exit_code": 0, "timed_out": False} for _ in range(8)],
+    }
+    service_log = output / "artifacts/services/control-plane/scheduler.log"
+    service_log.parent.mkdir(parents=True)
+    service_log.write_text("scheduler decision recorded\n", encoding="utf-8")
+    report["service_log_artifacts"] = [
+        {
+            "path": service_log.relative_to(output).as_posix(),
+            "sha256": hashlib.sha256(service_log.read_bytes()).hexdigest(),
+        }
+    ]
+    campaign = json.loads(CAMPAIGN.read_text(encoding="utf-8"))
+    experiment = next(
+        item for item in campaign["experiments"] if item["experiment_id"] == experiment_id
+    )
+    scenario_source = ROOT / experiment["scenario_manifest"]
+    scenario = output / "artifacts/config" / scenario_source.name
+    scenario.parent.mkdir(parents=True, exist_ok=True)
+    scenario.write_bytes(scenario_source.read_bytes())
+    report["campaign_scenario"] = {
+        "path": scenario.relative_to(output).as_posix(),
+        "sha256": hashlib.sha256(scenario.read_bytes()).hexdigest(),
+    }
+    paths.report.write_text(json.dumps(report), encoding="utf-8")
+
+
 def test_simulator_generates_ephemeral_artifacts_without_gpu_claim(tmp_path: Path) -> None:
     simulated = run_tool(tmp_path, "simulate")
     assert simulated.returncode == 0, simulated.stderr
@@ -82,6 +258,196 @@ def test_replay_entry_is_derived_from_manifest(tmp_path: Path) -> None:
     assert replay_entry["suite_id"] == "gate-g-i"
     assert replay_entry["scenario_manifest"] == "configs/scenarios/gate-gi.yaml"
     assert replay_entry["baseline_trace"].endswith("baseline-trace.json")
+
+
+def test_campaign_defines_e1_through_e8_and_missing_evidence_is_not_run(
+    tmp_path: Path,
+) -> None:
+    planned = subprocess.run(
+        [sys.executable, str(SCRIPT), "campaign-plan", "--campaign", str(CAMPAIGN)],
+        cwd=ROOT,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    assert planned.returncode == 0, planned.stderr
+    plan = json.loads(planned.stdout)
+    assert [item["experiment_id"] for item in plan["experiments"]] == [
+        f"E{index}" for index in range(1, 9)
+    ]
+
+    evaluated = campaign_result(tmp_path)
+    assert evaluated.returncode == 0, evaluated.stderr
+    result = json.loads(evaluated.stdout)
+    assert result["status"] == "NOT_RUN"
+    assert {item["status"] for item in result["experiments"]} == {"NOT_RUN"}
+
+
+def test_campaign_does_not_promote_cpu_evidence_to_gpu_pass(tmp_path: Path) -> None:
+    output = tmp_path / "e1-full-gpu"
+    simulated = run_tool_with_manifest(FULL_STACK_MANIFEST, output, "simulate")
+    assert simulated.returncode == 0, simulated.stderr
+    report = read_report(output)
+    report["experiment_id"] = "E1"
+    report["evidence"] = "CPU_INTEGRATION"
+    report["simulated"] = False
+    report["smoke"] = {"executed": True, "exit_code": 0}
+    report["environment_fingerprint"]["execution_mode"] = "cpu-full-stack"
+    (output / "report.json").write_text(json.dumps(report), encoding="utf-8")
+
+    evaluated = campaign_result(tmp_path)
+    assert evaluated.returncode == 0, evaluated.stderr
+    e1 = json.loads(evaluated.stdout)["experiments"][0]
+    assert e1["status"] == "INVALID"
+    assert "requires at least GPU_SINGLE_NODE evidence" in e1["blockers"]
+
+
+def test_campaign_blocks_uncalibrated_threshold_and_rejects_missing_fault_evidence(
+    tmp_path: Path,
+) -> None:
+    _write_full_stack_gpu_report(tmp_path / "e3-throughput-vug", "E3", "full-gpu")
+    _write_full_stack_gpu_report(tmp_path / "e7-recovery", "E7", "full-gpu")
+
+    evaluated = campaign_result(tmp_path)
+    assert evaluated.returncode == 0, evaluated.stderr
+    by_id = {item["experiment_id"]: item for item in json.loads(evaluated.stdout)["experiments"]}
+    assert by_id["E3"]["status"] == "BLOCKED"
+    assert any(rule.get("reason") == "calibration_required" for rule in by_id["E3"]["rules"])
+    assert by_id["E7"]["status"] == "INVALID"
+    assert any("required fault worker-exit" in blocker for blocker in by_id["E7"]["blockers"])
+
+
+def test_campaign_accepts_complete_exact_device_evidence(tmp_path: Path) -> None:
+    _write_full_stack_gpu_report(tmp_path / "e1-full-gpu", "E1", "full-gpu")
+
+    evaluated = campaign_result(tmp_path)
+
+    assert evaluated.returncode == 0, evaluated.stderr
+    e1 = json.loads(evaluated.stdout)["experiments"][0]
+    assert e1["status"] == "PASSED"
+    assert e1["blockers"] == []
+
+
+def test_campaign_rejects_device_identity_mismatch(tmp_path: Path) -> None:
+    output = tmp_path / "e1-full-gpu"
+    _write_full_stack_gpu_report(output, "E1", "full-gpu")
+    report = read_report(output)
+    variant_path = output / report["variant_trace"]
+    variant = json.loads(variant_path.read_text(encoding="utf-8"))
+    identity = next(
+        event
+        for event in variant["events"]
+        if event["phase"] == "measurement" and event["event_type"] == "device_identity_verified"
+    )
+    identity["worker_device_ids"] = ["GPU-other"]
+    variant_path.write_text(json.dumps(variant), encoding="utf-8")
+    report["trace_capture"]["variant_digest"] = hashlib.sha256(
+        variant_path.read_bytes()
+    ).hexdigest()
+    (output / "report.json").write_text(json.dumps(report), encoding="utf-8")
+
+    evaluated = campaign_result(tmp_path)
+
+    assert evaluated.returncode == 0, evaluated.stderr
+    e1 = json.loads(evaluated.stdout)["experiments"][0]
+    assert e1["status"] == "INVALID"
+    assert any(
+        "scheduler, allocation, and worker device identities differ" in blocker
+        for blocker in e1["blockers"]
+    )
+
+
+def test_campaign_ingest_rejects_wrong_experiment_identity(tmp_path: Path) -> None:
+    output = tmp_path / "source"
+    _write_full_stack_gpu_report(output, "E2", "full-gpu")
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(SCRIPT),
+            "campaign-ingest",
+            "E1",
+            "--campaign",
+            str(CAMPAIGN),
+            "--reports-dir",
+            str(tmp_path / "reports"),
+            "--report",
+            str(output / "report.json"),
+        ],
+        cwd=ROOT,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 1
+    assert "experiment_id does not match" in result.stderr
+
+
+def test_campaign_ingest_rejects_cpu_evidence(tmp_path: Path) -> None:
+    source = tmp_path / "source"
+    simulated = run_tool_with_manifest(FULL_STACK_MANIFEST, source, "simulate")
+    assert simulated.returncode == 0, simulated.stderr
+    report = read_report(source)
+    report["experiment_id"] = "E1"
+    report["evidence"] = "CPU_INTEGRATION"
+    report["simulated"] = False
+    (source / "report.json").write_text(json.dumps(report), encoding="utf-8")
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(SCRIPT),
+            "campaign-ingest",
+            "E1",
+            "--campaign",
+            str(CAMPAIGN),
+            "--reports-dir",
+            str(tmp_path / "reports"),
+            "--report",
+            str(source / "report.json"),
+        ],
+        cwd=ROOT,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 1
+    assert "requires at least GPU_SINGLE_NODE evidence" in result.stderr
+
+
+def test_campaign_ingest_copies_self_contained_evidence(tmp_path: Path) -> None:
+    source = tmp_path / "source"
+    reports = tmp_path / "reports"
+    _write_full_stack_gpu_report(source, "E1", "full-gpu")
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(SCRIPT),
+            "campaign-ingest",
+            "E1",
+            "--campaign",
+            str(CAMPAIGN),
+            "--reports-dir",
+            str(reports),
+            "--report",
+            str(source / "report.json"),
+        ],
+        cwd=ROOT,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    target = reports / "e1-full-gpu"
+    report = read_report(target)
+    assert (target / report["campaign_scenario"]["path"]).is_file()
+    assert all((target / record["path"]).is_file() for record in report["service_log_artifacts"])
+    evaluated = campaign_result(reports)
+    assert evaluated.returncode == 0, evaluated.stderr
+    assert json.loads(evaluated.stdout)["experiments"][0]["status"] == "PASSED"
 
 
 def test_invalid_manifest_rules_are_rejected(tmp_path: Path) -> None:
@@ -379,6 +745,9 @@ def test_gpu_ingest_copies_external_artifacts_and_preserves_not_run(tmp_path: Pa
             "end_to_end_iteration_ms_p50": 10.0,
             "scheduling_latency_ms_p95": 1.0,
             "gpu_active_time_ms": 2.0,
+            "valuable_useful_gpu_ratio": 0.0,
+            "interference_ratio": 0.0,
+            "convergence_quality": 0.0,
             "queue_depth_max": 1.0,
             "policy_lag_p95": 0.0,
             "sample_staleness_ratio": 0.0,

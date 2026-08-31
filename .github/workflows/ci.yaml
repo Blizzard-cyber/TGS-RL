@@ -149,6 +149,8 @@ jobs:
         run: uv sync --frozen
       - name: Validate deterministic SBOM and compatibility claims
         run: make check-governance
+      - name: Validate E1-E8 campaign contract
+        run: make gate-campaign
       - name: Check public repository content
         run: make check-public-content
 

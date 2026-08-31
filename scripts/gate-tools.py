@@ -16,14 +16,17 @@ import statistics
 import subprocess
 import sys
 import tarfile
+import tempfile
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_MANIFEST = ROOT / "configs" / "gates" / "gate-gi.json"
 DEFAULT_OUTPUT_DIR = ROOT / ".cache" / "tgsrl" / "gate-gi"
+DEFAULT_CAMPAIGN = ROOT / "configs" / "gates" / "e1-e8.json"
+DEFAULT_CAMPAIGN_REPORTS = ROOT / ".cache" / "tgsrl" / "e1-e8"
 
 STATUS_VALUES = {"NOT_RUN", "BLOCKED", "INVALID", "PASSED", "FAILED"}
 EVIDENCE_VALUES = {
@@ -34,6 +37,12 @@ EVIDENCE_VALUES = {
 }
 REAL_GPU_EVIDENCE = {"GPU_SINGLE_NODE", "GPU_MULTI_NODE"}
 REAL_EVIDENCE = {"CPU_INTEGRATION", *REAL_GPU_EVIDENCE}
+EVIDENCE_RANK = {
+    "SIMULATED": 0,
+    "CPU_INTEGRATION": 1,
+    "GPU_SINGLE_NODE": 2,
+    "GPU_MULTI_NODE": 3,
+}
 
 
 class GateToolError(ValueError):
@@ -269,6 +278,9 @@ def _simulated_trace(
             "end_to_end_iteration_ms_p50": float(latency),
             "scheduling_latency_ms_p95": 1.0,
             "gpu_active_time_ms": 0.0,
+            "valuable_useful_gpu_ratio": 0.0,
+            "interference_ratio": 0.0,
+            "convergence_quality": 0.0,
             "queue_depth_max": 1.0,
             "policy_lag_p95": 1.0,
             "sample_staleness_ratio": 0.0,
@@ -456,6 +468,18 @@ def _metrics_from_events(events: list[dict[str, Any]]) -> dict[str, float]:
     action_count = len(actions)
     scheduler_actions = [event for event in actions if event.get("source") == "scheduler"]
     decision_count = len(scheduler_actions) if scheduler_actions else len(actions)
+    gpu_active_time_ms = sum(float(event.get("gpu_active_ms", 0.0)) for event in consumed)
+    useful_gpu_time_ms = sum(float(event.get("useful_gpu_time_ms", 0.0)) for event in consumed)
+    interference = [
+        float(event.get("interference_ratio", 0.0))
+        for event in measured
+        if event.get("event_type") == "interference_observed"
+    ]
+    convergence = [
+        float(event.get("convergence_quality", 0.0))
+        for event in completed
+        if "convergence_quality" in event
+    ]
     metrics = {
         "latency_ms_p50": _percentile(latencies, 0.50),
         "latency_ms_p95": _percentile(latencies, 0.95),
@@ -469,7 +493,12 @@ def _metrics_from_events(events: list[dict[str, Any]]) -> dict[str, float]:
             [float(event.get("duration_ms", 0.0)) for event in (scheduler_actions or actions)],
             0.95,
         ),
-        "gpu_active_time_ms": sum(float(event.get("gpu_active_ms", 0.0)) for event in consumed),
+        "gpu_active_time_ms": gpu_active_time_ms,
+        "valuable_useful_gpu_ratio": (
+            0.0 if gpu_active_time_ms <= 0 else useful_gpu_time_ms / gpu_active_time_ms
+        ),
+        "interference_ratio": statistics.fmean(interference) if interference else 0.0,
+        "convergence_quality": statistics.fmean(convergence) if convergence else 0.0,
         "queue_depth_max": float(max(int(event.get("buffer_level", 0)) for event in measured)),
         "policy_lag_p95": _percentile(
             [float(observation.get("policy_lag", 0.0)) for observation in observations], 0.95
@@ -770,7 +799,8 @@ def cmd_cpu_smoke(args: argparse.Namespace) -> int:
     if errors:
         raise GateToolError("; ".join(errors))
     _archive_run(paths)
-    _print_artifacts(paths)
+    if not getattr(args, "quiet", False):
+        _print_artifacts(paths)
     return 0
 
 
@@ -867,12 +897,44 @@ def cmd_ingest(args: argparse.Namespace) -> int:
             digest = hashlib.sha256(payload).hexdigest()
             if supplied_capture.get(f"{side}_digest") != digest:
                 raise GateToolError(f"external {side} trace digest does not match the artifact")
+    service_log_payloads: list[tuple[Path, bytes, str]] = []
+    raw_service_logs = report.get("service_log_artifacts", [])
+    if not isinstance(raw_service_logs, list):
+        raise GateToolError("external service_log_artifacts must be a list")
+    seen_log_paths: set[Path] = set()
+    for index, record in enumerate(raw_service_logs):
+        if not isinstance(record, dict):
+            raise GateToolError(f"external service log artifact {index} must be an object")
+        relative = _relative_path(record.get("path"), f"service_log_artifacts[{index}].path")
+        if relative.parts[:2] != ("artifacts", "services"):
+            raise GateToolError(
+                f"service_log_artifacts[{index}].path must stay under artifacts/services"
+            )
+        if relative in seen_log_paths:
+            raise GateToolError("external service log artifact paths must be unique")
+        seen_log_paths.add(relative)
+        artifact = _resolve_external_artifact(
+            source, record.get("path"), f"service_log_artifacts[{index}].path"
+        )
+        payload = artifact.read_bytes()
+        digest = hashlib.sha256(payload).hexdigest()
+        if record.get("sha256") != digest:
+            raise GateToolError(f"external service log artifact {index} digest does not match")
+        service_log_payloads.append((relative, payload, digest))
     _reset_managed_artifacts(paths)
     paths.baseline_trace.parent.mkdir(parents=True, exist_ok=True)
     paths.baseline_trace.write_bytes(baseline_bytes)
     paths.variant_trace.write_bytes(variant_bytes)
     report["baseline_trace"] = _artifact_name(paths, paths.baseline_trace)
     report["variant_trace"] = _artifact_name(paths, paths.variant_trace)
+    if service_log_payloads:
+        copied_logs: list[dict[str, str]] = []
+        for relative, payload, digest in service_log_payloads:
+            destination = paths.root / relative
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            destination.write_bytes(payload)
+            copied_logs.append({"path": relative.as_posix(), "sha256": digest})
+        report["service_log_artifacts"] = copied_logs
     _write_json(paths.report, report)
     errors = _validate_report(manifest, paths, report)
     if errors:
@@ -944,24 +1006,36 @@ def _validate_report(
                 or fingerprint.get("execution_mode") != "cpu-full-stack"
             ):
                 errors.append("full-stack CPU evidence requires execution_mode=cpu-full-stack")
-            logs = report.get("service_log_artifacts")
-            if not isinstance(logs, list) or not logs:
-                errors.append("full-stack CPU evidence requires service log artifacts")
-            else:
-                for index, record in enumerate(logs):
-                    if not isinstance(record, dict):
-                        errors.append(f"service log artifact {index} must be an object")
-                        continue
-                    try:
-                        artifact = paths.root / _relative_path(
-                            record.get("path"), f"service_log_artifacts[{index}].path"
+    if (
+        evidence in REAL_EVIDENCE
+        and manifest.data["workload_runner"].get("evidence_mode") == "full_stack"
+    ):
+        logs = report.get("service_log_artifacts")
+        if not isinstance(logs, list) or not logs:
+            errors.append("full-stack evidence requires service log artifacts")
+        else:
+            for index, record in enumerate(logs):
+                if not isinstance(record, dict):
+                    errors.append(f"service log artifact {index} must be an object")
+                    continue
+                try:
+                    artifact = paths.root / _relative_path(
+                        record.get("path"), f"service_log_artifacts[{index}].path"
+                    )
+                    if artifact.relative_to(paths.root).parts[:2] != (
+                        "artifacts",
+                        "services",
+                    ):
+                        raise GateToolError(
+                            f"service_log_artifacts[{index}].path must stay under "
+                            "artifacts/services"
                         )
-                        digest = hashlib.sha256(artifact.read_bytes()).hexdigest()
-                    except (GateToolError, OSError) as error:
-                        errors.append(f"cannot verify service log artifact {index}: {error}")
-                        continue
-                    if record.get("sha256") != digest:
-                        errors.append(f"service log artifact {index} digest does not match")
+                    digest = hashlib.sha256(artifact.read_bytes()).hexdigest()
+                except (GateToolError, OSError) as error:
+                    errors.append(f"cannot verify service log artifact {index}: {error}")
+                    continue
+                if record.get("sha256") != digest:
+                    errors.append(f"service log artifact {index} digest does not match")
     if evidence in REAL_EVIDENCE:
         if report.get("workload_lock") != manifest.data["workload_lock"]:
             errors.append("real evidence workload_lock does not match the gate manifest")
@@ -1134,6 +1208,492 @@ def evaluate_gate(manifest: LoadedManifest, report: dict[str, Any]) -> dict[str,
     }
 
 
+def load_campaign(path: Path) -> dict[str, Any]:
+    campaign = _read_json(path)
+    if campaign.get("schema_version") != "tgsrl.io/gate-campaign/v1alpha1":
+        raise GateToolError("campaign schema_version must be tgsrl.io/gate-campaign/v1alpha1")
+    experiments = campaign.get("experiments")
+    if not isinstance(experiments, list):
+        raise GateToolError("campaign experiments must be a list")
+    experiment_ids = [item.get("experiment_id") for item in experiments if isinstance(item, dict)]
+    if experiment_ids != [f"E{index}" for index in range(1, 9)]:
+        raise GateToolError("campaign experiments must define E1 through E8 in order")
+    output_directories: set[str] = set()
+    for experiment in experiments:
+        experiment_id = str(experiment["experiment_id"])
+        output_directory = _relative_path(
+            experiment.get("output_directory"),
+            f"campaign {experiment_id} output_directory",
+        ).as_posix()
+        if output_directory in output_directories:
+            raise GateToolError("campaign output directories must be unique")
+        output_directories.add(output_directory)
+        gate_manifest_path = ROOT / _relative_path(
+            experiment.get("gate_manifest"), f"campaign {experiment_id} gate_manifest"
+        )
+        if not gate_manifest_path.is_file():
+            raise GateToolError(f"campaign {experiment_id} gate_manifest does not exist")
+        gate_manifest = load_manifest(gate_manifest_path)
+        scenario_path = ROOT / _relative_path(
+            experiment.get("scenario_manifest"),
+            f"campaign {experiment_id} scenario_manifest",
+        )
+        if not scenario_path.is_file():
+            raise GateToolError(f"campaign {experiment_id} scenario_manifest does not exist")
+        scenario = _read_json(scenario_path)
+        if (
+            scenario.get("schema_version") != "tgsrl.io/hardware-scenario/v1alpha1"
+            or scenario.get("experiment_id") != experiment_id
+        ):
+            raise GateToolError(f"campaign {experiment_id} scenario identity is invalid")
+        minimum_evidence = experiment.get("minimum_evidence")
+        if minimum_evidence not in REAL_GPU_EVIDENCE:
+            raise GateToolError(
+                f"campaign {experiment_id} must require GPU_SINGLE_NODE or GPU_MULTI_NODE"
+            )
+        requirements = experiment.get("requirements")
+        if not isinstance(requirements, dict):
+            raise GateToolError(f"campaign {experiment_id} requirements must be an object")
+        for field in (
+            "required_actions",
+            "required_faults",
+            "required_events",
+            "gpu_profiles",
+            "execution_modes",
+        ):
+            values = requirements.get(field, [])
+            if not isinstance(values, list) or any(
+                not isinstance(value, str) or not value for value in values
+            ):
+                raise GateToolError(
+                    f"campaign {experiment_id} requirements.{field} must contain strings"
+                )
+        for field in ("minimum_nodes", "minimum_accelerators"):
+            value = requirements.get(field, 0)
+            if not isinstance(value, int) or isinstance(value, bool) or value < 0:
+                raise GateToolError(
+                    f"campaign {experiment_id} requirements.{field} must be non-negative"
+                )
+        topology = scenario.get("topology")
+        if not isinstance(topology, dict):
+            raise GateToolError(f"campaign {experiment_id} scenario topology must be an object")
+        for field in ("minimum_nodes", "minimum_accelerators", "gpu_profiles"):
+            if topology.get(field) != requirements.get(field):
+                raise GateToolError(
+                    f"campaign {experiment_id} scenario topology.{field} "
+                    "does not match requirements"
+                )
+        faults = scenario.get("faults")
+        if not isinstance(faults, list) or any(not isinstance(fault, dict) for fault in faults):
+            raise GateToolError(f"campaign {experiment_id} scenario faults must be objects")
+        scenario_faults = [fault.get("fault_id") for fault in faults]
+        if scenario_faults != requirements.get("required_faults"):
+            raise GateToolError(
+                f"campaign {experiment_id} scenario faults do not match requirements"
+            )
+        required_evidence = scenario.get("required_evidence")
+        if (
+            not isinstance(required_evidence, list)
+            or not required_evidence
+            or any(not isinstance(value, str) or not value for value in required_evidence)
+        ):
+            raise GateToolError(
+                f"campaign {experiment_id} scenario required_evidence must contain strings"
+            )
+        rules = experiment.get("rules")
+        if not isinstance(rules, list) or not rules:
+            raise GateToolError(f"campaign {experiment_id} rules must be non-empty")
+        rule_ids: set[str] = set()
+        for rule in rules:
+            if not isinstance(rule, dict):
+                raise GateToolError(f"campaign {experiment_id} rule must be an object")
+            rule_id = rule.get("rule_id")
+            if not isinstance(rule_id, str) or not rule_id or rule_id in rule_ids:
+                raise GateToolError(f"campaign {experiment_id} rule IDs must be unique")
+            rule_ids.add(rule_id)
+            if not isinstance(rule.get("metric"), str) or not rule["metric"]:
+                raise GateToolError(f"campaign {experiment_id} rule {rule_id} needs a metric")
+            if rule["metric"] not in gate_manifest.data["metrics_schema"]["required_metrics"]:
+                raise GateToolError(
+                    f"campaign {experiment_id} rule {rule_id} metric is not declared "
+                    "by its gate manifest"
+                )
+            if rule.get("operator") not in {">=", "<=", ">", "<", "=="}:
+                raise GateToolError(f"campaign {experiment_id} rule {rule_id} has invalid operator")
+            if rule.get("comparison") not in {
+                None,
+                "baseline",
+                "variant",
+                "variant_over_baseline_ratio",
+                "variant_minus_baseline",
+            }:
+                raise GateToolError(
+                    f"campaign {experiment_id} rule {rule_id} has invalid comparison"
+                )
+            threshold = rule.get("threshold")
+            calibration_required = rule.get("calibration_required") is True
+            if threshold is None and not calibration_required:
+                raise GateToolError(
+                    f"campaign {experiment_id} rule {rule_id} needs a threshold "
+                    "or calibration_required"
+                )
+            if threshold is not None and not _is_finite_number(threshold):
+                raise GateToolError(
+                    f"campaign {experiment_id} rule {rule_id} threshold must be finite"
+                )
+    return campaign
+
+
+def _campaign_rule_value(rule: dict[str, Any], report: dict[str, Any]) -> float:
+    metrics = report.get("metrics", {})
+    baseline = metrics.get("baseline", {}) if isinstance(metrics, dict) else {}
+    variant = metrics.get("variant", {}) if isinstance(metrics, dict) else {}
+    metric = str(rule.get("metric", ""))
+    comparison = rule.get("comparison", "variant")
+    left = variant.get(metric) if isinstance(variant, dict) else None
+    right = baseline.get(metric) if isinstance(baseline, dict) else None
+    if comparison == "baseline":
+        value = right
+    elif comparison == "variant":
+        value = left
+    elif comparison == "variant_over_baseline_ratio":
+        if not _is_finite_number(right):
+            raise GateToolError(f"campaign metric {metric} has a zero or invalid baseline")
+        right_value = float(cast(int | float, right))
+        if right_value == 0 or not _is_finite_number(left):
+            raise GateToolError(f"campaign metric {metric} has a zero or invalid baseline")
+        value = float(cast(int | float, left)) / right_value
+    elif comparison == "variant_minus_baseline":
+        if not _is_finite_number(left) or not _is_finite_number(right):
+            raise GateToolError(f"campaign metric {metric} must be a finite number")
+        value = float(cast(int | float, left)) - float(cast(int | float, right))
+    else:
+        value = left
+    if not _is_finite_number(value):
+        raise GateToolError(f"campaign metric {metric} must be a finite number")
+    return float(cast(int | float, value))
+
+
+def _compare_metric(actual: float, operator: str, threshold: float) -> bool:
+    return {
+        ">=": actual >= threshold,
+        "<=": actual <= threshold,
+        ">": actual > threshold,
+        "<": actual < threshold,
+        "==": math.isclose(actual, threshold, rel_tol=1e-9, abs_tol=1e-9),
+    }[operator]
+
+
+def _campaign_measurement_events(
+    paths: ArtifactPaths,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    baseline = _read_json(paths.baseline_trace).get("events", [])
+    variant = _read_json(paths.variant_trace).get("events", [])
+    if not isinstance(baseline, list) or not isinstance(variant, list):
+        raise GateToolError("campaign trace events must be lists")
+    return (
+        [
+            event
+            for event in baseline
+            if isinstance(event, dict) and event.get("phase") == "measurement"
+        ],
+        [
+            event
+            for event in variant
+            if isinstance(event, dict) and event.get("phase") == "measurement"
+        ],
+    )
+
+
+def _validate_campaign_requirements(
+    experiment: dict[str, Any], report: dict[str, Any], paths: ArtifactPaths
+) -> list[str]:
+    requirements = experiment["requirements"]
+    errors: list[str] = []
+    scenario_record = report.get("campaign_scenario")
+    if not isinstance(scenario_record, dict):
+        errors.append("campaign scenario artifact is missing")
+    else:
+        try:
+            scenario_artifact = paths.root / _relative_path(
+                scenario_record.get("path"), "campaign_scenario.path"
+            )
+            scenario_digest = hashlib.sha256(scenario_artifact.read_bytes()).hexdigest()
+            expected_digest = hashlib.sha256(
+                (ROOT / experiment["scenario_manifest"]).read_bytes()
+            ).hexdigest()
+            if scenario_record.get("sha256") != scenario_digest:
+                errors.append("campaign scenario artifact digest does not match")
+            elif scenario_digest != expected_digest:
+                errors.append("campaign scenario artifact does not match the configured scenario")
+        except (GateToolError, OSError) as error:
+            errors.append(f"cannot verify campaign scenario artifact: {error}")
+    fingerprint = report.get("environment_fingerprint", {})
+    if not isinstance(fingerprint, dict):
+        fingerprint = {}
+    if int(fingerprint.get("accelerator_count", 0) or 0) < int(
+        requirements.get("minimum_accelerators", 0)
+    ):
+        errors.append("accelerator count is below the experiment requirement")
+    profiles = requirements.get("gpu_profiles", [])
+    if profiles and fingerprint.get("gpu_profile") not in profiles:
+        errors.append("environment gpu_profile does not match the experiment")
+    execution_modes = requirements.get("execution_modes", [])
+    if execution_modes and fingerprint.get("execution_mode") not in execution_modes:
+        errors.append("environment execution_mode does not match the experiment")
+    try:
+        baseline_events, variant_events = _campaign_measurement_events(paths)
+    except GateToolError as error:
+        return [str(error)]
+    for label, events in (("baseline", baseline_events), ("variant", variant_events)):
+        nodes = {str(event.get("node_id")) for event in events if event.get("node_id")}
+        if len(nodes) < int(requirements.get("minimum_nodes", 0)):
+            errors.append(f"{label} node count is below the experiment requirement")
+    observed_actions = {
+        str(event.get("action"))
+        for event in variant_events
+        if event.get("event_type") in {"decision_applied", "control_completed"}
+        and event.get("succeeded") is True
+    }
+    for action in requirements.get("required_actions", []):
+        if action not in observed_actions:
+            errors.append(f"required action {action} is missing from variant evidence")
+    observed_event_types = {str(event.get("event_type")) for event in variant_events}
+    for event_type in requirements.get("required_events", []):
+        if event_type not in observed_event_types:
+            errors.append(f"required event {event_type} is missing from variant evidence")
+    injected_faults = {
+        str(event.get("fault_id"))
+        for event in variant_events
+        if event.get("event_type") == "fault_injected" and event.get("fault_id")
+    }
+    recovered_faults = {
+        str(event.get("fault_id"))
+        for event in variant_events
+        if event.get("event_type") == "fault_recovered" and event.get("fault_id")
+    }
+    for fault in requirements.get("required_faults", []):
+        if fault not in injected_faults or fault not in recovered_faults:
+            errors.append(f"required fault {fault} lacks injected and recovered evidence")
+    if requirements.get("exact_device_identity") is True:
+        for label, events in (("baseline", baseline_events), ("variant", variant_events)):
+            identities = [
+                event for event in events if event.get("event_type") == "device_identity_verified"
+            ]
+            if not identities:
+                errors.append(f"{label} exact device identity evidence is missing")
+                continue
+            iterations = {int(event.get("iteration", 0)) for event in events}
+            identity_iterations = {int(event.get("iteration", 0)) for event in identities}
+            if identity_iterations != iterations:
+                errors.append(f"{label} exact device identity evidence is incomplete by iteration")
+            for event in identities:
+                scheduler_ids = sorted(
+                    str(value) for value in event.get("scheduler_device_ids", [])
+                )
+                allocated_ids = sorted(
+                    str(value) for value in event.get("allocated_device_ids", [])
+                )
+                worker_ids = sorted(str(value) for value in event.get("worker_device_ids", []))
+                if (
+                    not scheduler_ids
+                    or scheduler_ids != allocated_ids
+                    or scheduler_ids != worker_ids
+                ):
+                    errors.append(
+                        f"{label} scheduler, allocation, and worker device identities differ"
+                    )
+                    break
+    experiment_id = experiment["experiment_id"]
+    if any(event.get("experiment_id") != experiment_id for event in baseline_events):
+        errors.append("baseline events do not match the campaign experiment identity")
+    if any(event.get("experiment_id") != experiment_id for event in variant_events):
+        errors.append("variant events do not match the campaign experiment identity")
+    return errors
+
+
+def evaluate_campaign(campaign: dict[str, Any], reports_root: Path) -> dict[str, Any]:
+    results: list[dict[str, Any]] = []
+    for experiment in campaign["experiments"]:
+        experiment_id = experiment["experiment_id"]
+        gate_manifest = load_manifest(ROOT / experiment["gate_manifest"])
+        paths = artifact_paths(gate_manifest, reports_root / experiment["output_directory"])
+        if not paths.report.is_file():
+            results.append(
+                {
+                    "experiment_id": experiment_id,
+                    "status": "NOT_RUN",
+                    "evidence": None,
+                    "blockers": ["evidence report is missing"],
+                    "rules": [],
+                }
+            )
+            continue
+        try:
+            report = _read_json(paths.report)
+            validation_errors = _validate_report(gate_manifest, paths, report)
+        except GateToolError as error:
+            report = {}
+            validation_errors = [str(error)]
+        evidence = report.get("evidence")
+        blockers = list(validation_errors)
+        if report.get("experiment_id") != experiment_id:
+            validation_errors.append("report experiment_id does not match the campaign")
+            blockers.append("report experiment_id does not match the campaign")
+        minimum_evidence = experiment["minimum_evidence"]
+        evidence_insufficient = (
+            evidence not in EVIDENCE_RANK
+            or EVIDENCE_RANK[evidence] < EVIDENCE_RANK[minimum_evidence]
+        )
+        if evidence_insufficient:
+            blockers.append(f"requires at least {minimum_evidence} evidence")
+        requirement_errors: list[str] = []
+        if not validation_errors and not evidence_insufficient:
+            requirement_errors = _validate_campaign_requirements(experiment, report, paths)
+            blockers.extend(requirement_errors)
+        rule_results: list[dict[str, Any]] = []
+        rule_failed = False
+        calibration_pending = False
+        for rule in experiment["rules"]:
+            result = {"rule_id": rule["rule_id"], "metric": rule["metric"]}
+            if rule.get("threshold") is None:
+                result.update({"status": "BLOCKED", "reason": "calibration_required"})
+                calibration_pending = True
+            else:
+                try:
+                    actual = _campaign_rule_value(rule, report)
+                    passed = _compare_metric(actual, rule["operator"], float(rule["threshold"]))
+                    result.update(
+                        {
+                            "actual": actual,
+                            "operator": rule["operator"],
+                            "threshold": float(rule["threshold"]),
+                            "status": "PASSED" if passed else "FAILED",
+                        }
+                    )
+                    rule_failed = rule_failed or not passed
+                except (GateToolError, KeyError, TypeError, ValueError) as error:
+                    result.update({"status": "INVALID", "reason": str(error)})
+                    blockers.append(str(error))
+            rule_results.append(result)
+        source_status = report.get("status")
+        if validation_errors or requirement_errors:
+            experiment_status = "INVALID"
+        elif source_status in {"INVALID", "FAILED", "BLOCKED", "NOT_RUN"}:
+            experiment_status = source_status
+        elif evidence_insufficient:
+            experiment_status = "NOT_RUN"
+        elif rule_failed:
+            experiment_status = "FAILED"
+        elif calibration_pending:
+            experiment_status = "BLOCKED"
+        else:
+            experiment_status = "PASSED"
+        results.append(
+            {
+                "experiment_id": experiment_id,
+                "title": experiment["title"],
+                "status": experiment_status,
+                "evidence": evidence,
+                "blockers": sorted(set(blockers)),
+                "rules": rule_results,
+            }
+        )
+    statuses = {result["status"] for result in results}
+    overall = next(
+        (status for status in ("INVALID", "FAILED", "BLOCKED", "NOT_RUN") if status in statuses),
+        "PASSED",
+    )
+    return {
+        "schema_version": "tgsrl.io/gate-campaign-result/v1alpha1",
+        "campaign_id": campaign["campaign_id"],
+        "status": overall,
+        "experiments": results,
+    }
+
+
+def cmd_campaign_plan(args: argparse.Namespace) -> int:
+    campaign = load_campaign(Path(args.campaign))
+    print(json.dumps(campaign, indent=2, sort_keys=True))
+    return 0
+
+
+def cmd_campaign_evaluate(args: argparse.Namespace) -> int:
+    campaign = load_campaign(Path(args.campaign))
+    result = evaluate_campaign(campaign, Path(args.reports_dir).expanduser().resolve())
+    payload = json.dumps(result, indent=2, sort_keys=True) + "\n"
+    if args.output == "-":
+        print(payload, end="")
+    else:
+        output = Path(args.output).expanduser().resolve()
+        output.parent.mkdir(parents=True, exist_ok=True)
+        output.write_text(payload, encoding="utf-8")
+    return 1 if args.require_pass and result["status"] != "PASSED" else 0
+
+
+def cmd_campaign_ingest(args: argparse.Namespace) -> int:
+    campaign = load_campaign(Path(args.campaign))
+    experiment = next(
+        (item for item in campaign["experiments"] if item["experiment_id"] == args.experiment),
+        None,
+    )
+    if experiment is None:
+        raise GateToolError(f"unknown campaign experiment {args.experiment}")
+    source = Path(args.report).expanduser().resolve()
+    report = _read_json(source)
+    if report.get("experiment_id") != args.experiment:
+        raise GateToolError("external report experiment_id does not match the selected experiment")
+    evidence = report.get("evidence")
+    minimum_evidence = experiment["minimum_evidence"]
+    if evidence not in EVIDENCE_RANK or EVIDENCE_RANK[evidence] < EVIDENCE_RANK[minimum_evidence]:
+        raise GateToolError(
+            f"campaign experiment {args.experiment} requires at least {minimum_evidence} evidence"
+        )
+    reports_root = Path(args.reports_dir).expanduser().resolve()
+    target_root = reports_root / experiment["output_directory"]
+    with tempfile.TemporaryDirectory(prefix="tgsrl-campaign-ingest-") as directory:
+        temporary_root = Path(directory)
+        result = cmd_ingest(
+            argparse.Namespace(
+                manifest=str(ROOT / experiment["gate_manifest"]),
+                output_dir=str(temporary_root),
+                report=str(source),
+                quiet=True,
+            )
+        )
+        if result != 0:
+            return result
+        manifest = load_manifest(ROOT / experiment["gate_manifest"])
+        temporary_paths = artifact_paths(manifest, temporary_root)
+        ingested_report = _read_json(temporary_paths.report)
+        scenario_source = ROOT / experiment["scenario_manifest"]
+        scenario_destination = temporary_root / "artifacts" / "config" / scenario_source.name
+        scenario_destination.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(scenario_source, scenario_destination)
+        ingested_report["campaign_scenario"] = {
+            "path": scenario_destination.relative_to(temporary_root).as_posix(),
+            "sha256": hashlib.sha256(scenario_destination.read_bytes()).hexdigest(),
+        }
+        _write_json(temporary_paths.report, ingested_report)
+        requirement_errors = _validate_campaign_requirements(
+            experiment, ingested_report, temporary_paths
+        )
+        if requirement_errors:
+            raise GateToolError("; ".join(requirement_errors))
+        _archive_run(temporary_paths)
+        target_paths = artifact_paths(manifest, target_root)
+        _reset_managed_artifacts(target_paths)
+        for artifact in temporary_root.rglob("*"):
+            if artifact.is_file():
+                destination = target_root / artifact.relative_to(temporary_root)
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(artifact, destination)
+    print(
+        json.dumps({"experiment_id": args.experiment, "report": str(target_root / "report.json")})
+    )
+    return 0
+
+
 def _load_current_report(
     args: argparse.Namespace,
 ) -> tuple[LoadedManifest, ArtifactPaths, dict[str, Any]]:
@@ -1240,6 +1800,27 @@ def build_parser() -> argparse.ArgumentParser:
         ],
     )
     fingerprint.set_defaults(func=cmd_fingerprint)
+    campaign_plan = subparsers.add_parser(
+        "campaign-plan", help="Validate and print the E1-E8 campaign contract"
+    )
+    campaign_plan.add_argument("--campaign", default=str(DEFAULT_CAMPAIGN))
+    campaign_plan.set_defaults(func=cmd_campaign_plan)
+    campaign_evaluate = subparsers.add_parser(
+        "campaign-evaluate", help="Evaluate E1-E8 evidence reports"
+    )
+    campaign_evaluate.add_argument("--campaign", default=str(DEFAULT_CAMPAIGN))
+    campaign_evaluate.add_argument("--reports-dir", default=str(DEFAULT_CAMPAIGN_REPORTS))
+    campaign_evaluate.add_argument("--output", default="-")
+    campaign_evaluate.add_argument("--require-pass", action="store_true")
+    campaign_evaluate.set_defaults(func=cmd_campaign_evaluate)
+    campaign_ingest = subparsers.add_parser(
+        "campaign-ingest", help="Validate and store one E1-E8 evidence report"
+    )
+    campaign_ingest.add_argument("experiment", choices=[f"E{index}" for index in range(1, 9)])
+    campaign_ingest.add_argument("--campaign", default=str(DEFAULT_CAMPAIGN))
+    campaign_ingest.add_argument("--reports-dir", default=str(DEFAULT_CAMPAIGN_REPORTS))
+    campaign_ingest.add_argument("--report", required=True)
+    campaign_ingest.set_defaults(func=cmd_campaign_ingest)
     return parser
 
 
