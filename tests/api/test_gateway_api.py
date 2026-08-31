@@ -2374,7 +2374,9 @@ def test_cli_commands_are_runnable_against_live_gateway(tmp_path: Path) -> None:
     exported = json.loads(openapi_output.read_text(encoding="utf-8"))
     assert exported["openapi"] == "3.1.0"
 
-    port = 18081
+    with socket.socket() as probe:
+        probe.bind(("127.0.0.1", 0))
+        port = int(probe.getsockname()[1])
     server = subprocess.Popen(
         [
             str(VENV_PYTHON),
@@ -2401,7 +2403,12 @@ def test_cli_commands_are_runnable_against_live_gateway(tmp_path: Path) -> None:
                 assert health["status"] == "ok"
                 assert health["mode"] == "memory"
                 break
-            except Exception:
+            except Exception as error:
+                if server.poll() is not None:
+                    stdout, stderr = server.communicate(timeout=1)
+                    raise AssertionError(
+                        f"gateway exited before readiness: stdout={stdout!r} stderr={stderr!r}"
+                    ) from error
                 if time.time() >= deadline:
                     raise
                 time.sleep(0.1)
