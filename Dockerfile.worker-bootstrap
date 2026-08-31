@@ -8,7 +8,6 @@ COPY go.mod go.sum ./
 RUN go mod download
 COPY cmd/tgsrl-worker-bootstrap ./cmd/tgsrl-worker-bootstrap
 COPY internal ./internal
-COPY scheduler-go/provider/nvidia ./scheduler-go/provider/nvidia
 COPY gen/go ./gen/go
 
 RUN CGO_ENABLED=0 GOOS="${TARGETOS}" GOARCH="${TARGETARCH}" \

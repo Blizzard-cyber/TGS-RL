@@ -15,7 +15,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/Blizzard-cyber/TGS-RL/scheduler-go/provider/nvidia/helperstate"
+	"github.com/Blizzard-cyber/TGS-RL/internal/helperstate"
 )
 
 const SchemaVersion = 1

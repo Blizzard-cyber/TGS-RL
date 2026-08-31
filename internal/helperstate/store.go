@@ -1,5 +1,6 @@
 // Package helperstate provides process-safe atomic JSON storage for local
-// NVIDIA helper executables. Domain packages retain all schema validation.
+// helper and managed-worker processes. Domain packages retain all schema
+// validation.
 package helperstate
 
 import (
