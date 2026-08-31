@@ -35,6 +35,9 @@ const defaultListenAddress = "127.0.0.1:50051"
 
 func main() {
 	if err := run(); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			return
+		}
 		slog.Error("scheduler stopped", "error", err)
 		os.Exit(1)
 	}
