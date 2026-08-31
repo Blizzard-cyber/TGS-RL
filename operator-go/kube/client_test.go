@@ -592,7 +592,7 @@ func TestClientDiscoverCapabilitiesRequiresNVIDIADRAUUIDInventory(t *testing.T) 
 		case "/api/v1/nodes":
 			_ = json.NewEncoder(w).Encode(map[string]any{"items": []any{}})
 		case "/apis/resource.k8s.io/v1beta1/deviceclasses":
-			_ = json.NewEncoder(w).Encode(map[string]any{"items": []any{map[string]any{"metadata": map[string]any{"name": compiler.NVIDIADRADeviceClass}}}})
+			_ = json.NewEncoder(w).Encode(map[string]any{"items": []any{map[string]any{"metadata": map[string]any{"name": compiler.NVIDIADRAFullGPUDeviceClass}}}})
 		case "/apis/resource.k8s.io/v1beta1/resourceslices":
 			_ = json.NewEncoder(w).Encode(nvidiaDRAResourceSliceList(true, "GPU-aaaa"))
 		default:
@@ -611,8 +611,8 @@ func TestClientDiscoverCapabilitiesRequiresNVIDIADRAUUIDInventory(t *testing.T) 
 	if !capabilities.GPUProfiles["none"] || !capabilities.GPUProfiles["kubernetes-dra"] {
 		t.Fatalf("capabilities = %+v", capabilities)
 	}
-	if !capabilities.DRADeviceIDs["GPU-aaaa"] {
-		t.Fatalf("DRA device IDs = %+v, want GPU-aaaa", capabilities.DRADeviceIDs)
+	if capabilities.DRADevices["GPU-aaaa"].DeviceClass != compiler.NVIDIADRAFullGPUDeviceClass {
+		t.Fatalf("DRA devices = %+v, want typed GPU-aaaa", capabilities.DRADevices)
 	}
 	if strings.Join(paths, "|") != strings.Join([]string{
 		"/apis/kueue.x-k8s.io",
@@ -636,7 +636,7 @@ func TestClientDiscoverCapabilitiesRejectsDRAClassWithoutUUIDInventory(t *testin
 		case "/apis/node.k8s.io/v1/runtimeclasses", "/api/v1/nodes", "/apis/resource.k8s.io/v1/resourceslices":
 			_ = json.NewEncoder(w).Encode(map[string]any{"items": []any{}})
 		case "/apis/resource.k8s.io/v1/deviceclasses":
-			_ = json.NewEncoder(w).Encode(map[string]any{"items": []any{map[string]any{"metadata": map[string]any{"name": compiler.NVIDIADRADeviceClass}}}})
+			_ = json.NewEncoder(w).Encode(map[string]any{"items": []any{map[string]any{"metadata": map[string]any{"name": compiler.NVIDIADRAFullGPUDeviceClass}}}})
 		default:
 			t.Fatalf("unexpected request %s", r.URL.Path)
 		}
@@ -650,7 +650,7 @@ func TestClientDiscoverCapabilitiesRejectsDRAClassWithoutUUIDInventory(t *testin
 	if err != nil {
 		t.Fatal(err)
 	}
-	if capabilities.GPUProfiles[compiler.GPUProfileKubernetesDRA] || len(capabilities.DRADeviceIDs) != 0 {
+	if capabilities.GPUProfiles[compiler.GPUProfileKubernetesDRA] || len(capabilities.DRADevices) != 0 {
 		t.Fatalf("capabilities = %+v, want DRA disabled without UUID inventory", capabilities)
 	}
 }
@@ -709,7 +709,7 @@ func TestClientDiscoverCapabilitiesProbesNodeAndRuntimeClassSurfaces(t *testing.
 		case "/apis/resource.k8s.io/v1/deviceclasses":
 			_ = json.NewEncoder(w).Encode(map[string]any{
 				"items": []any{
-					map[string]any{"metadata": map[string]any{"name": compiler.NVIDIADRADeviceClass}},
+					map[string]any{"metadata": map[string]any{"name": compiler.NVIDIADRAFullGPUDeviceClass}},
 				},
 			})
 		case "/apis/resource.k8s.io/v1/resourceslices":
@@ -736,15 +736,15 @@ func TestClientDiscoverCapabilitiesProbesNodeAndRuntimeClassSurfaces(t *testing.
 	if capabilities.KubernetesAPIs.KueueWorkload != compiler.KueueWorkloadV1Beta2 || capabilities.KubernetesAPIs.DRAResourceClaim != compiler.DRAResourceClaimV1 {
 		t.Fatalf("API versions = %+v", capabilities.KubernetesAPIs)
 	}
-	if !capabilities.DRADeviceIDs["GPU-bbbb"] {
-		t.Fatalf("DRA device IDs = %+v, want GPU-bbbb", capabilities.DRADeviceIDs)
+	if capabilities.DRADevices["GPU-bbbb"].DeviceClass != compiler.NVIDIADRAFullGPUDeviceClass {
+		t.Fatalf("DRA devices = %+v, want typed GPU-bbbb", capabilities.DRADevices)
 	}
 }
 
 func nvidiaDRAResourceSliceList(legacy bool, deviceIDs ...string) map[string]any {
 	devices := make([]any, 0, len(deviceIDs))
 	for index, deviceID := range deviceIDs {
-		attributes := map[string]any{"uuid": map[string]any{"string": deviceID}}
+		attributes := map[string]any{"uuid": map[string]any{"string": deviceID}, "type": map[string]any{"string": "gpu"}}
 		device := map[string]any{"name": fmt.Sprintf("gpu-%d", index), "attributes": attributes}
 		if legacy {
 			device = map[string]any{"name": fmt.Sprintf("gpu-%d", index), "basic": map[string]any{"attributes": attributes}}

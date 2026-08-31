@@ -275,7 +275,7 @@ func (c *Client) discoverCapabilitiesByProbe(ctx context.Context) (compiler.Capa
 	}
 	capabilities.RuntimeClasses = runtimeClasses
 
-	gpuProfiles, err := c.discoverGPUProfilesByProbe(ctx, apiVersions)
+	gpuProfiles, draClasses, err := c.discoverGPUProfilesByProbe(ctx, apiVersions)
 	if err != nil {
 		return compiler.CapabilitySet{}, err
 	}
@@ -283,14 +283,19 @@ func (c *Client) discoverCapabilitiesByProbe(ctx context.Context) (compiler.Capa
 		capabilities.GPUProfiles[profile] = true
 	}
 	if capabilities.GPUProfiles[compiler.GPUProfileKubernetesDRA] {
-		deviceIDs, err := c.discoverNVIDIADRADeviceIDs(ctx, apiVersions.DRAResourceClaim)
+		devices, err := c.discoverNVIDIADRADevices(ctx, apiVersions.DRAResourceClaim)
 		if err != nil {
 			return compiler.CapabilitySet{}, err
 		}
-		if len(deviceIDs) == 0 {
+		for uuid, device := range devices {
+			if !draClasses[device.DeviceClass] {
+				delete(devices, uuid)
+			}
+		}
+		if len(devices) == 0 {
 			delete(capabilities.GPUProfiles, compiler.GPUProfileKubernetesDRA)
 		} else {
-			capabilities.DRADeviceIDs = deviceIDs
+			capabilities.DRADevices = devices
 			capabilities.ExactDevicePlacement = map[string]bool{compiler.GPUProfileKubernetesDRA: true}
 		}
 	}
@@ -298,7 +303,7 @@ func (c *Client) discoverCapabilitiesByProbe(ctx context.Context) (compiler.Capa
 	return capabilities, nil
 }
 
-func (c *Client) discoverNVIDIADRADeviceIDs(ctx context.Context, apiVersion string) (map[string]bool, error) {
+func (c *Client) discoverNVIDIADRADevices(ctx context.Context, apiVersion string) (map[string]compiler.DRADevice, error) {
 	if apiVersion == "" {
 		return nil, nil
 	}
@@ -309,7 +314,7 @@ func (c *Client) discoverNVIDIADRADeviceIDs(ctx context.Context, apiVersion stri
 	if statusCode == http.StatusNotFound {
 		return nil, nil
 	}
-	result, err := bundleadapter.DiscoverDRADeviceUUIDs(body, compiler.NVIDIADRADriver)
+	result, err := bundleadapter.DiscoverDRADevices(body, compiler.NVIDIADRADriver)
 	if err != nil {
 		return nil, fmt.Errorf("discover NVIDIA DRA device UUIDs: %w", err)
 	}
@@ -404,12 +409,12 @@ func (c *Client) discoverRuntimeClassesByProbe(ctx context.Context) (map[string]
 	return values, nil
 }
 
-func (c *Client) discoverGPUProfilesByProbe(ctx context.Context, apiVersions compiler.KubernetesAPIVersions) (map[string]bool, error) {
+func (c *Client) discoverGPUProfilesByProbe(ctx context.Context, apiVersions compiler.KubernetesAPIVersions) (map[string]bool, map[string]bool, error) {
 	profiles := make(map[string]bool)
 
 	body, statusCode, err := c.getURL(ctx, c.host+"/api/v1/nodes")
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	if statusCode != http.StatusNotFound {
 		var list struct {
@@ -421,7 +426,7 @@ func (c *Client) discoverGPUProfilesByProbe(ctx context.Context, apiVersions com
 			} `json:"items"`
 		}
 		if err := json.Unmarshal(body, &list); err != nil {
-			return nil, fmt.Errorf("decode nodes: %w", err)
+			return nil, nil, fmt.Errorf("decode nodes: %w", err)
 		}
 		for _, item := range list.Items {
 			if positiveResourceQuantity(item.Status.Allocatable["nvidia.com/gpu"]) || positiveResourceQuantity(item.Status.Capacity["nvidia.com/gpu"]) {
@@ -433,29 +438,29 @@ func (c *Client) discoverGPUProfilesByProbe(ctx context.Context, apiVersions com
 		}
 	}
 
-	draSupported, err := c.discoverDRAGPUByProbe(ctx, apiVersions.DRAResourceClaim)
+	draClasses, err := c.discoverNVIDIADRAClasses(ctx, apiVersions.DRAResourceClaim)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	if draSupported {
+	if len(draClasses) > 0 {
 		profiles[compiler.GPUProfileKubernetesDRA] = true
 	}
 	if len(profiles) == 0 {
-		return nil, nil
+		return nil, draClasses, nil
 	}
-	return profiles, nil
+	return profiles, draClasses, nil
 }
 
-func (c *Client) discoverDRAGPUByProbe(ctx context.Context, apiVersion string) (bool, error) {
+func (c *Client) discoverNVIDIADRAClasses(ctx context.Context, apiVersion string) (map[string]bool, error) {
 	if apiVersion == "" {
-		return false, nil
+		return nil, nil
 	}
 	body, statusCode, err := c.getURL(ctx, c.host+"/apis/"+apiVersion+"/deviceclasses")
 	if err != nil {
-		return false, err
+		return nil, err
 	}
 	if statusCode == http.StatusNotFound {
-		return false, nil
+		return nil, nil
 	}
 	var list struct {
 		Items []struct {
@@ -465,15 +470,16 @@ func (c *Client) discoverDRAGPUByProbe(ctx context.Context, apiVersion string) (
 		} `json:"items"`
 	}
 	if err := json.Unmarshal(body, &list); err != nil {
-		return false, fmt.Errorf("decode device classes: %w", err)
+		return nil, fmt.Errorf("decode device classes: %w", err)
 	}
+	classes := make(map[string]bool)
 	for _, item := range list.Items {
 		name := strings.ToLower(strings.TrimSpace(item.Metadata.Name))
-		if name == compiler.NVIDIADRADeviceClass {
-			return true, nil
+		if name == compiler.NVIDIADRAFullGPUDeviceClass || name == compiler.NVIDIADRAMIGDeviceClass {
+			classes[name] = true
 		}
 	}
-	return false, nil
+	return classes, nil
 }
 
 func positiveResourceQuantity(value string) bool {

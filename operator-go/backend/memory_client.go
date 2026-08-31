@@ -133,7 +133,7 @@ func (c *MemoryClient) DiscoverCapabilities(_ context.Context) (compiler.Capabil
 	return compiler.CapabilitySet{
 		GPUProfiles:          cloneBoolMap(c.capabilities.GPUProfiles),
 		ExactDevicePlacement: cloneBoolMap(c.capabilities.ExactDevicePlacement),
-		DRADeviceIDs:         cloneBoolMap(c.capabilities.DRADeviceIDs),
+		DRADevices:           cloneDRADevices(c.capabilities.DRADevices),
 		RuntimeClasses:       cloneStringMap(c.capabilities.RuntimeClasses),
 		NodeSelectors:        cloneNestedStringMap(c.capabilities.NodeSelectors),
 		DefaultNodeSelector:  cloneStringMap(c.capabilities.DefaultNodeSelector),
@@ -156,12 +156,23 @@ func (c *MemoryClient) SetCapabilities(values compiler.CapabilitySet) {
 	c.capabilities = compiler.CapabilitySet{
 		GPUProfiles:          cloneBoolMap(values.GPUProfiles),
 		ExactDevicePlacement: cloneBoolMap(values.ExactDevicePlacement),
-		DRADeviceIDs:         cloneBoolMap(values.DRADeviceIDs),
+		DRADevices:           cloneDRADevices(values.DRADevices),
 		RuntimeClasses:       cloneStringMap(values.RuntimeClasses),
 		NodeSelectors:        cloneNestedStringMap(values.NodeSelectors),
 		DefaultNodeSelector:  cloneStringMap(values.DefaultNodeSelector),
 		KubernetesAPIs:       values.KubernetesAPIs,
 	}
+}
+
+func cloneDRADevices(src map[string]compiler.DRADevice) map[string]compiler.DRADevice {
+	if len(src) == 0 {
+		return nil
+	}
+	dst := make(map[string]compiler.DRADevice, len(src))
+	for key, value := range src {
+		dst[key] = value
+	}
+	return dst
 }
 
 func (c *MemoryClient) controlJobLocked(object ClientObject, action tgsrlv1.JobCommandType) (*bundleadapter.JobControlReadback, error) {

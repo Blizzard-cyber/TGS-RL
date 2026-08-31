@@ -151,19 +151,6 @@ func requiresResourceClaim(profile string, accelerators float64) bool {
 	return accelerators > 0 && profile == GPUProfileKubernetesDRA
 }
 
-func deviceClass(profile string) string {
-	switch profile {
-	case GPUProfileKubernetesDRA:
-		return NVIDIADRADeviceClass
-	case GPUProfileVolcanoHAMI:
-		return "volcano.sh/gpu"
-	case GPUProfileNVIDIADevicePlugin:
-		return "nvidia.com/gpu"
-	default:
-		return "none"
-	}
-}
-
 func statusReason(run *tgsrlv1.JobRun) string {
 	for _, component := range run.GetComponentStatus() {
 		if component.GetDetail() != "" {

@@ -13,7 +13,8 @@ const (
 	GPUProfileNVIDIADevicePlugin = "nvidia-device-plugin"
 	GPUProfileKubernetesDRA      = "kubernetes-dra"
 	GPUProfileVolcanoHAMI        = "volcano-hami"
-	NVIDIADRADeviceClass         = "gpu.nvidia.com"
+	NVIDIADRAFullGPUDeviceClass  = "gpu.nvidia.com"
+	NVIDIADRAMIGDeviceClass      = "mig.nvidia.com"
 	NVIDIADRADriver              = "gpu.nvidia.com"
 )
 
@@ -56,11 +57,11 @@ func (c *Compiler) compileBinding(input CompileInput) (*api.Bundle, error) {
 	}
 	normalized.KubernetesAPIs = selected.KubernetesAPIs
 	if normalized.GPUProfile == GPUProfileKubernetesDRA {
-		for _, deviceID := range normalized.binding.GetDeviceIds() {
-			if !selected.DRADeviceIDs[deviceID] {
-				return nil, fmt.Errorf("binding %q references NVIDIA DRA device UUID %q that was not discovered", normalized.binding.GetBindingId(), deviceID)
-			}
+		devices, err := selectedDRADevices(normalized.binding.GetDeviceIds(), selected.DRADevices)
+		if err != nil {
+			return nil, fmt.Errorf("binding %q: %w", normalized.binding.GetBindingId(), err)
 		}
+		normalized.draDevices = devices
 	}
 	bundle, err := buildBundle(normalized)
 	if err != nil {

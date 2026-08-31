@@ -6,12 +6,14 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"reflect"
 	"sort"
 	"strings"
 	"time"
 
 	tgsrlv1 "github.com/Blizzard-cyber/TGS-RL/gen/go/tgsrl/v1"
 	"github.com/Blizzard-cyber/TGS-RL/operator-go/api"
+	"github.com/Blizzard-cyber/TGS-RL/operator-go/compiler"
 )
 
 var (
@@ -74,17 +76,14 @@ type Reader interface {
 	GetPath(ctx context.Context, path string) ([]byte, error)
 }
 
-// DRADeviceAllocation is the stable identity tuple returned by a ResourceClaim.
-type draAttribute struct {
-	StringValue *string `json:"string"`
+type draBasicDevice struct {
+	Attributes map[string]json.RawMessage `json:"attributes"`
 }
 
 type draSliceDevice struct {
-	Name       string                  `json:"name"`
-	Attributes map[string]draAttribute `json:"attributes"`
-	Basic      *struct {
-		Attributes map[string]draAttribute `json:"attributes"`
-	} `json:"basic"`
+	Name       string                     `json:"name"`
+	Attributes map[string]json.RawMessage `json:"attributes"`
+	Basic      *draBasicDevice            `json:"basic"`
 }
 
 type draResourceSlice struct {
@@ -98,38 +97,41 @@ type draResourceSlice struct {
 	} `json:"spec"`
 }
 
-// DiscoverDRADeviceUUIDs returns UUID attributes from each current pool generation.
-func DiscoverDRADeviceUUIDs(payload []byte, driver string) (map[string]bool, error) {
+// DiscoverDRADevices returns typed NVIDIA identities from each current pool generation.
+func DiscoverDRADevices(payload []byte, driver string) (map[string]compiler.DRADevice, error) {
 	index, err := draDeviceUUIDIndex(payload, driver)
 	if err != nil {
 		return nil, err
 	}
-	result := make(map[string]bool, len(index))
-	for _, uuid := range index {
-		result[uuid] = true
+	result := make(map[string]compiler.DRADevice, len(index))
+	for _, device := range index {
+		result[device.UUID] = device
 	}
 	return result, nil
 }
 
-// ResolveDRAAllocationUUIDs maps allocation driver/pool/device tuples to UUIDs.
-func ResolveDRAAllocationUUIDs(payload []byte, driver string, allocations []api.DeviceRequestAllocationResult) ([]string, error) {
+// ResolveDRAAllocationDevices maps allocation tuples to typed device identities.
+func ResolveDRAAllocationDevices(payload []byte, driver string, allocations []api.DeviceRequestAllocationResult) ([]compiler.DRADevice, error) {
 	index, err := draDeviceUUIDIndex(payload, driver)
 	if err != nil {
 		return nil, err
 	}
-	result := make([]string, 0, len(allocations))
+	result := make([]compiler.DRADevice, 0, len(allocations))
 	for _, allocation := range allocations {
-		uuid := index[allocation.Pool+"\x00"+allocation.Device]
-		if uuid == "" {
+		if allocation.Driver != driver {
+			return nil, fmt.Errorf("allocated DRA device %s/%s uses driver %q, want %q", allocation.Pool, allocation.Device, allocation.Driver, driver)
+		}
+		device, ok := index[allocation.Pool+"\x00"+allocation.Device]
+		if !ok {
 			return nil, fmt.Errorf("allocated DRA device %s/%s has no UUID in the current resource-slice generation", allocation.Pool, allocation.Device)
 		}
-		result = append(result, uuid)
+		result = append(result, device)
 	}
-	sort.Strings(result)
+	sort.Slice(result, func(i, j int) bool { return result[i].UUID < result[j].UUID })
 	return result, nil
 }
 
-func draDeviceUUIDIndex(payload []byte, driver string) (map[string]string, error) {
+func draDeviceUUIDIndex(payload []byte, driver string) (map[string]compiler.DRADevice, error) {
 	var list struct {
 		Items []draResourceSlice `json:"items"`
 	}
@@ -143,36 +145,91 @@ func draDeviceUUIDIndex(payload []byte, driver string) (map[string]string, error
 			latest[slice.Spec.Pool.Name] = slice.Spec.Pool.Generation
 		}
 	}
-	identities := make(map[string]string)
+	identities := make(map[string]compiler.DRADevice)
 	uuidOwners := make(map[string]string)
 	for _, slice := range list.Items {
 		if slice.Spec.Driver != driver || slice.Spec.Pool.Generation != latest[slice.Spec.Pool.Name] {
 			continue
 		}
 		for _, device := range slice.Spec.Devices {
-			attributes := device.Attributes
-			if device.Basic != nil {
-				attributes = device.Basic.Attributes
+			attributes, err := mergeDRAAttributes(device.Attributes, device.Basic)
+			if err != nil {
+				return nil, fmt.Errorf("DRA device %s/%s: %w", slice.Spec.Pool.Name, device.Name, err)
 			}
-			uuid := ""
-			if value, ok := attributes["uuid"]; ok && value.StringValue != nil {
-				uuid = strings.TrimSpace(*value.StringValue)
-			}
+			uuid := draStringAttribute(attributes, "uuid")
 			if uuid == "" {
 				continue
 			}
+			deviceType := draStringAttribute(attributes, "type")
+			deviceClass := ""
+			switch deviceType {
+			case "gpu":
+				deviceClass = compiler.NVIDIADRAFullGPUDeviceClass
+			case "mig":
+				deviceClass = compiler.NVIDIADRAMIGDeviceClass
+			case "vfio":
+				// NVIDIA publishes VFIO devices through the same driver. TGS-RL
+				// does not schedule them, so keep them out of the advertised
+				// inventory without making supported GPU/MIG devices unusable.
+				continue
+			default:
+				return nil, fmt.Errorf("DRA device %s/%s UUID %q has unsupported type %q", slice.Spec.Pool.Name, device.Name, uuid, deviceType)
+			}
+			identity := compiler.DRADevice{
+				UUID:        uuid,
+				Type:        deviceType,
+				DeviceClass: deviceClass,
+				Driver:      slice.Spec.Driver,
+				Pool:        slice.Spec.Pool.Name,
+				Device:      device.Name,
+				Profile:     draStringAttribute(attributes, "profile"),
+				ParentUUID:  draStringAttribute(attributes, "parentUUID"),
+			}
+			if identity.Type == "mig" && (identity.Profile == "" || identity.ParentUUID == "") {
+				return nil, fmt.Errorf("DRA MIG device %s/%s UUID %q has incomplete profile or parent UUID", identity.Pool, identity.Device, identity.UUID)
+			}
 			key := slice.Spec.Pool.Name + "\x00" + device.Name
-			if previous, duplicate := identities[key]; duplicate && previous != uuid {
-				return nil, fmt.Errorf("DRA device %s/%s has conflicting UUIDs", slice.Spec.Pool.Name, device.Name)
+			if previous, duplicate := identities[key]; duplicate {
+				return nil, fmt.Errorf("DRA device %s/%s is published more than once in generation %d (UUIDs %q and %q)", slice.Spec.Pool.Name, device.Name, slice.Spec.Pool.Generation, previous.UUID, identity.UUID)
 			}
-			if owner, duplicate := uuidOwners[uuid]; duplicate && owner != key {
-				return nil, fmt.Errorf("DRA UUID %q is published by multiple devices", uuid)
+			if owner, duplicate := uuidOwners[uuid]; duplicate {
+				return nil, fmt.Errorf("DRA UUID %q is published by multiple devices (%s and %s)", uuid, owner, key)
 			}
-			identities[key] = uuid
+			identities[key] = identity
 			uuidOwners[uuid] = key
 		}
 	}
 	return identities, nil
+}
+
+func mergeDRAAttributes(top map[string]json.RawMessage, basic *draBasicDevice) (map[string]json.RawMessage, error) {
+	merged := make(map[string]json.RawMessage, len(top))
+	for key, value := range top {
+		merged[key] = value
+	}
+	if basic == nil {
+		return merged, nil
+	}
+	for key, value := range basic.Attributes {
+		if previous, exists := merged[key]; exists {
+			var left, right any
+			if json.Unmarshal(previous, &left) != nil || json.Unmarshal(value, &right) != nil || !reflect.DeepEqual(left, right) {
+				return nil, fmt.Errorf("attribute %q conflicts between top-level and basic device data", key)
+			}
+		}
+		merged[key] = value
+	}
+	return merged, nil
+}
+
+func draStringAttribute(attributes map[string]json.RawMessage, key string) string {
+	var value struct {
+		StringValue *string `json:"string"`
+	}
+	if json.Unmarshal(attributes[key], &value) != nil || value.StringValue == nil {
+		return ""
+	}
+	return strings.TrimSpace(*value.StringValue)
 }
 
 type Stream interface {

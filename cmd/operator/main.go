@@ -216,7 +216,7 @@ func preflightBackend(ctx context.Context, selectedBackend backend.Backend, gpuP
 	if capabilities.KubernetesAPIs.KueueWorkload == "" {
 		return fmt.Errorf("Kueue Workload API is not available")
 	}
-	if profile == compiler.GPUProfileKubernetesDRA && len(capabilities.DRADeviceIDs) == 0 {
+	if profile == compiler.GPUProfileKubernetesDRA && len(capabilities.DRADevices) == 0 {
 		return fmt.Errorf("NVIDIA DRA device UUID inventory is not available")
 	}
 	slog.Info("backend capability preflight passed",

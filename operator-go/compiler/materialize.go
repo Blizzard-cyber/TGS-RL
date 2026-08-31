@@ -2,6 +2,7 @@ package compiler
 
 import (
 	"fmt"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -93,17 +94,21 @@ func buildBundle(input *normalizedInput) (*api.Bundle, error) {
 		if err != nil {
 			return nil, err
 		}
-		selectors := []api.DeviceSelector{{CEL: &api.CELDeviceSelector{Expression: nvidiaDRADeviceSelector(deviceIDs)}}}
+		if len(input.draDevices) != len(deviceIDs) {
+			return nil, fmt.Errorf("NVIDIA DRA device inventory is incomplete")
+		}
+		deviceClass := input.draDevices[0].DeviceClass
+		selectors := []api.DeviceSelector{{CEL: &api.CELDeviceSelector{Expression: nvidiaDRADeviceSelector(input.draDevices)}}}
 		request := api.DeviceRequest{Name: "accelerator"}
 		if input.KubernetesAPIs.DRAResourceClaim != DRAResourceClaimV1Beta1 {
 			request.Exactly = &api.ExactDeviceRequest{
-				DeviceClassName: deviceClass(input.GPUProfile),
+				DeviceClassName: deviceClass,
 				Selectors:       selectors,
 				AllocationMode:  "ExactCount",
 				Count:           int64(len(deviceIDs)),
 			}
 		} else {
-			request.DeviceClassName = deviceClass(input.GPUProfile)
+			request.DeviceClassName = deviceClass
 			request.Selectors = selectors
 			request.AllocationMode = "ExactCount"
 			request.Count = int64(len(deviceIDs))
@@ -173,12 +178,28 @@ func buildBundle(input *normalizedInput) (*api.Bundle, error) {
 	}, nil
 }
 
-func nvidiaDRADeviceSelector(deviceIDs []string) string {
-	quoted := make([]string, 0, len(deviceIDs))
-	for _, deviceID := range deviceIDs {
-		quoted = append(quoted, strconv.Quote(deviceID))
+func nvidiaDRADeviceSelector(devices []DRADevice) string {
+	quoted := make([]string, 0, len(devices))
+	for _, device := range devices {
+		quoted = append(quoted, strconv.Quote(device.UUID))
 	}
-	return `device.driver == "` + NVIDIADRADriver + `" && device.attributes["` + NVIDIADRADriver + `"].uuid in [` + strings.Join(quoted, ", ") + `]`
+	sort.Strings(quoted)
+	return `device.driver == "` + NVIDIADRADriver + `" && device.attributes["` + NVIDIADRADriver + `"].type == "` + devices[0].Type + `" && device.attributes["` + NVIDIADRADriver + `"].uuid in [` + strings.Join(quoted, ", ") + `]`
+}
+
+func nvidiaDRADeviceSelectorForClass(deviceIDs []string, deviceClass string) string {
+	deviceType := ""
+	switch deviceClass {
+	case NVIDIADRAFullGPUDeviceClass:
+		deviceType = "gpu"
+	case NVIDIADRAMIGDeviceClass:
+		deviceType = "mig"
+	}
+	devices := make([]DRADevice, 0, len(deviceIDs))
+	for _, deviceID := range deviceIDs {
+		devices = append(devices, DRADevice{UUID: deviceID, Type: deviceType})
+	}
+	return nvidiaDRADeviceSelector(devices)
 }
 
 func validateBundle(bundle *api.Bundle) error {
@@ -281,10 +302,10 @@ func validateDRAResourceClaim(bundle *api.Bundle) error {
 	} else if request.Exactly != nil {
 		return fmt.Errorf("resource.k8s.io/v1beta1 requires a flat device request")
 	}
-	if request.Name != "accelerator" || class != NVIDIADRADeviceClass || mode != "ExactCount" || count != int64(len(deviceIDs)) {
+	if request.Name != "accelerator" || (class != NVIDIADRAFullGPUDeviceClass && class != NVIDIADRAMIGDeviceClass) || mode != "ExactCount" || count != int64(len(bundle.RuntimeTargets[0].DeviceIDs)) {
 		return fmt.Errorf("kubernetes-dra resource request does not match the concrete binding")
 	}
-	if len(selectors) != 1 || selectors[0].CEL == nil || selectors[0].CEL.Expression != nvidiaDRADeviceSelector(deviceIDs) {
+	if len(selectors) != 1 || selectors[0].CEL == nil || selectors[0].CEL.Expression != nvidiaDRADeviceSelectorForClass(deviceIDs, class) {
 		return fmt.Errorf("kubernetes-dra resource request must select the binding device UUIDs")
 	}
 	return nil

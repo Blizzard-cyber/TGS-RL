@@ -57,7 +57,7 @@ func TestKubernetesObserverMapsObservedStatus(t *testing.T) {
 				"status": map[string]any{"allocation": map[string]any{"devices": map[string]any{"results": []any{map[string]any{"request": "accelerator", "driver": compiler.NVIDIADRADriver, "pool": "node-a", "device": "gpu-0"}}}}},
 			})
 		case "/apis/resource.k8s.io/v1beta1/resourceslices":
-			_ = json.NewEncoder(w).Encode(map[string]any{"items": []any{map[string]any{"spec": map[string]any{"driver": compiler.NVIDIADRADriver, "pool": map[string]any{"name": "node-a", "generation": 1}, "devices": []any{map[string]any{"name": "gpu-0", "basic": map[string]any{"attributes": map[string]any{"uuid": map[string]any{"string": "GPU-aaaa"}}}}}}}}})
+			_ = json.NewEncoder(w).Encode(map[string]any{"items": []any{map[string]any{"spec": map[string]any{"driver": compiler.NVIDIADRADriver, "pool": map[string]any{"name": "node-a", "generation": 1}, "devices": []any{map[string]any{"name": "gpu-0", "basic": map[string]any{"attributes": map[string]any{"uuid": map[string]any{"string": "GPU-aaaa"}, "type": map[string]any{"string": "gpu"}}}}}}}}})
 		default:
 			t.Fatalf("unexpected path %s", r.URL.Path)
 		}
@@ -82,6 +82,7 @@ func TestKubernetesObserverMapsObservedStatus(t *testing.T) {
 			},
 			ResourceClaim: &api.ResourceClaim{
 				ObjectMeta: api.ObjectMeta{Name: "claim-a", Namespace: "test-ns"},
+				Spec:       api.ResourceClaimSpec{Devices: api.DeviceClaim{Requests: []api.DeviceRequest{{Name: "accelerator", DeviceClassName: compiler.NVIDIADRAFullGPUDeviceClass}}}},
 			},
 		},
 		Bindings: []*tgsrlv1.Binding{{BindingId: "binding-a"}},
@@ -111,7 +112,7 @@ func TestKubernetesObserverRejectsDRADeviceIdentityMismatch(t *testing.T) {
 		case "/apis/resource.k8s.io/v1/namespaces/test-ns/resourceclaims/claim-a":
 			_ = json.NewEncoder(w).Encode(map[string]any{"status": map[string]any{"allocation": map[string]any{"devices": map[string]any{"results": []any{map[string]any{"request": "accelerator", "driver": compiler.NVIDIADRADriver, "pool": "node-a", "device": "gpu-0"}}}}}})
 		case "/apis/resource.k8s.io/v1/resourceslices":
-			_ = json.NewEncoder(w).Encode(map[string]any{"items": []any{map[string]any{"spec": map[string]any{"driver": compiler.NVIDIADRADriver, "pool": map[string]any{"name": "node-a", "generation": 1}, "devices": []any{map[string]any{"name": "gpu-0", "attributes": map[string]any{"uuid": map[string]any{"string": "GPU-other"}}}}}}}})
+			_ = json.NewEncoder(w).Encode(map[string]any{"items": []any{map[string]any{"spec": map[string]any{"driver": compiler.NVIDIADRADriver, "pool": map[string]any{"name": "node-a", "generation": 1}, "devices": []any{map[string]any{"name": "gpu-0", "attributes": map[string]any{"uuid": map[string]any{"string": "GPU-other"}, "type": map[string]any{"string": "gpu"}}}}}}}})
 		default:
 			t.Fatalf("unexpected path %s", r.URL.Path)
 		}
@@ -122,13 +123,44 @@ func TestKubernetesObserverRejectsDRADeviceIdentityMismatch(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	bundle := &api.Bundle{Namespace: "test-ns", Generation: 4, GPUProfile: compiler.GPUProfileKubernetesDRA, RuntimeTargets: []api.RuntimeTarget{{DeviceIDs: []string{"GPU-expected"}}}, Workload: api.Workload{TypeMeta: api.TypeMeta{APIVersion: "kueue.x-k8s.io/v1", Kind: "Workload"}, ObjectMeta: api.ObjectMeta{Name: "workload-a", Namespace: "test-ns"}}, Job: api.Job{ObjectMeta: api.ObjectMeta{Name: "job-a", Namespace: "test-ns"}}, ResourceClaim: &api.ResourceClaim{TypeMeta: api.TypeMeta{APIVersion: "resource.k8s.io/v1", Kind: "ResourceClaim"}, ObjectMeta: api.ObjectMeta{Name: "claim-a", Namespace: "test-ns"}}}
+	bundle := &api.Bundle{Namespace: "test-ns", Generation: 4, GPUProfile: compiler.GPUProfileKubernetesDRA, RuntimeTargets: []api.RuntimeTarget{{DeviceIDs: []string{"GPU-expected"}}}, Workload: api.Workload{TypeMeta: api.TypeMeta{APIVersion: "kueue.x-k8s.io/v1", Kind: "Workload"}, ObjectMeta: api.ObjectMeta{Name: "workload-a", Namespace: "test-ns"}}, Job: api.Job{ObjectMeta: api.ObjectMeta{Name: "job-a", Namespace: "test-ns"}}, ResourceClaim: &api.ResourceClaim{TypeMeta: api.TypeMeta{APIVersion: "resource.k8s.io/v1", Kind: "ResourceClaim"}, ObjectMeta: api.ObjectMeta{Name: "claim-a", Namespace: "test-ns"}, Spec: api.ResourceClaimSpec{Devices: api.DeviceClaim{Requests: []api.DeviceRequest{{Name: "accelerator", Exactly: &api.ExactDeviceRequest{DeviceClassName: compiler.NVIDIADRAFullGPUDeviceClass}}}}}}}
 	stream, err := observer.Watch(context.Background(), Request{Bundle: bundle, Bindings: []*tgsrlv1.Binding{{BindingId: "binding-a"}}})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if _, err := stream.Recv(); err == nil || !strings.Contains(err.Error(), "want binding device_ids") {
 		t.Fatalf("Recv() error = %v, want device identity mismatch", err)
+	}
+}
+
+func TestKubernetesObserverRejectsDRAAllocationDeviceClassMismatch(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/apis/kueue.x-k8s.io/v1/namespaces/test-ns/workloads/workload-a":
+			_ = json.NewEncoder(w).Encode(map[string]any{"metadata": map[string]any{"generation": 4}, "status": map[string]any{"admission": map[string]any{"clusterQueue": "queue"}, "conditions": []any{map[string]any{"type": "Admitted", "status": "True", "observedGeneration": 4}}}})
+		case "/apis/batch/v1/namespaces/test-ns/jobs/job-a":
+			_ = json.NewEncoder(w).Encode(map[string]any{"status": map[string]any{"active": 1}})
+		case "/apis/resource.k8s.io/v1/namespaces/test-ns/resourceclaims/claim-a":
+			_ = json.NewEncoder(w).Encode(map[string]any{"status": map[string]any{"allocation": map[string]any{"devices": map[string]any{"results": []any{map[string]any{"request": "accelerator", "driver": compiler.NVIDIADRADriver, "pool": "node-a", "device": "mig-0"}}}}}})
+		case "/apis/resource.k8s.io/v1/resourceslices":
+			_ = json.NewEncoder(w).Encode(map[string]any{"items": []any{map[string]any{"spec": map[string]any{"driver": compiler.NVIDIADRADriver, "pool": map[string]any{"name": "node-a", "generation": 1}, "devices": []any{map[string]any{"name": "mig-0", "attributes": map[string]any{"uuid": map[string]any{"string": "MIG-aaaa"}, "type": map[string]any{"string": "mig"}, "profile": map[string]any{"string": "1g.10gb"}, "parentUUID": map[string]any{"string": "GPU-parent"}}}}}}}})
+		default:
+			t.Fatalf("unexpected path %s", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+
+	observer, err := NewKubernetes(httpObserverClient{baseURL: server.URL, client: server.Client()}, time.Millisecond)
+	if err != nil {
+		t.Fatal(err)
+	}
+	bundle := &api.Bundle{Namespace: "test-ns", Generation: 4, GPUProfile: compiler.GPUProfileKubernetesDRA, RuntimeTargets: []api.RuntimeTarget{{DeviceIDs: []string{"MIG-aaaa"}}}, Workload: api.Workload{TypeMeta: api.TypeMeta{APIVersion: "kueue.x-k8s.io/v1", Kind: "Workload"}, ObjectMeta: api.ObjectMeta{Name: "workload-a", Namespace: "test-ns"}}, Job: api.Job{ObjectMeta: api.ObjectMeta{Name: "job-a", Namespace: "test-ns"}}, ResourceClaim: &api.ResourceClaim{TypeMeta: api.TypeMeta{APIVersion: "resource.k8s.io/v1", Kind: "ResourceClaim"}, ObjectMeta: api.ObjectMeta{Name: "claim-a", Namespace: "test-ns"}, Spec: api.ResourceClaimSpec{Devices: api.DeviceClaim{Requests: []api.DeviceRequest{{Name: "accelerator", Exactly: &api.ExactDeviceRequest{DeviceClassName: compiler.NVIDIADRAFullGPUDeviceClass}}}}}}}
+	stream, err := observer.Watch(context.Background(), Request{Bundle: bundle, Bindings: []*tgsrlv1.Binding{{BindingId: "binding-a"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := stream.Recv(); err == nil || !strings.Contains(err.Error(), "from class") {
+		t.Fatalf("Recv() error = %v, want device class mismatch", err)
 	}
 }
 

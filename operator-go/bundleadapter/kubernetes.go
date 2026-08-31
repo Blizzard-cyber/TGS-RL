@@ -383,14 +383,33 @@ func observeDRAAllocation(ctx context.Context, reader Reader, bundle *api.Bundle
 	if err != nil {
 		return false, nil, fmt.Errorf("read DRA resource slices: %w", err)
 	}
-	actual, err := ResolveDRAAllocationUUIDs(sliceBody, compiler.NVIDIADRADriver, results)
+	allocatedDevices, err := ResolveDRAAllocationDevices(sliceBody, compiler.NVIDIADRADriver, results)
 	if err != nil {
 		return false, nil, err
+	}
+	actual := make([]string, 0, len(allocatedDevices))
+	expectedClass := draRequestDeviceClass(bundle.ResourceClaim)
+	for _, device := range allocatedDevices {
+		if device.DeviceClass != expectedClass {
+			return false, nil, fmt.Errorf("resourceclaim allocated device UUID %q from class %q, want %q", device.UUID, device.DeviceClass, expectedClass)
+		}
+		actual = append(actual, device.UUID)
 	}
 	if !equalStrings(actual, expected) {
 		return false, nil, fmt.Errorf("resourceclaim allocated device UUIDs %v, want binding device_ids %v", actual, expected)
 	}
 	return true, actual, nil
+}
+
+func draRequestDeviceClass(claim *api.ResourceClaim) string {
+	if claim == nil || len(claim.Spec.Devices.Requests) != 1 {
+		return ""
+	}
+	request := claim.Spec.Devices.Requests[0]
+	if request.Exactly != nil {
+		return request.Exactly.DeviceClassName
+	}
+	return request.DeviceClassName
 }
 
 func expectedDRADeviceIDs(bundle *api.Bundle) []string {

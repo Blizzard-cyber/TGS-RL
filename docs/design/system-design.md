@@ -161,7 +161,9 @@ Kubernetes wire contract 通过 discovery 选择 Kueue `v1beta2`/`v1beta1` 和 D
 `resource.k8s.io/v1`/`v1beta2`/`v1beta1`，并生成带 `restartPolicy` 的 Job pod spec。部署者必须提供
 Scheduler、Job Controller、Runtime、Kueue 以及所选 GPU/DRA 控制器，并确认目标集群
 支持这些 API。GPU 设备身份采用单一权威模型：Scheduler 选择并保留 NVIDIA GPU/MIG UUID，
-`kubernetes-dra` profile 将 UUID 编译为 NVIDIA DRA `uuid` CEL selector；Operator 只有在
+Operator 从最新 ResourceSlice 维护 UUID 对应的 type、driver、pool/device、profile 和 parent UUID；
+`kubernetes-dra` profile 为 Full GPU 选择 `gpu.nvidia.com` DeviceClass，为 MIG 选择
+`mig.nvidia.com` DeviceClass，并将 UUID 编译为 NVIDIA DRA `uuid` CEL selector。Operator 只有在
 ResourceClaim allocation 可通过最新 ResourceSlice 反查到完全相同的 UUID 集合后，才发布
 `BOUND`/`RUNNING`。Device Plugin 与 HAMi 只表达数量，不宣称精确 UUID 一致。随附部署工件
 不会安装这些依赖。由于当前 Binding 语义始终包含具体设备身份，不能执行该身份约束的

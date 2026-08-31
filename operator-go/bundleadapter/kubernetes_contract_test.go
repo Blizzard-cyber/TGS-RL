@@ -2,9 +2,11 @@ package bundleadapter
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 
 	"github.com/Blizzard-cyber/TGS-RL/operator-go/api"
+	"github.com/Blizzard-cyber/TGS-RL/operator-go/compiler"
 )
 
 func TestMaterializeSanitizesKubernetesDesiredObjects(t *testing.T) {
@@ -40,6 +42,50 @@ func TestMaterializeSanitizesKubernetesDesiredObjects(t *testing.T) {
 				t.Fatalf("RuntimeClass desired payload contains namespace: %s", object.Payload)
 			}
 		}
+	}
+}
+
+func TestDiscoverDRADevicesHandlesTypesGenerationsAndAttributeLayouts(t *testing.T) {
+	payload := []byte(`{"items":[
+		{"spec":{"driver":"gpu.nvidia.com","pool":{"name":"node-a","generation":1},"devices":[{"name":"old","attributes":{"uuid":{"string":"GPU-old"},"type":{"string":"gpu"}}}]}},
+		{"spec":{"driver":"gpu.nvidia.com","pool":{"name":"node-a","generation":2},"devices":[
+			{"name":"gpu-0","attributes":{"type":{"string":"gpu"}},"basic":{"attributes":{"uuid":{"string":"GPU-aaaa"}}}},
+			{"name":"mig-0","basic":{"attributes":{"uuid":{"string":"MIG-aaaa"},"type":{"string":"mig"},"profile":{"string":"1g.10gb"},"parentUUID":{"string":"GPU-aaaa"}}}},
+			{"name":"vfio-0","attributes":{"uuid":{"string":"VFIO-aaaa"},"type":{"string":"vfio"}}}
+		]}}
+	]}`)
+	devices, err := DiscoverDRADevices(payload, compiler.NVIDIADRADriver)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(devices) != 2 || devices["GPU-old"].UUID != "" {
+		t.Fatalf("devices = %+v, stale pool generation must be ignored", devices)
+	}
+	if got := devices["GPU-aaaa"].DeviceClass; got != compiler.NVIDIADRAFullGPUDeviceClass {
+		t.Fatalf("full GPU device class = %q", got)
+	}
+	mig := devices["MIG-aaaa"]
+	if mig.DeviceClass != compiler.NVIDIADRAMIGDeviceClass || mig.Profile != "1g.10gb" || mig.ParentUUID != "GPU-aaaa" {
+		t.Fatalf("MIG metadata = %+v", mig)
+	}
+}
+
+func TestDiscoverDRADevicesRejectsAttributeConflictsAndDuplicateUUIDs(t *testing.T) {
+	conflict := []byte(`{"items":[{"spec":{"driver":"gpu.nvidia.com","pool":{"name":"node-a","generation":1},"devices":[{"name":"gpu-0","attributes":{"uuid":{"string":"GPU-a"}},"basic":{"attributes":{"uuid":{"string":"GPU-b"},"type":{"string":"gpu"}}}}]}}]}`)
+	if _, err := DiscoverDRADevices(conflict, compiler.NVIDIADRADriver); err == nil || !strings.Contains(err.Error(), "conflicts") {
+		t.Fatalf("attribute conflict error = %v", err)
+	}
+	duplicate := []byte(`{"items":[{"spec":{"driver":"gpu.nvidia.com","pool":{"name":"node-a","generation":1},"devices":[{"name":"gpu-0","attributes":{"uuid":{"string":"GPU-a"},"type":{"string":"gpu"}}},{"name":"gpu-1","attributes":{"uuid":{"string":"GPU-a"},"type":{"string":"gpu"}}}]}}]}`)
+	if _, err := DiscoverDRADevices(duplicate, compiler.NVIDIADRADriver); err == nil || !strings.Contains(err.Error(), "multiple devices") {
+		t.Fatalf("duplicate UUID error = %v", err)
+	}
+	unknown := []byte(`{"items":[{"spec":{"driver":"gpu.nvidia.com","pool":{"name":"node-a","generation":1},"devices":[{"name":"future-0","attributes":{"uuid":{"string":"future-a"},"type":{"string":"future"}}}]}}]}`)
+	if _, err := DiscoverDRADevices(unknown, compiler.NVIDIADRADriver); err == nil || !strings.Contains(err.Error(), "unsupported type") {
+		t.Fatalf("unknown device type error = %v", err)
+	}
+	missingMIGMetadata := []byte(`{"items":[{"spec":{"driver":"gpu.nvidia.com","pool":{"name":"node-a","generation":1},"devices":[{"name":"mig-0","attributes":{"uuid":{"string":"MIG-a"},"type":{"string":"mig"}}}]}}]}`)
+	if _, err := DiscoverDRADevices(missingMIGMetadata, compiler.NVIDIADRADriver); err == nil || !strings.Contains(err.Error(), "incomplete profile or parent UUID") {
+		t.Fatalf("incomplete MIG metadata error = %v", err)
 	}
 }
 

@@ -24,7 +24,7 @@
 | NVIDIA Provider（默认） | **有条件（Conditional）** | `LocalDriver` 可通过 `nvidia-smi` 形成设备快照 | 需要 NVIDIA 驱动和 `nvidia-smi`；默认不声明资源动作 |
 | NVIDIA Driver v2 | **有条件（Conditional）** | 已实现 inventory、MPS `set_share` 写入与读回，以及仓库内 binding/runtime/MIG helper 的 generation fence、幂等 durable receipt、原子落盘、重启发现、PID 信号控制和 managed-worker lifecycle | binding helper 不改变已运行进程的 GPU 可见性；offload/reload 需要训练 worker 实现 Unix socket 协议；MIG 仅在已存在、已发现的实例间切换，不自动改变节点 MIG 拓扑；现有测试为真实本地进程 + fake-command/CPU conformance，尚无真实 NVIDIA/CUDA 证据 |
 | 外部 Runtime Adapter | **有条件支持** | veRL 已有第一方 lifecycle/observation bridge、durable worker receipt、typed TraceEvent 和 CPU reference workload；其余 adapter 提供依赖检查、manifest 校验和 typed bridge 边界 | 真实 veRL worker、Ray/PyTorch/vLLM/SGLang、分布式环境和 GPU 资源控制仍需目标环境验证 |
-| Kubernetes Operator | **有条件支持** | 编译和调和 `JobRunBundle`、Kueue `Workload`、Kubernetes `Job`、可选 `ResourceClaim`/`RuntimeClass`，并观察状态；NVIDIA DRA profile 将 Scheduler UUID 投影为 selector 并回读 allocation/ResourceSlice 身份；Kubernetes 1.35.1 + Kueue 0.19.2 的本地 CPU API/RBAC/重启验证通过 | 精确 UUID 仅适用于 `gpu.nvidia.com` DRA 的整数个完整 GPU/MIG；MPS sharing 尚未接线；不能兑现具体 UUID 的 Device Plugin/HAMi profile 会 fail closed；本地 CPU 证据不代表生产集群或 GPU 验证，随附工件只部署 Operator |
+| Kubernetes Operator | **有条件支持** | 编译和调和 `JobRunBundle`、Kueue `Workload`、Kubernetes `Job`、可选 `ResourceClaim`/`RuntimeClass`，并观察状态；typed NVIDIA DRA inventory 为 Full GPU/MIG 分别选择 `gpu.nvidia.com`/`mig.nvidia.com` DeviceClass，并回读 allocation/ResourceSlice 身份；Kubernetes 1.35.1 + Kueue 0.19.2 的本地 CPU API/RBAC/重启验证通过 | 精确 UUID 仅适用于 NVIDIA DRA 的整数个完整 GPU/MIG；MPS sharing 尚未接线；不能兑现具体 UUID 的 Device Plugin/HAMi profile 会 fail closed；本地 CPU 证据不代表生产集群或 GPU 验证，随附工件只部署 Operator |
 
 ## 单机方案
 
@@ -66,8 +66,9 @@ bridge callback 并提供 control socket；其余 adapter 需要显式 bridge。
 - 提供 `v1beta2` 或 `v1beta1` Workload API 的 Kueue；Operator 优先选择 discovery
   返回的受支持版本；
 - 若使用 DRA，则优先使用稳定的 `resource.k8s.io/v1` API，也兼容
-  `v1beta2`/`v1beta1`，并要求 NVIDIA `gpu.nvidia.com` DeviceClass/driver 及带 `uuid` 属性的
-  ResourceSlice；
+  `v1beta2`/`v1beta1`；当前只支持 NVIDIA `gpu.nvidia.com` driver，Full GPU 使用
+  `gpu.nvidia.com` DeviceClass、MIG 使用 `mig.nvidia.com` DeviceClass，并要求 ResourceSlice
+  提供 `type`、`uuid` 以及 MIG 的 `profile`、`parentUUID` typed metadata；
 - 所选 GPU profile 所需的 Device Plugin、DRA 或 HAMi 组件；
 - 独立部署且可从 Operator 访问的 Scheduler、Job Controller 和 Runtime；
 - Operator cursor 目录的持久卷。

@@ -160,10 +160,12 @@ Job Controller 和 Runtime 的 service address，并默认把 `/var/lib/tgsrl-op
 RuntimeClass 写权限。这些工件不部署 Scheduler、Job Controller、Runtime、Kueue 或
 GPU/DRA 控制器。使用 Kubernetes backend 前，部署者必须提供这些依赖，并确认目标集群
 支持通过 API discovery 选择 Kueue `v1beta2`/`v1beta1` 与 DRA
-`resource.k8s.io/v1`/`v1beta2`/`v1beta1`。`kubernetes-dra` 不是通用 driver 模式：它要求
-NVIDIA `gpu.nvidia.com` DeviceClass 和 ResourceSlice `uuid` 属性，将 Scheduler `device_ids`
-编译为 CEL selector，并在 allocation 后回读 UUID 一致性。Device Plugin/HAMi 仍只提供
-数量语义。
+`resource.k8s.io/v1`/`v1beta2`/`v1beta1`。`kubernetes-dra` 不是通用 driver 模式：它固定
+使用 NVIDIA `gpu.nvidia.com` driver，根据 ResourceSlice 的 typed metadata 为 Full GPU 选择
+`gpu.nvidia.com` DeviceClass、为 MIG 选择 `mig.nvidia.com` DeviceClass，并要求 `type`、`uuid`
+以及 MIG 的 `profile`、`parentUUID`。Operator 将 Scheduler `device_ids` 编译为 CEL selector，
+并在 allocation 后通过最新 ResourceSlice 回读 UUID 与 DeviceClass 一致性。Device Plugin/HAMi
+仍只提供数量语义。
 
 ## 本地数据目录
 

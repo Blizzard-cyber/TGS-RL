@@ -2,6 +2,7 @@ package compiler
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 
 	tgsrlv1 "github.com/Blizzard-cyber/TGS-RL/gen/go/tgsrl/v1"
@@ -17,7 +18,10 @@ func discoveredGPUCapabilities(profiles ...string) CapabilitySet {
 		}
 		set.ExactDevicePlacement[profile] = true
 		if profile == GPUProfileKubernetesDRA {
-			set.DRADeviceIDs = map[string]bool{"GPU-aaaa": true, "GPU-bbbb": true}
+			set.DRADevices = map[string]DRADevice{
+				"GPU-aaaa": {UUID: "GPU-aaaa", Type: "gpu", DeviceClass: NVIDIADRAFullGPUDeviceClass, Driver: NVIDIADRADriver, Pool: "node-a", Device: "gpu-0"},
+				"GPU-bbbb": {UUID: "GPU-bbbb", Type: "gpu", DeviceClass: NVIDIADRAFullGPUDeviceClass, Driver: NVIDIADRADriver, Pool: "node-a", Device: "gpu-1"},
+			}
 		}
 	}
 	return set
@@ -116,13 +120,13 @@ func TestCompileDRAGeneratesResourceClaim(t *testing.T) {
 	if request.Exactly == nil {
 		t.Fatal("stable DRA API must use requests[].exactly")
 	}
-	if got := request.Exactly.DeviceClassName; got != NVIDIADRADeviceClass {
+	if got := request.Exactly.DeviceClassName; got != NVIDIADRAFullGPUDeviceClass {
 		t.Fatalf("unexpected device class: %q", got)
 	}
 	if request.Name != "accelerator" || request.Exactly.AllocationMode != "ExactCount" || request.Exactly.Count != 1 {
 		t.Fatalf("unexpected DRA request: %+v", request)
 	}
-	if len(request.Exactly.Selectors) != 1 || request.Exactly.Selectors[0].CEL == nil || request.Exactly.Selectors[0].CEL.Expression != `device.driver == "gpu.nvidia.com" && device.attributes["gpu.nvidia.com"].uuid in ["GPU-aaaa"]` {
+	if len(request.Exactly.Selectors) != 1 || request.Exactly.Selectors[0].CEL == nil || request.Exactly.Selectors[0].CEL.Expression != `device.driver == "gpu.nvidia.com" && device.attributes["gpu.nvidia.com"].type == "gpu" && device.attributes["gpu.nvidia.com"].uuid in ["GPU-aaaa"]` {
 		t.Fatalf("unexpected DRA UUID selector: %+v", request.Exactly.Selectors)
 	}
 	if len(bundle.Job.Spec.Template.Spec.ResourceClaims) != 1 {
@@ -163,7 +167,7 @@ func TestCompileDRAV1Beta1UsesLegacyFlatRequest(t *testing.T) {
 	if bundle.ResourceClaim.APIVersion != DRAResourceClaimV1Beta1 || bundle.Workload.APIVersion != KueueWorkloadV1Beta1 {
 		t.Fatalf("selected APIs were not projected: claim=%s workload=%s", bundle.ResourceClaim.APIVersion, bundle.Workload.APIVersion)
 	}
-	if request.Exactly != nil || request.DeviceClassName != NVIDIADRADeviceClass || request.Count != 1 || len(request.Selectors) != 1 || request.Selectors[0].CEL == nil {
+	if request.Exactly != nil || request.DeviceClassName != NVIDIADRAFullGPUDeviceClass || request.Count != 1 || len(request.Selectors) != 1 || request.Selectors[0].CEL == nil {
 		t.Fatalf("unexpected legacy DRA request: %+v", request)
 	}
 }
@@ -184,9 +188,58 @@ func TestCompileDRASelectsEveryConcreteBindingUUID(t *testing.T) {
 	if request == nil || request.Count != 2 {
 		t.Fatalf("DRA request = %+v, want two exact devices", request)
 	}
-	want := `device.driver == "gpu.nvidia.com" && device.attributes["gpu.nvidia.com"].uuid in ["GPU-aaaa", "GPU-bbbb"]`
+	want := `device.driver == "gpu.nvidia.com" && device.attributes["gpu.nvidia.com"].type == "gpu" && device.attributes["gpu.nvidia.com"].uuid in ["GPU-aaaa", "GPU-bbbb"]`
 	if got := request.Selectors[0].CEL.Expression; got != want {
 		t.Fatalf("DRA selector = %q, want %q", got, want)
+	}
+}
+
+func TestCompileDRASelectsMIGDeviceClass(t *testing.T) {
+	c := New()
+	c.SetCapabilities(CapabilitySet{
+		GPUProfiles:          map[string]bool{GPUProfileNone: true, GPUProfileKubernetesDRA: true},
+		ExactDevicePlacement: map[string]bool{GPUProfileKubernetesDRA: true},
+		DRADevices: map[string]DRADevice{
+			"MIG-aaaa": {UUID: "MIG-aaaa", Type: "mig", DeviceClass: NVIDIADRAMIGDeviceClass, Driver: NVIDIADRADriver, Pool: "node-a", Device: "gpu-0-mig-1g-10gb-0", Profile: "1g.10gb", ParentUUID: "GPU-parent"},
+		},
+		KubernetesAPIs: DefaultCapabilitySet().KubernetesAPIs,
+	})
+	input := singleBindingInput(testCompileInput(), 0)
+	input.GPUProfiles = []string{GPUProfileKubernetesDRA}
+	input.PlacementPlan.Bindings[0].DeviceIds = []string{"MIG-aaaa"}
+
+	bundle, err := c.compileBinding(input)
+	if err != nil {
+		t.Fatalf("compile failed: %v", err)
+	}
+	request := bundle.ResourceClaim.Spec.Devices.Requests[0].Exactly
+	if request == nil || request.DeviceClassName != NVIDIADRAMIGDeviceClass {
+		t.Fatalf("MIG request = %+v, want device class %q", request, NVIDIADRAMIGDeviceClass)
+	}
+	want := `device.driver == "gpu.nvidia.com" && device.attributes["gpu.nvidia.com"].type == "mig" && device.attributes["gpu.nvidia.com"].uuid in ["MIG-aaaa"]`
+	if got := request.Selectors[0].CEL.Expression; got != want {
+		t.Fatalf("MIG selector = %q, want %q", got, want)
+	}
+}
+
+func TestCompileDRARejectsMixedDeviceClasses(t *testing.T) {
+	c := New()
+	c.SetCapabilities(CapabilitySet{
+		GPUProfiles:          map[string]bool{GPUProfileNone: true, GPUProfileKubernetesDRA: true},
+		ExactDevicePlacement: map[string]bool{GPUProfileKubernetesDRA: true},
+		DRADevices: map[string]DRADevice{
+			"GPU-aaaa": {UUID: "GPU-aaaa", Type: "gpu", DeviceClass: NVIDIADRAFullGPUDeviceClass, Driver: NVIDIADRADriver, Pool: "node-a", Device: "gpu-0"},
+			"MIG-aaaa": {UUID: "MIG-aaaa", Type: "mig", DeviceClass: NVIDIADRAMIGDeviceClass, Driver: NVIDIADRADriver, Pool: "node-a", Device: "gpu-0-mig-1g-10gb-0", Profile: "1g.10gb", ParentUUID: "GPU-aaaa"},
+		},
+		KubernetesAPIs: DefaultCapabilitySet().KubernetesAPIs,
+	})
+	input := singleBindingInput(testCompileInput(), 0)
+	input.GPUProfiles = []string{GPUProfileKubernetesDRA}
+	input.PlacementPlan.Bindings[0].DeviceIds = []string{"GPU-aaaa", "MIG-aaaa"}
+	input.PlacementPlan.Bindings[0].Resources.AcceleratorUnits = 2
+
+	if _, err := c.compileBinding(input); err == nil || !strings.Contains(err.Error(), "mixes DRA device classes") {
+		t.Fatalf("compile mixed DRA classes error = %v", err)
 	}
 }
 
@@ -209,6 +262,16 @@ func TestCompileDRARejectsUndiscoveredOrIncompleteDeviceIdentity(t *testing.T) {
 	input.PlacementPlan.Bindings[0].Resources.AcceleratorUnits = 0.5
 	if _, err := c.compileBinding(singleBindingInput(input, 0)); err == nil {
 		t.Fatal("expected fractional DRA request without sharing configuration to fail closed")
+	}
+
+	capabilities := discoveredGPUCapabilities(GPUProfileKubernetesDRA)
+	device := capabilities.DRADevices["GPU-aaaa"]
+	device.UUID = "GPU-other"
+	capabilities.DRADevices["GPU-aaaa"] = device
+	c.SetCapabilities(capabilities)
+	input.PlacementPlan.Bindings[0].Resources.AcceleratorUnits = 1
+	if _, err := c.compileBinding(singleBindingInput(input, 0)); err == nil || !strings.Contains(err.Error(), "inventory key") {
+		t.Fatalf("expected inconsistent DRA inventory identity to fail closed, got %v", err)
 	}
 }
 
@@ -365,8 +428,11 @@ func TestCompileSelectsOnlyDiscoveredGPUCapability(t *testing.T) {
 			GPUProfileKubernetesDRA: true,
 		},
 		ExactDevicePlacement: map[string]bool{GPUProfileKubernetesDRA: true},
-		DRADeviceIDs:         map[string]bool{"GPU-aaaa": true, "GPU-bbbb": true},
-		KubernetesAPIs:       DefaultCapabilitySet().KubernetesAPIs,
+		DRADevices: map[string]DRADevice{
+			"GPU-aaaa": {UUID: "GPU-aaaa", Type: "gpu", DeviceClass: NVIDIADRAFullGPUDeviceClass, Driver: NVIDIADRADriver, Pool: "node-a", Device: "gpu-0"},
+			"GPU-bbbb": {UUID: "GPU-bbbb", Type: "gpu", DeviceClass: NVIDIADRAFullGPUDeviceClass, Driver: NVIDIADRADriver, Pool: "node-a", Device: "gpu-1"},
+		},
+		KubernetesAPIs: DefaultCapabilitySet().KubernetesAPIs,
 	})
 	input := testCompileInput()
 	input.GPUProfiles = []string{GPUProfileNVIDIADevicePlugin, GPUProfileKubernetesDRA}

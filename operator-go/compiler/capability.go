@@ -1,15 +1,31 @@
 package compiler
 
-import "fmt"
+import (
+	"fmt"
+	"sort"
+)
 
 type CapabilitySet struct {
 	GPUProfiles          map[string]bool
 	ExactDevicePlacement map[string]bool
-	DRADeviceIDs         map[string]bool
+	DRADevices           map[string]DRADevice
 	RuntimeClasses       map[string]string
 	NodeSelectors        map[string]map[string]string
 	DefaultNodeSelector  map[string]string
 	KubernetesAPIs       KubernetesAPIVersions
+}
+
+// DRADevice is the identity metadata required to project and verify one
+// scheduler-selected NVIDIA device through Kubernetes DRA.
+type DRADevice struct {
+	UUID        string
+	Type        string
+	DeviceClass string
+	Driver      string
+	Pool        string
+	Device      string
+	Profile     string
+	ParentUUID  string
 }
 
 // KubernetesAPIVersions records the concrete wire contracts selected from API
@@ -46,7 +62,7 @@ func SelectCapabilityProfile(requested RuntimeConfig, preferredGPUProfiles []str
 	}
 	selected := CapabilityProfile{
 		GPUProfile:     GPUProfileNone,
-		DRADeviceIDs:   cloneBoolMap(discovered.DRADeviceIDs),
+		DRADevices:     cloneDRADevices(discovered.DRADevices),
 		RuntimeClass:   requested.RuntimeClass,
 		NodeSelector:   cloneStringMap(requested.NodeSelector),
 		KubernetesAPIs: discovered.KubernetesAPIs,
@@ -94,6 +110,57 @@ func SelectCapabilityProfile(requested RuntimeConfig, preferredGPUProfiles []str
 		}
 	}
 	return selected, nil
+}
+
+func selectedDRADevices(deviceIDs []string, inventory map[string]DRADevice) ([]DRADevice, error) {
+	result := make([]DRADevice, 0, len(deviceIDs))
+	deviceClass := ""
+	for _, deviceID := range deviceIDs {
+		device, ok := inventory[deviceID]
+		if !ok {
+			return nil, fmt.Errorf("references NVIDIA DRA device UUID %q that was not discovered", deviceID)
+		}
+		if device.UUID != deviceID {
+			return nil, fmt.Errorf("NVIDIA DRA inventory key %q identifies UUID %q", deviceID, device.UUID)
+		}
+		wantClass := nvidiaDRAClassForType(device.Type)
+		if device.Driver != NVIDIADRADriver || wantClass == "" || device.DeviceClass != wantClass || device.Pool == "" || device.Device == "" {
+			return nil, fmt.Errorf("NVIDIA DRA device UUID %q has incomplete identity metadata", deviceID)
+		}
+		if device.Type == "mig" && (device.Profile == "" || device.ParentUUID == "") {
+			return nil, fmt.Errorf("NVIDIA DRA MIG device UUID %q has incomplete profile or parent UUID", deviceID)
+		}
+		if deviceClass == "" {
+			deviceClass = device.DeviceClass
+		} else if deviceClass != device.DeviceClass {
+			return nil, fmt.Errorf("mixes DRA device classes %q and %q", deviceClass, device.DeviceClass)
+		}
+		result = append(result, device)
+	}
+	sort.Slice(result, func(i, j int) bool { return result[i].UUID < result[j].UUID })
+	return result, nil
+}
+
+func nvidiaDRAClassForType(deviceType string) string {
+	switch deviceType {
+	case "gpu":
+		return NVIDIADRAFullGPUDeviceClass
+	case "mig":
+		return NVIDIADRAMIGDeviceClass
+	default:
+		return ""
+	}
+}
+
+func cloneDRADevices(src map[string]DRADevice) map[string]DRADevice {
+	if len(src) == 0 {
+		return nil
+	}
+	dst := make(map[string]DRADevice, len(src))
+	for key, value := range src {
+		dst[key] = value
+	}
+	return dst
 }
 
 func cloneBoolMap(src map[string]bool) map[string]bool {

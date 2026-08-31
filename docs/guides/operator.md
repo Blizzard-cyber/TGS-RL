@@ -83,8 +83,9 @@ Kubernetes wire payload 根据 API discovery 选择当前集群实际提供的�
 - Kubernetes `batch/v1` Job，pod template 包含合法的 `restartPolicy`；
 - 需要设备 claim 时优先使用稳定的 DRA `resource.k8s.io/v1` ResourceClaim，并兼容
   `v1beta2`/`v1beta1`；`v1`/`v1beta2` 使用 `devices.requests[].exactly`，`v1beta1`
-  使用旧的扁平 request；`kubernetes-dra` 当前明确绑定 NVIDIA `gpu.nvidia.com` driver/class，
-  并要求 ResourceSlice 发布可解析的 `uuid` 属性；
+  使用旧的扁平 request；`kubernetes-dra` 当前明确绑定 NVIDIA `gpu.nvidia.com` driver，
+  Full GPU 使用 `gpu.nvidia.com` DeviceClass，MIG 使用 `mig.nvidia.com` DeviceClass；
+  ResourceSlice 必须提供 `type`、`uuid`，MIG 还必须提供 `profile` 和 `parentUUID`；
 - 主资源写入前剥离 `uid`、`generation`、`resourceVersion`、`managedFields`、
   `creationTimestamp`、未解析 owner reference 和 `status` 等 server-owned 字段。
 
@@ -93,13 +94,16 @@ Operator ServiceAccount 通过只读 ClusterRole 列举 Node、RuntimeClass、De
 namespace。Kubernetes observer 通过轮询读取 Workload、Job 和可选 ResourceClaim，在准入、claim
 分配及 Job active 条件满足后发布 Bound/Running；失败和完成也由观察状态投影。仓库的
 本地 HTTP 合同测试覆盖这些 JSON 约定，但仍没有真实 Kubernetes/Kueue/DRA 集群 E2E。
-Scheduler binding 中的 `device_ids` 代表 NVIDIA GPU/MIG UUID。`kubernetes-dra` profile 会把
-这些 UUID 编译进 ResourceClaim 的 CEL selector，并在观察阶段用 allocation 的
+Scheduler binding 中的 `device_ids` 代表 NVIDIA GPU/MIG UUID。`kubernetes-dra` profile 根据
+ResourceSlice 的 typed inventory 选择 Full GPU 或 MIG DeviceClass，把这些 UUID 编译进
+ResourceClaim 的 CEL selector，并在观察阶段用 allocation 的
 `driver/pool/device` 从最新 ResourceSlice 解析实际 UUID；缺失、数量不符或身份不符都会
 fail closed，不能发布 `BOUND`/`RUNNING`。NVIDIA DRA driver 再通过 Pod resource claim/CDI
 将已分配设备注入容器。Device Plugin 与 HAMi profile 仍只表达资源数量，不保证具体 UUID。
-当前 DRA claim 未生成 NVIDIA MPS/time-slicing sharing configuration，因此只接受整数个完整
+一个 binding 不能混用 Full GPU 与 MIG DeviceClass。top-level 与 v1beta1 `basic` attributes 会
+合并，同名字段冲突、未知类型、过期 inventory 或重复 UUID 都会被拒绝。当前 DRA claim 未生成 NVIDIA MPS/time-slicing sharing configuration，因此只接受整数个完整
 GPU/MIG 设备；分数 share 会在编译时 fail closed。
+同一 NVIDIA driver 发布但当前不支持调度的 VFIO 设备不会进入 TGS-RL capability inventory。
 鉴于当前 `Binding` 的资源所有权属于 Scheduler，Operator 不会在 Device Plugin/HAMi 模式下
 丢弃 `device_ids` 后继续创建 Pod；这两种 count-only profile 会在启动预检或编译时被拒绝，
 直到实现可验证的身份映射。

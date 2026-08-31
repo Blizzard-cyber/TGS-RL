@@ -18,10 +18,14 @@ Kubernetes DRA 可以用 driver-specific CEL selector 约束设备，并在 Reso
 
 - Scheduler 是设备选择与 reservation 的唯一权威，`Binding.device_ids` 使用 NVIDIA
   GPU/MIG UUID。
-- Operator 的 `kubernetes-dra` profile 固定要求 `gpu.nvidia.com` DeviceClass/driver。
+- Operator 的 `kubernetes-dra` profile 固定要求 NVIDIA DRA driver `gpu.nvidia.com`，并根据
+  typed inventory 为 Full GPU 选择 `gpu.nvidia.com` DeviceClass、为 MIG 选择
+  `mig.nvidia.com` DeviceClass。
 - 每个 binding 的 ResourceClaim 使用 `uuid` CEL selector，只允许绑定中列出的 UUID。
-- Operator capability discovery 必须同时发现 DeviceClass、最新 ResourceSlice generation 和
-  可解析的唯一 UUID；仅发现 DRA API 或 DeviceClass 不足以开放该 profile。
+- Operator capability discovery 必须同时发现对应 DeviceClass、最新 ResourceSlice generation
+  以及包含 type、driver、pool、device、profile、parent UUID 的唯一设备记录；仅发现 DRA API
+  或 DeviceClass 不足以开放该 profile。
+- 同一个 binding 不能混用 Full GPU 与 MIG DeviceClass；未知类型和不完整 MIG 元数据直接拒绝。
 - ResourceClaim allocation 后，Operator 用 `driver/pool/device` 在最新 ResourceSlice 中反查
   UUID。实际集合与 Binding 不完全一致时 fail closed，不发布 `BOUND` 或 `RUNNING`。
 - 经过验证的 allocation UUID 写回 SandboxEvent，保持 Runtime 与 Scheduler 的观测一致。
@@ -33,7 +37,8 @@ Kubernetes DRA 可以用 driver-specific CEL selector 约束设备，并在 Reso
 ## 结果
 
 这项决定避免了两个资源权威，也保留现有 Scheduler 事务和 MIG 重配置语义。代价是 Kubernetes
-精确 GPU 路径明确依赖 NVIDIA DRA schema，不能再表述为通用 DRA 支持；ResourceSlice 读取需要
+精确 GPU 路径明确依赖 NVIDIA DRA schema，不能再表述为通用 DRA 支持；ResourceSlice 的
+top-level 和 v1beta1 `basic` attributes 会合并，相同字段冲突时拒绝；ResourceSlice 读取需要
 最小集群级 `list` 权限。未来若支持其他 DRA driver，必须新增明确的 identity adapter 和
 readback 规则，不能复用 NVIDIA 属性名称。
 
