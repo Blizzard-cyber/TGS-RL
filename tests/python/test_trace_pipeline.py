@@ -670,6 +670,38 @@ def test_ingestion_is_idempotent_and_conflicts_are_atomic(event_factory: EventFa
     assert ingestor.source_digest("run-1") == first_digest
 
 
+def test_ingestion_allows_worker_local_sequences_across_sandboxes(
+    event_factory: EventFactory,
+) -> None:
+    first = _event(event_factory, "worker-a", sequence=1, seconds=1)
+    first.sandbox_id = "sandbox-a"
+    second = _event(event_factory, "worker-b", sequence=1, seconds=2)
+    second.sandbox_id = "sandbox-b"
+
+    ingested = TraceIngestor().ingest("run-1", [second, first])
+    aggregates = TraceAggregator().aggregate_micro_stages(ingested)
+
+    assert {event.event_id for event in ingested} == {"worker-a", "worker-b"}
+    assert {stage.key.sandbox_id for stage in aggregates} == {"sandbox-a", "sandbox-b"}
+
+
+def test_observation_merge_preserves_worker_sequence_despite_clock_skew(
+    event_factory: EventFactory,
+) -> None:
+    first = _event(event_factory, "worker-first", sequence=1, seconds=10)
+    first.sandbox_id = "sandbox-a"
+    first.contract_observation.policy_version = "policy-1"
+    second = _event(event_factory, "worker-second", sequence=2, seconds=1)
+    second.sandbox_id = "sandbox-a"
+    second.policy_version = "policy-2"
+    second.contract_observation.policy_version = "policy-2"
+
+    summary = TraceAggregator().summarize([second, first])
+
+    assert summary.latest_event_id == "worker-second"
+    assert summary.latest_policy_version == "policy-2"
+
+
 def test_source_digest_is_independent_of_batch_arrival_order(
     event_factory: EventFactory,
 ) -> None:

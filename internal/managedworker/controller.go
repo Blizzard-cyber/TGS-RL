@@ -19,7 +19,10 @@ import (
 	"time"
 )
 
-const WorkerControlTokenHeader = "X-TGSRL-Worker-Control-Token"
+const (
+	WorkerControlTokenHeader = "X-TGSRL-Worker-Control-Token"
+	WorkerTraceTokenHeader   = "X-TGSRL-Worker-Trace-Token"
+)
 
 type ControlRequest struct {
 	Action          string  `json:"action"`

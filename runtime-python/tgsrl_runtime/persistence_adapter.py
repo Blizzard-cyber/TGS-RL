@@ -16,6 +16,7 @@ from tgsrl_runtime.experiments import ReplayExperimentStore
 from tgsrl_runtime.storage import (
     AdapterHydrationState,
     GatewayRepository,
+    ManagedWorkerTraceCommit,
     ReplayScheduleStep,
     RuntimeObservationBatch,
     RuntimeObservationCommit,
@@ -73,6 +74,28 @@ class PersistenceHook(Protocol):
     def record_intent(self, intent: scheduling_pb2.SchedulingIntent) -> None:
         """Persist one scheduling intent."""
 
+    def load_idempotent_response(
+        self, *, scope: str, key: str, request_payload: bytes
+    ) -> bytes | None:
+        """Load one exact prior response or reject conflicting key reuse."""
+
+    def remember_idempotent_response(
+        self, *, scope: str, key: str, request_payload: bytes, response_payload: bytes
+    ) -> bytes:
+        """Persist one request/response identity before external publication."""
+
+    def persist_managed_worker_trace(
+        self,
+        *,
+        scope: str,
+        key: str,
+        request_payload: bytes,
+        batch: trace_pb2.TraceEventBatch,
+        intents: Sequence[scheduling_pb2.SchedulingIntent],
+        response_payload: bytes,
+    ) -> ManagedWorkerTraceCommit:
+        """Atomically persist a trace batch, derived intents, and retry response."""
+
     def save_checkpoint(self, *, run_id: str, checkpoint_ref: str, completed_at: datetime) -> str:
         """Persist checkpoint completion metadata and return a cursor."""
 
@@ -116,6 +139,7 @@ class NullPersistenceHook:
 
     def __init__(self) -> None:
         self._runtime_event_sequence = 0
+        self._idempotent_responses: dict[tuple[str, str], tuple[bytes, bytes]] = {}
 
     def save_manifest(self, manifest: runtime_pb2.RuntimeManifest) -> runtime_pb2.RuntimeManifest:
         return manifest
@@ -136,6 +160,58 @@ class NullPersistenceHook:
 
     def record_intent(self, intent: scheduling_pb2.SchedulingIntent) -> None:
         del intent
+
+    def load_idempotent_response(
+        self, *, scope: str, key: str, request_payload: bytes
+    ) -> bytes | None:
+        entry = self._idempotent_responses.get((scope, key))
+        if entry is None:
+            return None
+        previous_request, response = entry
+        if previous_request != request_payload:
+            raise ValueError("idempotency key was reused with a different request")
+        return response
+
+    def remember_idempotent_response(
+        self, *, scope: str, key: str, request_payload: bytes, response_payload: bytes
+    ) -> bytes:
+        previous = self.load_idempotent_response(
+            scope=scope, key=key, request_payload=request_payload
+        )
+        if previous is not None:
+            return previous
+        self._idempotent_responses[(scope, key)] = (bytes(request_payload), bytes(response_payload))
+        return response_payload
+
+    def persist_managed_worker_trace(
+        self,
+        *,
+        scope: str,
+        key: str,
+        request_payload: bytes,
+        batch: trace_pb2.TraceEventBatch,
+        intents: Sequence[scheduling_pb2.SchedulingIntent],
+        response_payload: bytes,
+    ) -> ManagedWorkerTraceCommit:
+        cached = self.load_idempotent_response(
+            scope=scope, key=key, request_payload=request_payload
+        )
+        if cached is not None:
+            return ManagedWorkerTraceCommit(
+                batch=batch, intents=list(intents), response_payload=cached, idempotent=True
+            )
+        self.remember_idempotent_response(
+            scope=scope,
+            key=key,
+            request_payload=request_payload,
+            response_payload=response_payload,
+        )
+        return ManagedWorkerTraceCommit(
+            batch=batch,
+            intents=list(intents),
+            response_payload=response_payload,
+            idempotent=False,
+        )
 
     def save_checkpoint(self, *, run_id: str, checkpoint_ref: str, completed_at: datetime) -> str:
         del completed_at
@@ -212,6 +288,42 @@ class SQLitePersistenceHook:
 
     def record_intent(self, intent: scheduling_pb2.SchedulingIntent) -> None:
         self._gateway.record_intent(intent)
+
+    def load_idempotent_response(
+        self, *, scope: str, key: str, request_payload: bytes
+    ) -> bytes | None:
+        return self._store.load_idempotent_response(
+            scope=scope, key=key, request_payload=request_payload
+        )
+
+    def remember_idempotent_response(
+        self, *, scope: str, key: str, request_payload: bytes, response_payload: bytes
+    ) -> bytes:
+        return self._store.remember_idempotent_response(
+            scope=scope,
+            key=key,
+            request_payload=request_payload,
+            response_payload=response_payload,
+        )
+
+    def persist_managed_worker_trace(
+        self,
+        *,
+        scope: str,
+        key: str,
+        request_payload: bytes,
+        batch: trace_pb2.TraceEventBatch,
+        intents: Sequence[scheduling_pb2.SchedulingIntent],
+        response_payload: bytes,
+    ) -> ManagedWorkerTraceCommit:
+        return self._store.persist_managed_worker_trace(
+            scope=scope,
+            key=key,
+            request_payload=request_payload,
+            batch=batch,
+            intents=intents,
+            response_payload=response_payload,
+        )
 
     def save_checkpoint(self, *, run_id: str, checkpoint_ref: str, completed_at: datetime) -> str:
         return self._runtime.save_checkpoint(

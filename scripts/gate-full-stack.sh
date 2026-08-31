@@ -109,6 +109,8 @@ export CGO_ENABLED=0
 export GRPC_ENABLE_FORK_SUPPORT=0
 TGSRL_WORKER_REGISTRY_SIGNING_KEY=$("$PYTHON_BIN" -c 'import secrets; print(secrets.token_hex(32))')
 export TGSRL_WORKER_REGISTRY_SIGNING_KEY
+printf '%s\n' "$TGSRL_WORKER_REGISTRY_SIGNING_KEY" > "$STATE_DIR/registry-key"
+chmod 600 "$STATE_DIR/registry-key"
 
 SCHEDULER_PORT=$(free_port)
 REGISTRY_PORT=$(free_port)
@@ -147,7 +149,8 @@ start_process runtime "$PYTHON_BIN" -m tgsrl_runtime.runtime_app \
   --job-control-target "$CONTROLLER_TARGET" \
   --state-db "$STATE_DIR/runtime.db" \
   --config-root "$ROOT_DIR" \
-  --manifest compatibility/manifests/cpu-process-verl.yaml
+  --manifest compatibility/manifests/cpu-process-verl.yaml \
+  --worker-registry-signing-key-file "$STATE_DIR/registry-key"
 RUNTIME_PID=$LAST_PID
 wait_for_tcp runtime "$RUNTIME_PORT" "$RUNTIME_PID"
 
@@ -158,8 +161,6 @@ start_process controller "$BIN_DIR/job-controller" \
 CONTROLLER_PID=$LAST_PID
 wait_for_tcp controller "$CONTROLLER_PORT" "$CONTROLLER_PID"
 
-printf '%s\n' "$TGSRL_WORKER_REGISTRY_SIGNING_KEY" > "$STATE_DIR/registry-key"
-chmod 600 "$STATE_DIR/registry-key"
 start_process operator "$BIN_DIR/operator" \
   -mode process \
   -listen "$OPERATOR_TARGET" \

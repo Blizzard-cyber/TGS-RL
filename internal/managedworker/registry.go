@@ -20,6 +20,7 @@ import (
 const WorkerRegistryTokenHeader = "X-TGSRL-Worker-Token"
 
 const maxRegistryPayloadBytes = 64 << 10
+const maxTracePayloadBytes = 1 << 20
 
 // WorkerObserver receives authoritative bootstrap lifecycle observations after
 // the durable registry update succeeds. Callers must make observations
@@ -29,6 +30,11 @@ type WorkerObserver func(context.Context, Worker) error
 // WorkerAuthority validates that a bootstrap registration still matches the
 // Scheduler's current binding and generation before it becomes controllable.
 type WorkerAuthority func(context.Context, Worker) error
+
+// WorkerTracePublisher forwards an authenticated worker trace payload to the
+// Runtime authority. The registry intentionally treats the protobuf bytes as
+// opaque after binding and generation authorization.
+type WorkerTracePublisher func(context.Context, Worker, WorkerTraceRequest) (WorkerTraceResponse, error)
 
 type exitReport struct {
 	SandboxID    string `json:"sandbox_id"`
@@ -56,37 +62,110 @@ type WorkerStatusRequest struct {
 	Generation uint64 `json:"generation"`
 }
 
+// WorkerTraceRequest carries one deterministic protobuf TraceEventBatch.
+// Encoding []byte through JSON uses standard base64 without exposing the
+// registry credential to the workload process.
+type WorkerTraceRequest struct {
+	SandboxID      string `json:"sandbox_id"`
+	Generation     uint64 `json:"generation"`
+	IdempotencyKey string `json:"idempotency_key"`
+	Batch          []byte `json:"batch"`
+}
+
+type WorkerTraceResponse struct {
+	AcceptedEventCount uint64 `json:"accepted_event_count"`
+	Idempotent         bool   `json:"idempotent"`
+	Cursor             string `json:"cursor,omitempty"`
+}
+
 type workerActionResponse struct {
 	Accepted bool   `json:"accepted"`
 	Worker   Worker `json:"worker"`
 }
 
 type registryHandler struct {
-	controller *Controller
-	store      *Store
-	signingKey []byte
-	authorize  WorkerAuthority
-	observe    WorkerObserver
+	controller   *Controller
+	store        *Store
+	signingKey   []byte
+	authorize    WorkerAuthority
+	observe      WorkerObserver
+	publishTrace WorkerTracePublisher
 }
 
 // NewRegistryHandler exposes the narrow bootstrap registration boundary. It
 // intentionally does not expose lifecycle action execution; Scheduler helpers
 // read the durable registry and contact each bootstrap's private control URL.
-func NewRegistryHandler(controller *Controller, store *Store, signingKey []byte, authorize WorkerAuthority, observe WorkerObserver) (http.Handler, error) {
+func NewRegistryHandler(controller *Controller, store *Store, signingKey []byte, authorize WorkerAuthority, observe WorkerObserver, tracePublishers ...WorkerTracePublisher) (http.Handler, error) {
 	if controller == nil || store == nil {
 		return nil, errors.New("runtime controller and store are required")
 	}
 	if len(signingKey) < 32 {
 		return nil, errors.New("worker registry signing key must contain at least 32 bytes")
 	}
-	handler := &registryHandler{controller: controller, store: store, signingKey: append([]byte(nil), signingKey...), authorize: authorize, observe: observe}
+	if len(tracePublishers) > 1 {
+		return nil, errors.New("worker registry accepts at most one trace publisher")
+	}
+	var publishTrace WorkerTracePublisher
+	if len(tracePublishers) == 1 {
+		publishTrace = tracePublishers[0]
+	}
+	handler := &registryHandler{controller: controller, store: store, signingKey: append([]byte(nil), signingKey...), authorize: authorize, observe: observe, publishTrace: publishTrace}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", handler.health)
 	mux.HandleFunc("/v1/workers/register", handler.register)
 	mux.HandleFunc("/v1/workers/exit", handler.reportExit)
 	mux.HandleFunc("/v1/workers/action", handler.applyAction)
 	mux.HandleFunc("/v1/workers/status", handler.status)
+	mux.HandleFunc("/v1/workers/trace", handler.publishWorkerTrace)
 	return mux, nil
+}
+
+func (h *registryHandler) publishWorkerTrace(w http.ResponseWriter, request *http.Request) {
+	if request.Method != http.MethodPost {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+	if h.publishTrace == nil {
+		http.Error(w, "worker trace publication is unavailable", http.StatusServiceUnavailable)
+		return
+	}
+	var trace WorkerTraceRequest
+	if err := decodeRegistryRequestLimit(request, &trace, maxTracePayloadBytes); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	trace.SandboxID = strings.TrimSpace(trace.SandboxID)
+	trace.IdempotencyKey = strings.TrimSpace(trace.IdempotencyKey)
+	if trace.SandboxID == "" || trace.Generation == 0 || trace.IdempotencyKey == "" || len(trace.Batch) == 0 {
+		http.Error(w, "worker trace requires sandbox, generation, idempotency_key, and batch", http.StatusBadRequest)
+		return
+	}
+	state, err := h.store.Snapshot()
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	worker, found := state.Workers[trace.SandboxID]
+	if !found || !authorizedRegisteredWorker(request, worker) {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+	if worker.Generation != trace.Generation {
+		http.Error(w, "worker generation mismatch", http.StatusConflict)
+		return
+	}
+	if h.authorize != nil {
+		if err := h.authorize(request.Context(), worker); err != nil {
+			http.Error(w, err.Error(), http.StatusConflict)
+			return
+		}
+	}
+	response, err := h.publishTrace(request.Context(), worker, trace)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadGateway)
+		return
+	}
+	writeRegistryResponse(w, http.StatusOK, response)
 }
 
 func (h *registryHandler) applyAction(w http.ResponseWriter, request *http.Request) {
@@ -303,16 +382,22 @@ func authorizedRegisteredWorker(request *http.Request, worker Worker) bool {
 	return len(expected) != 0 && len(expected) == len(provided) && subtle.ConstantTimeCompare(expected, provided) == 1
 }
 
-func registryTokenHash(token string) string {
+func credentialHash(token string) string {
 	digest := sha256.Sum256([]byte(strings.TrimSpace(token)))
 	return fmt.Sprintf("sha256:%x", digest[:])
 }
 
+func registryTokenHash(token string) string { return credentialHash(token) }
+
 func decodeRegistryRequest(request *http.Request, value any) error {
+	return decodeRegistryRequestLimit(request, value, maxRegistryPayloadBytes)
+}
+
+func decodeRegistryRequestLimit(request *http.Request, value any, limit int64) error {
 	if request.Body == nil {
 		return errors.New("request body is required")
 	}
-	decoder := json.NewDecoder(io.LimitReader(request.Body, maxRegistryPayloadBytes+1))
+	decoder := json.NewDecoder(io.LimitReader(request.Body, limit+1))
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(value); err != nil {
 		return fmt.Errorf("decode worker registry request: %w", err)
@@ -373,6 +458,16 @@ func GetRemoteWorker(ctx context.Context, registryURL, token string, query Worke
 	return response.Worker, response.Accepted, nil
 }
 
+// PublishRemoteWorkerTrace sends one authenticated typed trace batch through
+// the registry without exposing the registration token to the worker process.
+func PublishRemoteWorkerTrace(ctx context.Context, registryURL, token string, trace WorkerTraceRequest) (WorkerTraceResponse, error) {
+	var response WorkerTraceResponse
+	if err := postRegistryResponse(ctx, registryURL, token, "/v1/workers/trace", trace, &response); err != nil {
+		return WorkerTraceResponse{}, err
+	}
+	return response, nil
+}
+
 func postRegistry(ctx context.Context, baseURL, token, path string, value any) error {
 	return postRegistryResponse(ctx, baseURL, token, path, value, nil)
 }
@@ -424,7 +519,11 @@ func postRegistryStatus(ctx context.Context, baseURL, token, path string, value,
 		return response.StatusCode, fmt.Errorf("worker registry returned HTTP %d: %s", response.StatusCode, strings.TrimSpace(string(detail)))
 	}
 	if output != nil {
-		decoder := json.NewDecoder(io.LimitReader(response.Body, maxRegistryPayloadBytes+1))
+		limit := int64(maxRegistryPayloadBytes)
+		if path == "/v1/workers/trace" {
+			limit = maxTracePayloadBytes
+		}
+		decoder := json.NewDecoder(io.LimitReader(response.Body, limit+1))
 		decoder.DisallowUnknownFields()
 		if err := decoder.Decode(output); err != nil {
 			return response.StatusCode, fmt.Errorf("decode worker registry response: %w", err)

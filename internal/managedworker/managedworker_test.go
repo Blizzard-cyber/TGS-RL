@@ -306,6 +306,50 @@ func TestWorkerRegistryScopesStatusAndLifecycleToRegistrationToken(t *testing.T)
 	}
 }
 
+func TestWorkerRegistryPublishesTraceOnlyForCurrentRegisteredIdentity(t *testing.T) {
+	signingKey := []byte(strings.Repeat("registry-signing-key-", 2))
+	controlServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_ = json.NewEncoder(w).Encode(ControlResponse{Accepted: true, Generation: 4, InstanceID: "instance-a", PID: 4242, ProcessToken: "process-a", State: "running", Ready: true, BindingID: "binding-a", DeviceID: "GPU-aaaa", Share: 1})
+	}))
+	defer controlServer.Close()
+	store, _ := NewStore(filepath.Join(t.TempDir(), "runtime.json"))
+	controller, _ := NewController(store)
+	worker := Worker{RunID: "run-a", JobID: "job-a", TraceID: "trace-a", RuntimeUnitID: "unit-a", SandboxID: "sandbox-a", BindingID: "binding-a", Generation: 4, PID: 4242, ProcessToken: "process-a", InstanceID: "instance-a", State: "running", Ready: true, DeviceIDs: []string{"GPU-aaaa"}, DeviceID: "GPU-aaaa", Share: 1, ControlURL: controlServer.URL, ControlToken: "worker-token"}
+	var published WorkerTraceRequest
+	handler, err := NewRegistryHandler(controller, store, signingKey, nil, nil, func(_ context.Context, authorized Worker, request WorkerTraceRequest) (WorkerTraceResponse, error) {
+		if authorized.TraceID != worker.TraceID {
+			return WorkerTraceResponse{}, errors.New("unexpected trace identity")
+		}
+		published = request
+		return WorkerTraceResponse{AcceptedEventCount: 1, Cursor: "cursor-a"}, nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	registry := httptest.NewServer(handler)
+	defer registry.Close()
+	token, err := bootstrapauth.Sign(signingKey, registrationClaims(worker))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := RegisterRemoteWorker(context.Background(), registry.URL, token, worker); err != nil {
+		t.Fatal(err)
+	}
+	trace := WorkerTraceRequest{SandboxID: worker.SandboxID, Generation: worker.Generation, IdempotencyKey: "trace-sha256-a", Batch: []byte("batch-a")}
+	response, err := PublishRemoteWorkerTrace(context.Background(), registry.URL, token, trace)
+	if err != nil || response.AcceptedEventCount != 1 || response.Cursor != "cursor-a" || !reflect.DeepEqual(published, trace) {
+		t.Fatalf("trace publication = (%+v, %v), request=%+v", response, err, published)
+	}
+	if _, err := PublishRemoteWorkerTrace(context.Background(), registry.URL, "wrong", trace); err == nil {
+		t.Fatal("trace publication accepted the wrong registration token")
+	}
+	stale := trace
+	stale.Generation--
+	if _, err := PublishRemoteWorkerTrace(context.Background(), registry.URL, token, stale); err == nil {
+		t.Fatal("trace publication accepted a stale generation")
+	}
+}
+
 func TestStoreRejectsRemoteRestartUntilPendingReceiptIsReconciled(t *testing.T) {
 	store, err := NewStore(filepath.Join(t.TempDir(), "runtime.json"))
 	if err != nil {

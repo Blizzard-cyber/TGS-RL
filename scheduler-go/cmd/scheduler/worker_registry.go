@@ -14,15 +14,28 @@ import (
 	"time"
 
 	tgsrlv1 "github.com/Blizzard-cyber/TGS-RL/gen/go/tgsrl/v1"
+	"github.com/Blizzard-cyber/TGS-RL/internal/bootstrapauth"
 	"github.com/Blizzard-cyber/TGS-RL/internal/managedworker"
 	"github.com/Blizzard-cyber/TGS-RL/scheduler-go/provider"
 	"google.golang.org/grpc"
+	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
 type runtimeEventPublisher interface {
 	PublishSandboxEvent(context.Context, *tgsrlv1.PublishSandboxEventRequest, ...grpc.CallOption) (*tgsrlv1.PublishSandboxEventResponse, error)
+	PublishTraceBatch(context.Context, *tgsrlv1.PublishTraceBatchRequest, ...grpc.CallOption) (*tgsrlv1.PublishTraceBatchResponse, error)
 	GetRuntimeStatus(context.Context, *tgsrlv1.GetRuntimeStatusRequest, ...grpc.CallOption) (*tgsrlv1.GetRuntimeStatusResponse, error)
+}
+
+func signTraceRequest(signingKey []byte, request *tgsrlv1.PublishTraceBatchRequest) error {
+	request.AuthenticationTag = nil
+	payload, err := proto.MarshalOptions{Deterministic: true}.Marshal(request)
+	if err != nil {
+		return fmt.Errorf("marshal worker trace request: %w", err)
+	}
+	request.AuthenticationTag, err = bootstrapauth.SignPayload(signingKey, payload)
+	return err
 }
 
 func startWorkerRegistry(address, statePath, signingKeyFile string, resourceProvider provider.CompleteResourceProvider, runtimeClient runtimeEventPublisher) (*http.Server, net.Listener, error) {
@@ -75,13 +88,13 @@ func startWorkerRegistry(address, statePath, signingKeyFile string, resourceProv
 			}
 			bound := false
 			for _, sandbox := range status.GetSandboxes() {
-				if sandbox.GetSandboxId() == worker.SandboxID && sandbox.GetGeneration() == worker.Generation && sandbox.GetState() == tgsrlv1.RuntimeState_RUNTIME_STATE_BOUND {
+				if sandbox.GetSandboxId() == worker.SandboxID && sandbox.GetGeneration() == worker.Generation && (sandbox.GetState() == tgsrlv1.RuntimeState_RUNTIME_STATE_BOUND || sandbox.GetState() == tgsrlv1.RuntimeState_RUNTIME_STATE_RUNNING) {
 					bound = true
 					break
 				}
 			}
 			if !bound {
-				return errors.New("runtime has not observed the bound workload generation")
+				return errors.New("runtime has not observed the bound or running workload generation")
 			}
 		}
 		return nil
@@ -139,7 +152,33 @@ func startWorkerRegistry(address, statePath, signingKeyFile string, resourceProv
 		_, err = resourceProvider.ObserveSandbox(ctx, stored.GetEvent())
 		return err
 	}
-	handler, err := managedworker.NewRegistryHandler(controller, store, []byte(signingKey), authorize, observe)
+	publishTrace := func(ctx context.Context, worker managedworker.Worker, request managedworker.WorkerTraceRequest) (managedworker.WorkerTraceResponse, error) {
+		var batch tgsrlv1.TraceEventBatch
+		if err := proto.Unmarshal(request.Batch, &batch); err != nil {
+			return managedworker.WorkerTraceResponse{}, fmt.Errorf("decode worker trace batch: %w", err)
+		}
+		if err := validateWorkerTraceBatch(worker, request, &batch); err != nil {
+			return managedworker.WorkerTraceResponse{}, err
+		}
+		runtimeRequest := &tgsrlv1.PublishTraceBatchRequest{
+			BatchPayload:   append([]byte(nil), request.Batch...),
+			RuntimeUnitId:  worker.RuntimeUnitID,
+			SandboxId:      worker.SandboxID,
+			BindingId:      worker.BindingID,
+			Generation:     worker.Generation,
+			DeviceIds:      worker.AllDeviceIDs(),
+			IdempotencyKey: request.IdempotencyKey,
+		}
+		if err := signTraceRequest([]byte(signingKey), runtimeRequest); err != nil {
+			return managedworker.WorkerTraceResponse{}, err
+		}
+		response, err := runtimeClient.PublishTraceBatch(ctx, runtimeRequest)
+		if err != nil {
+			return managedworker.WorkerTraceResponse{}, err
+		}
+		return managedworker.WorkerTraceResponse{AcceptedEventCount: response.GetAcceptedEventCount(), Idempotent: response.GetIdempotent(), Cursor: response.GetCursor()}, nil
+	}
+	handler, err := managedworker.NewRegistryHandler(controller, store, []byte(signingKey), authorize, observe, publishTrace)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -149,6 +188,38 @@ func startWorkerRegistry(address, statePath, signingKeyFile string, resourceProv
 	}
 	server := &http.Server{Handler: handler, ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 10 * time.Second, WriteTimeout: 10 * time.Second, IdleTimeout: 30 * time.Second}
 	return server, listener, nil
+}
+
+func validateWorkerTraceBatch(worker managedworker.Worker, request managedworker.WorkerTraceRequest, batch *tgsrlv1.TraceEventBatch) error {
+	if batch == nil || len(batch.GetEvents()) == 0 {
+		return errors.New("worker trace batch is empty")
+	}
+	digest := sha256.Sum256(request.Batch)
+	if request.IdempotencyKey != fmt.Sprintf("trace-sha256-%x", digest[:]) {
+		return errors.New("worker trace idempotency key does not match the batch")
+	}
+	if batch.GetExecutionId() == "" || batch.GetRunId() != worker.RunID || batch.GetTraceId() != worker.TraceID {
+		return errors.New("worker trace batch identity does not match the registration")
+	}
+	for _, event := range batch.GetEvents() {
+		if event.GetExecutionId() != batch.GetExecutionId() || event.GetRunId() != worker.RunID || event.GetJobId() != worker.JobID || event.GetTraceId() != worker.TraceID || event.GetSandboxId() != worker.SandboxID || event.GetGeneration() != worker.Generation || event.GetAttributes()["runtime_unit_id"] != worker.RuntimeUnitID {
+			return errors.New("worker trace event identity does not match the registration")
+		}
+		if ids := splitDeviceIDs(event.GetAttributes()["device_ids"]); !sameDeviceSet(ids, worker.AllDeviceIDs()) {
+			return errors.New("worker trace device identity does not match the registration")
+		}
+	}
+	return nil
+}
+
+func splitDeviceIDs(value string) []string {
+	var result []string
+	for _, item := range strings.Split(value, ",") {
+		if item = strings.TrimSpace(item); item != "" {
+			result = append(result, item)
+		}
+	}
+	return result
 }
 
 func sameDeviceSet(left, right []string) bool {

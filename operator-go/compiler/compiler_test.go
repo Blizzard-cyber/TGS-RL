@@ -219,6 +219,9 @@ func TestCompileWrapsWorkloadWithManagedWorkerBootstrap(t *testing.T) {
 	if environment["TGSRL_WORKER_ID"].Value != "unit-1" || environment["TGSRL_RUNTIME_UNIT_ID"].Value != "unit-1" {
 		t.Fatalf("veRL worker identity environment = %+v", environment)
 	}
+	if environment["TGSRL_EXECUTION_ID"].Value != "exec-1" || environment["TGSRL_STAGE_ID"].Value != "stage-1" {
+		t.Fatalf("workload execution identity environment = %+v", environment)
+	}
 	if environment["TGSRL_VERL_CONTROL_SOCKET"].Value != "/tmp/gate/worker.sock" || environment["TGSRL_VERL_TRACE_PATH"].Value != "/tmp/gate/trace.ndjson" || environment["TGSRL_VERL_STATE_PATH"].Value != "/tmp/gate/state.json" {
 		t.Fatalf("veRL path environment = %+v", environment)
 	}

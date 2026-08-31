@@ -16,10 +16,10 @@ class TraceIngestError(ValueError):
     """Raised when an event batch violates its recorded stream boundary."""
 
 
-def _causal_key(event: trace_pb2.TraceEvent) -> tuple[str, int, int, str]:
+def _causal_key(event: trace_pb2.TraceEvent) -> tuple[str, str, int, int, str]:
     sequence = event.sequence if event.sequence else (1 << 64) - 1
     logical_time = event.occurred_at.seconds * 1_000_000_000 + event.occurred_at.nanos
-    return event.execution_id, sequence, logical_time, event.event_id
+    return event.execution_id, event.sandbox_id, sequence, logical_time, event.event_id
 
 
 @dataclass
@@ -90,13 +90,14 @@ class TraceIngestor:
     def _validate_sequence_ownership(
         events: builtins.list[trace_pb2.TraceEvent],
     ) -> None:
-        owners: dict[tuple[str, str, int, int], str] = {}
+        owners: dict[tuple[str, str, str, int, int], str] = {}
         for event in events:
             if not event.sequence:
                 continue
             key = (
                 event.execution_id,
                 event.stage_id,
+                event.sandbox_id,
                 event.generation,
                 event.sequence,
             )

@@ -96,7 +96,7 @@ func buildEnv(input *normalizedInput) []api.EnvVar {
 	reserved := map[string]struct{}{
 		"TGSRL_JOB_ID": struct{}{}, "TGSRL_RUN_ID": struct{}{}, "TGSRL_TRACE_ID": struct{}{}, "TGSRL_PLAN_ID": struct{}{},
 		"TGSRL_GPU_PROFILE": struct{}{}, "TGSRL_SANDBOX_ID": struct{}{}, "TGSRL_BINDING_ID": struct{}{},
-		"TGSRL_RUNTIME_UNIT_ID": struct{}{}, "TGSRL_GENERATION": struct{}{}, "TGSRL_DEVICE_IDS": struct{}{},
+		"TGSRL_EXECUTION_ID": struct{}{}, "TGSRL_RUNTIME_UNIT_ID": struct{}{}, "TGSRL_GENERATION": struct{}{}, "TGSRL_DEVICE_IDS": struct{}{},
 		"TGSRL_ACCELERATOR_SHARE": struct{}{}, "TGSRL_WORKER_REGISTRY_URL": struct{}{},
 		"TGSRL_WORKER_REGISTRY_TOKEN": struct{}{}, "TGSRL_POD_IP": struct{}{},
 		"TGSRL_POD_UID":           struct{}{},
@@ -104,7 +104,10 @@ func buildEnv(input *normalizedInput) []api.EnvVar {
 		"TGSRL_POLICY_VERSION": struct{}{}, "TGSRL_ALGORITHM": struct{}{},
 		"TGSRL_VERL_CONTROL_SOCKET": struct{}{}, "TGSRL_VERL_TRACE_PATH": struct{}{},
 		"TGSRL_VERL_STATE_PATH": struct{}{},
-		"TGSRL_WORKER_ID":       struct{}{},
+		"TGSRL_WORKER_ID":       struct{}{}, "TGSRL_STAGE_ID": struct{}{},
+		"TGSRL_PHASE_KIND": struct{}{}, "TGSRL_ROLLOUT_MODE": struct{}{},
+		"TGSRL_DATA_KIND": struct{}{}, "TGSRL_WORKER_TRACE_URL": struct{}{},
+		"TGSRL_WORKER_TRACE_TOKEN": struct{}{},
 	}
 	values := make([]api.EnvVar, 0, len(input.Manifest.GetEnvironment())+12)
 	for _, key := range sortedProtoLabelKeys(input.Manifest.GetEnvironment()) {
@@ -122,6 +125,7 @@ func buildEnv(input *normalizedInput) []api.EnvVar {
 		api.EnvVar{Name: "TGSRL_JOB_ID", Value: input.Run.GetJobId()},
 		api.EnvVar{Name: "TGSRL_RUN_ID", Value: input.Run.GetRunId()},
 		api.EnvVar{Name: "TGSRL_TRACE_ID", Value: input.Run.GetTraceId()},
+		api.EnvVar{Name: "TGSRL_EXECUTION_ID", Value: input.Plan.GetExecutionId()},
 		api.EnvVar{Name: "TGSRL_PLAN_ID", Value: input.Plan.GetPlanId()},
 		api.EnvVar{Name: "TGSRL_GPU_PROFILE", Value: input.GPUProfile},
 		api.EnvVar{Name: "TGSRL_SANDBOX_ID", Value: input.binding.GetSandboxId()},
@@ -133,6 +137,10 @@ func buildEnv(input *normalizedInput) []api.EnvVar {
 		api.EnvVar{Name: "TGSRL_ACCELERATOR_SHARE", Value: formatAcceleratorQuantity(acceleratorShare)},
 		api.EnvVar{Name: "TGSRL_POLICY_VERSION", Value: input.Manifest.GetPolicyVersion()},
 		api.EnvVar{Name: "TGSRL_ALGORITHM", Value: input.Manifest.GetAnnotations()["algorithm"]},
+		api.EnvVar{Name: "TGSRL_STAGE_ID", Value: input.Plan.GetStageId()},
+		api.EnvVar{Name: "TGSRL_PHASE_KIND", Value: fmt.Sprintf("%d", phaseKindForStage(input.Manifest, input.Plan.GetStageId()))},
+		api.EnvVar{Name: "TGSRL_ROLLOUT_MODE", Value: fmt.Sprintf("%d", input.Manifest.GetRolloutMode())},
+		api.EnvVar{Name: "TGSRL_DATA_KIND", Value: fmt.Sprintf("%d", input.Manifest.GetDataKind())},
 	)
 	if strings.EqualFold(input.Manifest.GetFramework(), "verl") {
 		controlSocket := manifestEnvironmentOrDefault(input.Manifest.GetEnvironment(), "TGSRL_VERL_CONTROL_SOCKET", "/tmp/tgsrl/verl.sock")
@@ -146,6 +154,15 @@ func buildEnv(input *normalizedInput) []api.EnvVar {
 	}
 	sort.Slice(values, func(i, j int) bool { return values[i].Name < values[j].Name })
 	return values
+}
+
+func phaseKindForStage(manifest *tgsrlv1.RuntimeManifest, stageID string) tgsrlv1.PhaseKind {
+	for _, phase := range manifest.GetExecutionContract().GetPhaseGraph().GetPhases() {
+		if phase.GetPhaseId() == stageID {
+			return phase.GetKind()
+		}
+	}
+	return tgsrlv1.PhaseKind_PHASE_KIND_UNKNOWN
 }
 
 func manifestEnvironmentOrDefault(values map[string]string, key, fallback string) string {

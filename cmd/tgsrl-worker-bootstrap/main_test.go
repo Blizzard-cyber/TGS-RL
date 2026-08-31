@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -54,6 +55,46 @@ func TestRunWorkerRegistersRealProcessAndReportsExit(t *testing.T) {
 	}
 	if terminal.State != "terminated" || terminal.Generation != 4 || terminal.InstanceID != registered.InstanceID || terminal.ProcessToken != registered.ProcessToken {
 		t.Fatalf("terminal worker = %+v", terminal)
+	}
+}
+
+func TestSupervisorTraceProxyUsesDedicatedTokenAndRegistryCredential(t *testing.T) {
+	var registryToken string
+	var forwarded runtimehelper.WorkerTraceRequest
+	registry := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+		registryToken = request.Header.Get(runtimehelper.WorkerRegistryTokenHeader)
+		if err := json.NewDecoder(request.Body).Decode(&forwarded); err != nil {
+			t.Fatal(err)
+		}
+		_ = json.NewEncoder(w).Encode(runtimehelper.WorkerTraceResponse{AcceptedEventCount: 1, Cursor: "cursor-a"})
+	}))
+	defer registry.Close()
+	s := &supervisor{worker: runtimehelper.Worker{SandboxID: "sandbox-a", Generation: 4}, traceToken: "trace-token", registryURL: registry.URL, registryToken: "registry-token", controlTimeout: time.Second, registered: true}
+	server := httptest.NewServer(s)
+	defer server.Close()
+	payload, _ := json.Marshal(runtimehelper.WorkerTraceRequest{SandboxID: "forged", Generation: 99, IdempotencyKey: "trace-key", Batch: []byte("batch")})
+	request, _ := http.NewRequest(http.MethodPost, server.URL+"/v1/trace", bytes.NewReader(payload))
+	request.Header.Set(runtimehelper.WorkerTraceTokenHeader, "trace-token")
+	response, err := http.DefaultClient.Do(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK || registryToken != "registry-token" {
+		t.Fatalf("trace proxy status/token = %d/%q", response.StatusCode, registryToken)
+	}
+	if forwarded.SandboxID != "sandbox-a" || forwarded.Generation != 4 || forwarded.IdempotencyKey != "trace-key" {
+		t.Fatalf("forwarded trace = %+v", forwarded)
+	}
+	bad, _ := http.NewRequest(http.MethodPost, server.URL+"/v1/trace", bytes.NewReader(payload))
+	bad.Header.Set(runtimehelper.WorkerTraceTokenHeader, "registry-token")
+	badResponse, err := http.DefaultClient.Do(bad)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer badResponse.Body.Close()
+	if badResponse.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("registry credential was accepted as workload trace token: %d", badResponse.StatusCode)
 	}
 }
 
@@ -217,7 +258,7 @@ func TestMPSPIDCleanupCannotRemoveReplacementGeneration(t *testing.T) {
 
 func setWorkerEnvironment(t *testing.T) {
 	t.Helper()
-	values := map[string]string{"TGSRL_RUN_ID": "run-a", "TGSRL_JOB_ID": "job-a", "TGSRL_TRACE_ID": "trace-a", "TGSRL_RUNTIME_UNIT_ID": "unit-a", "TGSRL_SANDBOX_ID": "sandbox-a", "TGSRL_BINDING_ID": "binding-a", "TGSRL_GENERATION": "4", "TGSRL_DEVICE_IDS": "GPU-aaaa", "TGSRL_ACCELERATOR_SHARE": "1", "TGSRL_POD_UID": "pod-a"}
+	values := map[string]string{"TGSRL_RUN_ID": "run-a", "TGSRL_JOB_ID": "job-a", "TGSRL_TRACE_ID": "trace-a", "TGSRL_EXECUTION_ID": "execution-a", "TGSRL_RUNTIME_UNIT_ID": "unit-a", "TGSRL_SANDBOX_ID": "sandbox-a", "TGSRL_BINDING_ID": "binding-a", "TGSRL_GENERATION": "4", "TGSRL_DEVICE_IDS": "GPU-aaaa", "TGSRL_ACCELERATOR_SHARE": "1", "TGSRL_POD_UID": "pod-a"}
 	for key, value := range values {
 		t.Setenv(key, value)
 	}

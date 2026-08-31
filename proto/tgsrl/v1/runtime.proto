@@ -415,6 +415,31 @@ message PublishSandboxEventResponse {
   SandboxEvent event = 1;
 }
 
+// PublishTraceBatchRequest carries one authenticated managed-worker trace
+// batch from the Scheduler registry into the Runtime state authority.
+message PublishTraceBatchRequest {
+  // batch_payload is the exact deterministic TraceEventBatch wire payload
+  // produced by the worker. Keeping the original bytes makes its digest and
+  // cross-language HMAC stable even when TraceEvent maps are present.
+  bytes batch_payload = 1;
+  string runtime_unit_id = 2;
+  string sandbox_id = 3;
+  string binding_id = 4;
+  uint64 generation = 5;
+  repeated string device_ids = 6;
+  string idempotency_key = 7;
+  // authentication_tag is an HMAC-SHA256 over this deterministic request with
+  // this field cleared. It authenticates the Scheduler registry to Runtime.
+  bytes authentication_tag = 8;
+}
+
+message PublishTraceBatchResponse {
+  repeated SchedulingIntent intents = 1;
+  bool idempotent = 2;
+  string cursor = 3;
+  uint64 accepted_event_count = 4;
+}
+
 message ObserveSandboxRequest {
   SandboxEvent event = 1;
 }
@@ -490,6 +515,7 @@ service RuntimeControlService {
   rpc GetRuntimeStatus(GetRuntimeStatusRequest) returns (GetRuntimeStatusResponse);
   rpc WatchRuntimeEvents(WatchRuntimeEventsRequest) returns (stream WatchRuntimeEventsResponse);
   rpc PublishSandboxEvent(PublishSandboxEventRequest) returns (PublishSandboxEventResponse);
+  rpc PublishTraceBatch(PublishTraceBatchRequest) returns (PublishTraceBatchResponse);
 }
 
 // SchedulerObservationService projects execution-substrate observations into

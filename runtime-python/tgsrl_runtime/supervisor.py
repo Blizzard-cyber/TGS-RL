@@ -63,6 +63,7 @@ from tgsrl_runtime.stores import (
     SandboxEventStore,
     SandboxStore,
 )
+from tgsrl_runtime.trace_auth import verify_trace_request
 from tgsrl_runtime.trace_ingest import TraceIngestor
 from tgsrl_runtime.version_store import VersionStore
 
@@ -366,6 +367,7 @@ class RuntimeSupervisor:
     fake_executor: RuntimeExecutor = field(init=False)
     real_executor: RuntimeExecutor = field(init=False)
     lifecycle: RuntimeLifecycleCoordinator = field(init=False)
+    trace_signing_key: bytes = field(default=b"", repr=False)
 
     def __post_init__(self) -> None:
         self.fake_executor = RuntimeExecutor(
@@ -403,6 +405,198 @@ class RuntimeSupervisor:
         if not self.manifests.has(run_id):
             raise RuntimeLifecycleError(f"unknown run_id: {run_id}")
         return self.manifests.get(run_id)
+
+    async def publish_trace_batch(
+        self, request: runtime_pb2.PublishTraceBatchRequest
+    ) -> runtime_pb2.PublishTraceBatchResponse:
+        self.authenticate_trace_request(request)
+        batch = self.decode_trace_batch(request)
+        if not request.idempotency_key.strip():
+            raise ValueError("trace idempotency_key is required")
+        request_payload = self._unsigned_trace_request_payload(request)
+        expected_key = "trace-sha256-" + hashlib.sha256(request.batch_payload).hexdigest()
+        if request.idempotency_key != expected_key:
+            raise ValueError("trace idempotency_key does not match the batch")
+        return await self._ingest_authenticated_trace(
+            request=request, batch=batch, request_payload=request_payload
+        )
+
+    def authenticate_trace_request(self, request: runtime_pb2.PublishTraceBatchRequest) -> None:
+        if len(self.trace_signing_key) < 32:
+            raise RuntimeLifecycleError("managed-worker trace ingestion is not configured")
+        if not verify_trace_request(self.trace_signing_key, request):
+            raise PermissionError("managed-worker trace authentication failed")
+
+    @staticmethod
+    def _unsigned_trace_request_payload(
+        request: runtime_pb2.PublishTraceBatchRequest,
+    ) -> bytes:
+        unsigned = runtime_pb2.PublishTraceBatchRequest()
+        unsigned.CopyFrom(request)
+        unsigned.ClearField("authentication_tag")
+        return unsigned.SerializeToString(deterministic=True)
+
+    async def _ingest_authenticated_trace(
+        self,
+        *,
+        request: runtime_pb2.PublishTraceBatchRequest,
+        batch: trace_pb2.TraceEventBatch,
+        request_payload: bytes,
+    ) -> runtime_pb2.PublishTraceBatchResponse:
+        manifest = self._ensure_run(batch.run_id)
+        if (
+            request.generation == 0
+            or batch.run_id != manifest.run_id
+            or batch.trace_id != manifest.trace_id
+            or not batch.execution_id
+            or batch.data_kind != manifest.data_kind
+            or not request.runtime_unit_id
+            or not request.sandbox_id
+            or not request.binding_id
+            or len(request.device_ids) != len(set(request.device_ids))
+            or any(
+                not device_id or device_id != device_id.strip() for device_id in request.device_ids
+            )
+        ):
+            raise RuntimeLifecycleError("managed-worker trace identity is incomplete")
+        unit = self.runtime_units.get_by_runtime_unit_id(batch.run_id, request.runtime_unit_id)
+        sandbox = self.sandboxes.get(batch.run_id, request.sandbox_id)
+        if (
+            batch.execution_id != unit.execution_id
+            or unit.sandbox_id != request.sandbox_id
+            or unit.generation != request.generation
+            or sandbox.generation != request.generation
+            or sandbox.binding.binding_id != request.binding_id
+            or (sandbox.binding.runtime_unit_id or sandbox.binding.pending_unit_id)
+            != request.runtime_unit_id
+            or sorted(sandbox.binding.device_ids) != sorted(request.device_ids)
+        ):
+            raise RuntimeLifecycleError(
+                "managed-worker trace identity does not match Runtime state"
+            )
+        events = list(batch.events)
+        if len({event.event_id for event in events}) != len(events):
+            raise RuntimeLifecycleError("managed-worker trace batch contains duplicate event IDs")
+        if any(
+            event.run_id != batch.run_id
+            or event.job_id != manifest.job_id
+            or event.execution_id != unit.execution_id
+            or event.trace_id != manifest.trace_id
+            or event.sandbox_id != request.sandbox_id
+            or event.generation != request.generation
+            or event.stage_id != unit.stage_id
+            or event.phase_id != unit.phase_id
+            or event.phase_kind != unit.phase_kind
+            or event.data_kind != manifest.data_kind
+            or event.attributes.get("runtime_unit_id") != request.runtime_unit_id
+            or event.attributes.get("binding_id") != request.binding_id
+            or sorted(
+                item.strip()
+                for item in event.attributes.get("device_ids", "").split(",")
+                if item.strip()
+            )
+            != sorted(request.device_ids)
+            for event in events
+        ):
+            raise RuntimeLifecycleError(
+                "managed-worker trace event identity does not match Runtime state"
+            )
+        cached = self.persistence.load_idempotent_response(
+            scope="managed-worker-trace",
+            key=request.idempotency_key,
+            request_payload=request_payload,
+        )
+        if cached is not None:
+            response = runtime_pb2.PublishTraceBatchResponse.FromString(cached)
+            response.idempotent = True
+            await self._publish_trace_intents(response.intents)
+            return response
+        current_events = self.trace_ingestor.list(batch.run_id)
+        existing_ids = {event.event_id for event in current_events}
+        batch_ids = {event.event_id for event in events}
+        if batch_ids & existing_ids and not batch_ids <= existing_ids:
+            raise RuntimeLifecycleError("trace batch mixes stored and new events")
+        candidate = TraceIngestor()
+        candidate.ingest(batch.run_id, current_events)
+        candidate.ingest_batch(batch.run_id, batch)
+        summary = self.aggregator.summarize(candidate.list(batch.run_id))
+        intents = [
+            intent
+            for intent in self.published_intents
+            if intent.run_id == batch.run_id
+            and intent.stage_id == unit.stage_id
+            and intent.labels.get("tgsrl.trace_idempotency_key") == request.idempotency_key
+        ]
+        if not intents:
+            intents = self.intent_coordinator.build_for_units(manifest, [unit], summary)
+            for intent in intents:
+                intent.run_id = batch.run_id
+                intent.trace_id = manifest.trace_id
+                intent.data_kind = manifest.data_kind
+                intent.generation = request.generation
+                intent.labels["selection_strategy"] = manifest.annotations.get(
+                    "selection_strategy", ""
+                )
+                intent.labels["provider_source"] = manifest.annotations.get("provider_source", "")
+                intent.labels["provider_kind"] = manifest.annotations.get("provider_kind", "")
+                intent.labels["algorithm"] = manifest.annotations.get("algorithm", "")
+                intent.labels["tgsrl.trace_idempotency_key"] = request.idempotency_key
+                intent.cursor = self._cursor_for_intent(intent)
+        response = runtime_pb2.PublishTraceBatchResponse(
+            intents=intents,
+            cursor=_cursor("trace", batch.run_id, request.idempotency_key),
+            accepted_event_count=len(events),
+        )
+        commit = self.persistence.persist_managed_worker_trace(
+            scope="managed-worker-trace",
+            key=request.idempotency_key,
+            request_payload=request_payload,
+            batch=batch,
+            intents=intents,
+            response_payload=response.SerializeToString(deterministic=True),
+        )
+        if commit.idempotent:
+            response = runtime_pb2.PublishTraceBatchResponse.FromString(commit.response_payload)
+            response.idempotent = True
+        else:
+            self.trace_ingestor.ingest_batch(batch.run_id, batch)
+            for intent in intents:
+                if not any(
+                    known.execution_id == intent.execution_id
+                    and known.stage_id == intent.stage_id
+                    and known.version == intent.version
+                    for known in self.published_intents
+                ):
+                    self.published_intents.append(intent)
+        await self._publish_trace_intents(response.intents)
+        return response
+
+    @staticmethod
+    def decode_trace_batch(
+        request: runtime_pb2.PublishTraceBatchRequest,
+    ) -> trace_pb2.TraceEventBatch:
+        if not request.batch_payload:
+            raise ValueError("trace batch payload is required")
+        try:
+            return trace_pb2.TraceEventBatch.FromString(request.batch_payload)
+        except ValueError as error:
+            raise ValueError("trace batch payload is not a TraceEventBatch") from error
+
+    async def _publish_trace_intents(
+        self, intents: Sequence[scheduling_pb2.SchedulingIntent]
+    ) -> None:
+        if self.scheduler_client is None:
+            raise RuntimeError("runtime trace ingestion requires a scheduler client")
+        for intent in intents:
+            response = await self.scheduler_client.publish_intent(intent)
+            if response is not None and response.status not in {
+                scheduling_pb2.INTENT_PUBLISH_STATUS_ACCEPTED,
+                scheduling_pb2.INTENT_PUBLISH_STATUS_DEDUPLICATED,
+            }:
+                raise RuntimeLifecycleError(
+                    f"scheduler rejected trace intent {intent.execution_id}/{intent.stage_id}: "
+                    f"{response.detail}"
+                )
 
     def _executor_for_manifest(self, manifest: runtime_pb2.RuntimeManifest) -> RuntimeExecutor:
         fake_components = {manifest.framework, manifest.execution_backend, manifest.trainer}

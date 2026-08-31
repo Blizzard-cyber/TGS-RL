@@ -171,6 +171,13 @@ binding、generation、device、policy version 和 socket/trace 路径。`observ
 识别 veRL 0.9 的 trajectory staleness 与 rollout IS ESS 指标；调用方仍须从本次真实 batch
 传入 accepted/expected sample 数，缺少的指标不会被推测成 GPU 证据。
 
+由 workload bootstrap 启动时，`install_verl_control_from_environment()` 还会自动读取
+`TGSRL_WORKER_TRACE_URL` 与一次性 `TGSRL_WORKER_TRACE_TOKEN`。typed `TraceEvent` 会在进程内
+批量发送到 loopback bootstrap，再经已认证 registry 转发给 Runtime；Runtime 原子持久化 trace、
+派生 Intent 和幂等响应后再投递 Scheduler。训练进程不会看到 registry 主 key 或 scoped
+registration token，且 endpoint 非 loopback、重定向、身份不一致或 stale generation 都会
+fail closed。`record_workload_completed()` 和 `close()` 会强制 flush 尚未满批的 observation。
+
 ## 生成与规范化 Trace
 
 ```python

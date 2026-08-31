@@ -42,6 +42,7 @@ class IntentCoordinator:
         intents: list[scheduling_pb2.SchedulingIntent] = []
         rollout_mode = _rollout_mode_for_manifest(manifest)
         for unit in runtime_units:
+            observation = summary.latest_observation_for_stage(unit.stage_id)
             labels = {
                 "runtime_unit_id": unit.runtime_unit_id,
                 "support_status": unit.annotations.get("component_support", ""),
@@ -63,7 +64,11 @@ class IntentCoordinator:
                     contract=manifest.execution_contract,
                     rollout_mode=rollout_mode,
                     phase_kind=unit.phase_kind,
-                    policy_version=manifest.policy_version or "policy-1",
+                    policy_version=(
+                        observation.policy_version
+                        if observation is not None and observation.policy_version
+                        else manifest.policy_version or "policy-1"
+                    ),
                     ttl=timedelta(seconds=60),
                     resources_per_unit=unit.requested_resources or resource_pb2.ResourceVector(),
                     required_capabilities=unit.required_capabilities
@@ -74,7 +79,7 @@ class IntentCoordinator:
                     labels=labels,
                     preferences=preferences,
                     deterministic_seed=deterministic_seed,
-                    contract_observation=summary.latest_observation_for_stage(unit.stage_id),
+                    contract_observation=observation,
                 )
             )
         return intents

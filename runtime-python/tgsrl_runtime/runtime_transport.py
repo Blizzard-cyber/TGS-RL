@@ -348,6 +348,25 @@ class RuntimeControlServicer(runtime_pb2_grpc.RuntimeControlServiceServicer):
             await _abort_mutation(context, error)
             raise AssertionError("context.abort returned unexpectedly") from error
 
+    async def PublishTraceBatch(
+        self,
+        request: runtime_pb2.PublishTraceBatchRequest,
+        context: grpc.aio.ServicerContext[
+            runtime_pb2.PublishTraceBatchRequest, runtime_pb2.PublishTraceBatchResponse
+        ],
+    ) -> runtime_pb2.PublishTraceBatchResponse:
+        try:
+            self._supervisor.authenticate_trace_request(request)
+            batch = self._supervisor.decode_trace_batch(request)
+            async with self._supervisor.lifecycle.lock_for_run(batch.run_id):
+                return await self._supervisor.publish_trace_batch(request)
+        except PermissionError as error:
+            await context.abort(grpc.StatusCode.UNAUTHENTICATED, str(error))
+            raise AssertionError("context.abort returned unexpectedly") from error
+        except (KeyError, RuntimeLifecycleError, ValueError) as error:
+            await context.abort(grpc.StatusCode.FAILED_PRECONDITION, str(error))
+            raise AssertionError("context.abort returned unexpectedly") from error
+
     async def _report_current_observation(self, run_id: str) -> None:
         if self._job_control_reporter is None:
             return

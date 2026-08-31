@@ -8,9 +8,9 @@ from datetime import datetime
 from typing import Protocol
 
 from google.protobuf.message import Message
-from tgsrl.v1 import control_pb2, runtime_pb2
+from tgsrl.v1 import control_pb2, runtime_pb2, scheduling_pb2, trace_pb2
 
-from tgsrl_runtime.storage.types import Page, SequencedRuntimeEvent
+from tgsrl_runtime.storage.types import ManagedWorkerTraceCommit, Page, SequencedRuntimeEvent
 
 
 class SQLiteStoreHelpers(Protocol):
@@ -88,6 +88,17 @@ class SQLiteStoreHelpers(Protocol):
     def list_component_statuses(
         self, *, run_id: str, limit: int, after_cursor: str = ""
     ) -> Page[control_pb2.ComponentStatus]: ...
+
+    def persist_managed_worker_trace(
+        self,
+        *,
+        scope: str,
+        key: str,
+        request_payload: bytes,
+        batch: trace_pb2.TraceEventBatch,
+        intents: Sequence[scheduling_pb2.SchedulingIntent],
+        response_payload: bytes,
+    ) -> ManagedWorkerTraceCommit: ...
 
     def watch_runtime_events_with_sequences(
         self, *, run_id: str, limit: int, after_cursor: str = ""

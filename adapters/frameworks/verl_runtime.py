@@ -19,7 +19,10 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, cast
 
+from tgsrl.v1 import execution_pb2, trace_pb2
+
 from adapters.frameworks.verl_bridge import VerlWorkerBridge, WorkerIdentity
+from adapters.trace_transport import registry_trace_sink_from_environment
 
 VERL_RUNTIME_VERSION = "0.9.0"
 _GLOBAL_STEP = re.compile(r"(?:^|/)global_step_(\d+)(?:/|$)")
@@ -379,14 +382,24 @@ class VerlControlHook:
         return self.callbacks._stop_requested or self.callbacks.stop_event.is_set()
 
     def close(self, timeout_seconds: float = 2.0) -> None:
-        self._closed = True
-        self.callbacks.stop_event.set()
-        self.callbacks.cancel_wait()
-        self.bridge.shutdown()
-        if self.thread is not None:
-            self.thread.join(timeout=timeout_seconds)
-            if self.thread.is_alive():
-                raise RuntimeError("veRL control hook did not stop")
+        flush = getattr(self.bridge.trace_sink, "flush", None)
+        flush_error: Exception | None = None
+        try:
+            if callable(flush):
+                flush()
+        except Exception as error:
+            flush_error = error
+        finally:
+            self._closed = True
+            self.callbacks.stop_event.set()
+            self.callbacks.cancel_wait()
+            self.bridge.shutdown()
+            if self.thread is not None:
+                self.thread.join(timeout=timeout_seconds)
+                if self.thread.is_alive():
+                    raise RuntimeError("veRL control hook did not stop")
+        if flush_error is not None:
+            raise RuntimeError("flush managed-worker trace") from flush_error
 
 
 def install_verl_control(
@@ -473,6 +486,18 @@ def worker_identity_from_environment(
         raise ValueError("WORLD_SIZE must be non-negative")
     if world_size > 0 and not 0 <= rank < world_size:
         raise ValueError("RANK must be within WORLD_SIZE when WORLD_SIZE is positive")
+    phase_id = values.get("TGSRL_STAGE_ID", "decode").strip() or "decode"
+    phase_kind = int(values.get("TGSRL_PHASE_KIND", str(execution_pb2.PHASE_KIND_DECODE)))
+    rollout_mode = int(
+        values.get("TGSRL_ROLLOUT_MODE", str(trace_pb2.ROLLOUT_MODE_PARTIALLY_ASYNC))
+    )
+    data_kind = int(values.get("TGSRL_DATA_KIND", str(trace_pb2.DATA_KIND_LIVE)))
+    if phase_kind == execution_pb2.PHASE_KIND_UNKNOWN:
+        raise ValueError("TGSRL_PHASE_KIND must identify a known phase")
+    if rollout_mode == trace_pb2.ROLLOUT_MODE_UNKNOWN:
+        raise ValueError("TGSRL_ROLLOUT_MODE must identify a known rollout mode")
+    if data_kind == trace_pb2.DATA_KIND_UNKNOWN:
+        raise ValueError("TGSRL_DATA_KIND must identify a known data kind")
     return WorkerIdentity(
         run_id=values["TGSRL_RUN_ID"].strip(),
         job_id=values["TGSRL_JOB_ID"].strip(),
@@ -481,9 +506,15 @@ def worker_identity_from_environment(
         role=values.get("TGSRL_WORKER_ROLE", "actor_rollout").strip() or "actor_rollout",
         generation=generation,
         policy_version=values.get("TGSRL_POLICY_VERSION", "policy-0").strip() or "policy-0",
+        execution_id=values.get("TGSRL_EXECUTION_ID", values["TGSRL_RUN_ID"]).strip(),
         algorithm=values.get("TGSRL_ALGORITHM", "grpo").strip() or "grpo",
+        rollout_mode=rollout_mode,
+        data_kind=data_kind,
+        phase_id=phase_id,
+        phase_kind=phase_kind,
         binding_id=values.get("TGSRL_BINDING_ID", "").strip(),
         device_id=devices[0] if len(devices) == 1 else "",
+        device_ids=tuple(devices),
         share=share,
         runtime_unit_id=values.get("TGSRL_RUNTIME_UNIT_ID", "").strip(),
         worker_id=values.get("TGSRL_WORKER_ID", values.get("TGSRL_RUNTIME_UNIT_ID", "")).strip(),
@@ -511,6 +542,9 @@ def install_verl_control_from_environment(
     resolved_trace = trace_path or values.get("TGSRL_VERL_TRACE_PATH", "")
     if not str(resolved_socket).strip() or not str(resolved_trace).strip():
         raise ValueError("veRL control socket and trace path are required")
+    resolved_trace_sink = trace_sink
+    if resolved_trace_sink is None:
+        resolved_trace_sink = registry_trace_sink_from_environment(values)
     return install_verl_control(
         trainer,
         identity=worker_identity_from_environment(values),
@@ -520,7 +554,7 @@ def install_verl_control_from_environment(
         checkpoint_root=checkpoint_root or values.get("TGSRL_VERL_CHECKPOINT_ROOT") or None,
         safe_point_timeout_seconds=safe_point_timeout_seconds,
         verify_version=verify_version,
-        trace_sink=trace_sink,
+        trace_sink=resolved_trace_sink,
     )
 
 

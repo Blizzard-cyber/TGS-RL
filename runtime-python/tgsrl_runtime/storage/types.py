@@ -68,6 +68,14 @@ class RuntimeObservationCommit:
 
 
 @dataclass(frozen=True, slots=True)
+class ManagedWorkerTraceCommit:
+    batch: trace_pb2.TraceEventBatch
+    intents: list[scheduling_pb2.SchedulingIntent]
+    response_payload: bytes
+    idempotent: bool
+
+
+@dataclass(frozen=True, slots=True)
 class RuntimeRecoveryState:
     manifest: runtime_pb2.RuntimeManifest
     runtime_units: list[runtime_pb2.RuntimeUnit]

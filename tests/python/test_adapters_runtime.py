@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import base64
 import json
 import threading
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from types import ModuleType
@@ -49,6 +51,11 @@ from adapters.frameworks.verl_runtime import (
 )
 from adapters.rollout_engines import SGLangRolloutEngineAdapter, VLLMRolloutEngineAdapter
 from adapters.runtime_registry import runtime_manifest_from_job
+from adapters.trace_transport import (
+    RegistryTraceSink,
+    registry_trace_sink_from_environment,
+    trace_batch_idempotency_key,
+)
 from adapters.trainers import PyTorchTrainerAdapter
 
 type AdapterUnderTest = (
@@ -539,6 +546,7 @@ def test_verl_worker_bridge_controls_lifecycle_and_emits_quality_observations(
     assert typed_events[-1].attributes == {
         "binding_id": "binding-1",
         "device_id": "MIG-a",
+        "device_ids": "MIG-a",
         "local_rank": "0",
         "rank": "0",
         "runtime_unit_id": "unit-1",
@@ -1054,6 +1062,7 @@ def test_verl_runtime_identity_comes_from_bootstrap_environment() -> None:
             "TGSRL_RUN_ID": "run-1",
             "TGSRL_JOB_ID": "job-1",
             "TGSRL_TRACE_ID": "trace-1",
+            "TGSRL_EXECUTION_ID": "execution-1",
             "TGSRL_SANDBOX_ID": "sandbox-1",
             "TGSRL_BINDING_ID": "binding-1",
             "TGSRL_GENERATION": "4",
@@ -1068,6 +1077,7 @@ def test_verl_runtime_identity_comes_from_bootstrap_environment() -> None:
         }
     )
     assert identity.generation == 4
+    assert identity.execution_id == "execution-1"
     assert identity.device_id == "GPU-a"
     assert identity.share == 0.5
     assert identity.policy_version == "policy-9"
@@ -1104,6 +1114,172 @@ def test_verl_runtime_identity_comes_from_bootstrap_environment() -> None:
         )
 
 
+def test_registry_trace_sink_posts_deterministic_batch_with_bounded_retry() -> None:
+    received: list[tuple[str, bytes]] = []
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_POST(self) -> None:
+            body = self.rfile.read(int(self.headers["Content-Length"]))
+            received.append((self.headers.get("X-TGSRL-Worker-Trace-Token", ""), body))
+            if len(received) == 1:
+                self.send_response(503)
+                self.end_headers()
+                return
+            response = json.dumps({"accepted_event_count": 1, "cursor": "cursor-a"}).encode()
+            self.send_response(200)
+            self.send_header("Content-Length", str(len(response)))
+            self.end_headers()
+            self.wfile.write(response)
+
+        def log_message(self, *_args: object) -> None:
+            return None
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    event = trace_pb2.TraceEvent(
+        event_id="event-1",
+        job_id="job-1",
+        execution_id="execution-1",
+        phase_id="decode",
+        event_type=trace_pb2.TRACE_EVENT_TYPE_SAMPLE_CONSUMED,
+        algorithm="grpo",
+        rollout_mode=trace_pb2.ROLLOUT_MODE_PARTIALLY_ASYNC,
+        policy_version="policy-1",
+        decision_id="decision-1",
+        sequence=3,
+        phase_kind=execution_pb2.PHASE_KIND_DECODE,
+        sandbox_id="sandbox-1",
+        stage_id="decode",
+        run_id="run-1",
+        data_kind=trace_pb2.DATA_KIND_LIVE,
+        trace_id="trace-1",
+        generation=4,
+    )
+    event.occurred_at.FromDatetime(datetime.now(tz=UTC))
+    try:
+        sink = RegistryTraceSink(
+            endpoint=f"http://127.0.0.1:{server.server_port}/v1/trace",
+            token="trace-token",
+            max_retries=1,
+            batch_size=1,
+            sleeper=lambda _seconds: None,
+        )
+        sink(event)
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=1)
+
+    assert len(received) == 2
+    token, raw = received[-1]
+    assert token == "trace-token"
+    payload = json.loads(raw)
+    batch = trace_pb2.TraceEventBatch.FromString(base64.b64decode(cast(str, payload["batch"])))
+    assert batch.events == [event]
+    assert payload["idempotency_key"] == trace_batch_idempotency_key(batch)
+    with pytest.raises(ValueError, match="loopback"):
+        RegistryTraceSink(endpoint="http://registry.example.test/v1/trace", token="token")
+    with pytest.raises(ValueError, match="configured together"):
+        registry_trace_sink_from_environment({"TGSRL_WORKER_TRACE_URL": "http://127.0.0.1"})
+
+
+def test_registry_trace_sink_batches_and_flushes_worker_events() -> None:
+    received: list[dict[str, object]] = []
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_POST(self) -> None:
+            payload = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+            received.append(payload)
+            batch = trace_pb2.TraceEventBatch.FromString(base64.b64decode(payload["batch"]))
+            body = json.dumps(
+                {"accepted_event_count": len(batch.events), "cursor": "cursor-a"}
+            ).encode()
+            self.send_response(200)
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, *_args: object) -> None:
+            return None
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    sink = RegistryTraceSink(
+        endpoint=f"http://127.0.0.1:{server.server_port}/v1/trace",
+        token="trace-token",
+        batch_size=2,
+    )
+    events = []
+    for sequence in (1, 2, 3):
+        event = trace_pb2.TraceEvent(
+            event_id=f"event-{sequence}",
+            execution_id="execution-1",
+            sandbox_id="sandbox-1",
+            run_id="run-1",
+            trace_id="trace-1",
+            generation=1,
+            data_kind=trace_pb2.DATA_KIND_LIVE,
+            sequence=sequence,
+        )
+        events.append(event)
+        sink(event)
+    assert len(received) == 1
+    sink.close()
+    server.shutdown()
+    server.server_close()
+    thread.join(timeout=1)
+
+    assert len(received) == 2
+    batches = [
+        trace_pb2.TraceEventBatch.FromString(base64.b64decode(cast(str, payload["batch"])))
+        for payload in received
+    ]
+    assert [[event.sequence for event in batch.events] for batch in batches] == [[1, 2], [3]]
+
+
+def test_verl_hook_close_still_shuts_down_when_trace_flush_fails(tmp_path: Path) -> None:
+    class FailingSink:
+        def __call__(self, _event: trace_pb2.TraceEvent) -> None:
+            return None
+
+        def flush(self) -> None:
+            raise OSError("trace sink unavailable")
+
+    trainer = _VerlTrainerDouble(
+        2,
+        _VerlWorkerGroupDouble(),
+        _VerlWorkerGroupDouble(),
+        _VerlCheckpointManagerDouble(),
+        use_critic=False,
+    )
+    hook = install_verl_control(
+        trainer,
+        identity=WorkerIdentity(
+            run_id="run-1",
+            job_id="job-1",
+            trace_id="trace-1",
+            sandbox_id="sandbox-1",
+            role="actor",
+            generation=1,
+            policy_version="policy-1",
+        ),
+        socket_path=Path("/tmp") / f"tgsrl-close-{time.time_ns()}.sock",
+        trace_path=tmp_path / "trace.ndjson",
+        verify_version=False,
+        trace_sink=FailingSink(),
+    )
+    try:
+        hook.start()
+        with pytest.raises(RuntimeError, match="flush managed-worker trace"):
+            hook.close()
+        assert hook._closed
+        assert hook.thread is not None and not hook.thread.is_alive()
+    finally:
+        hook.bridge.socket_path.unlink(missing_ok=True)
+
+
 def test_verl_runtime_installs_from_bootstrap_environment(tmp_path: Path) -> None:
     trainer = _VerlTrainerDouble(
         2,
@@ -1129,6 +1305,7 @@ def test_verl_runtime_installs_from_bootstrap_environment(tmp_path: Path) -> Non
         trainer, environment=environment, verify_version=False
     )
     assert hook.bridge.identity.generation == 2
+    assert hook.bridge.identity.execution_id == "run-1"
     assert hook.bridge.socket_path == tmp_path / "worker.sock"
     assert hook.callbacks.checkpoint_root == tmp_path / "checkpoints"
 

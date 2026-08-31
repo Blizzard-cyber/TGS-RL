@@ -101,6 +101,7 @@ class WorkerIdentity:
     role: str
     generation: int
     policy_version: str
+    execution_id: str = ""
     algorithm: str = "grpo"
     rollout_mode: int = trace_pb2.ROLLOUT_MODE_PARTIALLY_ASYNC
     data_kind: int = trace_pb2.DATA_KIND_LIVE
@@ -108,6 +109,7 @@ class WorkerIdentity:
     phase_kind: int = execution_pb2.PHASE_KIND_DECODE
     binding_id: str = ""
     device_id: str = ""
+    device_ids: tuple[str, ...] = ()
     share: float = 0.0
     runtime_unit_id: str = ""
     worker_id: str = ""
@@ -337,7 +339,6 @@ class VerlWorkerBridge:
                 gpu_active_ms=gpu_active_ms,
                 contract_observation=contract_observation,
             )
-            role = self.identity.role
             phase_id = self.identity.phase_id
             phase_kind = self.identity.phase_kind
             algorithm = self.identity.algorithm
@@ -359,7 +360,7 @@ class VerlWorkerBridge:
                 safe_point=safe_point,
                 source="verl-worker-bridge",
                 event_id=event_id,
-                phase_id=role,
+                phase_id=phase_id,
                 policy_version=policy_version,
                 sample_count=expected_samples,
                 effective_sample_size_ratio=(
@@ -370,7 +371,7 @@ class VerlWorkerBridge:
             trace_event = trace_pb2.TraceEvent(
                 event_id=event_id,
                 job_id=str(emitted["job_id"]),
-                execution_id=str(emitted["run_id"]),
+                execution_id=self.identity.execution_id or str(emitted["run_id"]),
                 phase_id=phase_id,
                 event_type=_trace_event_type(event_type),
                 algorithm=algorithm,
@@ -404,7 +405,7 @@ class VerlWorkerBridge:
         recovery_time_ms: float = 0.0,
     ) -> None:
         """Record an executed control action for benchmark aggregation."""
-        self._emit(
+        self._emit_and_publish(
             "decision_applied",
             action=action,
             duration_ms=duration_ms,
@@ -417,12 +418,52 @@ class VerlWorkerBridge:
         self, *, item_count: int, elapsed_ms: float, queue_depth: int
     ) -> None:
         """Record the terminal event used for end-to-end throughput metrics."""
-        self._emit(
+        self._emit_and_publish(
             "workload_completed",
             item_count=item_count,
             elapsed_ms=elapsed_ms,
             queue_depth=queue_depth,
         )
+        flush = getattr(self.trace_sink, "flush", None)
+        if callable(flush):
+            flush()
+
+    def _emit_and_publish(self, event_type: str, **extra: Any) -> None:
+        with self._lock:
+            emitted = self._emit(event_type, **extra)
+            phase_id = self.identity.phase_id
+            phase_kind = self.identity.phase_kind
+            algorithm = self.identity.algorithm
+            rollout_mode = self.identity.rollout_mode
+            data_kind = self.identity.data_kind
+        if self.trace_sink is None:
+            return
+        observed_at = datetime.fromisoformat(str(emitted["occurred_at"]))
+        event = trace_pb2.TraceEvent(
+            event_id=str(emitted["event_id"]),
+            job_id=str(emitted["job_id"]),
+            execution_id=self.identity.execution_id or str(emitted["run_id"]),
+            phase_id=phase_id,
+            event_type=_trace_event_type(event_type),
+            algorithm=algorithm,
+            rollout_mode=rollout_mode,
+            policy_version=str(emitted["policy_version"]),
+            decision_id=f"verl-observation:{emitted['sandbox_id']}",
+            buffer_level=int(extra.get("queue_depth", 0)),
+            safe_point=bool(emitted["safe_point"]),
+            sequence=int(emitted["sequence"]),
+            phase_kind=phase_kind,
+            raw_phase_label=phase_id,
+            sandbox_id=str(emitted["sandbox_id"]),
+            stage_id=phase_id,
+            run_id=str(emitted["run_id"]),
+            data_kind=data_kind,
+            trace_id=str(emitted["trace_id"]),
+            generation=int(emitted["generation"]),
+            attributes=self._trace_attributes(),
+        )
+        event.occurred_at.FromDatetime(observed_at)
+        self.trace_sink(event)
 
     def _emit(self, event_type: str, **extra: Any) -> dict[str, Any]:
         with self._lock:
@@ -436,6 +477,7 @@ class VerlWorkerBridge:
                 "run_id": self.identity.run_id,
                 "job_id": self.identity.job_id,
                 "trace_id": self.identity.trace_id,
+                "execution_id": self.identity.execution_id,
                 "sandbox_id": self.identity.sandbox_id,
                 "role": self.identity.role,
                 "generation": self.identity.generation,
@@ -449,6 +491,7 @@ class VerlWorkerBridge:
                 "world_size": self.identity.world_size,
                 "binding_id": self.identity.binding_id,
                 "device_id": self.identity.device_id,
+                "device_ids": list(self.identity.device_ids),
                 "share": self.identity.share,
                 **extra,
             }
@@ -470,6 +513,7 @@ class VerlWorkerBridge:
                 "policy_version": self.identity.policy_version,
                 "binding_id": self.identity.binding_id,
                 "device_id": self.identity.device_id,
+                "device_ids": list(self.identity.device_ids),
                 "share": self.identity.share,
                 "runtime_unit_id": self.identity.runtime_unit_id,
                 "worker_id": self.identity.worker_id,
@@ -502,6 +546,7 @@ class VerlWorkerBridge:
                 ("worker_id", self.identity.worker_id),
                 ("binding_id", self.identity.binding_id),
                 ("device_id", self.identity.device_id),
+                ("device_ids", ",".join(self.identity.device_ids) or self.identity.device_id),
             )
             if value
         }
@@ -580,8 +625,14 @@ class VerlWorkerBridge:
         if observed_contract != expected_contract:
             raise ValueError("veRL worker state contract does not match the configured worker")
         immutable_execution_identity = (
+            ("execution_id", self.identity.execution_id, str),
             ("runtime_unit_id", self.identity.runtime_unit_id, str),
             ("worker_id", self.identity.worker_id, str),
+            (
+                "device_ids",
+                self.identity.device_ids,
+                lambda value: tuple(str(item) for item in value),
+            ),
             ("rank", self.identity.rank, int),
             ("local_rank", self.identity.local_rank, int),
             ("world_size", self.identity.world_size, int),
@@ -686,6 +737,7 @@ def _trace_event_type(value: str) -> int:
         "backpressure_changed": trace_pb2.TRACE_EVENT_TYPE_BACKPRESSURE_CHANGED,
         "safe_point_reached": trace_pb2.TRACE_EVENT_TYPE_SAFE_POINT_REACHED,
         "decision_applied": trace_pb2.TRACE_EVENT_TYPE_DECISION_APPLIED,
+        "workload_completed": trace_pb2.TRACE_EVENT_TYPE_PHASE_COMPLETED,
     }.get(value, trace_pb2.TRACE_EVENT_TYPE_UNKNOWN)
 
 

@@ -282,6 +282,66 @@ def test_intent_cas_and_idempotency(store: SQLiteStore) -> None:
         store.record_intent_cas(conflicting_key)
 
 
+def test_managed_worker_trace_commit_is_atomic_and_idempotent(store: SQLiteStore) -> None:
+    batch = _trace_batch()
+    intent = _intent(1)
+    request = b"request-a"
+    response = runtime_pb2.PublishTraceBatchResponse(
+        intents=[intent], accepted_event_count=len(batch.events), cursor="cursor-a"
+    ).SerializeToString(deterministic=True)
+
+    first = store.persist_managed_worker_trace(
+        scope="managed-worker-trace",
+        key="trace-key",
+        request_payload=request,
+        batch=batch,
+        intents=[intent],
+        response_payload=response,
+    )
+    repeated = store.persist_managed_worker_trace(
+        scope="managed-worker-trace",
+        key="trace-key",
+        request_payload=request,
+        batch=batch,
+        intents=[intent],
+        response_payload=b"ignored",
+    )
+
+    assert not first.idempotent
+    assert repeated.idempotent
+    assert repeated.response_payload == response
+    assert store.get_trace_batch("execution-1", "run-1").events == batch.events
+    assert store.get_latest_intent("execution-1", "stage-1") == intent
+    with pytest.raises(IntentVersionConflict, match="different request"):
+        store.persist_managed_worker_trace(
+            scope="managed-worker-trace",
+            key="trace-key",
+            request_payload=b"request-b",
+            batch=batch,
+            intents=[intent],
+            response_payload=response,
+        )
+
+
+def test_managed_worker_trace_commit_rolls_back_all_records(store: SQLiteStore) -> None:
+    batch = _trace_batch()
+    batch.events.append(_event("event-1", sequence=3, second=3))
+
+    with pytest.raises(IntentVersionConflict, match="trace event"):
+        store.persist_managed_worker_trace(
+            scope="managed-worker-trace",
+            key="trace-key",
+            request_payload=b"request",
+            batch=batch,
+            intents=[_intent(1)],
+            response_payload=b"response",
+        )
+
+    assert list(store._connection.execute("SELECT event_id FROM trace_events")) == []
+    assert list(store._connection.execute("SELECT version FROM intents")) == []
+    assert list(store._connection.execute("SELECT key FROM idempotency_records")) == []
+
+
 def test_stable_trace_pagination_cursor(store: SQLiteStore) -> None:
     batch = _trace_batch()
     extra = _event("event-3", sequence=3, second=3)

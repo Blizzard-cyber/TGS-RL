@@ -133,6 +133,10 @@ begin
   scheduler_args = scheduler.dig("spec", "template", "spec", "containers", 0, "args")
   assert(scheduler_args.include?("--worker-registry-runtime-target=tgsrl-runtime:50071"), "worker registry must publish lifecycle to Runtime")
   assert(scheduler.dig("spec", "template", "spec", "volumes").any? { |volume| volume.dig("secret", "secretName") == "tgsrl-worker-registry" }, "Scheduler must mount the shared signing key")
+  runtime = resource(registry_docs, "Deployment", "tgsrl-runtime")
+  runtime_args = runtime.dig("spec", "template", "spec", "containers", 0, "args")
+  assert(runtime_args.include?("--worker-registry-signing-key-file=/var/run/secrets/tgsrl-worker-registry/signing-key"), "Runtime must authenticate worker trace requests with the shared signing key")
+  assert(runtime.dig("spec", "template", "spec", "volumes").any? { |volume| volume.dig("secret", "secretName") == "tgsrl-worker-registry" }, "Runtime must mount the shared signing key")
 
   failure, status = Open3.capture2e("helm", "template", "contract-test", chart, "--set", "scheduler.workerRegistry.enabled=true")
   assert(!status.success? && failure.include?("signingKeySecret"), "registry render must fail when its signing-key Secret is missing")

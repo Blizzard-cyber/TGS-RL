@@ -33,6 +33,9 @@ spec:
             - --operator-target=tgsrl-operator:{{ .Values.operator.service.port }}
             - --config-root={{ ternary .Values.config.mountPath "/opt/tgsrl/config" (ne .Values.config.existingConfigMap "") }}
             - --manifest={{ .Values.scheduler.manifest }}
+{{- if .Values.scheduler.workerRegistry.enabled }}
+            - --worker-registry-signing-key-file=/var/run/secrets/tgsrl-worker-registry/signing-key
+{{- end }}
           ports:
             - {name: grpc, containerPort: {{ .Values.runtime.service.grpcPort }}, protocol: TCP}
           readinessProbe:
@@ -46,6 +49,9 @@ spec:
 {{- if .Values.config.existingConfigMap }}
             - {name: config, mountPath: {{ .Values.config.mountPath }}, readOnly: true}
 {{- end }}
+{{- if .Values.scheduler.workerRegistry.enabled }}
+            - {name: worker-registry-signing-key, mountPath: /var/run/secrets/tgsrl-worker-registry, readOnly: true}
+{{- end }}
       volumes:
         - name: state
 {{ include "tgsrl.stateVolume" (list . "tgsrl-runtime" .Values.runtime.persistence) | indent 10 }}
@@ -57,6 +63,13 @@ spec:
             items:
 {{ toYaml . | indent 14 }}
 {{- end }}
+{{- end }}
+{{- if .Values.scheduler.workerRegistry.enabled }}
+        - name: worker-registry-signing-key
+          secret:
+            secretName: {{ required "scheduler.workerRegistry.signingKeySecret is required when the registry is enabled" .Values.scheduler.workerRegistry.signingKeySecret }}
+            items:
+              - {key: {{ .Values.scheduler.workerRegistry.signingKeyKey }}, path: signing-key}
 {{- end }}
 ---
 apiVersion: v1

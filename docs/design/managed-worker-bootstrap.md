@@ -23,6 +23,9 @@ sequenceDiagram
   S->>S: verify HMAC, source IP and Provider binding
   S->>R: require matching BOUND generation
   S->>R: publish RUNNING SandboxEvent
+  W->>B: publish typed TraceEvent batch with local token
+  B->>S: forward batch with scoped registration token
+  S->>R: authenticate, persist, and publish derived Intent
   S->>B: generation-fenced lifecycle request
   B->>W: cooperative socket or restricted signal action
   W-->>B: observed state/readiness
@@ -53,6 +56,13 @@ registry 还要求 control URL 的 IP 与 HTTP 请求来源相同，并向 Provi
 保存在 runtime helper 私有状态文件中。helper 强制使用 `0700` 目录和 `0600` 文件；备份介质
 仍需部署者限制访问。
 
+训练进程不会获得 scoped registry token。bootstrap 启动时生成独立随机 trace token，只把
+loopback `TGSRL_WORKER_TRACE_URL` 和该 token 注入子进程；收到的 protobuf batch 会以 bootstrap
+持有的 registry token 转发。Scheduler 在转发 Runtime 前再次核对当前 registration、Provider
+binding、generation、device IDs 和 batch identity，并用共享主 key 对原始 batch bytes 及请求
+元数据签名。Runtime 以同一 key 验签，随后把 trace、派生 Intent 和幂等响应作为一个 SQLite
+事务落盘，再以至少一次语义发布 Intent。
+
 终态上报继续使用该进程 incarnation 的注册凭据，并同时检查 Pod UID、process token 和请求
 generation 是否等于当前 worker generation。合法 rebind 会更新 worker generation，但不会改变
 该进程的注册 credential；旧 Pod 或 PID reuse 仍不能覆盖替代进程。
@@ -78,7 +88,8 @@ bootstrap 的启动顺序为：
 5. 等待 cooperative socket readiness，或确认 signal-only 进程仍存活。
 6. 有界重试 registry；Runtime 尚未观察到 BOUND 时保持未 Ready。
 7. 注册成功后 `/readyz` 才返回成功，Operator 才能发布 RUNNING。
-8. 转发 SIGTERM/SIGINT，等待子进程退出，generation-fenced 清理 MPS PID 文件并上报终态。
+8. worker observation 以有界 batch 经 bootstrap/registry 回传 Runtime；完成或关闭时强制 flush。
+9. 转发 SIGTERM/SIGINT，等待子进程退出，generation-fenced 清理 MPS PID 文件并上报终态。
 
 registration、单次 cooperative control 与 shutdown 都有独立的有界超时；shutdown 超时后会
 关闭 control server 并把未退出的 workload 进程组升级为 SIGKILL，避免 Pod termination 无限悬挂。

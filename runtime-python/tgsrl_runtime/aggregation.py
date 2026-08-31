@@ -21,6 +21,7 @@ class MicroStageKey:
     trace_id: str
     execution_id: str
     stage_id: str
+    sandbox_id: str
     generation: int
     attempt: int
 
@@ -447,13 +448,14 @@ class TraceAggregator:
         self, events: Iterable[trace_pb2.TraceEvent]
     ) -> tuple[MicroStageAggregate, ...]:
         normalized = self._normalizer.normalize(events)
-        groups: dict[tuple[str, str, str, str, int], list[trace_pb2.TraceEvent]] = {}
+        groups: dict[tuple[str, str, str, str, str, int], list[trace_pb2.TraceEvent]] = {}
         for event in normalized:
             base_key = (
                 event.run_id,
                 event.trace_id,
                 event.execution_id,
                 event.stage_id,
+                event.sandbox_id,
                 event.generation,
             )
             groups.setdefault(base_key, []).append(event)
@@ -484,7 +486,7 @@ class TraceAggregator:
 
     @staticmethod
     def _finalize(
-        base_key: tuple[str, str, str, str, int],
+        base_key: tuple[str, str, str, str, str, int],
         attempt: int,
         events: list[trace_pb2.TraceEvent],
     ) -> MicroStageAggregate:

@@ -55,6 +55,9 @@ type supervisor struct {
 	mu             sync.Mutex
 	worker         runtimehelper.Worker
 	controlToken   string
+	traceToken     string
+	registryURL    string
+	registryToken  string
 	controlSocket  string
 	safePointFile  string
 	readinessFile  string
@@ -208,12 +211,36 @@ func runWorker(cfg config) error {
 			return err
 		}
 	}
+	controlToken, err := randomToken(32)
+	if err != nil {
+		return err
+	}
+	traceToken, err := randomToken(32)
+	if err != nil {
+		return err
+	}
+	worker.ControlToken = controlToken
+	listener, err := net.Listen("tcp", cfg.listenAddress)
+	if err != nil {
+		return err
+	}
+	defer listener.Close()
+	port := listener.Addr().(*net.TCPAddr).Port
+	worker.ControlURL = "http://" + net.JoinHostPort(cfg.advertiseHost, strconv.Itoa(port)) + "/v1/control"
+	supervisor := &supervisor{worker: worker, controlToken: controlToken, traceToken: traceToken, registryURL: cfg.registryURL, registryToken: cfg.registryToken, controlSocket: cfg.controlSocket, safePointFile: cfg.safePointFile, readinessFile: cfg.readinessFile, controlTimeout: cfg.controlTimeout, receipts: make(map[string]receipt)}
+	server := &http.Server{Handler: supervisor, ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 10 * time.Second, WriteTimeout: 10 * time.Second, IdleTimeout: 30 * time.Second}
+	go func() { _ = server.Serve(listener) }()
 	command := exec.Command(cfg.command[0], cfg.command[1:]...)
-	command.Env = workloadEnvironment()
+	command.Env = append(
+		workloadEnvironment(),
+		"TGSRL_WORKER_TRACE_URL=http://"+net.JoinHostPort("127.0.0.1", strconv.Itoa(port))+"/v1/trace",
+		"TGSRL_WORKER_TRACE_TOKEN="+traceToken,
+	)
 	command.Dir = strings.TrimSpace(os.Getenv("TGSRL_WORKING_DIRECTORY"))
 	command.Stdin, command.Stdout, command.Stderr = os.Stdin, os.Stdout, os.Stderr
 	command.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	if err := command.Start(); err != nil {
+		_ = server.Close()
 		return fmt.Errorf("start workload: %w", err)
 	}
 	waiter := &processWait{done: make(chan struct{})}
@@ -224,6 +251,7 @@ func runWorker(cfg config) error {
 	worker.PID = command.Process.Pid
 	worker.ProcessToken, err = runtimehelper.ProcessToken(context.Background(), worker.PID)
 	if err != nil {
+		_ = server.Close()
 		terminateProcess(waiter, worker.PID, syscall.SIGKILL, cfg.shutdownWait)
 		return err
 	}
@@ -231,16 +259,11 @@ func runWorker(cfg config) error {
 	if worker.InstanceID == "" {
 		worker.InstanceID, err = randomToken(16)
 		if err != nil {
+			_ = server.Close()
 			terminateProcess(waiter, worker.PID, syscall.SIGKILL, cfg.shutdownWait)
 			return err
 		}
 	}
-	controlToken, err := randomToken(32)
-	if err != nil {
-		terminateProcess(waiter, worker.PID, syscall.SIGKILL, cfg.shutdownWait)
-		return err
-	}
-	worker.ControlToken = controlToken
 	worker.State, worker.Ready = "running", true
 	if cfg.mpsPIDDirectory != "" {
 		worker.MPSServerPID, err = discoverMPSServerPID()
@@ -254,17 +277,9 @@ func runWorker(cfg config) error {
 			return err
 		}
 	}
-	supervisor := &supervisor{worker: worker, controlToken: controlToken, controlSocket: cfg.controlSocket, safePointFile: cfg.safePointFile, readinessFile: cfg.readinessFile, controlTimeout: cfg.controlTimeout, receipts: make(map[string]receipt)}
-	listener, err := net.Listen("tcp", cfg.listenAddress)
-	if err != nil {
-		terminateProcess(waiter, worker.PID, syscall.SIGKILL, cfg.shutdownWait)
-		return err
-	}
-	defer listener.Close()
-	worker.ControlURL = "http://" + net.JoinHostPort(cfg.advertiseHost, strconv.Itoa(listener.Addr().(*net.TCPAddr).Port)) + "/v1/control"
-	supervisor.worker.ControlURL = worker.ControlURL
-	server := &http.Server{Handler: supervisor, ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 10 * time.Second, WriteTimeout: 10 * time.Second, IdleTimeout: 30 * time.Second}
-	go func() { _ = server.Serve(listener) }()
+	supervisor.mu.Lock()
+	supervisor.worker = worker
+	supervisor.mu.Unlock()
 	if worker.MPSServerPID > 0 {
 		if err := writeMPSPID(cfg.mpsPIDDirectory, worker.SandboxID, worker.Generation, worker.MPSServerPID, worker.MPSServerProcessToken); err != nil {
 			_ = server.Close()
@@ -379,7 +394,7 @@ func workerFromEnvironment() (runtimehelper.Worker, error) {
 		}
 	}
 	worker := runtimehelper.Worker{RunID: env("TGSRL_RUN_ID"), JobID: env("TGSRL_JOB_ID"), TraceID: env("TGSRL_TRACE_ID"), RuntimeUnitID: env("TGSRL_RUNTIME_UNIT_ID"), SandboxID: env("TGSRL_SANDBOX_ID"), BindingID: env("TGSRL_BINDING_ID"), Generation: generation, DeviceIDs: splitCSV(env("TGSRL_DEVICE_IDS")), Share: share}
-	if worker.RunID == "" || worker.JobID == "" || worker.RuntimeUnitID == "" || worker.SandboxID == "" || worker.BindingID == "" {
+	if worker.RunID == "" || worker.JobID == "" || worker.TraceID == "" || worker.RuntimeUnitID == "" || worker.SandboxID == "" || worker.BindingID == "" {
 		return runtimehelper.Worker{}, errors.New("workload identity environment is incomplete")
 	}
 	if len(worker.DeviceIDs) == 1 {
@@ -406,6 +421,10 @@ func (s *supervisor) ServeHTTP(w http.ResponseWriter, request *http.Request) {
 		w.WriteHeader(http.StatusNoContent)
 		return
 	}
+	if request.URL.Path == "/v1/trace" {
+		s.publishTrace(w, request)
+		return
+	}
 	if request.URL.Path != "/v1/control" {
 		http.NotFound(w, request)
 		return
@@ -429,6 +448,65 @@ func (s *supervisor) ServeHTTP(w http.ResponseWriter, request *http.Request) {
 	response := s.handle(request.Context(), control)
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(response)
+}
+
+func (s *supervisor) publishTrace(w http.ResponseWriter, request *http.Request) {
+	if request.Method != http.MethodPost {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+	provided, expected := []byte(request.Header.Get(runtimehelper.WorkerTraceTokenHeader)), []byte(s.traceToken)
+	if len(provided) != len(expected) || subtle.ConstantTimeCompare(provided, expected) != 1 {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+	if err := s.waitUntilRegistered(request.Context()); err != nil {
+		http.Error(w, err.Error(), http.StatusServiceUnavailable)
+		return
+	}
+	var trace runtimehelper.WorkerTraceRequest
+	decoder := json.NewDecoder(io.LimitReader(request.Body, 1<<20))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&trace); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	worker := s.snapshot()
+	trace.SandboxID = worker.SandboxID
+	trace.Generation = worker.Generation
+	response, err := runtimehelper.PublishRemoteWorkerTrace(request.Context(), s.registryURL, s.registryToken, trace)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadGateway)
+		return
+	}
+	if response.AcceptedEventCount == 0 || strings.TrimSpace(response.Cursor) == "" {
+		http.Error(w, "worker trace registry returned an invalid receipt", http.StatusBadGateway)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(response)
+}
+
+func (s *supervisor) waitUntilRegistered(ctx context.Context) error {
+	deadline := time.NewTimer(s.controlTimeout)
+	defer deadline.Stop()
+	ticker := time.NewTicker(10 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		s.mu.Lock()
+		registered := s.registered
+		s.mu.Unlock()
+		if registered {
+			return nil
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-deadline.C:
+			return errors.New("worker is not registered")
+		case <-ticker.C:
+		}
+	}
 }
 
 func (s *supervisor) handle(ctx context.Context, request runtimehelper.ControlRequest) runtimehelper.ControlResponse {
@@ -704,7 +782,7 @@ func workloadEnvironment() []string {
 	result := make([]string, 0, len(os.Environ()))
 	for _, entry := range os.Environ() {
 		key, _, _ := strings.Cut(entry, "=")
-		if key == "TGSRL_WORKER_REGISTRY_TOKEN" {
+		if key == "TGSRL_WORKER_REGISTRY_TOKEN" || key == "TGSRL_WORKER_TRACE_URL" || key == "TGSRL_WORKER_TRACE_TOKEN" {
 			continue
 		}
 		result = append(result, entry)

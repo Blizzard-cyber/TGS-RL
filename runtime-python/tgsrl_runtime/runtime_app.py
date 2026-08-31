@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import os
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -35,6 +36,15 @@ _RUNTIME_COMPONENT_FIELDS = (
     "trainer",
     "rollout_engine",
 )
+
+
+def _trace_signing_key(path: str) -> bytes:
+    configured = os.environ.get("TGSRL_WORKER_REGISTRY_SIGNING_KEY", "").strip()
+    if path.strip():
+        configured = Path(path).read_text(encoding="utf-8").strip()
+    if configured and len(configured.encode()) < 32:
+        raise ValueError("worker trace signing key must contain at least 32 bytes")
+    return configured.encode()
 
 
 def _server_state_db(value: str | None) -> str:
@@ -137,6 +147,7 @@ def build_runtime_supervisor(
     job_control_target: str | None = None,
     persistence: PersistenceHook | None = None,
     config_load_options: runtime_config.LoadOptions | None = None,
+    trace_signing_key: bytes = b"",
 ) -> RuntimeSupervisor:
     """Construct a supervisor with optional sqlite persistence and real scheduler client."""
     from tgsrl_runtime.supervisor import RuntimeSupervisor
@@ -162,6 +173,7 @@ def build_runtime_supervisor(
         config_bundle=bundle,
         scheduler_client=client,
         persistence=hook,
+        trace_signing_key=trace_signing_key,
     )
 
 
@@ -176,6 +188,7 @@ async def serve_runtime(
     operator_client: OperatorClient | None = None,
     job_control_reporter: JobControlClient | None = None,
     config_load_options: runtime_config.LoadOptions | None = None,
+    trace_signing_key: bytes = b"",
 ) -> grpc.aio.Server:
     """Create and start the Python runtime gRPC server."""
     if supervisor is None:
@@ -190,6 +203,7 @@ async def serve_runtime(
         state_db=_server_state_db(state_db),
         scheduler_target=scheduler_target,
         config_load_options=config_load_options,
+        trace_signing_key=trace_signing_key,
     )
     resolved_operator = operator_client or (
         OperatorClient(target=operator_target) if operator_target else None
@@ -224,6 +238,11 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--operator-target", default=DEFAULT_OPERATOR_TARGET)
     parser.add_argument("--config-root", default=DEFAULT_CONFIG_ROOT)
     parser.add_argument("--manifest", default="")
+    parser.add_argument(
+        "--worker-registry-signing-key-file",
+        default="",
+        help="shared HMAC key used to authenticate Scheduler-forwarded worker traces",
+    )
     parser.add_argument("role", nargs="?")
     parser.add_argument("component", nargs="?")
     parser.add_argument("run_id", nargs="?")
@@ -239,6 +258,7 @@ async def _run_server(
     operator_target: str,
     config_root: str,
     manifest: str,
+    worker_registry_signing_key_file: str = "",
 ) -> None:
     _require_product_server_dependencies(
         scheduler_target=scheduler_target,
@@ -254,6 +274,7 @@ async def _run_server(
         state_db=_server_state_db(state_db),
         scheduler_target=scheduler_target,
         config_load_options=config_load_options,
+        trace_signing_key=_trace_signing_key(worker_registry_signing_key_file),
     )
     operator_client = OperatorClient(target=operator_target)
     job_control_reporter = JobControlClient(target=job_control_target)
@@ -293,6 +314,7 @@ def main() -> None:
             operator_target=args.operator_target,
             config_root=args.config_root,
             manifest=args.manifest,
+            worker_registry_signing_key_file=args.worker_registry_signing_key_file,
         )
     )
 

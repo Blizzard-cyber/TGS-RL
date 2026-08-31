@@ -327,6 +327,35 @@ def execute(args: argparse.Namespace) -> list[JsonObject]:
             ),
             timeout,
         )
+        observed_decision = cast(
+            JsonObject,
+            _wait(
+                "Runtime-ingested managed-worker observation",
+                lambda: next(
+                    (
+                        item
+                        for item in cast(
+                            list[JsonObject],
+                            client.list_decisions(job_id, run_id=run_id)["decisions"],
+                        )
+                        if not cast(JsonObject, item).get("fallback")
+                        and cast(JsonObject, item).get("intentVersion", 0)
+                        > cast(JsonObject, selected).get("intentVersion", 0)
+                    ),
+                    None,
+                ),
+                timeout,
+            ),
+        )
+        service_events.append(
+            {
+                "event_type": "worker_observation_ingested",
+                "source": "runtime",
+                "decision_id": observed_decision["decisionId"],
+                "intent_version": observed_decision["intentVersion"],
+                "policy_version": observed_decision["policyVersion"],
+            }
+        )
         pause_ms, pause_evidence = _command(
             client,
             runtime,

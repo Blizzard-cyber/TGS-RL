@@ -44,6 +44,7 @@ from tgsrl_runtime.runtime_transport import ExperimentServicer, RuntimeControlSe
 from tgsrl_runtime.storage import ReplayScheduleStep
 from tgsrl_runtime.supervisor import RuntimeSupervisor
 from tgsrl_runtime.synthetic import SyntheticScenario, SyntheticWorkload
+from tgsrl_runtime.trace_auth import sign_trace_request
 
 from adapters import (
     GRPOAdapter,
@@ -324,6 +325,226 @@ def _make_sandbox_event(
         occurred_at=runtime_unit.observed_at,
         data_kind=trace_pb2.DATA_KIND_SYNTHETIC,
     )
+
+
+async def _trace_ready_supervisor(
+    *,
+    scheduler: _SchedulerStub,
+    signing_key: bytes,
+    persistence: SQLitePersistenceHook | None = None,
+) -> tuple[RuntimeSupervisor, runtime_pb2.RuntimeUnit, runtime_pb2.PublishTraceBatchRequest]:
+    supervisor = RuntimeSupervisor(
+        scheduler_client=scheduler,
+        persistence=persistence or NullPersistenceHook(),
+        trace_signing_key=signing_key,
+    )
+    validated = supervisor.validate_runtime(
+        runtime_pb2.ValidateRuntimeRequest(manifest=_manifest(), idempotency_key="trace-v")
+    )
+    supervisor.compile_runtime(
+        runtime_pb2.CompileRuntimeRequest(
+            manifest=validated.normalized_manifest, idempotency_key="trace-c"
+        )
+    )
+    started = await supervisor.start_runtime(
+        runtime_pb2.StartRuntimeRequest(run_id="run-1", idempotency_key="trace-s")
+    )
+    unit = next(item for item in started.runtime_units if item.stage_id == "decode")
+    bound = _make_sandbox_event(
+        runtime_unit=unit,
+        event_id="trace-bound",
+        event_type=runtime_pb2.SANDBOX_EVENT_TYPE_BOUND,
+        state=runtime_pb2.RUNTIME_STATE_BOUND,
+        binding_id="binding-trace",
+        sandbox_id="sandbox-trace",
+    )
+    bound.binding.runtime_unit_id = unit.runtime_unit_id
+    bound.binding.device_ids.append("mock-cpu-0")
+    supervisor.publish_sandbox_event(runtime_pb2.PublishSandboxEventRequest(event=bound))
+    event = trace_pb2.TraceEvent(
+        event_id="worker-observation-1",
+        job_id="job-1",
+        execution_id=unit.execution_id,
+        phase_id=unit.phase_id,
+        occurred_at=to_timestamp(datetime.now(tz=UTC)),
+        event_type=trace_pb2.TRACE_EVENT_TYPE_SAMPLE_CONSUMED,
+        algorithm="grpo",
+        rollout_mode=trace_pb2.ROLLOUT_MODE_PARTIALLY_ASYNC,
+        policy_version="policy-worker-2",
+        buffer_level=7,
+        decision_id="worker-observation:sandbox-trace",
+        sequence=1,
+        attributes={
+            "runtime_unit_id": unit.runtime_unit_id,
+            "binding_id": "binding-trace",
+            "device_ids": "mock-cpu-0",
+        },
+        phase_kind=unit.phase_kind,
+        raw_phase_label=unit.phase_id,
+        sandbox_id="sandbox-trace",
+        stage_id=unit.stage_id,
+        run_id="run-1",
+        data_kind=trace_pb2.DATA_KIND_SYNTHETIC,
+        trace_id="trace-1",
+        generation=1,
+        contract_observation=execution_pb2.ContractObservation(
+            policy_lag=1,
+            sample_stale=False,
+            buffer_level=7,
+            effective_sample_size=3.5,
+            accepted_samples=4,
+            expected_samples=4,
+            source="verl-worker-bridge",
+            event_id="worker-observation-1",
+            phase_id=unit.phase_id,
+            policy_version="policy-worker-2",
+            sample_count=4,
+            effective_sample_size_ratio=0.875,
+        ),
+    )
+    event.contract_observation.observed_at.CopyFrom(event.occurred_at)
+    batch = trace_pb2.TraceEventBatch(
+        execution_id=unit.execution_id,
+        first_sequence=1,
+        last_sequence=1,
+        events=[event],
+        run_id="run-1",
+        trace_id="trace-1",
+        data_kind=trace_pb2.DATA_KIND_SYNTHETIC,
+    )
+    request = runtime_pb2.PublishTraceBatchRequest(
+        batch_payload=batch.SerializeToString(deterministic=True),
+        runtime_unit_id=unit.runtime_unit_id,
+        sandbox_id="sandbox-trace",
+        binding_id="binding-trace",
+        generation=1,
+        device_ids=["mock-cpu-0"],
+        idempotency_key="trace-sha256-"
+        + hashlib.sha256(batch.SerializeToString(deterministic=True)).hexdigest(),
+    )
+    request.authentication_tag = sign_trace_request(signing_key, request)
+    return supervisor, unit, request
+
+
+@pytest.mark.asyncio
+async def test_managed_worker_trace_updates_scheduler_intent_and_is_idempotent() -> None:
+    signing_key = b"t" * 32
+    scheduler = _DeduplicatingScheduler()
+    supervisor, _, request = await _trace_ready_supervisor(
+        scheduler=scheduler, signing_key=signing_key
+    )
+    scheduler.published.clear()
+    existing_event_count = len(supervisor.trace_ingestor.list("run-1"))
+
+    first = await supervisor.publish_trace_batch(request)
+    second = await supervisor.publish_trace_batch(request)
+
+    assert first.accepted_event_count == 1
+    assert not first.idempotent
+    assert second.idempotent
+    assert len(supervisor.trace_ingestor.list("run-1")) == existing_event_count + 1
+    assert len(first.intents) == 1
+    assert first.intents[0].contract_observation.event_id == "worker-observation-1"
+    assert first.intents[0].contract_observation.buffer_level == 7
+    assert first.intents[0].policy_version == "policy-worker-2"
+    assert [status for _, status in scheduler.responses[-2:]] == [
+        scheduling_pb2.INTENT_PUBLISH_STATUS_ACCEPTED,
+        scheduling_pb2.INTENT_PUBLISH_STATUS_DEDUPLICATED,
+    ]
+
+    tampered = runtime_pb2.PublishTraceBatchRequest()
+    tampered.CopyFrom(request)
+    tampered.binding_id = "binding-other"
+    with pytest.raises(PermissionError, match="authentication"):
+        await supervisor.publish_trace_batch(tampered)
+
+    stale = runtime_pb2.PublishTraceBatchRequest()
+    stale.CopyFrom(request)
+    stale.generation = 2
+    stale_batch = trace_pb2.TraceEventBatch.FromString(stale.batch_payload)
+    stale_batch.events[0].event_id = "worker-observation-stale"
+    stale_batch.events[0].generation = 2
+    stale.batch_payload = stale_batch.SerializeToString(deterministic=True)
+    stale.idempotency_key = "trace-sha256-" + hashlib.sha256(stale.batch_payload).hexdigest()
+    stale.authentication_tag = sign_trace_request(signing_key, stale)
+    with pytest.raises(RuntimeLifecycleError, match="identity"):
+        await supervisor.publish_trace_batch(stale)
+
+
+@pytest.mark.asyncio
+async def test_managed_worker_trace_recovers_after_receipt_crash_and_restart(
+    tmp_path: Path,
+) -> None:
+    signing_key = b"r" * 32
+    state_db = tmp_path / "trace-recovery.sqlite3"
+    first_scheduler = _DeduplicatingScheduler()
+    persistence = SQLitePersistenceHook(str(state_db))
+    supervisor, _, request = await _trace_ready_supervisor(
+        scheduler=first_scheduler, signing_key=signing_key, persistence=persistence
+    )
+    first_scheduler.published.clear()
+    existing_event_count = len(supervisor.trace_ingestor.list("run-1"))
+
+    class FailingScheduler(_DeduplicatingScheduler):
+        async def publish_intent(
+            self, intent: scheduling_pb2.SchedulingIntent
+        ) -> scheduling_pb2.PublishIntentResponse:
+            del intent
+            raise RuntimeError("scheduler unavailable after durable trace commit")
+
+    supervisor.scheduler_client = FailingScheduler()
+    with pytest.raises(RuntimeError, match="after durable trace commit"):
+        await supervisor.publish_trace_batch(request)
+    assert any(
+        event.event_id == "worker-observation-1"
+        for event in supervisor.trace_ingestor.list("run-1")
+    )
+    persistence.close()
+
+    resumed_scheduler = _DeduplicatingScheduler()
+    resumed_persistence = SQLitePersistenceHook(str(state_db))
+    resumed = RuntimeSupervisor(
+        scheduler_client=resumed_scheduler,
+        persistence=resumed_persistence,
+        trace_signing_key=signing_key,
+    )
+    recovered = await resumed.publish_trace_batch(request)
+    repeated = await resumed.publish_trace_batch(request)
+
+    assert recovered.accepted_event_count == 1
+    assert recovered.idempotent
+    assert repeated.idempotent
+    assert len(resumed_scheduler.published) == 2
+    assert (
+        resumed_scheduler.published[0].idempotency_key
+        == resumed_scheduler.published[1].idempotency_key
+    )
+    assert len(resumed.trace_ingestor.list("run-1")) == existing_event_count + 1
+    resumed_persistence.close()
+
+
+@pytest.mark.asyncio
+async def test_managed_worker_trace_grpc_authentication_failure_is_unauthenticated() -> None:
+    signing_key = b"g" * 32
+    supervisor, _, request = await _trace_ready_supervisor(
+        scheduler=_DeduplicatingScheduler(), signing_key=signing_key
+    )
+    request.authentication_tag = b"invalid"
+    server = grpc.aio.server()
+    runtime_pb2_grpc.add_RuntimeControlServiceServicer_to_server(
+        RuntimeControlServicer(supervisor), server
+    )
+    port = server.add_insecure_port("127.0.0.1:0")
+    await server.start()
+    channel = grpc.aio.insecure_channel(f"127.0.0.1:{port}")
+    stub = runtime_pb2_grpc.RuntimeControlServiceStub(channel)
+    try:
+        with pytest.raises(grpc.aio.AioRpcError) as caught:
+            await stub.PublishTraceBatch(request)
+        assert caught.value.code() is grpc.StatusCode.UNAUTHENTICATED
+    finally:
+        await channel.close()
+        await server.stop(None)
 
 
 def test_sandbox_dual_timestamps_preserve_source_and_state_age() -> None:

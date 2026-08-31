@@ -37,6 +37,7 @@ const (
 	RuntimeControlService_GetRuntimeStatus_FullMethodName    = "/tgsrl.v1.RuntimeControlService/GetRuntimeStatus"
 	RuntimeControlService_WatchRuntimeEvents_FullMethodName  = "/tgsrl.v1.RuntimeControlService/WatchRuntimeEvents"
 	RuntimeControlService_PublishSandboxEvent_FullMethodName = "/tgsrl.v1.RuntimeControlService/PublishSandboxEvent"
+	RuntimeControlService_PublishTraceBatch_FullMethodName   = "/tgsrl.v1.RuntimeControlService/PublishTraceBatch"
 )
 
 // RuntimeControlServiceClient is the client API for RuntimeControlService service.
@@ -64,6 +65,7 @@ type RuntimeControlServiceClient interface {
 	GetRuntimeStatus(ctx context.Context, in *GetRuntimeStatusRequest, opts ...grpc.CallOption) (*GetRuntimeStatusResponse, error)
 	WatchRuntimeEvents(ctx context.Context, in *WatchRuntimeEventsRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[WatchRuntimeEventsResponse], error)
 	PublishSandboxEvent(ctx context.Context, in *PublishSandboxEventRequest, opts ...grpc.CallOption) (*PublishSandboxEventResponse, error)
+	PublishTraceBatch(ctx context.Context, in *PublishTraceBatchRequest, opts ...grpc.CallOption) (*PublishTraceBatchResponse, error)
 }
 
 type runtimeControlServiceClient struct {
@@ -263,6 +265,16 @@ func (c *runtimeControlServiceClient) PublishSandboxEvent(ctx context.Context, i
 	return out, nil
 }
 
+func (c *runtimeControlServiceClient) PublishTraceBatch(ctx context.Context, in *PublishTraceBatchRequest, opts ...grpc.CallOption) (*PublishTraceBatchResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(PublishTraceBatchResponse)
+	err := c.cc.Invoke(ctx, RuntimeControlService_PublishTraceBatch_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // RuntimeControlServiceServer is the server API for RuntimeControlService service.
 // All implementations must embed UnimplementedRuntimeControlServiceServer
 // for forward compatibility.
@@ -288,6 +300,7 @@ type RuntimeControlServiceServer interface {
 	GetRuntimeStatus(context.Context, *GetRuntimeStatusRequest) (*GetRuntimeStatusResponse, error)
 	WatchRuntimeEvents(*WatchRuntimeEventsRequest, grpc.ServerStreamingServer[WatchRuntimeEventsResponse]) error
 	PublishSandboxEvent(context.Context, *PublishSandboxEventRequest) (*PublishSandboxEventResponse, error)
+	PublishTraceBatch(context.Context, *PublishTraceBatchRequest) (*PublishTraceBatchResponse, error)
 	mustEmbedUnimplementedRuntimeControlServiceServer()
 }
 
@@ -351,6 +364,9 @@ func (UnimplementedRuntimeControlServiceServer) WatchRuntimeEvents(*WatchRuntime
 }
 func (UnimplementedRuntimeControlServiceServer) PublishSandboxEvent(context.Context, *PublishSandboxEventRequest) (*PublishSandboxEventResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method PublishSandboxEvent not implemented")
+}
+func (UnimplementedRuntimeControlServiceServer) PublishTraceBatch(context.Context, *PublishTraceBatchRequest) (*PublishTraceBatchResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method PublishTraceBatch not implemented")
 }
 func (UnimplementedRuntimeControlServiceServer) mustEmbedUnimplementedRuntimeControlServiceServer() {}
 func (UnimplementedRuntimeControlServiceServer) testEmbeddedByValue()                               {}
@@ -690,6 +706,24 @@ func _RuntimeControlService_PublishSandboxEvent_Handler(srv interface{}, ctx con
 	return interceptor(ctx, in, info, handler)
 }
 
+func _RuntimeControlService_PublishTraceBatch_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(PublishTraceBatchRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(RuntimeControlServiceServer).PublishTraceBatch(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: RuntimeControlService_PublishTraceBatch_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(RuntimeControlServiceServer).PublishTraceBatch(ctx, req.(*PublishTraceBatchRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // RuntimeControlService_ServiceDesc is the grpc.ServiceDesc for RuntimeControlService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -764,6 +798,10 @@ var RuntimeControlService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "PublishSandboxEvent",
 			Handler:    _RuntimeControlService_PublishSandboxEvent_Handler,
+		},
+		{
+			MethodName: "PublishTraceBatch",
+			Handler:    _RuntimeControlService_PublishTraceBatch_Handler,
 		},
 	},
 	Streams: []grpc.StreamDesc{

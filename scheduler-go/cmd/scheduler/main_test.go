@@ -2,8 +2,10 @@ package main
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -25,6 +27,7 @@ import (
 	"github.com/Blizzard-cyber/TGS-RL/scheduler-go/state"
 	"google.golang.org/grpc"
 	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
 func signedWorkerToken(t *testing.T, signingKey []byte, worker runtimehelper.Worker) string {
@@ -44,8 +47,9 @@ type recordingResumer struct {
 }
 
 type recordingRuntimePublisher struct {
-	events    []*tgsrlv1.SandboxEvent
-	sandboxes []*tgsrlv1.Sandbox
+	events        []*tgsrlv1.SandboxEvent
+	traceRequests []*tgsrlv1.PublishTraceBatchRequest
+	sandboxes     []*tgsrlv1.Sandbox
 }
 
 func (p *recordingRuntimePublisher) PublishSandboxEvent(_ context.Context, request *tgsrlv1.PublishSandboxEventRequest, _ ...grpc.CallOption) (*tgsrlv1.PublishSandboxEventResponse, error) {
@@ -64,6 +68,15 @@ func (p *recordingRuntimePublisher) PublishSandboxEvent(_ context.Context, reque
 
 func (p *recordingRuntimePublisher) GetRuntimeStatus(_ context.Context, _ *tgsrlv1.GetRuntimeStatusRequest, _ ...grpc.CallOption) (*tgsrlv1.GetRuntimeStatusResponse, error) {
 	return &tgsrlv1.GetRuntimeStatusResponse{Sandboxes: p.sandboxes}, nil
+}
+
+func (p *recordingRuntimePublisher) PublishTraceBatch(_ context.Context, request *tgsrlv1.PublishTraceBatchRequest, _ ...grpc.CallOption) (*tgsrlv1.PublishTraceBatchResponse, error) {
+	p.traceRequests = append(p.traceRequests, proto.Clone(request).(*tgsrlv1.PublishTraceBatchRequest))
+	var batch tgsrlv1.TraceEventBatch
+	if err := proto.Unmarshal(request.GetBatchPayload(), &batch); err != nil {
+		return nil, err
+	}
+	return &tgsrlv1.PublishTraceBatchResponse{AcceptedEventCount: uint64(len(batch.GetEvents())), Cursor: "trace-cursor"}, nil
 }
 
 func (r *recordingResumer) ResumeRecoveredState(ctx context.Context, recovered *persistence.SchedulerState) error {
@@ -333,11 +346,11 @@ func TestWorkerRegistryAuthorizesBindingAndPublishesLifecycle(t *testing.T) {
 	})
 	controlServer := httptest.NewServer(workerControl)
 	defer controlServer.Close()
-	worker := runtimehelper.Worker{RunID: "run-a", JobID: "job-a", RuntimeUnitID: "unit-a", SandboxID: "sandbox-a", Generation: 4, BindingID: "binding-a", DeviceIDs: []string{"mock-cpu-0"}, DeviceID: "mock-cpu-0", Share: 1, PID: 4242, ProcessToken: "process-a", InstanceID: "instance-a", State: "running", Ready: true, ControlURL: controlServer.URL, ControlToken: "control-token"}
+	worker := runtimehelper.Worker{RunID: "run-a", JobID: "job-a", TraceID: "trace-a", RuntimeUnitID: "unit-a", SandboxID: "sandbox-a", Generation: 4, BindingID: "binding-a", DeviceIDs: []string{"mock-cpu-0"}, DeviceID: "mock-cpu-0", Share: 1, PID: 4242, ProcessToken: "process-a", InstanceID: "instance-a", State: "running", Ready: true, ControlURL: controlServer.URL, ControlToken: "control-token"}
 	registryURL := "http://" + listener.Addr().String()
 	registryToken := signedWorkerToken(t, signingKey, worker)
 	runtimePublisher.sandboxes[0].State = tgsrlv1.RuntimeState_RUNTIME_STATE_STARTING
-	if err := runtimehelper.RegisterRemoteWorker(context.Background(), registryURL, registryToken, worker); err == nil || !strings.Contains(err.Error(), "bound workload generation") {
+	if err := runtimehelper.RegisterRemoteWorker(context.Background(), registryURL, registryToken, worker); err == nil || !strings.Contains(err.Error(), "bound or running workload generation") {
 		t.Fatalf("registration before Runtime BOUND error = %v", err)
 	}
 	stateBeforeBound, err := runtimehelper.NewStore(statePath)
@@ -360,6 +373,32 @@ func TestWorkerRegistryAuthorizesBindingAndPublishesLifecycle(t *testing.T) {
 	}
 	if len(runtimePublisher.events) != 1 || runtimePublisher.events[0].GetState() != tgsrlv1.RuntimeState_RUNTIME_STATE_RUNNING {
 		t.Fatalf("runtime events = %+v", runtimePublisher.events)
+	}
+	runtimePublisher.sandboxes[0].State = tgsrlv1.RuntimeState_RUNTIME_STATE_RUNNING
+	event := &tgsrlv1.TraceEvent{EventId: "trace-event-a", JobId: worker.JobID, ExecutionId: "execution-a", PhaseId: "decode", OccurredAt: timestamppb.Now(), EventType: tgsrlv1.TraceEventType_TRACE_EVENT_TYPE_SAMPLE_CONSUMED, Algorithm: "grpo", RolloutMode: tgsrlv1.RolloutMode_ROLLOUT_MODE_PARTIALLY_ASYNC, PolicyVersion: "policy-1", DecisionId: "decision-a", Sequence: 1, PhaseKind: tgsrlv1.PhaseKind_PHASE_KIND_DECODE, SandboxId: worker.SandboxID, StageId: "decode", RunId: worker.RunID, DataKind: tgsrlv1.DataKind_DATA_KIND_SYNTHETIC, TraceId: worker.TraceID, Generation: worker.Generation, Attributes: map[string]string{"runtime_unit_id": worker.RuntimeUnitID, "binding_id": worker.BindingID, "device_ids": "mock-cpu-0"}}
+	batch := &tgsrlv1.TraceEventBatch{ExecutionId: "execution-a", FirstSequence: 1, LastSequence: 1, Events: []*tgsrlv1.TraceEvent{event}, RunId: worker.RunID, TraceId: worker.TraceID, DataKind: tgsrlv1.DataKind_DATA_KIND_SYNTHETIC}
+	batchBytes, err := proto.MarshalOptions{Deterministic: true}.Marshal(batch)
+	if err != nil {
+		t.Fatal(err)
+	}
+	digest := sha256.Sum256(batchBytes)
+	traceResponse, err := runtimehelper.PublishRemoteWorkerTrace(context.Background(), registryURL, registryToken, runtimehelper.WorkerTraceRequest{SandboxID: worker.SandboxID, Generation: worker.Generation, IdempotencyKey: fmt.Sprintf("trace-sha256-%x", digest[:]), Batch: batchBytes})
+	if err != nil || traceResponse.AcceptedEventCount != 1 || len(runtimePublisher.traceRequests) != 1 {
+		t.Fatalf("trace publication = (%+v, %v), requests=%d", traceResponse, err, len(runtimePublisher.traceRequests))
+	}
+	forwarded := runtimePublisher.traceRequests[0]
+	unsigned := proto.Clone(forwarded).(*tgsrlv1.PublishTraceBatchRequest)
+	unsigned.AuthenticationTag = nil
+	payload, err := proto.MarshalOptions{Deterministic: true}.Marshal(unsigned)
+	if err != nil || !bootstrapauth.VerifyPayload(signingKey, payload, forwarded.GetAuthenticationTag()) {
+		t.Fatalf("Runtime trace request authentication failed: %v", err)
+	}
+	forwardedBatch := &tgsrlv1.TraceEventBatch{}
+	if err := proto.Unmarshal(forwarded.GetBatchPayload(), forwardedBatch); err != nil {
+		t.Fatal(err)
+	}
+	if forwarded.GetRuntimeUnitId() != worker.RuntimeUnitID || forwarded.GetBindingId() != worker.BindingID || !proto.Equal(forwardedBatch, batch) {
+		t.Fatalf("forwarded Runtime trace request = %+v", forwarded)
 	}
 	worker.State, worker.Ready, worker.ExitCode, worker.Detail = "failed", false, 7, "worker exited"
 	if err := runtimehelper.ReportRemoteWorkerExit(context.Background(), registryURL, registryToken, worker); err != nil {

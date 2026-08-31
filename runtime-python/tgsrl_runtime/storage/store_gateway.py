@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import hashlib
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from datetime import UTC
 from typing import cast
 
@@ -14,6 +14,7 @@ from tgsrl_runtime.storage.store_contracts import SQLiteStoreHelpers
 from tgsrl_runtime.storage.types import (
     AdapterHydrationState,
     IntentVersionConflict,
+    ManagedWorkerTraceCommit,
     Page,
     ReplayScheduleStep,
     StorageCorruptionError,
@@ -35,6 +36,119 @@ class SQLiteGatewayStoreMixin:
             if not page.next_cursor:
                 return items
             cursor = page.next_cursor
+
+    def persist_managed_worker_trace(
+        self,
+        *,
+        scope: str,
+        key: str,
+        request_payload: bytes,
+        batch: trace_pb2.TraceEventBatch,
+        intents: Sequence[scheduling_pb2.SchedulingIntent],
+        response_payload: bytes,
+    ) -> ManagedWorkerTraceCommit:
+        store = cast(SQLiteStoreHelpers, self)
+        request_digest = hashlib.sha256(request_payload).hexdigest()
+        created_at = store._stamp()
+        with store._connection:
+            existing = store._connection.execute(
+                "SELECT request_digest, response_payload FROM idempotency_records "
+                "WHERE scope = ? AND key = ?",
+                (scope, key),
+            ).fetchone()
+            if existing is not None:
+                if existing["request_digest"] != request_digest:
+                    raise IntentVersionConflict(
+                        "idempotency key was reused with a different request"
+                    )
+                return ManagedWorkerTraceCommit(
+                    batch=batch,
+                    intents=list(intents),
+                    response_payload=bytes(existing["response_payload"]),
+                    idempotent=True,
+                )
+            for event in batch.events:
+                payload, digest = store._marshal(event)
+                duplicate = store._connection.execute(
+                    "SELECT payload_sha256 FROM trace_events WHERE event_id = ?",
+                    (event.event_id,),
+                ).fetchone()
+                if duplicate is not None:
+                    if duplicate["payload_sha256"] != digest:
+                        raise IntentVersionConflict(
+                            f"trace event {event.event_id} already exists with different payload"
+                        )
+                    continue
+                store._connection.execute(
+                    """
+                    INSERT INTO trace_events(
+                        event_id, execution_id, run_id, trace_id, job_id, sequence,
+                        occurred_at, payload, payload_sha256, created_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        event.event_id,
+                        event.execution_id,
+                        event.run_id,
+                        event.trace_id,
+                        event.job_id,
+                        event.sequence,
+                        store._stamp(event.occurred_at.ToDatetime(tzinfo=UTC)),
+                        payload,
+                        digest,
+                        created_at,
+                    ),
+                )
+            for intent in intents:
+                payload, digest = store._marshal(intent)
+                duplicate = store._connection.execute(
+                    "SELECT payload_sha256 FROM intents WHERE execution_id = ? "
+                    "AND stage_id = ? AND version = ?",
+                    (intent.execution_id, intent.stage_id, intent.version),
+                ).fetchone()
+                if duplicate is not None:
+                    if duplicate["payload_sha256"] != digest:
+                        raise IntentVersionConflict(
+                            "intent version already exists with different payload"
+                        )
+                    continue
+                same_key = store._connection.execute(
+                    "SELECT payload_sha256 FROM intents WHERE idempotency_key = ?",
+                    (intent.idempotency_key,),
+                ).fetchone()
+                if same_key is not None and same_key["payload_sha256"] != digest:
+                    raise IntentVersionConflict(
+                        "idempotency key already used by a different intent"
+                    )
+                store._connection.execute(
+                    """
+                    INSERT INTO intents(
+                        execution_id, stage_id, version, job_id, run_id, trace_id,
+                        idempotency_key, payload, payload_sha256, created_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        intent.execution_id,
+                        intent.stage_id,
+                        intent.version,
+                        intent.job_id,
+                        intent.run_id,
+                        intent.trace_id,
+                        intent.idempotency_key,
+                        payload,
+                        digest,
+                        store._stamp(intent.submitted_at.ToDatetime(tzinfo=UTC)),
+                    ),
+                )
+            store._connection.execute(
+                "INSERT INTO idempotency_records("
+                "scope, key, request_digest, response_payload, created_at"
+                ") VALUES (?, ?, ?, ?, ?)",
+                (scope, key, request_digest, response_payload, created_at),
+            )
+        return ManagedWorkerTraceCommit(
+            batch=batch, intents=list(intents), response_payload=response_payload, idempotent=False
+        )
 
     def _decode_replay_schedule_step(
         self,

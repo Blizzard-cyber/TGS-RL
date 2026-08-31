@@ -54,6 +54,29 @@ class SQLiteMaintenanceMixin:
             )
         return response_payload
 
+    def load_idempotent_response(
+        self,
+        *,
+        scope: str,
+        key: str,
+        request_payload: bytes,
+    ) -> bytes | None:
+        store = cast(SQLiteStoreHelpers, self)
+        request_digest = hashlib.sha256(request_payload).hexdigest()
+        row = store._connection.execute(
+            """
+            SELECT request_digest, response_payload
+            FROM idempotency_records
+            WHERE scope = ? AND key = ?
+            """,
+            (scope, key),
+        ).fetchone()
+        if row is None:
+            return None
+        if row["request_digest"] != request_digest:
+            raise IntentVersionConflict("idempotency key was reused with a different request")
+        return bytes(row["response_payload"])
+
     def prune_before(self, *, cutoff: datetime, scopes: Sequence[str]) -> list[DeleteAudit]:
         store = cast(SQLiteStoreHelpers, self)
         if cutoff.tzinfo is None:
