@@ -306,15 +306,21 @@ describe('JobDetailPage controls', () => {
       attempt: 21 - index,
     }));
     const latestRunId = manyRuns[0]?.id ?? '';
+    const getJobDetail = vi.fn(async (_jobId: string, options?: { filters?: Record<string, string>; signal?: AbortSignal }) => {
+      const requestedRunId = options?.filters?.run_id;
+      const selectedRunId = manyRuns.some((run) => run.id === requestedRunId)
+        ? requestedRunId
+        : latestRunId;
+      return ready({
+        ...detail,
+        runs: manyRuns,
+        selectedRunId,
+        metrics: [{ label: 'Requested run', value: requestedRunId ? `queried ${requestedRunId}` : 'default' }],
+      });
+    });
     const client = createTestApiClient({
       listJobs: async () => ready(jobs),
-      getJobDetail: async (_jobId, options) => {
-        const requestedRunId = options?.filters?.run_id;
-        const selectedRunId = manyRuns.some((run) => run.id === requestedRunId)
-          ? requestedRunId
-          : latestRunId;
-        return ready({ ...detail, runs: manyRuns, selectedRunId });
-      },
+      getJobDetail,
     });
 
     const { router } = renderPage(client, '/jobs/job-live-017');
@@ -323,6 +329,13 @@ describe('JobDetailPage controls', () => {
     await waitFor(() =>
       expect(router.state.location.search).toBe('?runId=run-live-017-01'),
     );
+    await waitFor(() =>
+      expect(getJobDetail).toHaveBeenLastCalledWith('job-live-017', {
+        filters: { mode: 'ready', require_gpu: 'true', run_id: 'run-live-017-01' },
+        signal: expect.any(AbortSignal),
+      }),
+    );
+    await screen.findByText('queried run-live-017-01');
     await screen.findByRole('button', { name: 'run-live-017-01 (selected)' });
     const lastRun = await screen.findByRole('button', { name: 'run-live-017-21' });
     await user.click(lastRun);
