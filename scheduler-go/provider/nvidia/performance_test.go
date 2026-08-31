@@ -5,6 +5,7 @@ package nvidia
 import (
 	"context"
 	"fmt"
+	"runtime"
 	"sort"
 	"syscall"
 	"testing"
@@ -14,9 +15,12 @@ import (
 )
 
 // TestPerformanceBudgets guards local provider event publication and replay
-// bookkeeping. Process CPU time prevents hosted-runner descheduling from
-// masquerading as a provider regression. It is not a production latency SLA.
+// bookkeeping. Single-P process CPU time prevents hosted-runner descheduling
+// and host CPU topology from masquerading as a provider regression. It is not
+// a production latency SLA.
 func TestPerformanceBudgets(t *testing.T) {
+	previousProcs := runtime.GOMAXPROCS(1)
+	t.Cleanup(func() { runtime.GOMAXPROCS(previousProcs) })
 	now := time.Date(2026, time.August, 28, 9, 0, 0, 0, time.UTC)
 	p, err := New(
 		WithNow(func() time.Time { return now }),

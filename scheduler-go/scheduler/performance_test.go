@@ -3,6 +3,7 @@
 package scheduler
 
 import (
+	"runtime"
 	"sort"
 	"syscall"
 	"testing"
@@ -13,8 +14,11 @@ import (
 
 func TestPerformanceBudgets(t *testing.T) {
 	// Hosted runners can deschedule the test process for an entire batch. Measure
-	// process CPU time so runner contention does not masquerade as a Scheduler
-	// regression. These are deterministic compute budgets, not latency SLAs.
+	// single-P process CPU time so runner contention and host CPU topology do not
+	// masquerade as a Scheduler regression. These are deterministic compute
+	// budgets, not latency SLAs.
+	previousProcs := runtime.GOMAXPROCS(1)
+	t.Cleanup(func() { runtime.GOMAXPROCS(previousProcs) })
 	tests := []struct {
 		name    string
 		devices int
