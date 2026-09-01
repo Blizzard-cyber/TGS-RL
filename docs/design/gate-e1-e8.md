@@ -30,8 +30,14 @@
 
 ```bash
 make gate-campaign-run \
-  GATE_CAMPAIGN_DRIVER=/opt/tgsrl/bin/tgsrl-hardware-environment-driver
+  TGSRL_HARDWARE_DRIVER_CONFIG=/etc/tgsrl/hardware/environment.json
 ```
+
+仓库提供 `scripts/tgsrl-hardware-environment-driver`。目标环境从
+`configs/hardware/environment.example.json` 派生本地配置，至少指定 Gateway URL、固定
+Kubernetes context/namespace、workload Job 模板和容器内 trace 导出命令。driver 的私有状态按
+`campaign_id/experiment_id/run_key` 持久化，重复 request ID 只回放同一 receipt。配置文件只引用
+凭据所在环境，不允许内嵌 token、password 或 kubeconfig。
 
 仓库内 executor 固定读取各 scenario 的 `execution_plan`，并对每个 baseline/variant 的
 warmup/measurement iteration 依次执行 `provision`、`launch`、`verify_device_identity`、
@@ -56,6 +62,26 @@ action/fault ID；response 必须使用 `tgsrl.io/hardware-driver-response/v1alp
 
 仓库不内置集群凭据、模型、数据或厂商环境命令。替换 environment driver 是部署环境配置，
 不要求修改场景顺序、Scheduler、Runtime、Operator 或 Gate 证据协议。
+
+### 仓库 driver 的环境边界
+
+- `provision` 通过 Gateway 创建并准入 Job；`bind` 通过 Start 触发 Scheduler，不直接创建
+  Kubernetes workload；
+- `launch` 必须同时观察到 Runtime `RUNNING`、目标 Pod `Ready` 和 managed-worker identity；
+- `verify_device_identity` 对账 Scheduler Binding、ResourceClaim allocation + 最新 ResourceSlice
+  以及 Pod 内 `nvidia-smi -L`，Full GPU/MIG 分别要求正确 DeviceClass；
+- `measure` 执行配置中的容器内只读 trace 导出命令，只接收身份匹配的真实 worker NDJSON；
+- `stop` 通过 Gateway lifecycle API；`cleanup` 仅删除该 run 的 JobRunBundle 及其精确命名的
+  Job、Workload、ResourceClaim，不使用 label-wide 或 namespace-wide 删除；
+- `rebind`、`set_share`、`set_priority` 等自适应动作必须配置环境 hook。hook 只负责向已有
+  Runtime/Scheduler observation 入口提交信号并返回 authority receipt，driver 随后等待新的成功
+  Scheduler decision；没有 hook 时 fail closed，绝不 patch ResourceClaim 或 Binding；
+- 故障注入同样使用显式、按 fault ID 配置的 hook，仓库默认不携带集群破坏命令。
+
+环境 hook 接受 `${REQUEST_PATH}` / `${RESPONSE_PATH}`，response 使用
+`tgsrl.io/hardware-driver-hook-response/v1alpha1`。动作 hook 必须回传
+`authority: scheduler-observation`；fault hook 必须回传 `authority: target-environment`。
+hook 必须以 request ID 实现幂等；driver 或 runner 在响应丢失、超时或重启后可能重放同一请求。
 
 ## 证据流
 
@@ -106,6 +132,16 @@ uv run --frozen python scripts/gate-tools.py campaign-evaluate \
 - E8 必须使用 `GPU_MULTI_NODE`，baseline/variant 至少包含相同的两个真实 node identity。
 - `calibration_required: true` 的规则没有数值门槛时结果为 `BLOCKED`；只有将经过评审的
   阈值写入 campaign 并重新校验后，才可能得到 `PASSED`。
+
+取得真实证据后，可生成只读标定报告：
+
+```bash
+make gate-campaign-calibrate
+```
+
+输出列出每条未标定规则的 observed value、证据等级和 report digest，但不会修改
+`configs/gates/e1-e8.json`。阈值仍需基于多次 baseline/variant 运行人工评审后提交；缺报告的规则
+保留在 `missing` 中，状态为 `INCOMPLETE`。
 
 ## 当前验证边界
 

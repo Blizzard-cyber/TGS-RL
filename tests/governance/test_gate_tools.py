@@ -563,6 +563,57 @@ def test_campaign_blocks_uncalibrated_threshold_and_rejects_missing_fault_eviden
     assert any("required fault worker-exit" in blocker for blocker in by_id["E7"]["blockers"])
 
 
+def test_campaign_calibration_report_is_read_only_and_keeps_threshold_null(
+    tmp_path: Path,
+) -> None:
+    output = tmp_path / "e3-throughput-vug"
+    _write_full_stack_gpu_report(output, "E3", "full-gpu")
+    before = CAMPAIGN.read_bytes()
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(SCRIPT),
+            "campaign-calibrate",
+            "--campaign",
+            str(CAMPAIGN),
+            "--reports-dir",
+            str(tmp_path),
+        ],
+        cwd=ROOT,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    report = json.loads(result.stdout)
+    observation = next(item for item in report["observations"] if item["rule_id"] == "e3-vug-ratio")
+    assert observation["observed_value"] == pytest.approx(1.0)
+    assert report["policy_mutated"] is False
+    assert report["review_required"] is True
+    assert {item["rule_id"] for item in report["missing"]} == {
+        "e4-staleness-bound",
+        "e4-ess-floor",
+        "e5-interference-bound",
+        "e6-pause-latency",
+        "e6-checkpoint-latency",
+        "e6-reload-latency",
+        "e7-recovery-time",
+        "e8-convergence-quality",
+    }
+    assert CAMPAIGN.read_bytes() == before
+    campaign = json.loads(before)
+    calibration_rules = [
+        rule
+        for experiment in campaign["experiments"]
+        for rule in experiment["rules"]
+        if rule.get("calibration_required") is True
+    ]
+    assert len(calibration_rules) == 9
+    assert all(rule["threshold"] is None for rule in calibration_rules)
+
+
 def test_campaign_accepts_complete_exact_device_evidence(tmp_path: Path) -> None:
     _write_full_stack_gpu_report(tmp_path / "e1-full-gpu", "E1", "full-gpu")
 

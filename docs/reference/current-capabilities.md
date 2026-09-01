@@ -144,6 +144,10 @@ gate-tools/campaign/gate/scenario/executor/driver digest，拒绝旧 commit、�
 证据，再以 `campaign-evaluate --require-pass` 作为发布门禁。Hardware Validation workflow
 的 `e1-e8-run` 模式执行 campaign；`e1-e8-evaluate` 模式只消费名为
 `gate-e1-e8-evidence` 的已采集 artifact，不在普通 GitHub runner 上伪造硬件执行。
+仓库提供的 `scripts/tgsrl-hardware-environment-driver` 已用 fake Gateway/kubectl 验证 E1/E2
+原子链、持久 receipt 和 identity fail-closed，但这不构成真实 GPU 证据。部署者需要从
+`configs/hardware/environment.example.json` 创建本地配置，并提供真实 workload 模板、trace
+导出命令与必要的 observation/fault hook；未配置的自适应动作会直接拒绝。
 
 ## 明确不支持
 

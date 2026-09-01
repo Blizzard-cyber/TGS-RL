@@ -1991,6 +1991,81 @@ def cmd_campaign_evaluate(args: argparse.Namespace) -> int:
     return 1 if args.require_pass and result["status"] != "PASSED" else 0
 
 
+def build_calibration_report(campaign: dict[str, Any], reports_root: Path) -> dict[str, Any]:
+    """Render observed values for null-threshold rules without mutating policy."""
+    reports_root = reports_root.expanduser().resolve()
+    if reports_root in {Path("/").resolve(), Path.home().resolve(), ROOT.resolve()}:
+        raise GateToolError("campaign reports directory is too broad")
+    observations: list[dict[str, Any]] = []
+    missing: list[dict[str, str]] = []
+    for experiment in campaign["experiments"]:
+        calibration_rules = [
+            rule
+            for rule in experiment["rules"]
+            if rule.get("threshold") is None and rule.get("calibration_required") is True
+        ]
+        if not calibration_rules:
+            continue
+        manifest = load_manifest(ROOT / experiment["gate_manifest"])
+        paths = artifact_paths(
+            manifest,
+            _campaign_output_directory(reports_root, str(experiment["output_directory"])),
+        )
+        if not paths.report.is_file():
+            missing.extend(
+                {"experiment_id": experiment["experiment_id"], "rule_id": rule["rule_id"]}
+                for rule in calibration_rules
+            )
+            continue
+        report = _read_json(paths.report)
+        validation_errors = _validate_report(manifest, paths, report)
+        validation_errors.extend(_validate_campaign_requirements(experiment, report, paths))
+        if validation_errors:
+            raise GateToolError(
+                f"campaign {experiment['experiment_id']} calibration evidence is invalid: "
+                + "; ".join(validation_errors)
+            )
+        for rule in calibration_rules:
+            observations.append(
+                {
+                    "experiment_id": experiment["experiment_id"],
+                    "rule_id": rule["rule_id"],
+                    "metric": rule["metric"],
+                    "comparison": rule.get("comparison", "variant"),
+                    "operator": rule["operator"],
+                    "observed_value": _campaign_rule_value(rule, report),
+                    "evidence": report["evidence"],
+                    "report_sha256": hashlib.sha256(paths.report.read_bytes()).hexdigest(),
+                }
+            )
+    return {
+        "schema_version": "tgsrl.io/gate-calibration-report/v1alpha1",
+        "campaign_id": campaign["campaign_id"],
+        "campaign_revision": campaign["campaign_revision"],
+        "campaign_sha256": hashlib.sha256(
+            json.dumps(campaign, sort_keys=True, separators=(",", ":")).encode()
+        ).hexdigest(),
+        "status": "READY_FOR_REVIEW" if observations and not missing else "INCOMPLETE",
+        "observations": observations,
+        "missing": missing,
+        "policy_mutated": False,
+        "review_required": True,
+    }
+
+
+def cmd_campaign_calibrate(args: argparse.Namespace) -> int:
+    campaign = load_campaign(Path(args.campaign))
+    result = build_calibration_report(campaign, Path(args.reports_dir).expanduser().resolve())
+    payload = json.dumps(result, indent=2, sort_keys=True) + "\n"
+    if args.output == "-":
+        print(payload, end="")
+    else:
+        output = Path(args.output).expanduser().resolve()
+        output.parent.mkdir(parents=True, exist_ok=True)
+        output.write_text(payload, encoding="utf-8")
+    return 0
+
+
 def _campaign_executable(value: str, *, label: str) -> Path:
     raw = value.strip()
     if not raw:
@@ -2589,6 +2664,14 @@ def build_parser() -> argparse.ArgumentParser:
     campaign_run.add_argument("--timeout-seconds", type=float, default=7200.0)
     campaign_run.add_argument("--require-pass", action="store_true")
     campaign_run.set_defaults(func=cmd_campaign_run)
+    campaign_calibrate = subparsers.add_parser(
+        "campaign-calibrate",
+        help="Render observed values for manual threshold calibration",
+    )
+    campaign_calibrate.add_argument("--campaign", default=str(DEFAULT_CAMPAIGN))
+    campaign_calibrate.add_argument("--reports-dir", default=str(DEFAULT_CAMPAIGN_REPORTS))
+    campaign_calibrate.add_argument("--output", default="-")
+    campaign_calibrate.set_defaults(func=cmd_campaign_calibrate)
     campaign_ingest = subparsers.add_parser(
         "campaign-ingest", help="Validate and store one E1-E8 evidence report"
     )

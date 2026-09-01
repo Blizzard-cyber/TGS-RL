@@ -21,7 +21,7 @@ GATEWAY_LISTEN ?= 127.0.0.1:8080
 OPERATOR_LISTEN ?= 127.0.0.1:50081
 SCHEDULER_FALLBACK ?= noop
 
-.PHONY: help doctor proto check-generated check-openapi proto-roundtrip check-migrations check-compose check-deploy render-kubernetes check-public-content sbom check-governance gate-campaign gate-campaign-run test-go test-performance test-python test-api test-console test-console-browser lint staticcheck test race build-nvidia-binding build-nvidia-runtime build-nvidia-mig build-worker-bootstrap demo product-e2e gate-cpu-integration run-scheduler run-controller run-runtime run-gateway run-operator run-console
+.PHONY: help doctor proto check-generated check-openapi proto-roundtrip check-migrations check-compose check-deploy render-kubernetes check-public-content sbom check-governance gate-campaign gate-campaign-run gate-campaign-calibrate test-go test-performance test-python test-api test-console test-console-browser lint staticcheck test race build-nvidia-binding build-nvidia-runtime build-nvidia-mig build-worker-bootstrap demo product-e2e gate-cpu-integration run-scheduler run-controller run-runtime run-gateway run-operator run-console
 
 help:
 	@printf '%s\n' \
@@ -41,6 +41,7 @@ help:
 	  '  make gate-cpu-integration run the full local process Gate path' \
 	  '  make gate-campaign     validate E1-E8 and summarize available evidence' \
 	  '  make gate-campaign-run execute E1-E8 with a target-environment driver' \
+	  '  make gate-campaign-calibrate render observed values for threshold review' \
 	  '  make test-go          run all Go tests' \
 	  '  make test-performance run non-race Scheduler and Provider P95 budgets' \
 	  '  make test-python      sync the locked Python environment and run tests' \
@@ -133,6 +134,12 @@ gate-campaign-run:
 		--reports-dir .cache/tgsrl/e1-e8 \
 		--driver "$(GATE_CAMPAIGN_DRIVER)" \
 		--require-pass
+
+gate-campaign-calibrate:
+	uv run --frozen python scripts/gate-tools.py campaign-calibrate \
+		--campaign configs/gates/e1-e8.json \
+		--reports-dir .cache/tgsrl/e1-e8 \
+		--output .cache/tgsrl/e1-e8/calibration-report.json
 
 test-go:
 	go test $(GO_PACKAGES)
