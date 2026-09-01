@@ -48,6 +48,7 @@ type Snapshot struct {
 	ControlAction              tgsrlv1.JobCommandType
 	ControlBackendRevision     uint64
 	ControlCommitted           bool
+	ControlRetireRun           bool
 }
 
 func snapshotFromAdapter(value *bundleadapter.Snapshot) *Snapshot {
@@ -73,6 +74,7 @@ func snapshotFromAdapter(value *bundleadapter.Snapshot) *Snapshot {
 		ControlAction:              value.ControlAction,
 		ControlBackendRevision:     value.ControlBackendRevision,
 		ControlCommitted:           value.ControlCommitted,
+		ControlRetireRun:           value.ControlRetireRun,
 	}
 }
 

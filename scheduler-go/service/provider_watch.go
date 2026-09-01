@@ -90,12 +90,23 @@ func (s *Server) bootstrapLiveProviderProjection(ctx context.Context, complete p
 		bootstrapped = append(bootstrapped, sandboxToProto(sandbox))
 	}
 	s.planMu.Lock()
-	if _, err := s.store.ReplaceProjectedSandboxes(bootstrapped); err != nil {
+	allocationChanged := s.store.ReconcileProviderSandboxes(bootstrapped)
+	projectionChanged, err := s.store.ReplaceProjectedSandboxes(bootstrapped)
+	if err != nil {
 		s.planMu.Unlock()
 		s.markProjectionLiveNotReady("sandbox")
 		s.setProviderWatchUnhealthy("sandbox", err.Error())
 		s.recorder.IncCounter("provider_watch_event_apply_failures", 1)
 		return fmt.Errorf("service: bootstrap sandbox projection: %w", err)
+	}
+	if projectionChanged || allocationChanged {
+		s.mu.Lock()
+		err = s.checkpointLocked()
+		s.mu.Unlock()
+		if err != nil {
+			s.planMu.Unlock()
+			return fmt.Errorf("service: checkpoint provider bootstrap: %w", err)
+		}
 	}
 	s.planMu.Unlock()
 	return nil

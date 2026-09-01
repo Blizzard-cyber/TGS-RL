@@ -713,9 +713,10 @@ func TestKubernetesBackendDoesNotRepeatCompletedIrreversibleDeleteAfterRestart(t
 	if err := first.SetControlStatePath(path); err != nil {
 		t.Fatal(err)
 	}
-	_, _, request := twoBundleControlFixture(t, first)
+	firstBundle, _, request := twoBundleControlFixture(t, first)
 	request.Action = tgsrlv1.JobCommandType_JOB_COMMAND_TYPE_TERMINATE
 	request.IdempotencyKey = "terminate-both"
+	wantMetadata := metadataForControl(request, 1, true)
 
 	// Model a crash after the first delete reached Kubernetes but before the
 	// completed marker was durable: the ledger retains in_flight while the Job
@@ -747,6 +748,17 @@ func TestKubernetesBackendDoesNotRepeatCompletedIrreversibleDeleteAfterRestart(t
 	}
 	if client.calls["ns/job-a"] != 0 || client.calls["ns/job-b"] != 1 {
 		t.Fatalf("delete calls = %+v; absent in-flight delete must be treated as complete", client.calls)
+	}
+	if !wantMetadata.RetireRun {
+		t.Fatal("transport terminal control did not retain run-retirement authority")
+	}
+	object, found, err := client.Get(context.Background(), restarted.adapter.BundleObject(firstBundle.Key))
+	if err != nil || !found {
+		t.Fatalf("get terminal bundle: found=%v err=%v", found, err)
+	}
+	metadata, found, err := DecodeControlMetadata(object.Payload)
+	if err != nil || !found || !metadata.RetireRun {
+		t.Fatalf("terminal metadata lost run-retirement authority: metadata=%+v found=%v err=%v", metadata, found, err)
 	}
 }
 
@@ -1066,7 +1078,7 @@ func TestControlMetadataForBundleKeepsLegacyAndNewestCommittedCausality(t *testi
 	if err != nil || !found || metadata != legacy {
 		t.Fatalf("metadata with older ledger = %+v, found=%v err=%v", metadata, found, err)
 	}
-	newest := ControlMetadata{RequestID: "newest-request", IdempotencyKey: "newest-ledger", Action: tgsrlv1.JobCommandType_JOB_COMMAND_TYPE_TERMINATE, BackendRevision: 4, Committed: true}
+	newest := ControlMetadata{RequestID: "newest-request", IdempotencyKey: "newest-ledger", Action: tgsrlv1.JobCommandType_JOB_COMMAND_TYPE_TERMINATE, BackendRevision: 4, Committed: true, RetireRun: true}
 	backend.controls[newest.IdempotencyKey] = controlRecord{
 		Digest: "newest", Request: ControlRequest{RequestID: newest.RequestID, IdempotencyKey: newest.IdempotencyKey, Action: newest.Action},
 		BundleKeys: []string{bundle.Key}, Result: &ControlResult{Accepted: true, BackendRevision: newest.BackendRevision},

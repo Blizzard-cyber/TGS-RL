@@ -12,6 +12,7 @@ import (
 	"time"
 
 	tgsrlv1 "github.com/Blizzard-cyber/TGS-RL/gen/go/tgsrl/v1"
+	"github.com/Blizzard-cyber/TGS-RL/internal/protocolmeta"
 	"github.com/Blizzard-cyber/TGS-RL/operator-go/api"
 	"github.com/Blizzard-cyber/TGS-RL/operator-go/backend"
 	"github.com/Blizzard-cyber/TGS-RL/operator-go/compiler"
@@ -281,6 +282,14 @@ func TestObservationManagerPublishesLifecycleControlOnlyAfterReadback(t *testing
 	} {
 		if countState(publisher.snapshot(), state) < 2 {
 			t.Fatalf("missing manager-published %s observations", state)
+		}
+	}
+	for _, event := range publisher.snapshot() {
+		if event.GetState() != tgsrlv1.RuntimeState_RUNTIME_STATE_TERMINATED {
+			continue
+		}
+		if !protocolmeta.RetiresRun(event) {
+			t.Fatalf("terminal lifecycle event lacks run-retirement authority: %+v", event)
 		}
 	}
 }

@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"log/slog"
 	"time"
 
 	tgsrlv1 "github.com/Blizzard-cyber/TGS-RL/gen/go/tgsrl/v1"
@@ -13,6 +14,8 @@ import (
 	runtimepub "github.com/Blizzard-cyber/TGS-RL/operator-go/runtime"
 	"github.com/Blizzard-cyber/TGS-RL/operator-go/statuswatch"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
+	grpcstatus "google.golang.org/grpc/status"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -160,6 +163,7 @@ func (w *Worker) runDecisions(ctx context.Context) error {
 			if ctx.Err() != nil {
 				return nil
 			}
+			slog.Warn("operator decision loop retrying", "error", err, "backoff", backoff)
 		} else {
 			backoff = w.retryBase
 			if backoff <= 0 {
@@ -195,6 +199,14 @@ func (w *Worker) RunOnce(ctx context.Context) error {
 		if err := w.deliveries.Clear(); err != nil {
 			return err
 		}
+		record = DeliveryRecord{}
+	}
+	// An in-flight delivery is more precise than an older or missing cursor.
+	// Resume from its immediate predecessor so the first streamed decision is
+	// the one whose side effects may need reconciliation, rather than replaying
+	// unrelated history and conflicting with the durable delivery fence.
+	if record.Sequence > after.Sequence {
+		after = cursor.Cursor{Sequence: record.Sequence - 1}
 	}
 	stream, err := w.source.Watch(ctx, after)
 	if err != nil {
@@ -230,14 +242,14 @@ func (w *Worker) handleDecision(ctx context.Context, decision *tgsrlv1.DecisionR
 		RunId: decision.GetRunId(),
 	})
 	if err != nil {
-		return err
+		return w.handleMissingDependency(decision, "runtime_manifest", err)
 	}
 	jobRunResp, err := w.jobRuns.GetJobRun(ctx, &tgsrlv1.GetJobRunRequest{
 		JobId: manifestResp.GetManifest().GetJobId(),
 		RunId: decision.GetRunId(),
 	})
 	if err != nil {
-		return err
+		return w.handleMissingDependency(decision, "job_run", err)
 	}
 	input := compiler.CompileInput{
 		Namespace:       w.namespace,
@@ -275,6 +287,31 @@ func (w *Worker) handleDecision(ctx context.Context, decision *tgsrlv1.DecisionR
 			return err
 		}
 	}
+	return w.completeDelivery(decision)
+}
+
+func (w *Worker) handleMissingDependency(decision *tgsrlv1.DecisionRecord, dependency string, err error) error {
+	if grpcstatus.Code(err) != codes.NotFound {
+		return err
+	}
+	expiresAt := decision.GetSelectedPlan().GetExpiresAt()
+	if expiresAt == nil || expiresAt.CheckValid() != nil || time.Now().Before(expiresAt.AsTime()) {
+		return err
+	}
+	// Decisions and their referenced JobRun/RuntimeManifest identities are
+	// immutable. Once the plan has expired, a serving dependency returning
+	// NOT_FOUND means the retained decision is orphaned (for example after
+	// independently restoring persistent service volumes); retrying it forever
+	// would starve every newer decision. An unexpired decision remains
+	// fail-closed because its dependency may still become visible.
+	slog.Warn("skipping orphaned operator decision",
+		"dependency", dependency,
+		"error", err,
+		"decision_id", decision.GetDecisionId(),
+		"sequence", decision.GetSequence(),
+		"run_id", decision.GetRunId(),
+		"trace_id", decision.GetTraceId(),
+	)
 	return w.completeDelivery(decision)
 }
 

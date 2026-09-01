@@ -22,32 +22,39 @@ type KubernetesAdapter struct {
 	now      func() time.Time
 }
 
-func controlMetadataFromBundleBody(body []byte) (string, string, tgsrlv1.JobCommandType, uint64, bool, error) {
+func controlMetadataFromBundleBody(body []byte) (string, string, tgsrlv1.JobCommandType, uint64, bool, bool, error) {
 	var object struct {
 		Metadata struct {
 			Annotations map[string]string `json:"annotations"`
 		} `json:"metadata"`
 	}
 	if err := json.Unmarshal(body, &object); err != nil {
-		return "", "", 0, 0, false, err
+		return "", "", 0, 0, false, false, err
 	}
 	values := object.Metadata.Annotations
 	if values == nil || values["tgsrl.io/control-idempotency-key"] == "" {
-		return "", "", 0, 0, false, nil
+		return "", "", 0, 0, false, false, nil
 	}
 	actionValue, ok := tgsrlv1.JobCommandType_value[values["tgsrl.io/control-action"]]
 	if !ok {
-		return "", "", 0, 0, false, fmt.Errorf("unknown control action %q", values["tgsrl.io/control-action"])
+		return "", "", 0, 0, false, false, fmt.Errorf("unknown control action %q", values["tgsrl.io/control-action"])
 	}
 	revision, err := strconv.ParseUint(values["tgsrl.io/control-backend-revision"], 10, 64)
 	if err != nil {
-		return "", "", 0, 0, false, err
+		return "", "", 0, 0, false, false, err
 	}
 	committed, err := strconv.ParseBool(values["tgsrl.io/control-committed"])
 	if err != nil {
-		return "", "", 0, 0, false, err
+		return "", "", 0, 0, false, false, err
 	}
-	return values["tgsrl.io/control-request-id"], values["tgsrl.io/control-idempotency-key"], tgsrlv1.JobCommandType(actionValue), revision, committed, nil
+	retireRun := false
+	if raw := strings.TrimSpace(values["tgsrl.io/control-retire-run"]); raw != "" {
+		retireRun, err = strconv.ParseBool(raw)
+		if err != nil {
+			return "", "", 0, 0, false, false, err
+		}
+	}
+	return values["tgsrl.io/control-request-id"], values["tgsrl.io/control-idempotency-key"], tgsrlv1.JobCommandType(actionValue), revision, committed, retireRun, nil
 }
 
 func NewKubernetes(interval time.Duration) *KubernetesAdapter {
@@ -233,12 +240,13 @@ func (a *KubernetesAdapter) observeOnce(ctx context.Context, reader Reader, bund
 	var controlAction tgsrlv1.JobCommandType
 	var backendRevision uint64
 	var controlCommitted bool
+	var controlRetireRun bool
 	if strings.TrimSpace(bundle.Key) != "" {
 		bundleBody, err := reader.GetPath(ctx, objectPath(a.BundleObject(bundle.Key), bundle.Namespace))
 		if err != nil {
 			return nil, false, err
 		}
-		requestID, idempotencyKey, controlAction, backendRevision, controlCommitted, err = controlMetadataFromBundleBody(bundleBody)
+		requestID, idempotencyKey, controlAction, backendRevision, controlCommitted, controlRetireRun, err = controlMetadataFromBundleBody(bundleBody)
 		if err != nil {
 			return nil, false, fmt.Errorf("decode bundle control metadata: %w", err)
 		}
@@ -254,7 +262,7 @@ func (a *KubernetesAdapter) observeOnce(ctx context.Context, reader Reader, bund
 			if a != nil && a.now != nil {
 				now = a.now
 			}
-			return &Snapshot{ObservedGeneration: bundle.Generation, WorkloadAdmitted: true, JobDeleted: true, Reason: "kubernetes job deleted", ObservedAt: now().UTC(), ControlRequestID: requestID, ControlIdempotencyKey: idempotencyKey, ControlAction: controlAction, ControlBackendRevision: backendRevision, ControlCommitted: controlCommitted}, true, nil
+			return &Snapshot{ObservedGeneration: bundle.Generation, WorkloadAdmitted: true, JobDeleted: true, Reason: "kubernetes job deleted", ObservedAt: now().UTC(), ControlRequestID: requestID, ControlIdempotencyKey: idempotencyKey, ControlAction: controlAction, ControlBackendRevision: backendRevision, ControlCommitted: controlCommitted, ControlRetireRun: controlRetireRun}, true, nil
 		}
 		return nil, false, err
 	}
@@ -271,7 +279,7 @@ func (a *KubernetesAdapter) observeOnce(ctx context.Context, reader Reader, bund
 	if a != nil && a.now != nil {
 		now = a.now
 	}
-	snapshot := &Snapshot{ObservedGeneration: bundle.Generation, WorkerRegistrationRequired: bundleUsesWorkerBootstrap(bundle), ObservedAt: now().UTC(), ControlRequestID: requestID, ControlIdempotencyKey: idempotencyKey, ControlAction: controlAction, ControlBackendRevision: backendRevision, ControlCommitted: controlCommitted}
+	snapshot := &Snapshot{ObservedGeneration: bundle.Generation, WorkerRegistrationRequired: bundleUsesWorkerBootstrap(bundle), ObservedAt: now().UTC(), ControlRequestID: requestID, ControlIdempotencyKey: idempotencyKey, ControlAction: controlAction, ControlBackendRevision: backendRevision, ControlCommitted: controlCommitted, ControlRetireRun: controlRetireRun}
 	var workload struct {
 		Metadata struct {
 			Generation uint64 `json:"generation"`

@@ -88,6 +88,16 @@ func (s *Server) appendDecision(jobID string, decision *tgsrlv1.DecisionRecord) 
 	if s.persistenceErr != nil {
 		return s.persistenceErr
 	}
+	for _, entry := range s.decisions {
+		if entry.decision.GetSequence() != 0 && entry.decision.GetDecisionId() == decision.GetDecisionId() {
+			// Deterministic terminal fallbacks may be produced by more than one
+			// queued tick before the key is forgotten. Treat an identical audit
+			// identity as an idempotent append instead of persisting duplicate IDs.
+			if sameRecoveredFailureDecision(entry.decision, decision) {
+				return s.checkpointLocked()
+			}
+		}
+	}
 
 	nextSequence := s.sequence + 1
 	committed := cloneDecision(decision)

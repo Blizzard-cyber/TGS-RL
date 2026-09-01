@@ -146,6 +146,9 @@ func TestReconcileStopsReleasedWorkloadAndCreatesReplacement(t *testing.T) {
 	if err != nil || !terminal || !victimSnapshot.JobDeleted {
 		t.Fatalf("victim readback = (%+v, terminal=%v, err=%v)", victimSnapshot, terminal, err)
 	}
+	if victimSnapshot.ControlRetireRun {
+		t.Fatal("scheduler release was mislabeled as whole-run retirement")
+	}
 }
 
 func TestReconcileValidatesReplacementBeforeStoppingVictim(t *testing.T) {

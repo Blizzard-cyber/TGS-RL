@@ -16,6 +16,7 @@ const (
 	controlActionAnnotation      = "tgsrl.io/control-action"
 	controlRevisionAnnotation    = "tgsrl.io/control-backend-revision"
 	controlCommittedAnnotation   = "tgsrl.io/control-committed"
+	controlRetireRunAnnotation   = "tgsrl.io/control-retire-run"
 )
 
 // ControlMetadata is persisted on each materialized JobRunBundle so the
@@ -27,10 +28,12 @@ type ControlMetadata struct {
 	Action          tgsrlv1.JobCommandType
 	BackendRevision uint64
 	Committed       bool
+	RetireRun       bool
 }
 
 func metadataForControl(request ControlRequest, revision uint64, committed bool) ControlMetadata {
-	return ControlMetadata{RequestID: request.RequestID, IdempotencyKey: request.IdempotencyKey, Action: request.Action, BackendRevision: revision, Committed: committed}
+	retireRun := !request.GlobalTargetLookup && (request.Action == tgsrlv1.JobCommandType_JOB_COMMAND_TYPE_STOP || request.Action == tgsrlv1.JobCommandType_JOB_COMMAND_TYPE_TERMINATE)
+	return ControlMetadata{RequestID: request.RequestID, IdempotencyKey: request.IdempotencyKey, Action: request.Action, BackendRevision: revision, Committed: committed, RetireRun: retireRun}
 }
 
 func (b *KubernetesBackend) writeControlMetadata(ctx context.Context, bundleKeys []string, metadata ControlMetadata) error {
@@ -93,6 +96,7 @@ func encodeControlMetadata(object ClientObject, metadata ControlMetadata) (Clien
 	annotations[controlActionAnnotation] = metadata.Action.String()
 	annotations[controlRevisionAnnotation] = strconv.FormatUint(metadata.BackendRevision, 10)
 	annotations[controlCommittedAnnotation] = strconv.FormatBool(metadata.Committed)
+	annotations[controlRetireRunAnnotation] = strconv.FormatBool(metadata.RetireRun)
 	encoded, err := json.Marshal(payload)
 	if err != nil {
 		return ClientObject{}, err
@@ -127,7 +131,14 @@ func DecodeControlMetadata(payload []byte) (ControlMetadata, bool, error) {
 	if err != nil {
 		return ControlMetadata{}, false, fmt.Errorf("invalid control committed flag: %w", err)
 	}
-	return ControlMetadata{RequestID: values[controlRequestIDAnnotation], IdempotencyKey: values[controlIdempotencyAnnotation], Action: tgsrlv1.JobCommandType(actionValue), BackendRevision: revision, Committed: committed}, true, nil
+	retireRun := false
+	if raw := strings.TrimSpace(values[controlRetireRunAnnotation]); raw != "" {
+		retireRun, err = strconv.ParseBool(raw)
+		if err != nil {
+			return ControlMetadata{}, false, fmt.Errorf("invalid control retire-run flag: %w", err)
+		}
+	}
+	return ControlMetadata{RequestID: values[controlRequestIDAnnotation], IdempotencyKey: values[controlIdempotencyAnnotation], Action: tgsrlv1.JobCommandType(actionValue), BackendRevision: revision, Committed: committed, RetireRun: retireRun}, true, nil
 }
 
 func (b *KubernetesBackend) controlMetadataForBundle(ctx context.Context, key string) (ControlMetadata, bool, error) {
@@ -189,7 +200,8 @@ func shouldPreferLedgerControlMetadata(objectMetadata ControlMetadata, objectFou
 func sameControlIdentity(left, right ControlMetadata) bool {
 	return left.RequestID == right.RequestID &&
 		left.IdempotencyKey == right.IdempotencyKey &&
-		left.Action == right.Action
+		left.Action == right.Action &&
+		left.RetireRun == right.RetireRun
 }
 
 func (b *KubernetesBackend) controlMetadataFromLedger(bundleKey string) (ControlMetadata, bool, error) {

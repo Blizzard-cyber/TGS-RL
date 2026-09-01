@@ -7,6 +7,7 @@ import (
 	"time"
 
 	tgsrlv1 "github.com/Blizzard-cyber/TGS-RL/gen/go/tgsrl/v1"
+	"github.com/Blizzard-cyber/TGS-RL/internal/protocolmeta"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
@@ -175,7 +176,7 @@ func (s *Store) ReplaceProjectedSandboxes(sandboxes []*tgsrlv1.Sandbox) (bool, e
 			}
 			continue
 		}
-		next := cloneProjectedSandbox(sandbox)
+		next := mergeDurableSandboxDisposition(current, sandbox)
 		if confirmedAt.IsZero() {
 			confirmedAt = s.clock.Now()
 		}
@@ -223,16 +224,17 @@ func (s *Store) ApplyProviderSandboxEvent(event *tgsrlv1.SandboxEvent) (*tgsrlv1
 	}
 
 	next := &tgsrlv1.Sandbox{
-		SandboxId:  event.GetSandboxId(),
-		RunId:      event.GetRunId(),
-		JobId:      event.GetJobId(),
-		TraceId:    event.GetTraceId(),
-		State:      event.GetState(),
-		Generation: event.GetGeneration(),
-		Binding:    cloneProjectedBinding(event.GetBinding()),
-		SafePoint:  event.GetSafePoint(),
-		ObservedAt: cloneTimestamp(event.GetOccurredAt()),
-		DataKind:   event.GetDataKind(),
+		SandboxId:       event.GetSandboxId(),
+		RunId:           event.GetRunId(),
+		JobId:           event.GetJobId(),
+		TraceId:         event.GetTraceId(),
+		State:           event.GetState(),
+		Generation:      event.GetGeneration(),
+		Binding:         cloneProjectedBinding(event.GetBinding()),
+		SafePoint:       event.GetSafePoint(),
+		ObservedAt:      cloneTimestamp(event.GetOccurredAt()),
+		DataKind:        event.GetDataKind(),
+		SemanticContext: cloneSemanticEnvelope(event.GetSemanticContext()),
 	}
 	if current != nil {
 		merged := cloneProjectedSandbox(current)
@@ -264,6 +266,11 @@ func (s *Store) ApplyProviderSandboxEvent(event *tgsrlv1.SandboxEvent) (*tgsrlv1
 		}
 		merged.ObservedAt = cloneTimestamp(next.GetObservedAt())
 		merged.DataKind = next.GetDataKind()
+		if next.GetSemanticContext() != nil {
+			merged.SemanticContext = cloneSemanticEnvelope(next.GetSemanticContext())
+		} else if next.GetGeneration() != current.GetGeneration() {
+			merged.SemanticContext = nil
+		}
 		next = merged
 	}
 	if current == nil {
@@ -279,13 +286,268 @@ func (s *Store) ApplyProviderSandboxEvent(event *tgsrlv1.SandboxEvent) (*tgsrlv1
 	}
 	stampSandboxConfirmation(current, next, s.clock.Now())
 
-	if proto.Equal(current, next) {
+	working := cloneSnapshot(s.snapshot)
+	retired := retireRunFromTerminalEventLocked(s.intents, s.providerProjection.sandboxes, working, event)
+	if proto.Equal(current, next) && !retired {
 		return cloneProjectedSandbox(current), false, nil
 	}
 	s.providerProjection.sandboxes[event.GetSandboxId()] = cloneProjectedSandbox(next)
-	working := cloneSnapshot(s.snapshot)
 	s.commitSnapshotLocked(working)
 	return cloneProjectedSandbox(next), true, nil
+}
+
+func retireRunFromTerminalEventLocked(intents map[intentKey]*tgsrlv1.SchedulingIntent, observed map[string]*tgsrlv1.Sandbox, working *tgsrlv1.ClusterSnapshot, event *tgsrlv1.SandboxEvent) bool {
+	if working == nil || event == nil || !terminalRuntimeState(event.GetState()) ||
+		event.GetRunId() == "" || event.GetSandboxId() == "" || event.GetGeneration() == 0 {
+		return false
+	}
+	matched := false
+	for _, allocation := range working.GetAllocations() {
+		if allocation.GetRunId() == event.GetRunId() && allocationMatchesTerminalEvent(allocation, event) {
+			matched = true
+			break
+		}
+	}
+	if !matched {
+		return false
+	}
+	if protocolmeta.HasRunRetirementDisposition(event.GetSemanticContext()) {
+		if !protocolmeta.RetiresRun(event) || !allRunAllocationsTerminal(working.GetAllocations(), observed, event) {
+			return false
+		}
+	} else if !allRunAllocationsTerminal(working.GetAllocations(), observed, event) {
+		return false
+	}
+	kept := working.Allocations[:0]
+	changed := false
+	for _, allocation := range working.GetAllocations() {
+		if allocation.GetRunId() != event.GetRunId() {
+			kept = append(kept, allocation)
+			continue
+		}
+		for _, deviceID := range allocation.GetDeviceIds() {
+			if device := findDevice(working.GetDevices(), deviceID); device != nil {
+				addResourcesCapped(device.Allocatable, allocation.GetResources(), device.GetCapacity())
+			}
+		}
+		changed = true
+	}
+	working.Allocations = kept
+	for key, intent := range intents {
+		if intent.GetRunId() == event.GetRunId() {
+			delete(intents, key)
+			changed = true
+		}
+	}
+	keptPending := working.PendingUnits[:0]
+	for _, unit := range working.GetPendingUnits() {
+		if unit.GetRunId() == event.GetRunId() {
+			changed = true
+			continue
+		}
+		keptPending = append(keptPending, unit)
+	}
+	working.PendingUnits = keptPending
+	if !changed {
+		return false
+	}
+	return true
+}
+
+func allRunAllocationsTerminal(allocations []*tgsrlv1.Allocation, observed map[string]*tgsrlv1.Sandbox, current *tgsrlv1.SandboxEvent) bool {
+	matched := 0
+	for _, allocation := range allocations {
+		if allocation.GetRunId() != current.GetRunId() {
+			continue
+		}
+		matched++
+		if allocationMatchesTerminalEvent(allocation, current) {
+			continue
+		}
+		sandbox := observed[allocation.GetSandboxId()]
+		if !sandboxMatchesAllocation(allocation, sandbox) || !terminalRuntimeState(sandbox.GetState()) {
+			return false
+		}
+	}
+	return matched > 0
+}
+
+// ReconcileProviderSandboxes repairs the durable allocation ledger against a
+// successfully-read authoritative provider inventory. Terminal sandboxes and
+// expired allocations missing from that inventory no longer hold provider
+// resources. Active intents are requeued; explicitly retired Runs lose their
+// intent and pending work as well.
+func (s *Store) ReconcileProviderSandboxes(sandboxes []*tgsrlv1.Sandbox) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	retiredRuns := make(map[string]struct{})
+	retirementRequestedRuns := make(map[string]struct{})
+	nonRetiredRuns := make(map[string]struct{})
+	live := make(map[string]*tgsrlv1.Sandbox, len(sandboxes))
+	observed := make(map[string]*tgsrlv1.Sandbox, len(s.providerProjection.sandboxes)+len(sandboxes))
+	for sandboxID, sandbox := range s.providerProjection.sandboxes {
+		observed[sandboxID] = sandbox
+	}
+	for _, sandbox := range sandboxes {
+		if sandbox == nil || sandbox.GetSandboxId() == "" {
+			continue
+		}
+		live[sandbox.GetSandboxId()] = sandbox
+		observed[sandbox.GetSandboxId()] = mergeDurableSandboxDisposition(observed[sandbox.GetSandboxId()], sandbox)
+	}
+	// Classify only the final merged view so a newer live observation for a
+	// sandbox overrides its durable pre-restart projection.
+	for _, sandbox := range observed {
+		if terminalRuntimeState(sandbox.GetState()) && sandbox.GetRunId() != "" && protocolmeta.EnvelopeRetiresRun(sandbox.GetSemanticContext()) {
+			retirementRequestedRuns[sandbox.GetRunId()] = struct{}{}
+		} else if terminalRuntimeState(sandbox.GetState()) && sandbox.GetRunId() != "" && protocolmeta.HasRunRetirementDisposition(sandbox.GetSemanticContext()) {
+			nonRetiredRuns[sandbox.GetRunId()] = struct{}{}
+		}
+	}
+	for runID := range runAllocationCounts(s.snapshot.GetAllocations()) {
+		_, retirementRequested := retirementRequestedRuns[runID]
+		_, explicitlyNotRetired := nonRetiredRuns[runID]
+		allTerminal := allRunAllocationsTerminal(s.snapshot.GetAllocations(), observed, &tgsrlv1.SandboxEvent{RunId: runID})
+		if allTerminal && (retirementRequested || !explicitlyNotRetired) {
+			retiredRuns[runID] = struct{}{}
+		}
+	}
+	now := s.clock.Now()
+	working := cloneSnapshot(s.snapshot)
+	kept := working.Allocations[:0]
+	retryCandidates := make([]*tgsrlv1.Allocation, 0)
+	changed := false
+	for _, allocation := range working.GetAllocations() {
+		sandbox := live[allocation.GetSandboxId()]
+		_, retireRun := retiredRuns[allocation.GetRunId()]
+		_, retirementRequested := retirementRequestedRuns[allocation.GetRunId()]
+		if retirementRequested && !retireRun {
+			// A whole-Run lifecycle stop is still converging. Retain every
+			// allocation until all siblings are terminal so the scheduler cannot
+			// replace a unit or reuse capacity while the execution layer drains.
+			kept = append(kept, allocation)
+			continue
+		}
+		providerReleased := sandboxMatchesAllocation(allocation, sandbox) && terminalRuntimeState(sandbox.GetState()) || sandbox == nil && allocationExpired(allocation, now)
+		if !retireRun && !providerReleased {
+			kept = append(kept, allocation)
+			continue
+		}
+		for _, deviceID := range allocation.GetDeviceIds() {
+			if device := findDevice(working.GetDevices(), deviceID); device != nil {
+				addResourcesCapped(device.Allocatable, allocation.GetResources(), device.GetCapacity())
+			}
+		}
+		if !retireRun && !allocationHasExplicitReleaseDisposition(allocation, observed) {
+			retryCandidates = append(retryCandidates, allocation)
+		}
+		changed = true
+	}
+	working.Allocations = kept
+	for _, allocation := range retryCandidates {
+		requeueAllocation(working, s.intents, allocation, now)
+	}
+	for key, intent := range s.intents {
+		if _, retire := retiredRuns[intent.GetRunId()]; retire {
+			delete(s.intents, key)
+			changed = true
+		}
+	}
+	keptPending := working.PendingUnits[:0]
+	for _, unit := range working.GetPendingUnits() {
+		if _, retire := retiredRuns[unit.GetRunId()]; retire {
+			changed = true
+			continue
+		}
+		keptPending = append(keptPending, unit)
+	}
+	working.PendingUnits = keptPending
+	if changed {
+		s.commitSnapshotLocked(working)
+	}
+	return changed
+}
+
+func runAllocationCounts(allocations []*tgsrlv1.Allocation) map[string]int {
+	counts := make(map[string]int)
+	for _, allocation := range allocations {
+		if allocation.GetRunId() != "" {
+			counts[allocation.GetRunId()]++
+		}
+	}
+	return counts
+}
+
+func terminalRuntimeState(value tgsrlv1.RuntimeState) bool {
+	return value == tgsrlv1.RuntimeState_RUNTIME_STATE_TERMINATED || value == tgsrlv1.RuntimeState_RUNTIME_STATE_FAILED
+}
+
+func requeueAllocation(snapshot *tgsrlv1.ClusterSnapshot, intents map[intentKey]*tgsrlv1.SchedulingIntent, allocation *tgsrlv1.Allocation, now time.Time) {
+	if snapshot == nil || allocation == nil {
+		return
+	}
+	intent := intents[intentKey{executionID: allocation.GetExecutionId(), stageID: allocation.GetStageId()}]
+	if intent == nil || intent.GetVersion() != allocation.GetIntentVersion() || !intent.GetValidUntil().AsTime().After(now) {
+		return
+	}
+	current := liveAllocationCount(snapshot.GetAllocations(), intent)
+	for _, unit := range snapshot.GetPendingUnits() {
+		if unit.GetExecutionId() == intent.GetExecutionId() && unit.GetStageId() == intent.GetStageId() && unit.GetIntentVersion() == intent.GetVersion() {
+			current++
+		}
+		if unit.GetPendingUnitId() == allocation.GetPendingUnitId() {
+			return
+		}
+	}
+	if current >= intent.GetUnitCount() {
+		return
+	}
+	priority := intent.GetPriority()
+	if allocation.Priority != nil {
+		priority = allocation.GetPriority()
+	}
+	snapshot.PendingUnits = append(snapshot.PendingUnits, &tgsrlv1.PendingUnit{
+		PendingUnitId: allocation.GetPendingUnitId(), ExecutionId: allocation.GetExecutionId(), StageId: allocation.GetStageId(),
+		IntentVersion: allocation.GetIntentVersion(), JobId: allocation.GetJobId(), RequestedResources: cloneResourceVector(allocation.GetResources()),
+		RequiredCapabilities: cloneCapabilitySet(intent.GetRequiredCapabilities()), Priority: priority, QueuedAt: timestamppb.New(now),
+		RunId: allocation.GetRunId(), TraceId: allocation.GetTraceId(), DataKind: allocation.GetDataKind(), RuntimeUnitId: allocation.GetRuntimeUnitId(),
+	})
+	sortPendingUnits(snapshot.PendingUnits)
+}
+
+func sandboxMatchesAllocation(allocation *tgsrlv1.Allocation, sandbox *tgsrlv1.Sandbox) bool {
+	if allocation == nil || sandbox == nil || allocation.GetGeneration() != sandbox.GetGeneration() {
+		return false
+	}
+	if allocation.GetSandboxId() != "" {
+		return allocation.GetSandboxId() == sandbox.GetSandboxId()
+	}
+	binding := sandbox.GetBinding()
+	return binding != nil && allocation.GetBindingId() != "" && allocation.GetBindingId() == binding.GetBindingId()
+}
+
+func allocationMatchesTerminalEvent(allocation *tgsrlv1.Allocation, event *tgsrlv1.SandboxEvent) bool {
+	if allocation == nil || event == nil || allocation.GetGeneration() != event.GetGeneration() {
+		return false
+	}
+	if allocation.GetSandboxId() != "" || event.GetSandboxId() != "" {
+		return allocation.GetSandboxId() != "" && allocation.GetSandboxId() == event.GetSandboxId()
+	}
+	binding := event.GetBinding()
+	return binding != nil && allocation.GetBindingId() != "" && allocation.GetBindingId() == binding.GetBindingId()
+}
+
+func allocationHasExplicitReleaseDisposition(allocation *tgsrlv1.Allocation, observed map[string]*tgsrlv1.Sandbox) bool {
+	sandbox := observed[allocation.GetSandboxId()]
+	return sandboxMatchesAllocation(allocation, sandbox) && terminalRuntimeState(sandbox.GetState()) &&
+		protocolmeta.HasRunRetirementDisposition(sandbox.GetSemanticContext()) &&
+		!protocolmeta.EnvelopeRetiresRun(sandbox.GetSemanticContext())
+}
+
+func allocationExpired(allocation *tgsrlv1.Allocation, now time.Time) bool {
+	expiresAt := allocation.GetExpiresAt()
+	return expiresAt != nil && expiresAt.CheckValid() == nil && !now.Before(expiresAt.AsTime())
 }
 
 // stampSandboxConfirmation records scheduler receipt time independently from
@@ -565,6 +827,35 @@ func cloneProjectedBinding(binding *tgsrlv1.Binding) *tgsrlv1.Binding {
 		return nil
 	}
 	return proto.Clone(binding).(*tgsrlv1.Binding)
+}
+
+// mergeDurableSandboxDisposition keeps lifecycle causality that a resource
+// provider cannot reconstruct. It is safe only for the same terminal
+// generation; a new generation or a non-terminal readback starts clean.
+func mergeDurableSandboxDisposition(current, incoming *tgsrlv1.Sandbox) *tgsrlv1.Sandbox {
+	next := cloneProjectedSandbox(incoming)
+	if next == nil || current == nil || current.GetGeneration() != next.GetGeneration() ||
+		current.GetRunId() == "" || current.GetRunId() != next.GetRunId() ||
+		!terminalRuntimeState(current.GetState()) || !terminalRuntimeState(next.GetState()) ||
+		protocolmeta.HasRunRetirementDisposition(next.GetSemanticContext()) ||
+		!protocolmeta.HasRunRetirementDisposition(current.GetSemanticContext()) {
+		return next
+	}
+	if next.SemanticContext == nil {
+		next.SemanticContext = &tgsrlv1.SemanticEnvelope{}
+	}
+	if next.SemanticContext.Attributes == nil {
+		next.SemanticContext.Attributes = make(map[string]string)
+	}
+	next.SemanticContext.Attributes[protocolmeta.RunRetirementAttribute] = current.GetSemanticContext().GetAttributes()[protocolmeta.RunRetirementAttribute]
+	return next
+}
+
+func cloneSemanticEnvelope(envelope *tgsrlv1.SemanticEnvelope) *tgsrlv1.SemanticEnvelope {
+	if envelope == nil {
+		return nil
+	}
+	return proto.Clone(envelope).(*tgsrlv1.SemanticEnvelope)
 }
 
 func equalProjectedSandboxes(left, right map[string]*tgsrlv1.Sandbox) bool {

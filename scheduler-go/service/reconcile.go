@@ -200,9 +200,6 @@ func (s *Server) processAcceptedTrigger(ctx context.Context, work *workState, in
 				if s.tickRuntime != nil {
 					s.tickRuntime.Forget(intent.GetExecutionId(), intent.GetStageId())
 				}
-				if err := s.appendTerminalFallback(intent, "INTENT_NOT_FOUND", "accepted intent is no longer available"); err != nil {
-					return true
-				}
 				return true
 			}
 			if latest.GetVersion() != intent.GetVersion() {
@@ -212,10 +209,20 @@ func (s *Server) processAcceptedTrigger(ctx context.Context, work *workState, in
 				return true
 			}
 			if _, valid := s.store.LatestValidIntent(intent.GetExecutionId(), intent.GetStageId()); !valid {
+				// A provider-backed allocation can outlive its plan TTL when the
+				// Operator or Scheduler restarts between materialization and terminal
+				// observation. Reconcile only allocations that the latest authoritative
+				// sandbox projection proves absent or terminal before forgetting the key.
+				s.store.ReconcileProviderSandboxes(s.store.ListProjectedSandboxes())
+				beforeRetirement := s.store.ExportDurableState()
+				s.store.RetireExpiredIntent(intent.GetExecutionId(), intent.GetStageId(), intent.GetVersion())
 				if s.tickRuntime != nil {
 					s.tickRuntime.Forget(intent.GetExecutionId(), intent.GetStageId())
 				}
 				if err := s.appendTerminalFallback(intent, scheduler.FallbackReasonIntentExpired, "intent expired before execution"); err != nil {
+					if restoreErr := s.store.Restore(beforeRetirement); restoreErr != nil {
+						slog.Error("expired intent rollback failed", "error", restoreErr, "job_id", intent.GetJobId(), "run_id", intent.GetRunId(), "trace_id", intent.GetTraceId())
+					}
 					return true
 				}
 				return true

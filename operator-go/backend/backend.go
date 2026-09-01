@@ -87,6 +87,7 @@ type ObservationSnapshot struct {
 	ControlAction              tgsrlv1.JobCommandType
 	ControlBackendRevision     uint64
 	ControlCommitted           bool
+	ControlRetireRun           bool
 }
 
 type ApplyResult struct {

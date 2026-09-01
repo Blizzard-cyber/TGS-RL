@@ -354,6 +354,35 @@ func TestRetryOfSupersededVersionIsStale(t *testing.T) {
 	}
 }
 
+func TestRetireExpiredIntentRemovesPendingWorkAfterAllocationsRelease(t *testing.T) {
+	store, clock := newTestStore(t)
+	intent := testIntent(clock, 1, "expired-retirement")
+	if _, err := store.PublishIntent(intent); err != nil {
+		t.Fatal(err)
+	}
+	clock.Advance(6 * time.Minute)
+	before := store.Revision()
+	if !store.RetireExpiredIntent(intent.GetExecutionId(), intent.GetStageId(), intent.GetVersion()) {
+		t.Fatal("RetireExpiredIntent() = false, want true")
+	}
+	if store.Revision() != before+1 {
+		t.Fatalf("revision = %d, want %d", store.Revision(), before+1)
+	}
+	snapshot, err := store.GetSnapshot(context.Background(), 0, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(snapshot.GetPendingUnits()) != 0 {
+		t.Fatalf("expired pending units remain: %+v", snapshot.GetPendingUnits())
+	}
+	if _, ok := store.LatestIntent(intent.GetExecutionId(), intent.GetStageId()); ok {
+		t.Fatal("expired intent remains")
+	}
+	if store.RetireExpiredIntent(intent.GetExecutionId(), intent.GetStageId(), intent.GetVersion()) {
+		t.Fatal("RetireExpiredIntent() replay changed state")
+	}
+}
+
 func TestHigherVersionRetainsLiveAllocationsAcrossDesiredStateDriftAndScaleIn(t *testing.T) {
 	store, clock := newTestStore(t)
 	version1 := testIntent(clock, 1, "idempotency-1")

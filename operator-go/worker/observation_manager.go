@@ -8,6 +8,7 @@ import (
 	"time"
 
 	tgsrlv1 "github.com/Blizzard-cyber/TGS-RL/gen/go/tgsrl/v1"
+	"github.com/Blizzard-cyber/TGS-RL/internal/protocolmeta"
 	"github.com/Blizzard-cyber/TGS-RL/operator-go/api"
 	runtimepub "github.com/Blizzard-cyber/TGS-RL/operator-go/runtime"
 	"github.com/Blizzard-cyber/TGS-RL/operator-go/statuswatch"
@@ -531,6 +532,9 @@ func (m *ObservationManager) publishSnapshot(ctx context.Context, registration *
 			if registration.PendingControlRequestID != "" {
 				event.Detail = registration.PendingDetail + " (request " + registration.PendingControlRequestID + ")"
 			}
+		}
+		if (projection.State == tgsrlv1.RuntimeState_RUNTIME_STATE_TERMINATED || projection.State == tgsrlv1.RuntimeState_RUNTIME_STATE_FAILED) && snapshot.ControlCommitted {
+			protocolmeta.SetRunRetirement(event, snapshot.ControlRetireRun)
 		}
 		baseEventID := event.GetEventId()
 		if registration.Transition > 1 {

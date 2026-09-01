@@ -6,6 +6,7 @@ import (
 	"time"
 
 	tgsrlv1 "github.com/Blizzard-cyber/TGS-RL/gen/go/tgsrl/v1"
+	"github.com/Blizzard-cyber/TGS-RL/internal/protocolmeta"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
@@ -63,6 +64,314 @@ func TestProviderProjectionPreservesSafePointWhenMutableReadbackOmitsIt(t *testi
 	if !projected.GetSafePoint() || projected.GetShare() != share {
 		t.Fatalf("mutable readback projection = %+v, want preserved safe point and share %v", projected, share)
 	}
+}
+
+func TestTerminalSandboxObservationReleasesAllocationAndRetiresRun(t *testing.T) {
+	store, clock, intent, allocation := terminalAllocationStore(t)
+	event := terminalAllocationEvent(clock, intent, allocation, "run-stop")
+	protocolmeta.SetRunRetirement(event, true)
+
+	_, changed, err := store.ApplyProviderSandboxEvent(event)
+	if err != nil || !changed {
+		t.Fatalf("ApplyProviderSandboxEvent() = changed:%v err:%v, want true nil", changed, err)
+	}
+	snapshot, err := store.GetSnapshot(context.Background(), 0, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(snapshot.GetAllocations()) != 0 || len(snapshot.GetPendingUnits()) != 0 {
+		t.Fatalf("terminal run retained scheduler work: allocations=%+v pending=%+v", snapshot.GetAllocations(), snapshot.GetPendingUnits())
+	}
+	if got := snapshot.GetDevices()[0].GetAllocatable().GetCpuMillis(); got != snapshot.GetDevices()[0].GetCapacity().GetCpuMillis() {
+		t.Fatalf("allocatable CPU after terminal observation = %d, want %d", got, snapshot.GetDevices()[0].GetCapacity().GetCpuMillis())
+	}
+	if _, ok := store.LatestIntent(intent.GetExecutionId(), intent.GetStageId()); ok {
+		t.Fatal("terminal run retained its scheduling intent")
+	}
+	revision := snapshot.GetRevision()
+	if _, changed, err := store.ApplyProviderSandboxEvent(proto.Clone(event).(*tgsrlv1.SandboxEvent)); err != nil || changed || store.Revision() != revision {
+		t.Fatalf("terminal replay = changed:%v revision:%d err:%v, want false %d nil", changed, store.Revision(), err, revision)
+	}
+}
+
+func TestTerminalRunWaitsForEveryAllocationBeforeRetirement(t *testing.T) {
+	store, clock, intent, first := terminalAllocationStore(t)
+	second := proto.Clone(first).(*tgsrlv1.Allocation)
+	second.AllocationId = "allocation-terminal-2"
+	second.PendingUnitId = "pending-terminal-2"
+	second.RuntimeUnitId = "runtime-terminal-2"
+	second.SandboxId = "sandbox-terminal-2"
+	second.BindingId = "binding-terminal-2"
+	snapshot, err := store.GetSnapshot(context.Background(), 0, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.MutateResources(snapshot.GetRevision(), func(working *tgsrlv1.ClusterSnapshot) error {
+		working.Allocations = append(working.Allocations, second)
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	firstEvent := terminalAllocationEvent(clock, intent, first, "run-stop-first")
+	protocolmeta.SetRunRetirement(firstEvent, true)
+	if _, changed, err := store.ApplyProviderSandboxEvent(firstEvent); err != nil || !changed {
+		t.Fatalf("ApplyProviderSandboxEvent(first) = changed:%v err:%v, want true nil", changed, err)
+	}
+	snapshot, err = store.GetSnapshot(context.Background(), 0, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(snapshot.GetAllocations()) != 2 {
+		t.Fatalf("first terminal event released live sibling allocations: %+v", snapshot.GetAllocations())
+	}
+	if _, ok := store.LatestIntent(intent.GetExecutionId(), intent.GetStageId()); !ok {
+		t.Fatal("first terminal event retired the run before all allocations stopped")
+	}
+
+	secondEvent := terminalAllocationEvent(clock, intent, second, "run-stop-second")
+	protocolmeta.SetRunRetirement(secondEvent, true)
+	if _, changed, err := store.ApplyProviderSandboxEvent(secondEvent); err != nil || !changed {
+		t.Fatalf("ApplyProviderSandboxEvent(second) = changed:%v err:%v, want true nil", changed, err)
+	}
+	snapshot, err = store.GetSnapshot(context.Background(), 0, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(snapshot.GetAllocations()) != 0 {
+		t.Fatalf("fully terminal run retained allocations: %+v", snapshot.GetAllocations())
+	}
+	if _, ok := store.LatestIntent(intent.GetExecutionId(), intent.GetStageId()); ok {
+		t.Fatal("fully terminal run retained its intent")
+	}
+}
+
+func TestTerminalAllocationReleaseDoesNotRetireRunWithoutAuthority(t *testing.T) {
+	store, clock, intent, allocation := terminalAllocationStore(t)
+	event := terminalAllocationEvent(clock, intent, allocation, "scheduler-scale-in")
+	protocolmeta.SetRunRetirement(event, false)
+
+	if _, changed, err := store.ApplyProviderSandboxEvent(event); err != nil || !changed {
+		t.Fatalf("ApplyProviderSandboxEvent() = changed:%v err:%v, want true nil", changed, err)
+	}
+	if _, ok := store.LatestIntent(intent.GetExecutionId(), intent.GetStageId()); !ok {
+		t.Fatal("single allocation release retired the complete run intent")
+	}
+}
+
+func TestNewSandboxGenerationClearsTerminalRetirementDisposition(t *testing.T) {
+	store, clock, intent, allocation := terminalAllocationStore(t)
+	event := terminalAllocationEvent(clock, intent, allocation, "scheduler-scale-in")
+	protocolmeta.SetRunRetirement(event, false)
+	if _, changed, err := store.ApplyProviderSandboxEvent(event); err != nil || !changed {
+		t.Fatalf("ApplyProviderSandboxEvent(terminal) = changed:%v err:%v, want true nil", changed, err)
+	}
+	clock.Advance(time.Second)
+	projected, changed, err := store.ApplyProviderSandboxEvent(&tgsrlv1.SandboxEvent{
+		EventId: "replacement-generation", SandboxId: allocation.GetSandboxId(), RunId: intent.GetRunId(),
+		Generation: allocation.GetGeneration() + 1, ProviderRevision: event.GetProviderRevision() + 1,
+		State: tgsrlv1.RuntimeState_RUNTIME_STATE_RUNNING, OccurredAt: timestamppb.New(clock.Now()),
+	})
+	if err != nil || !changed {
+		t.Fatalf("ApplyProviderSandboxEvent(replacement) = changed:%v err:%v, want true nil", changed, err)
+	}
+	if protocolmeta.HasRunRetirementDisposition(projected.GetSemanticContext()) {
+		t.Fatalf("replacement generation inherited terminal disposition: %+v", projected.GetSemanticContext())
+	}
+}
+
+func TestReconcileProviderSandboxesRepairsLegacyExpiredTerminalAllocation(t *testing.T) {
+	source, clock, intent, allocation := terminalAllocationStore(t)
+	clock.Advance(6 * time.Minute)
+	durable := source.ExportDurableState()
+	durable.ProjectedSandboxes = []*tgsrlv1.Sandbox{{
+		SandboxId: allocation.GetSandboxId(), RunId: intent.GetRunId(), Generation: allocation.GetGeneration(),
+		State: tgsrlv1.RuntimeState_RUNTIME_STATE_TERMINATED, Binding: &tgsrlv1.Binding{
+			BindingId: allocation.GetBindingId(), SandboxId: allocation.GetSandboxId(), Generation: allocation.GetGeneration(),
+		}, ObservedAt: timestamppb.New(clock.Now()),
+	}}
+	store, err := NewStore(nil, WithClock(clock))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Restore(durable); err != nil {
+		t.Fatal(err)
+	}
+	if !store.ReconcileProviderSandboxes(nil) {
+		t.Fatal("ReconcileProviderSandboxes() = false, want legacy terminal repair")
+	}
+	snapshot, err := store.GetSnapshot(context.Background(), 0, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(snapshot.GetAllocations()) != 0 {
+		t.Fatalf("legacy terminal allocation remains: %+v", snapshot.GetAllocations())
+	}
+	if _, ok := store.LatestIntent(intent.GetExecutionId(), intent.GetStageId()); ok {
+		t.Fatal("legacy terminal run retained its scheduling intent")
+	}
+	if len(snapshot.GetPendingUnits()) != 0 {
+		t.Fatalf("expired legacy terminal allocation was requeued: %+v", snapshot.GetPendingUnits())
+	}
+}
+
+func TestReconcileProviderSandboxesKeepsUnexpiredMissingSandboxFailClosed(t *testing.T) {
+	store, _, intent, allocation := terminalAllocationStore(t)
+	if store.ReconcileProviderSandboxes(nil) {
+		t.Fatal("ReconcileProviderSandboxes() changed unexpired allocation")
+	}
+	snapshot, err := store.GetSnapshot(context.Background(), 0, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(snapshot.GetAllocations()) != 1 || snapshot.GetAllocations()[0].GetAllocationId() != allocation.GetAllocationId() {
+		t.Fatalf("unexpired allocation was not preserved: %+v", snapshot.GetAllocations())
+	}
+	if _, ok := store.LatestIntent(intent.GetExecutionId(), intent.GetStageId()); !ok {
+		t.Fatal("unexpired intent was not preserved")
+	}
+	if len(snapshot.GetPendingUnits()) != 0 {
+		t.Fatalf("unexpired allocation was requeued: %+v", snapshot.GetPendingUnits())
+	}
+}
+
+func TestReconcileProviderSandboxesPreservesDurableSchedulerReleaseDisposition(t *testing.T) {
+	source, clock, intent, allocation := terminalAllocationStore(t)
+	event := terminalAllocationEvent(clock, intent, allocation, "scheduler-scale-in")
+	protocolmeta.SetRunRetirement(event, false)
+	if _, changed, err := source.ApplyProviderSandboxEvent(event); err != nil || !changed {
+		t.Fatalf("ApplyProviderSandboxEvent() = changed:%v err:%v, want true nil", changed, err)
+	}
+	store, err := NewStore(nil, WithClock(clock))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Restore(source.ExportDurableState()); err != nil {
+		t.Fatal(err)
+	}
+	live := proto.Clone(source.ExportDurableState().ProjectedSandboxes[0]).(*tgsrlv1.Sandbox)
+	live.SemanticContext = nil
+	if !store.ReconcileProviderSandboxes([]*tgsrlv1.Sandbox{live}) {
+		t.Fatal("ReconcileProviderSandboxes() = false, want terminal allocation repair")
+	}
+	snapshot, err := store.GetSnapshot(context.Background(), 0, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(snapshot.GetAllocations()) != 0 {
+		t.Fatalf("terminal Scheduler release retained allocation: %+v", snapshot.GetAllocations())
+	}
+	if len(snapshot.GetPendingUnits()) != 0 {
+		t.Fatalf("terminal Scheduler release was requeued: %+v", snapshot.GetPendingUnits())
+	}
+	if _, ok := store.LatestIntent(intent.GetExecutionId(), intent.GetStageId()); !ok {
+		t.Fatal("durable Scheduler release disposition retired the complete run")
+	}
+}
+
+func TestReconcileProviderSandboxesDoesNotRequeuePartiallyObservedRunRetirement(t *testing.T) {
+	source, clock, intent, first := terminalAllocationStore(t)
+	second := proto.Clone(first).(*tgsrlv1.Allocation)
+	second.AllocationId = "allocation-terminal-2"
+	second.PendingUnitId = "pending-terminal-2"
+	second.RuntimeUnitId = "runtime-terminal-2"
+	second.SandboxId = "sandbox-terminal-2"
+	second.BindingId = "binding-terminal-2"
+	snapshot, err := source.GetSnapshot(context.Background(), 0, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := source.MutateResources(snapshot.GetRevision(), func(working *tgsrlv1.ClusterSnapshot) error {
+		working.Allocations = append(working.Allocations, second)
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	firstEvent := terminalAllocationEvent(clock, intent, first, "run-stop-first")
+	protocolmeta.SetRunRetirement(firstEvent, true)
+	if _, changed, err := source.ApplyProviderSandboxEvent(firstEvent); err != nil || !changed {
+		t.Fatalf("ApplyProviderSandboxEvent() = changed:%v err:%v, want true nil", changed, err)
+	}
+	store, err := NewStore(nil, WithClock(clock))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Restore(source.ExportDurableState()); err != nil {
+		t.Fatal(err)
+	}
+	liveFirst := proto.Clone(source.ExportDurableState().ProjectedSandboxes[0]).(*tgsrlv1.Sandbox)
+	liveFirst.SemanticContext = nil
+	liveSecond := &tgsrlv1.Sandbox{
+		SandboxId: second.GetSandboxId(), RunId: intent.GetRunId(), Generation: second.GetGeneration(),
+		State: tgsrlv1.RuntimeState_RUNTIME_STATE_RUNNING, ObservedAt: timestamppb.New(clock.Now()),
+	}
+	if store.ReconcileProviderSandboxes([]*tgsrlv1.Sandbox{liveFirst, liveSecond}) {
+		t.Fatal("ReconcileProviderSandboxes() changed state before whole-run retirement converged")
+	}
+	snapshot, err = store.GetSnapshot(context.Background(), 0, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(snapshot.GetAllocations()) != 2 {
+		t.Fatalf("partial retirement released allocations before every sibling stopped: %+v", snapshot.GetAllocations())
+	}
+	if len(snapshot.GetPendingUnits()) != 0 {
+		t.Fatalf("partial whole-run retirement requeued stopped allocation: %+v", snapshot.GetPendingUnits())
+	}
+	if _, ok := store.LatestIntent(intent.GetExecutionId(), intent.GetStageId()); !ok {
+		t.Fatal("partial retirement removed intent before live sibling stopped")
+	}
+}
+
+func terminalAllocationEvent(clock Clock, intent *tgsrlv1.SchedulingIntent, allocation *tgsrlv1.Allocation, id string) *tgsrlv1.SandboxEvent {
+	return &tgsrlv1.SandboxEvent{
+		EventId: id, SandboxId: allocation.GetSandboxId(), RunId: intent.GetRunId(),
+		Generation: allocation.GetGeneration(), ProviderRevision: 10,
+		State: tgsrlv1.RuntimeState_RUNTIME_STATE_TERMINATED, Binding: &tgsrlv1.Binding{
+			BindingId: allocation.GetBindingId(), SandboxId: allocation.GetSandboxId(), Generation: allocation.GetGeneration(),
+		}, OccurredAt: timestamppb.New(clock.Now()),
+	}
+}
+
+func terminalAllocationStore(t *testing.T) (*Store, *fakeClock, *tgsrlv1.SchedulingIntent, *tgsrlv1.Allocation) {
+	t.Helper()
+	store, clock := newTestStore(t)
+	intent := testIntent(clock, 1, "terminal-intent")
+	intent.RunId = "run-terminal"
+	intent.TraceId = "trace-terminal"
+	intent.UnitCount = 1
+	if _, err := store.PublishIntent(intent); err != nil {
+		t.Fatal(err)
+	}
+	snapshot, _ := store.GetSnapshot(context.Background(), 0, true)
+	if _, err := store.MutateResources(snapshot.GetRevision(), func(working *tgsrlv1.ClusterSnapshot) error {
+		working.Devices = []*tgsrlv1.Device{{
+			DeviceId: "device-terminal", Health: tgsrlv1.DeviceHealth_DEVICE_HEALTH_READY,
+			Capacity: &tgsrlv1.ResourceVector{CpuMillis: 1000, MemoryBytes: 4096}, Allocatable: &tgsrlv1.ResourceVector{CpuMillis: 1000, MemoryBytes: 4096},
+		}}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	snapshot, _ = store.GetSnapshot(context.Background(), 0, true)
+	binding := &tgsrlv1.Binding{
+		BindingId: "binding-terminal", PendingUnitId: snapshot.GetPendingUnits()[0].GetPendingUnitId(),
+		RuntimeUnitId: "runtime-terminal", SandboxId: "sandbox-terminal", Generation: 1,
+		DeviceIds: []string{"device-terminal"}, Resources: cloneResourceVector(intent.GetResourcesPerUnit()),
+	}
+	plan := &tgsrlv1.PlacementPlan{
+		PlanId: "plan-terminal", DecisionId: "decision-terminal", ExecutionId: intent.GetExecutionId(),
+		StageId: intent.GetStageId(), IntentVersion: intent.GetVersion(), SnapshotRevision: snapshot.GetRevision(),
+		RunId: intent.GetRunId(), TraceId: intent.GetTraceId(), ExpiresAt: cloneTimestamp(intent.GetValidUntil()), Bindings: []*tgsrlv1.Binding{binding},
+	}
+	if _, err := store.ReservePlan(plan); err != nil {
+		t.Fatal(err)
+	}
+	active, err := store.FinalizePlan(plan, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return store, clock, intent, proto.Clone(active.GetAllocations()[0]).(*tgsrlv1.Allocation)
 }
 
 func TestBootstrapProviderSnapshotDeepClonesComponentVersions(t *testing.T) {

@@ -19,7 +19,10 @@ import (
 	"github.com/Blizzard-cyber/TGS-RL/operator-go/cursor"
 	"github.com/Blizzard-cyber/TGS-RL/operator-go/statuswatch"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
 func discoveredWorkerBackend() *backend.FakeBackend {
@@ -467,6 +470,184 @@ func TestWorkerDoesNotOverwriteUnfinishedDelivery(t *testing.T) {
 	}
 }
 
+func TestWorkerSkipsUnrecoverableDeliveryAndProcessesNewerDecision(t *testing.T) {
+	dir := t.TempDir()
+	ledger := NewFileDeliveryRepository(filepath.Join(dir, "delivery.json"))
+	repo := cursor.NewFileRepository(filepath.Join(dir, "cursor.json"))
+	stale := decisionForSequence(8)
+	stale.RunId = "run-gone"
+	stale.SelectedPlan.RunId = stale.RunId
+	stale.SelectedPlan.ExecutionId = stale.RunId
+	stale.SelectedPlan.ExpiresAt = timestamppb.New(time.Now().Add(-time.Minute))
+	if err := ledger.Save(DeliveryRecord{
+		DecisionID: stale.GetDecisionId(),
+		Sequence:   stale.GetSequence(),
+		Cursor:     stale.GetCursor(),
+		Phase:      "reconciling",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	current := successfulDecision()
+	source := &sliceDecisionSource{decisions: []*tgsrlv1.DecisionRecord{stale, current}}
+	reconciler := &recordingReconciler{result: &ReconcileResult{
+		Bundles:    []*api.Bundle{bundleForDecision(current)},
+		Idempotent: true,
+	}}
+	w, err := New(Config{
+		Source:     source,
+		JobRuns:    fakeJobRunClient{run: testJobRun()},
+		Manifests:  missingRunManifestClient{missingRunID: stale.GetRunId(), manifest: testManifest()},
+		Reconciler: reconciler,
+		Observer:   &scriptedObserver{},
+		Publisher:  &fakePublisher{},
+		Cursors:    repo,
+		Deliveries: ledger,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := w.RunOnce(context.Background()); err != nil {
+		t.Fatalf("RunOnce() error = %v", err)
+	}
+	if reconciler.calls != 1 {
+		t.Fatalf("reconcile calls = %d, want only the current decision", reconciler.calls)
+	}
+	if len(source.afterSequenceSeen) != 1 || source.afterSequenceSeen[0] != stale.GetSequence()-1 {
+		t.Fatalf("watch cursor history = %v, want [%d]", source.afterSequenceSeen, stale.GetSequence()-1)
+	}
+	saved, err := repo.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if saved.DecisionID != current.GetDecisionId() || saved.Sequence != current.GetSequence() {
+		t.Fatalf("cursor = %+v, want current decision", saved)
+	}
+	pending, err := ledger.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pending.DecisionID != "" || pending.Sequence != 0 {
+		t.Fatalf("delivery ledger was not cleared: %+v", pending)
+	}
+}
+
+func TestWorkerKeepsUnfinishedDeliveryOnTemporaryDependencyFailure(t *testing.T) {
+	dir := t.TempDir()
+	ledger := NewFileDeliveryRepository(filepath.Join(dir, "delivery.json"))
+	decision := successfulDecision()
+	unfinished := DeliveryRecord{
+		DecisionID: decision.GetDecisionId(),
+		Sequence:   decision.GetSequence(),
+		Cursor:     decision.GetCursor(),
+		Phase:      "reconciling",
+	}
+	if err := ledger.Save(unfinished); err != nil {
+		t.Fatal(err)
+	}
+	w, err := New(Config{
+		Source:     &sliceDecisionSource{decisions: []*tgsrlv1.DecisionRecord{decision}},
+		JobRuns:    fakeJobRunClient{run: testJobRun()},
+		Manifests:  errorManifestClient{err: status.Error(codes.Unavailable, "runtime unavailable")},
+		Reconciler: &recordingReconciler{},
+		Observer:   &scriptedObserver{},
+		Publisher:  &fakePublisher{},
+		Cursors:    cursor.NewFileRepository(filepath.Join(dir, "cursor.json")),
+		Deliveries: ledger,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := w.RunOnce(context.Background()); status.Code(err) != codes.Unavailable {
+		t.Fatalf("RunOnce() error = %v, want unavailable", err)
+	}
+	pending, err := ledger.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pending.DecisionID != unfinished.DecisionID || pending.Sequence != unfinished.Sequence {
+		t.Fatalf("temporary failure discarded unfinished delivery: %+v", pending)
+	}
+}
+
+func TestWorkerKeepsUnexpiredDeliveryWhenDependencyIsNotFound(t *testing.T) {
+	dir := t.TempDir()
+	ledger := NewFileDeliveryRepository(filepath.Join(dir, "delivery.json"))
+	decision := successfulDecision()
+	decision.SelectedPlan.ExpiresAt = timestamppb.New(time.Now().Add(time.Minute))
+	unfinished := DeliveryRecord{
+		DecisionID: decision.GetDecisionId(),
+		Sequence:   decision.GetSequence(),
+		Cursor:     decision.GetCursor(),
+		Phase:      "reconciling",
+	}
+	if err := ledger.Save(unfinished); err != nil {
+		t.Fatal(err)
+	}
+	w, err := New(Config{
+		Source:     &sliceDecisionSource{decisions: []*tgsrlv1.DecisionRecord{decision}},
+		JobRuns:    fakeJobRunClient{run: testJobRun()},
+		Manifests:  errorManifestClient{err: status.Error(codes.NotFound, "runtime manifest not visible yet")},
+		Reconciler: &recordingReconciler{},
+		Observer:   &scriptedObserver{},
+		Publisher:  &fakePublisher{},
+		Cursors:    cursor.NewFileRepository(filepath.Join(dir, "cursor.json")),
+		Deliveries: ledger,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := w.RunOnce(context.Background()); status.Code(err) != codes.NotFound {
+		t.Fatalf("RunOnce() error = %v, want not found", err)
+	}
+	pending, err := ledger.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pending.DecisionID != unfinished.DecisionID || pending.Sequence != unfinished.Sequence {
+		t.Fatalf("unexpired dependency miss discarded unfinished delivery: %+v", pending)
+	}
+}
+
+func TestWorkerSkipsExpiredDeliveryWhenJobRunIsGone(t *testing.T) {
+	dir := t.TempDir()
+	ledger := NewFileDeliveryRepository(filepath.Join(dir, "delivery.json"))
+	repo := cursor.NewFileRepository(filepath.Join(dir, "cursor.json"))
+	decision := successfulDecision()
+	decision.SelectedPlan.ExpiresAt = timestamppb.New(time.Now().Add(-time.Minute))
+	if err := ledger.Save(DeliveryRecord{
+		DecisionID: decision.GetDecisionId(),
+		Sequence:   decision.GetSequence(),
+		Cursor:     decision.GetCursor(),
+		Phase:      "reconciling",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	w, err := New(Config{
+		Source:     &sliceDecisionSource{decisions: []*tgsrlv1.DecisionRecord{decision}},
+		JobRuns:    errorJobRunClient{err: status.Error(codes.NotFound, "job run no longer exists")},
+		Manifests:  fakeManifestClient{manifest: testManifest()},
+		Reconciler: &recordingReconciler{},
+		Observer:   &scriptedObserver{},
+		Publisher:  &fakePublisher{},
+		Cursors:    repo,
+		Deliveries: ledger,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := w.RunOnce(context.Background()); err != nil {
+		t.Fatalf("RunOnce() error = %v", err)
+	}
+	saved, err := repo.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if saved.DecisionID != decision.GetDecisionId() || saved.Sequence != decision.GetSequence() {
+		t.Fatalf("cursor = %+v, want expired orphan checkpoint", saved)
+	}
+}
+
 func TestWorkerRegistersIdempotentReconcileBeforeAdvancingCursor(t *testing.T) {
 	dir := t.TempDir()
 	ledger := NewFileDeliveryRepository(filepath.Join(dir, "delivery.json"))
@@ -507,6 +688,16 @@ func TestWorkerRegistersIdempotentReconcileBeforeAdvancingCursor(t *testing.T) {
 type staticReconciler struct {
 	result *ReconcileResult
 	err    error
+}
+
+type recordingReconciler struct {
+	result *ReconcileResult
+	calls  int
+}
+
+func (r *recordingReconciler) Reconcile(context.Context, compiler.CompileInput) (*ReconcileResult, error) {
+	r.calls++
+	return r.result, nil
 }
 
 func (r staticReconciler) Reconcile(context.Context, compiler.CompileInput) (*ReconcileResult, error) {
@@ -665,6 +856,14 @@ type fakeJobRunClient struct {
 	run *tgsrlv1.JobRun
 }
 
+type errorJobRunClient struct {
+	err error
+}
+
+func (c errorJobRunClient) GetJobRun(context.Context, *tgsrlv1.GetJobRunRequest, ...grpc.CallOption) (*tgsrlv1.GetJobRunResponse, error) {
+	return nil, c.err
+}
+
 func (c fakeJobRunClient) GetJobRun(_ context.Context, in *tgsrlv1.GetJobRunRequest, _ ...grpc.CallOption) (*tgsrlv1.GetJobRunResponse, error) {
 	if in.GetJobId() != "job-1" || in.GetRunId() != "run-1" {
 		return nil, io.ErrUnexpectedEOF
@@ -674,6 +873,29 @@ func (c fakeJobRunClient) GetJobRun(_ context.Context, in *tgsrlv1.GetJobRunRequ
 
 type fakeManifestClient struct {
 	manifest *tgsrlv1.RuntimeManifest
+}
+
+type missingRunManifestClient struct {
+	missingRunID string
+	manifest     *tgsrlv1.RuntimeManifest
+}
+
+type errorManifestClient struct {
+	err error
+}
+
+func (c errorManifestClient) GetRuntimeManifest(context.Context, *tgsrlv1.GetRuntimeManifestRequest, ...grpc.CallOption) (*tgsrlv1.GetRuntimeManifestResponse, error) {
+	return nil, c.err
+}
+
+func (c missingRunManifestClient) GetRuntimeManifest(_ context.Context, in *tgsrlv1.GetRuntimeManifestRequest, _ ...grpc.CallOption) (*tgsrlv1.GetRuntimeManifestResponse, error) {
+	if in.GetRunId() == c.missingRunID {
+		return nil, status.Error(codes.NotFound, "runtime manifest no longer exists")
+	}
+	if in.GetRunId() != c.manifest.GetRunId() {
+		return nil, io.ErrUnexpectedEOF
+	}
+	return &tgsrlv1.GetRuntimeManifestResponse{Manifest: c.manifest}, nil
 }
 
 func (c fakeManifestClient) GetRuntimeManifest(_ context.Context, in *tgsrlv1.GetRuntimeManifestRequest, _ ...grpc.CallOption) (*tgsrlv1.GetRuntimeManifestResponse, error) {

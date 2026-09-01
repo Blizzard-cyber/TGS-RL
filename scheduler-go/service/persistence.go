@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"strings"
 
 	tgsrlv1 "github.com/Blizzard-cyber/TGS-RL/gen/go/tgsrl/v1"
 	"github.com/Blizzard-cyber/TGS-RL/scheduler-go/persistence"
@@ -13,6 +14,7 @@ import (
 	"github.com/Blizzard-cyber/TGS-RL/scheduler-go/provider"
 	"github.com/Blizzard-cyber/TGS-RL/scheduler-go/state"
 	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
 // DurableRepository is the atomic checkpoint boundary used for every critical
@@ -83,22 +85,43 @@ func (s *Server) RestoreDecisions(decisions []*tgsrlv1.DecisionRecord, cursor ui
 	}
 	committed := make([]*tgsrlv1.DecisionRecord, 0, len(decisions))
 	pending := make([]*tgsrlv1.DecisionRecord, 0, len(decisions))
-	seen := make(map[string]struct{}, len(decisions))
+	committedByID := make(map[string]int, len(decisions))
+	pendingByID := make(map[string]*tgsrlv1.DecisionRecord, len(decisions))
 	for _, decision := range decisions {
 		if decision == nil || decision.GetDecisionId() == "" {
 			return fmt.Errorf("service: recovered decision identity is invalid")
 		}
-		if _, duplicate := seen[decision.GetDecisionId()]; duplicate {
-			return fmt.Errorf("service: duplicate recovered decision %q", decision.GetDecisionId())
-		}
-		seen[decision.GetDecisionId()] = struct{}{}
 		if decision.GetSequence() == 0 {
+			if previous, duplicate := pendingByID[decision.GetDecisionId()]; duplicate {
+				if sameRecoveredFailureDecision(previous, decision) {
+					continue
+				}
+				return fmt.Errorf("service: conflicting recovered decision %q", decision.GetDecisionId())
+			}
+			if _, duplicate := committedByID[decision.GetDecisionId()]; duplicate {
+				return fmt.Errorf("service: conflicting recovered decision %q", decision.GetDecisionId())
+			}
 			if decision.GetSelectedPlan() == nil || decision.GetSelectedPlan().GetPlanId() == "" {
 				return fmt.Errorf("service: recovered pending decision %q requires a selected plan", decision.GetDecisionId())
 			}
 			pending = append(pending, cloneDecision(decision))
+			pendingByID[decision.GetDecisionId()] = decision
 			continue
 		}
+		if previousIndex, duplicate := committedByID[decision.GetDecisionId()]; duplicate {
+			previous := committed[previousIndex]
+			if !sameRecoveredFailureDecision(previous, decision) {
+				return fmt.Errorf("service: conflicting recovered decision %q", decision.GetDecisionId())
+			}
+			if decision.GetSequence() > previous.GetSequence() {
+				committed[previousIndex] = cloneDecision(decision)
+			}
+			continue
+		}
+		if _, duplicate := pendingByID[decision.GetDecisionId()]; duplicate {
+			return fmt.Errorf("service: conflicting recovered decision %q", decision.GetDecisionId())
+		}
+		committedByID[decision.GetDecisionId()] = len(committed)
 		committed = append(committed, cloneDecision(decision))
 	}
 	sort.Slice(committed, func(i, j int) bool { return committed[i].GetSequence() < committed[j].GetSequence() })
@@ -116,6 +139,18 @@ func (s *Server) RestoreDecisions(decisions []*tgsrlv1.DecisionRecord, cursor ui
 	return nil
 }
 
+func sameRecoveredFailureDecision(left, right *tgsrlv1.DecisionRecord) bool {
+	if left == nil || right == nil || !left.GetFallback() || !right.GetFallback() ||
+		!strings.HasPrefix(left.GetDecisionId(), "failure-") || left.GetFallbackReason() != right.GetFallbackReason() {
+		return false
+	}
+	left = cloneDecision(left)
+	right = cloneDecision(right)
+	left.Sequence, right.Sequence = 0, 0
+	left.DecidedAt, right.DecidedAt = nil, nil
+	return proto.Equal(left, right)
+}
+
 // ResumeRecoveredState reconciles recovered scheduler authority back into the
 // live event loop and provider-backed store before the server starts serving.
 func (s *Server) ResumeRecoveredState(ctx context.Context, recovered *persistence.SchedulerState) error {
@@ -131,7 +166,8 @@ func (s *Server) ResumeRecoveredState(ctx context.Context, recovered *persistenc
 	if err := s.RestoreDecisions(recovered.Decisions, recovered.Cursor); err != nil {
 		return err
 	}
-	if err := s.reconcileRecoveredTransactions(ctx); err != nil {
+	oldestRetainedSequence := oldestCommittedDecisionSequence(recovered.Decisions)
+	if err := s.reconcileRecoveredTransactions(ctx, recovered.Decisions, oldestRetainedSequence); err != nil {
 		return err
 	}
 	if err := s.reconcileRecoveredReservations(ctx, recovered); err != nil {
@@ -150,7 +186,7 @@ func (s *Server) ResumeRecoveredState(ctx context.Context, recovered *persistenc
 	return nil
 }
 
-func (s *Server) reconcileRecoveredTransactions(ctx context.Context) error {
+func (s *Server) reconcileRecoveredTransactions(ctx context.Context, recoveredDecisions []*tgsrlv1.DecisionRecord, oldestRetainedSequence uint64) error {
 	if s == nil || s.planExecutor == nil {
 		return nil
 	}
@@ -168,6 +204,9 @@ func (s *Server) reconcileRecoveredTransactions(ctx context.Context) error {
 		}
 		pending, ok := s.pendingDecisionForPlan(record.Plan)
 		if !ok {
+			if terminalAuditPrecedesRetention(record.FinalizedAt, recoveredDecisions, oldestRetainedSequence) {
+				continue
+			}
 			return fmt.Errorf("service: recovered transaction %q is missing its pending decision audit", record.TransactionID)
 		}
 		transaction, err := s.planExecutor.Get(ctx, record.TransactionID)
@@ -202,6 +241,28 @@ func (s *Server) reconcileRecoveredTransactions(ctx context.Context) error {
 		}
 	}
 	return nil
+}
+
+func oldestCommittedDecisionSequence(decisions []*tgsrlv1.DecisionRecord) uint64 {
+	var oldest uint64
+	for _, decision := range decisions {
+		if sequence := decision.GetSequence(); sequence != 0 && (oldest == 0 || sequence < oldest) {
+			oldest = sequence
+		}
+	}
+	return oldest
+}
+
+func terminalAuditPrecedesRetention(finalizedAt *timestamppb.Timestamp, decisions []*tgsrlv1.DecisionRecord, oldestSequence uint64) bool {
+	if oldestSequence <= 1 || finalizedAt == nil || finalizedAt.CheckValid() != nil {
+		return false
+	}
+	for _, decision := range decisions {
+		if decision.GetSequence() == oldestSequence && decision.GetDecidedAt() != nil && decision.GetDecidedAt().CheckValid() == nil {
+			return !finalizedAt.AsTime().After(decision.GetDecidedAt().AsTime())
+		}
+	}
+	return false
 }
 
 func (s *Server) reconcileRecoveredReservations(ctx context.Context, recovered *persistence.SchedulerState) error {

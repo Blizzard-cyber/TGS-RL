@@ -228,6 +228,38 @@ func (s *Store) LatestIntent(executionID, stageID string) (*tgsrlv1.SchedulingIn
 	return cloneIntent(intent), true
 }
 
+// RetireExpiredIntent removes one expired intent and its pending units only
+// after no live allocation for the execution/stage remains. Idempotency keys
+// stay reserved so a completed publication cannot be reused with new content.
+func (s *Store) RetireExpiredIntent(executionID, stageID string, version uint64) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	key := intentKey{executionID: executionID, stageID: stageID}
+	intent := s.intents[key]
+	if intent == nil || intent.GetVersion() != version || intent.GetValidUntil() == nil || intent.GetValidUntil().AsTime().After(s.clock.Now()) {
+		return false
+	}
+	for _, allocation := range s.snapshot.GetAllocations() {
+		if allocation.GetExecutionId() == executionID && allocation.GetStageId() == stageID &&
+			(allocation.GetState() == tgsrlv1.AllocationState_ALLOCATION_STATE_PENDING || allocation.GetState() == tgsrlv1.AllocationState_ALLOCATION_STATE_ACTIVE) {
+			return false
+		}
+	}
+	working := cloneSnapshot(s.snapshot)
+	kept := working.PendingUnits[:0]
+	for _, unit := range working.GetPendingUnits() {
+		if unit.GetExecutionId() == executionID && unit.GetStageId() == stageID {
+			continue
+		}
+		kept = append(kept, unit)
+	}
+	working.PendingUnits = kept
+	delete(s.intents, key)
+	s.commitSnapshotLocked(working)
+	return true
+}
+
 func validateIntentStructure(intent *tgsrlv1.SchedulingIntent) error {
 	if intent == nil {
 		return fmt.Errorf("%w: intent is nil", ErrInvalidIntent)

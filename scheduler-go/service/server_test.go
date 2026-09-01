@@ -1346,6 +1346,101 @@ func TestAppendDecisionCheckpointFailureKeepsDecisionAndSequenceInvisible(t *tes
 	}
 }
 
+func TestAppendDecisionDeduplicatesDeterministicFailure(t *testing.T) {
+	now := time.Date(2026, 8, 28, 8, 15, 0, 0, time.UTC)
+	store, err := state.NewStore(serviceSnapshot(now), state.WithClock(state.ClockFunc(func() time.Time { return now })))
+	if err != nil {
+		t.Fatal(err)
+	}
+	evaluator, _ := scheduler.New(scheduler.Config{Clock: scheduler.ClockFunc(func() time.Time { return now })})
+	mockProvider, _ := provider.NewMockResourceProvider(provider.WithNow(func() time.Time { return now }))
+	repository := &recordingRepository{}
+	implementation, err := New(Config{Store: store, Scheduler: evaluator, Provider: mockProvider, Repository: repository, DeferStart: true, Clock: ClockFunc(func() time.Time { return now })})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer implementation.Close()
+	decision := &tgsrlv1.DecisionRecord{DecisionId: "failure-run-1-stage-1-1-INTENT_EXPIRED", JobId: "job-1", RunId: "run-1", Fallback: true, FallbackReason: "INTENT_EXPIRED: intent expired before execution"}
+	if err := implementation.appendDecision(decision.GetJobId(), decision); err != nil {
+		t.Fatal(err)
+	}
+	if err := implementation.appendDecision(decision.GetJobId(), decision); err != nil {
+		t.Fatal(err)
+	}
+	entries, _, _ := implementation.decisionsAfter(0)
+	if len(entries) != 1 || implementation.sequence != 1 || repository.SaveCount() != 2 {
+		t.Fatalf("duplicate terminal fallback changed log: entries=%d sequence=%d saves=%d", len(entries), implementation.sequence, repository.SaveCount())
+	}
+}
+
+func TestRestoreDecisionsCollapsesLegacyFailureDuplicates(t *testing.T) {
+	now := time.Date(2026, 8, 28, 8, 20, 0, 0, time.UTC)
+	store, _ := state.NewStore(serviceSnapshot(now), state.WithClock(state.ClockFunc(func() time.Time { return now })))
+	evaluator, _ := scheduler.New(scheduler.Config{Clock: scheduler.ClockFunc(func() time.Time { return now })})
+	mockProvider, _ := provider.NewMockResourceProvider(provider.WithNow(func() time.Time { return now }))
+	implementation, err := New(Config{Store: store, Scheduler: evaluator, Provider: mockProvider, DeferStart: true, Clock: ClockFunc(func() time.Time { return now })})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer implementation.Close()
+	first := &tgsrlv1.DecisionRecord{DecisionId: "failure-run-1-stage-1-1-INTENT_EXPIRED", Sequence: 7, ExecutionId: "run-1", StageId: "stage-1", IntentVersion: 1, JobId: "job-1", RunId: "run-1", TraceId: "trace-1", Fallback: true, FallbackReason: "INTENT_EXPIRED: intent expired before execution", DecidedAt: timestamppb.New(now)}
+	latest := proto.Clone(first).(*tgsrlv1.DecisionRecord)
+	latest.Sequence = 9
+	latest.DecidedAt = timestamppb.New(now.Add(time.Second))
+	if err := implementation.RestoreDecisions([]*tgsrlv1.DecisionRecord{first, latest}, 9); err != nil {
+		t.Fatalf("RestoreDecisions() error = %v", err)
+	}
+	entries, _, _ := implementation.decisionsAfter(0)
+	if len(entries) != 1 || entries[0].decision.GetSequence() != 9 {
+		t.Fatalf("restored decisions = %+v, want latest duplicate only", entries)
+	}
+}
+
+func TestRestoreDecisionsRejectsConflictingDuplicateIdentity(t *testing.T) {
+	now := time.Date(2026, 8, 28, 8, 25, 0, 0, time.UTC)
+	store, _ := state.NewStore(serviceSnapshot(now), state.WithClock(state.ClockFunc(func() time.Time { return now })))
+	evaluator, _ := scheduler.New(scheduler.Config{Clock: scheduler.ClockFunc(func() time.Time { return now })})
+	mockProvider, _ := provider.NewMockResourceProvider(provider.WithNow(func() time.Time { return now }))
+	implementation, err := New(Config{Store: store, Scheduler: evaluator, Provider: mockProvider, DeferStart: true, Clock: ClockFunc(func() time.Time { return now })})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer implementation.Close()
+	first := &tgsrlv1.DecisionRecord{DecisionId: "duplicate", Sequence: 1, JobId: "job-1"}
+	second := proto.Clone(first).(*tgsrlv1.DecisionRecord)
+	second.Sequence = 2
+	second.JobId = "job-2"
+	if err := implementation.RestoreDecisions([]*tgsrlv1.DecisionRecord{first, second}, 2); err == nil || !strings.Contains(err.Error(), "conflicting recovered decision") {
+		t.Fatalf("RestoreDecisions() error = %v, want conflict", err)
+	}
+}
+
+func TestResumeRecoveredStateAllowsTerminalTransactionAfterAuditRetention(t *testing.T) {
+	now := time.Date(2026, 8, 28, 8, 30, 0, 0, time.UTC)
+	store, _ := state.NewStore(serviceSnapshot(now), state.WithClock(state.ClockFunc(func() time.Time { return now })))
+	evaluator, _ := scheduler.New(scheduler.Config{Clock: scheduler.ClockFunc(func() time.Time { return now })})
+	mockProvider, _ := provider.NewMockResourceProvider(provider.WithNow(func() time.Time { return now }))
+	implementation, err := New(Config{Store: store, Scheduler: evaluator, Provider: mockProvider, Repository: &recordingRepository{}, DeferStart: true, Clock: ClockFunc(func() time.Time { return now })})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer implementation.Close()
+	recovered := &persistence.SchedulerState{
+		Snapshot: serviceSnapshot(now),
+		Cursor:   20,
+		Decisions: []*tgsrlv1.DecisionRecord{{
+			DecisionId: "retained", Sequence: 10, JobId: "job-current", DecidedAt: timestamppb.New(now),
+		}},
+		Transactions: []state.TransactionRecord{{
+			TransactionID: "old-plan", PlanID: "old-plan", Plan: &tgsrlv1.PlacementPlan{PlanId: "old-plan", DecisionId: "evicted-decision"},
+			State: state.TransactionStateCommitted, Terminal: true, FinalizedAt: timestamppb.New(now.Add(-time.Minute)),
+		}},
+	}
+	if err := implementation.ResumeRecoveredState(context.Background(), recovered); err != nil {
+		t.Fatalf("ResumeRecoveredState() error = %v, want retained terminal transaction accepted", err)
+	}
+}
+
 func TestDecisionCheckpointFailureRecoversCompletePendingAudit(t *testing.T) {
 	now := time.Date(2026, 8, 28, 8, 30, 0, 0, time.UTC)
 	store, err := state.NewStore(serviceSnapshot(now), state.WithClock(state.ClockFunc(func() time.Time { return now })))

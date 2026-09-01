@@ -102,11 +102,12 @@ func applyControlMetadata(snapshot *ObservationSnapshot, metadata ControlMetadat
 	snapshot.ControlAction = metadata.Action
 	snapshot.ControlBackendRevision = metadata.BackendRevision
 	snapshot.ControlCommitted = metadata.Committed
+	snapshot.ControlRetireRun = metadata.RetireRun
 }
 
 func snapshotFromAdapter(snapshot *bundleadapter.Snapshot, terminal bool, err error) (*ObservationSnapshot, bool, error) {
 	if err != nil || snapshot == nil {
 		return nil, terminal, err
 	}
-	return &ObservationSnapshot{ObservedGeneration: snapshot.ObservedGeneration, WorkloadAdmitted: snapshot.WorkloadAdmitted, ResourceClaimsAllocated: snapshot.ResourceClaimsAllocated, AllocatedDeviceIDs: append([]string(nil), snapshot.AllocatedDeviceIDs...), JobActive: snapshot.JobActive, WorkerRegistrationRequired: snapshot.WorkerRegistrationRequired, PodReady: snapshot.PodReady, JobSucceeded: snapshot.JobSucceeded, JobFailed: snapshot.JobFailed, JobPaused: snapshot.JobPaused, JobDeleted: snapshot.JobDeleted, Reason: snapshot.Reason, ObservedAt: snapshot.ObservedAt, ControlRequestID: snapshot.ControlRequestID, ControlIdempotencyKey: snapshot.ControlIdempotencyKey, ControlAction: snapshot.ControlAction, ControlBackendRevision: snapshot.ControlBackendRevision, ControlCommitted: snapshot.ControlCommitted}, terminal, nil
+	return &ObservationSnapshot{ObservedGeneration: snapshot.ObservedGeneration, WorkloadAdmitted: snapshot.WorkloadAdmitted, ResourceClaimsAllocated: snapshot.ResourceClaimsAllocated, AllocatedDeviceIDs: append([]string(nil), snapshot.AllocatedDeviceIDs...), JobActive: snapshot.JobActive, WorkerRegistrationRequired: snapshot.WorkerRegistrationRequired, PodReady: snapshot.PodReady, JobSucceeded: snapshot.JobSucceeded, JobFailed: snapshot.JobFailed, JobPaused: snapshot.JobPaused, JobDeleted: snapshot.JobDeleted, Reason: snapshot.Reason, ObservedAt: snapshot.ObservedAt, ControlRequestID: snapshot.ControlRequestID, ControlIdempotencyKey: snapshot.ControlIdempotencyKey, ControlAction: snapshot.ControlAction, ControlBackendRevision: snapshot.ControlBackendRevision, ControlCommitted: snapshot.ControlCommitted, ControlRetireRun: snapshot.ControlRetireRun}, terminal, nil
 }

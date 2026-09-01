@@ -50,6 +50,7 @@ type Snapshot struct {
 	ControlAction              tgsrlv1.JobCommandType
 	ControlBackendRevision     uint64
 	ControlCommitted           bool
+	ControlRetireRun           bool
 }
 
 // JobControlReadback is the minimal backend-neutral state returned after a
