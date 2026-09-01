@@ -1,0 +1,31 @@
+{
+  "schema_version": "tgsrl.io/hardware-environment/v1alpha1",
+  "state_directory": "/var/lib/tgsrl-hardware-driver",
+  "defaults": {
+    "gateway_url": "http://tgsrl-gateway.tgsrl.svc.cluster.local:8080",
+    "namespace": "tgsrl-workloads",
+    "kube_context": "tgsrl-validation",
+    "kubectl": "kubectl",
+    "job_template": "/etc/tgsrl/hardware/verl-job.json",
+    "trace_command": ["/opt/tgsrl/bin/export-gate-trace", "--format", "ndjson"],
+    "operation_timeout_seconds": 1800,
+    "poll_interval_seconds": 2
+  },
+  "targets": {
+    "E1": {
+      "gpu_profile": "full-gpu"
+    },
+    "E2": {
+      "gpu_profile": "mig",
+      "action_hooks": {
+        "rebind": [
+          "/opt/tgsrl/bin/submit-rebind-observation",
+          "--request",
+          "${REQUEST_PATH}",
+          "--response",
+          "${RESPONSE_PATH}"
+        ]
+      }
+    }
+  }
+}
