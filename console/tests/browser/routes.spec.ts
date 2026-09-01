@@ -34,3 +34,49 @@ for (const [path, heading] of routes) {
     expect(errors).toEqual([]);
   });
 }
+
+for (const width of [1366, 1180, 1024, 820, 390]) {
+  test(`调度决策在 ${width}px 宽度下保持在视口内`, async ({ page }) => {
+    await page.setViewportSize({ width, height: 900 });
+    await page.goto('/decisions');
+
+    await expect(page.getByRole('heading', { name: '调度决策', level: 1 })).toBeVisible();
+    await expect(page.locator('.trace-workbench')).toBeVisible();
+
+    const layout = await page.evaluate(() => {
+      const panels = [...document.querySelectorAll<HTMLElement>('.trace-workbench > .panel')].map((panel) => {
+        const bounds = panel.getBoundingClientRect();
+        return { left: bounds.left, right: bounds.right, width: bounds.width };
+      });
+      return {
+        viewportWidth: window.innerWidth,
+        documentWidth: document.documentElement.scrollWidth,
+        panels,
+      };
+    });
+
+    expect(layout.documentWidth).toBeLessThanOrEqual(layout.viewportWidth);
+    expect(layout.panels).toHaveLength(2);
+    for (const panel of layout.panels) {
+      expect(panel.left).toBeGreaterThanOrEqual(0);
+      expect(panel.right).toBeLessThanOrEqual(layout.viewportWidth);
+    }
+    if (width <= 1180) {
+      expect(Math.abs(layout.panels[0].left - layout.panels[1].left)).toBeLessThanOrEqual(1);
+    } else {
+      expect(layout.panels[1].left).toBeGreaterThan(layout.panels[0].left);
+    }
+  });
+}
+
+for (const width of [1024, 390]) {
+  test(`${width}px 宽度下所有工作台都不会撑开页面`, async ({ page }) => {
+    await page.setViewportSize({ width, height: 900 });
+    for (const [path, heading] of routes) {
+      await page.goto(path);
+      await expect(page.getByRole('heading', { name: heading, level: 1 })).toBeVisible();
+      const documentWidth = await page.evaluate(() => document.documentElement.scrollWidth);
+      expect(documentWidth, `${path} 不应产生页面级横向滚动`).toBeLessThanOrEqual(width);
+    }
+  });
+}

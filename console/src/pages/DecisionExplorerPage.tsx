@@ -83,6 +83,7 @@ export function DecisionExplorerPage() {
         <Panel
           title="决策记录"
           subtitle="按服务端保留序列分页，选择一条查看完整证据。"
+          className="decision-list-panel"
           actions={
             <div className="control-row compact">
               <button
@@ -124,15 +125,13 @@ export function DecisionExplorerPage() {
                     selected={selectedDecisionId === decision.id}
                     onClick={() => setDecisionId(decision.id)}
                   >
-                    <div className="list-card-header">
-                      <div>
-                        <h3>{decision.id}</h3>
-                        <p>序列 {decision.sequence} · {formatTimestamp(decision.decidedAt)}</p>
-                      </div>
+                    <div className="decision-record-heading">
+                      <code title={decision.id}>{decision.id}</code>
                       <Pill tone={decision.fallback ? 'critical' : 'good'}>
                         {decision.fallback ? '已回退' : '已应用'}
                       </Pill>
                     </div>
+                    <p className="decision-record-meta">序列 {decision.sequence} · {formatTimestamp(decision.decidedAt)}</p>
                     <p className="body-copy">{decision.summary}</p>
                   </SelectCardButton>
                 ))}
@@ -140,15 +139,15 @@ export function DecisionExplorerPage() {
             )}
           </SurfaceStateBoundary>
         </Panel>
-        <Panel title="决策证据" subtitle="可行候选、拒绝原因与动作回读。">
+        <Panel className="decision-detail-panel" title="决策证据" subtitle="可行候选、拒绝原因与动作回读。">
           <SurfaceStateBoundary result={explorerQuery.result} retry={explorerQuery.retry}>
             {(data) => (
               <>
                 {data?.selectedDecision ? (
                   <div className="trace-inspector-hero">
-                    <div>
+                    <div className="decision-identity">
                       <span className="eyebrow">调度结论</span>
-                      <h3>{data.selectedDecision.id}</h3>
+                      <h3 title={data.selectedDecision.id}>{data.selectedDecision.id}</h3>
                       <code>{data.selectedDecision.traceId}</code>
                     </div>
                     <Pill tone={data.selectedDecision.fallback ? 'critical' : 'good'}>
