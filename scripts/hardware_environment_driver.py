@@ -1231,9 +1231,19 @@ class HardwareEnvironmentDriver:
     ) -> list[JsonObject]:
         del response_path
         if run.get("job_id") and not run.get("run_id"):
-            raise DriverError(
-                "provisioned Job has no run identity; manual control-plane cleanup is required"
+            gateway = Gateway(target.gateway_url, target.timeout)
+            runs = _items(
+                gateway.get(f"/v1/jobs/{parse.quote(str(run['job_id']), safe='')}/runs"),
+                "runs",
             )
+            if len(runs) > 1:
+                raise DriverError("provisioned Job has multiple runs; refusing ambiguous cleanup")
+            if len(runs) == 1:
+                run["run_id"] = _string(runs[0].get("runId"), label="cleanup service run ID")
+            else:
+                # Job definitions remain as audit records; no admitted run means
+                # the Operator could not have materialized cluster resources.
+                return []
         if not run.get("stop_operation_id"):
             try:
                 self._command(request_value, target, run, "terminate")
