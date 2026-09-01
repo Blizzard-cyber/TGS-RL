@@ -308,9 +308,7 @@ def load_config(path: Path) -> DriverConfig:
     for experiment_id, override_value in targets_raw.items():
         override = _mapping(override_value, label=f"targets.{experiment_id}")
         if set(override) - TARGET_FIELDS:
-            raise DriverError(
-                f"targets.{experiment_id} contains unsupported fields"
-            )
+            raise DriverError(f"targets.{experiment_id} contains unsupported fields")
         values = {**defaults, **override}
         namespace = _string(values.get("namespace"), label=f"targets.{experiment_id}.namespace")
         if len(namespace) > 63 or DNS_LABEL_PATTERN.fullmatch(namespace) is None:
@@ -477,6 +475,19 @@ class Kubernetes:
 
     def json(self, argv: Sequence[str], *, namespaced: bool = True) -> JsonObject:
         raw = self.run([*argv, "-o", "json"], namespaced=namespaced)
+        try:
+            value = json.loads(raw)
+        except json.JSONDecodeError as exc:
+            raise DriverError(f"kubectl {argv[0]} returned invalid JSON") from exc
+        return _mapping(value, label="kubectl response")
+
+    def optional_json(self, argv: Sequence[str], *, namespaced: bool = True) -> JsonObject | None:
+        raw = self.run(
+            [*argv, "--ignore-not-found=true", "-o", "json"],
+            namespaced=namespaced,
+        )
+        if not raw.strip():
+            return None
         try:
             value = json.loads(raw)
         except json.JSONDecodeError as exc:
@@ -1259,6 +1270,21 @@ class HardwareEnvironmentDriver:
                     _mapping(value.get("metadata"), label=f"{resource} metadata").get("name"),
                     label=f"{resource} name",
                 )
+                live = kube.optional_json(["get", resource, name])
+                if live is None:
+                    continue
+                labels = _mapping(
+                    _mapping(live.get("metadata"), label=f"live {resource} metadata").get(
+                        "labels", {}
+                    ),
+                    label=f"live {resource} labels",
+                )
+                if labels.get("tgsrl.io/job-id") != run.get("job_id") or labels.get(
+                    "tgsrl.io/run-id"
+                ) != run.get("run_id"):
+                    raise DriverError(
+                        f"refusing to delete {resource}/{name}: ownership labels do not match"
+                    )
                 kube.run(
                     [
                         "delete",

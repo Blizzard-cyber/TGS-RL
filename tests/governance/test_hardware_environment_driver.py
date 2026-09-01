@@ -221,6 +221,8 @@ for option in ("--context", "--namespace"):
         del args[index:index + 2]
 if args[-2:] == ["-o", "json"]:
     args = args[:-2]
+if "--ignore-not-found=true" in args:
+    args.remove("--ignore-not-found=true")
 marker = Path(os.environ["TGSRL_FAKE_REBIND_MARKER"])
 generation = 2 if marker.exists() else 1
 device_id = f"MIG-{generation}/1/0"
@@ -291,8 +293,12 @@ elif args == ["get", "pods"]:
         "status": {"conditions": [{"type": "Ready", "status": "True"}]},
     }]})
 elif len(args) == 3 and args[:2] == ["get", "resourceclaims.resource.k8s.io"]:
+    owner = "other-job" if os.environ.get("TGSRL_FAKE_BAD_OWNER") else "job-a"
     emit({
-        "metadata": {"name": claim_name},
+        "metadata": {
+            "name": claim_name,
+            "labels": {"tgsrl.io/job-id": owner, "tgsrl.io/run-id": "run-a"},
+        },
         "spec": {"devices": {"requests": [{
             "name": "accelerator",
             "exactly": {"deviceClassName": "mig.nvidia.com"},
@@ -303,6 +309,17 @@ elif len(args) == 3 and args[:2] == ["get", "resourceclaims.resource.k8s.io"]:
             "pool": "gpu-node-a",
             "device": device_name,
         }]}}},
+    })
+elif len(args) == 3 and args[0] == "get" and args[1] in {
+    "jobs.batch",
+    "workloads.kueue.x-k8s.io",
+}:
+    owner = "other-job" if os.environ.get("TGSRL_FAKE_BAD_OWNER") else "job-a"
+    emit({
+        "metadata": {
+            "name": args[2],
+            "labels": {"tgsrl.io/job-id": owner, "tgsrl.io/run-id": "run-a"},
+        }
     })
 elif args[:1] == ["exec"] and args[-2:] == ["nvidia-smi", "-L"]:
     print(f"MIG 1g.10gb Device 0: (UUID: {device_id})")
@@ -662,3 +679,14 @@ def test_driver_rejects_resourceclaim_device_identity_mismatch(
     with pytest.raises(DRIVER.DriverError, match="differs across Scheduler"):
         _execute(driver, root, _request("verify_device_identity", 5))
     monkeypatch.setattr(DRIVER, "_visible_device_ids", original)
+
+
+def test_driver_cleanup_rejects_reused_object_name(
+    driver_environment: tuple[Any, _GatewayState, Path],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    driver, _state, root = driver_environment
+    _execute(driver, root, _request("provision", 1))
+    monkeypatch.setenv("TGSRL_FAKE_BAD_OWNER", "1")
+    with pytest.raises(DRIVER.DriverError, match="ownership labels do not match"):
+        _execute(driver, root, _request("cleanup", 8))

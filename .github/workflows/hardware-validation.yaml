@@ -188,9 +188,12 @@ jobs:
           uv sync --frozen
       - name: Execute and require the complete campaign
         env:
-          CAMPAIGN_DRIVER: ${{ vars.TGSRL_CAMPAIGN_DRIVER || 'tgsrl-hardware-environment-driver' }}
+          CAMPAIGN_DRIVER: ${{ vars.TGSRL_CAMPAIGN_DRIVER || 'scripts/tgsrl-hardware-environment-driver' }}
+          TGSRL_HARDWARE_DRIVER_CONFIG: ${{ vars.TGSRL_HARDWARE_DRIVER_CONFIG }}
         run: |
           test -z "$(git status --porcelain --untracked-files=normal)"
+          test -n "${TGSRL_HARDWARE_DRIVER_CONFIG}"
+          test -f "${TGSRL_HARDWARE_DRIVER_CONFIG}"
           uv run --frozen python scripts/gate-tools.py campaign-run \
             --campaign configs/gates/e1-e8.json \
             --reports-dir .cache/tgsrl/e1-e8 \
