@@ -32,11 +32,13 @@ export function formatTimestamp(value: string) {
 
 const labels: Record<string, string> = {
   healthy: '健康',
+  ok: '正常',
   degraded: '降级',
   stalled: '停滞',
   pending: '等待中',
   running: '运行中',
   paused: '已暂停',
+  stopped: '已停止',
   succeeded: '已成功',
   failed: '失败',
   cancelled: '已取消',

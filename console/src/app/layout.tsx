@@ -3,11 +3,35 @@ import type { ApiClient } from '../api/types';
 import { ApiProvider } from './context';
 import { Icon, type IconName } from '../components/primitives';
 
-const navigation: Array<{ to: string; label: string; hint: string; icon: IconName }> = [
-  { to: '/', label: '运行总览', hint: '全局态势', icon: 'overview' },
-  { to: '/jobs', label: '任务中心', hint: '运行与控制', icon: 'jobs' },
-  { to: '/traces', label: '链路追踪', hint: '事件因果链', icon: 'trace' },
-  { to: '/experiments', label: '实验对比', hint: '基线与变体', icon: 'experiment' },
+const navigation: Array<{ group: string; items: Array<{ to: string; label: string; icon: IconName }> }> = [
+  {
+    group: '运行',
+    items: [
+      { to: '/', label: '运行总览', icon: 'overview' },
+      { to: '/jobs', label: '任务中心', icon: 'jobs' },
+    ],
+  },
+  {
+    group: '可观测',
+    items: [
+      { to: '/traces', label: '链路追踪', icon: 'trace' },
+      { to: '/timeline', label: '事件时间线', icon: 'timeline' },
+    ],
+  },
+  {
+    group: '资源',
+    items: [
+      { to: '/topology', label: '资源拓扑', icon: 'topology' },
+      { to: '/sandboxes', label: '运行沙箱', icon: 'sandbox' },
+    ],
+  },
+  {
+    group: '分析',
+    items: [
+      { to: '/decisions', label: '调度决策', icon: 'decision' },
+      { to: '/experiments', label: '实验对比', icon: 'experiment' },
+    ],
+  },
 ];
 
 export function AppLayout() {
@@ -21,6 +45,11 @@ type AppLayoutWithClientProps = {
 export function AppLayoutWithClient({ client }: AppLayoutWithClientProps) {
   const location = useLocation();
   const mockMode = (import.meta.env.VITE_TGSRL_API_ADAPTER ?? 'http') === 'mock';
+  const isActiveRoute = (to: string, reactRouterActive: boolean) => {
+    if (to === '/') return reactRouterActive;
+    if (to === '/jobs') return location.pathname === '/jobs' || /^\/jobs\/[^/]+$/.test(location.pathname);
+    return reactRouterActive || location.pathname.endsWith(to);
+  };
   return (
     <ApiProvider client={client}>
       <div className="app-shell">
@@ -34,23 +63,24 @@ export function AppLayoutWithClient({ client }: AppLayoutWithClientProps) {
             </div>
           </div>
           <nav className="nav-list" aria-label="主导航">
-            {navigation.map((item) => (
-              <NavLink
-                key={item.to}
-                to={item.to}
-                end={item.to === '/'}
-                className={({ isActive }) => {
-                  const active = item.to === '/traces'
-                    ? location.pathname.includes('/traces')
-                    : item.to === '/jobs'
-                      ? isActive && !location.pathname.includes('/traces')
-                      : isActive;
-                  return `nav-link${active ? ' active' : ''}`;
-                }}
-              >
-                <Icon name={item.icon} />
-                <span><strong>{item.label}</strong><small>{item.hint}</small></span>
-              </NavLink>
+            {navigation.map((section) => (
+              <section className="nav-section" key={section.group}>
+                <p>{section.group}</p>
+                {section.items.map((item) => (
+                  <NavLink
+                    key={item.to}
+                    to={item.to}
+                    end={item.to === '/'}
+                    className={({ isActive }) => {
+                      const active = isActiveRoute(item.to, isActive);
+                      return `nav-link${active ? ' active' : ''}`;
+                    }}
+                  >
+                    <Icon name={item.icon} />
+                    <strong>{item.label}</strong>
+                  </NavLink>
+                ))}
+              </section>
             ))}
           </nav>
           <div className="sidebar-status">
@@ -61,9 +91,15 @@ export function AppLayoutWithClient({ client }: AppLayoutWithClientProps) {
             </div>
           </div>
         </aside>
-        <main className="content-area">
-          <Outlet />
-        </main>
+        <div className="workspace">
+          <header className="workspace-bar">
+            <div><span className="workspace-product">TGS-RL</span><span className="workspace-separator">/</span><strong>本机调度集群</strong></div>
+            <div className="workspace-state"><span className="status-beacon" /><strong>{mockMode ? '演示数据' : '控制面在线'}</strong><span>协议 v0.3</span></div>
+          </header>
+          <main className="content-area">
+            <Outlet />
+          </main>
+        </div>
       </div>
     </ApiProvider>
   );

@@ -117,7 +117,7 @@ describe('OverviewPage', () => {
     expect(screen.getByText('正在加载控制面数据')).toBeInTheDocument();
     expect(await screen.findByText('PPO Actor-Critic Burst')).toBeInTheDocument();
     expect(screen.getByText('加速卡压力')).toBeInTheDocument();
-    expect(screen.getByText('保留任务')).toBeInTheDocument();
+    expect(screen.getByText('任务总数')).toBeInTheDocument();
   });
 
   it('hides mock-only surface controls outside mock mode', async () => {

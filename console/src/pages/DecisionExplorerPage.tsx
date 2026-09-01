@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { useApiClient } from '../app/apiContext';
-import { useQuery, useRunScopedSearchParams } from '../app/hooks';
+import { useQuery, useResolvedRunScope } from '../app/hooks';
 import { formatTimestamp, simulationOptions, toQueryFilters, titleCase } from '../app/utils';
 import { SurfaceStateBoundary, SurfaceStateControl } from '../app/surface';
 import { DataTable, Panel, Pill, SelectCardButton, ShellFrame } from '../components/primitives';
@@ -8,8 +8,8 @@ import { DataTable, Panel, Pill, SelectCardButton, ShellFrame } from '../compone
 export function DecisionExplorerPage() {
   const client = useApiClient();
   const [mode, setMode] = useState('ready');
-  const { jobId, runId, decisionId, setJobId, setRunId, setDecisionId } =
-    useRunScopedSearchParams();
+  const { jobId, runId, decisionId, setRunId, setDecisionId, setScopedParams, jobsQuery } =
+    useResolvedRunScope(client, mode);
   const paginationScope = `${jobId}\0${runId}`;
   const [pagination, setPagination] = useState({ scope: paginationScope, tokens: [''] });
   const pageTokens = pagination.scope === paginationScope ? pagination.tokens : [''];
@@ -60,12 +60,12 @@ export function DecisionExplorerPage() {
       actions={
         <div className="control-row">
           <label>
-            <span>任务编号</span>
-            <input
-              value={jobId}
-              onChange={(event) => setJobId(event.target.value || undefined)}
-              placeholder="job-…"
-            />
+            <span>任务</span>
+            <select aria-label="任务编号" value={jobId} onChange={(event) => { const selected = jobsQuery.result.data?.find((job) => job.id === event.target.value); setScopedParams({ jobId: selected?.id || undefined, runId: selected?.currentRunId, decisionId: undefined }); }}>
+              <option value="">请选择任务</option>
+              {jobId && !(jobsQuery.result.data ?? []).some((job) => job.id === jobId) ? <option value={jobId}>{jobId}</option> : null}
+              {(jobsQuery.result.data ?? []).map((job) => <option key={job.id} value={job.id}>{job.name}</option>)}
+            </select>
           </label>
           <label>
             <span>运行编号</span>

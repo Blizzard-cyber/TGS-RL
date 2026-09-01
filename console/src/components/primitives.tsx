@@ -24,20 +24,20 @@ export function ShellFrame({ title, subtitle, actions, children }: PropsWithChil
     <div className="shell-frame">
       <header className="page-header">
         <div>
-          <p className="eyebrow">训练资源编排</p>
+          <p className="eyebrow">调度控制台</p>
           <h1>{title}</h1>
           <p className="page-subtitle">{subtitle}</p>
         </div>
-        {actions ? <div className="page-actions">{actions}</div> : null}
       </header>
+      {actions ? <div className="page-toolbar"><span className="toolbar-caption">视图范围</span><div className="page-actions">{actions}</div></div> : null}
       {children}
     </div>
   );
 }
 
-export function Panel({ title, subtitle, children, actions }: PropsWithChildren<{ title: string; subtitle?: string; actions?: ReactNode }>) {
+export function Panel({ title, subtitle, children, actions, className }: PropsWithChildren<{ title: string; subtitle?: string; actions?: ReactNode; className?: string }>) {
   return (
-    <section className="panel">
+    <section className={`panel${className ? ` ${className}` : ''}`}>
       <header className="panel-header">
         <div>
           <h2>{title}</h2>

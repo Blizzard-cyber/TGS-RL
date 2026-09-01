@@ -454,11 +454,11 @@ describe('JobDetailPage controls', () => {
       }),
     );
 
-    expect(screen.getByRole('link', { name: '事件时间线' })).toHaveAttribute('href', '/jobs/job-live-017/timeline?runId=run-live-017-b');
-    expect(screen.getByRole('link', { name: '资源拓扑' })).toHaveAttribute('href', '/jobs/job-live-017/topology?runId=run-live-017-b');
-    expect(screen.getByRole('link', { name: '运行沙箱' })).toHaveAttribute('href', '/jobs/job-live-017/sandboxes?runId=run-live-017-b');
-    expect(screen.getAllByRole('link', { name: '调度决策' })[0]).toHaveAttribute('href', '/jobs/job-live-017/decisions?runId=run-live-017-b');
-    expect(screen.getByRole('link', { name: '链路追踪' })).toHaveAttribute('href', '/jobs/job-live-017/traces?runId=run-live-017-b');
+    expect(screen.getAllByRole('link', { name: '事件时间线' }).at(-1)).toHaveAttribute('href', '/jobs/job-live-017/timeline?runId=run-live-017-b');
+    expect(screen.getAllByRole('link', { name: '资源拓扑' }).at(-1)).toHaveAttribute('href', '/jobs/job-live-017/topology?runId=run-live-017-b');
+    expect(screen.getAllByRole('link', { name: '运行沙箱' }).at(-1)).toHaveAttribute('href', '/jobs/job-live-017/sandboxes?runId=run-live-017-b');
+    expect(screen.getAllByRole('link', { name: '调度决策' }).at(-1)).toHaveAttribute('href', '/jobs/job-live-017/decisions?runId=run-live-017-b');
+    expect(screen.getAllByRole('link', { name: '链路追踪' }).at(-1)).toHaveAttribute('href', '/jobs/job-live-017/traces?runId=run-live-017-b');
     expect(screen.getByRole('link', { name: 'dec-7104' })).toHaveAttribute(
       'href',
       '/jobs/job-live-017/decisions?runId=run-live-017-b&decisionId=dec-7104',

@@ -29,7 +29,7 @@ describe('TimelinePage', () => {
     const listTimeline = vi.fn();
     renderPage('/timeline', createTestApiClient({ listTimeline }));
 
-    expect(await screen.findByText('输入任务编号后即可查看事件时间线。')).toBeInTheDocument();
+    expect(await screen.findByText('请选择任务后查看事件时间线。')).toBeInTheDocument();
     expect(listTimeline).not.toHaveBeenCalled();
   });
 
@@ -58,7 +58,7 @@ describe('TimelinePage', () => {
 
     renderPage('/jobs/job-live-017/timeline?runId=run-live-017-a', createTestApiClient({ listTimeline }));
 
-    expect(await screen.findAllByText('决策应用')).toHaveLength(2);
+    expect(await screen.findAllByText('决策应用')).toHaveLength(1);
     expect(listTimeline).toHaveBeenLastCalledWith('job-live-017', {
       filters: {
         mode: 'ready',

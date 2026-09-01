@@ -1,5 +1,4 @@
 import type {
-  DataKind,
   DecisionExplorerResult,
   DecisionRecord,
   ExperimentSummary,
@@ -19,10 +18,6 @@ const now = '2026-08-27T14:32:00Z';
 
 function metric(label: string, value: string, delta?: string, tone?: MetricCard['tone']): MetricCard {
   return { label, value, delta, tone };
-}
-
-function kindSuffix(dataKind: DataKind): string {
-  return dataKind.toUpperCase();
 }
 
 export const jobs: JobSummary[] = [
@@ -147,6 +142,7 @@ export const decisions: DecisionRecord[] = [
     id: 'dec-7104',
     sequence: 7104,
     jobId: 'job-live-017',
+    runId: 'run-live-017-a',
     traceId: 'trace-live-017',
     stageId: 'actor-rollout',
     decidedAt: '2026-08-27T14:28:31Z',
@@ -216,6 +212,7 @@ export const sandboxes: SandboxRecord[] = [
   {
     id: 'sbx-live-a14',
     jobId: 'job-live-017',
+    runId: 'run-live-017-a',
     state: 'running',
     generation: 7,
     nodeLabel: 'gpu-cell-4',
@@ -230,6 +227,7 @@ export const sandboxes: SandboxRecord[] = [
   {
     id: 'sbx-live-a09',
     jobId: 'job-live-017',
+    runId: 'run-live-017-a',
     state: 'paused',
     generation: 3,
     nodeLabel: 'gpu-cell-4',
@@ -488,6 +486,8 @@ export const traceEvents: TraceEventRecord[] = [
 ];
 
 export const topology: TopologySnapshot = {
+  runId: 'run-live-017-a',
+  manifestId: 'manifest-live-017-a',
   nodes: [
     { id: 'queue-priority', label: 'priority-train', kind: 'queue', status: 'busy', gpu: false, utilization: 0.92 },
     { id: 'queue-audit', label: 'audit', kind: 'queue', status: 'ready', gpu: false, utilization: 0.48 },
@@ -521,7 +521,7 @@ export const experiments: ExperimentSummary[] = [
         id: 'run-live-ppo',
         experimentId: 'exp-ppo-compare',
         runId: 'run-live-ppo',
-        label: `Live ${kindSuffix('live')}`,
+        label: '真实运行',
         kind: 'live',
         dataKind: 'live',
         policyVersion: 'policy-2026.08.27.5',
@@ -538,13 +538,13 @@ export const experiments: ExperimentSummary[] = [
         id: 'run-replay-ppo',
         experimentId: 'exp-ppo-compare',
         runId: 'run-replay-ppo',
-        label: `Replay ${kindSuffix('replay')}`,
+        label: '回放基线',
         kind: 'replay',
         dataKind: 'replay',
         policyVersion: 'replay-2026.08.27.2',
         configHash: 'cfg-a9f4',
         codeRevision: 'rev-a13bc1',
-        summary: 'Lower throughput but stable decision latency envelope.',
+        summary: '吞吐较低，但决策延迟范围更稳定。',
         metrics: [
           metric('奖励值', '0.76', '-0.01', 'neutral'),
           metric('每秒样本', '11.1k', '-1.2k', 'warn'),
@@ -565,7 +565,7 @@ export const experiments: ExperimentSummary[] = [
         id: 'run-sim-a3c',
         experimentId: 'exp-capacity-sim',
         runId: 'run-sim-a3c',
-        label: `Synthetic ${kindSuffix('synthetic')}`,
+        label: '合成演练',
         kind: 'simulation',
         dataKind: 'synthetic',
         policyVersion: 'sim-2026.08.26.9',

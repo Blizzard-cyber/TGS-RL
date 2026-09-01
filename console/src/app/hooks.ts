@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useParams, useSearchParams } from 'react-router-dom';
-import type { QueryResult } from '../api/types';
+import type { ApiClient, QueryResult } from '../api/types';
 
 function isAbortError(error: unknown) {
   return (
@@ -97,4 +97,30 @@ export function useRunScopedSearchParams() {
     }),
     [searchParams, jobId, runId, decisionId, traceId, updateScopedParams],
   );
+}
+
+export function useResolvedRunScope(client: ApiClient, mode: string) {
+  const scope = useRunScopedSearchParams();
+  const jobsQuery = useQuery(
+    (signal) => client.listJobs({ limit: 200, filters: { mode }, signal }),
+    [client, mode],
+  );
+  const selectedJob = useMemo(() => {
+    const jobs = jobsQuery.result.data ?? [];
+    const requested = jobs.find((job) => job.id === scope.jobId);
+    return requested ?? [...jobs].sort(
+      (left, right) => Date.parse(right.updatedAt) - Date.parse(left.updatedAt),
+    )[0];
+  }, [jobsQuery.result.data, scope.jobId]);
+
+  useEffect(() => {
+    if (selectedJob && (!scope.jobId || !scope.runId)) {
+      scope.setScopedParams({
+        jobId: selectedJob.id,
+        runId: scope.runId || selectedJob.currentRunId,
+      });
+    }
+  }, [scope, selectedJob]);
+
+  return { ...scope, jobsQuery, selectedJob };
 }

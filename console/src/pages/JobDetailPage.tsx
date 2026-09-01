@@ -1,4 +1,4 @@
-import { useDeferredValue, useEffect, useRef, useState } from 'react';
+import { useDeferredValue, useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 import { useApiClient } from '../app/apiContext';
 import { useQuery, useRunScopedSearchParams } from '../app/hooks';
@@ -51,6 +51,7 @@ export function JobDetailPage() {
   const [controlMessage, setControlMessage] = useState<string>('');
   const [controlError, setControlError] = useState<string>('');
   const [pendingAction, setPendingAction] = useState<string>('');
+  const [jobSearch, setJobSearch] = useState('');
   const activeControlRequest = useRef<symbol | null>(null);
   const pendingRunSelection = useRef<{ jobId: string; runId: string } | null>(null);
 
@@ -66,6 +67,12 @@ export function JobDetailPage() {
       }),
     [client, dataKind, mode],
   );
+  const visibleJobs = useMemo(() => {
+    const normalized = jobSearch.trim().toLowerCase();
+    return [...(jobsQuery.result.data ?? [])]
+      .filter((job) => !normalized || `${job.name} ${job.id} ${job.queue}`.toLowerCase().includes(normalized))
+      .sort((left, right) => Date.parse(right.updatedAt) - Date.parse(left.updatedAt));
+  }, [jobSearch, jobsQuery.result.data]);
 
   const selectedJobId = routeJobId ?? jobsQuery.result.data?.[0]?.id ?? '';
   const requestedRunId = selectedRunId;
@@ -184,14 +191,35 @@ export function JobDetailPage() {
         </div>
       }
     >
-      <div className="two-column">
-        <Panel title="任务列表" subtitle="选择一项任务查看完整运行现场。">
+      <section className="run-control-bar list-card" aria-labelledby="run-control-heading">
+        <div>
+          <h3 id="run-control-heading">运行控制</h3>
+          <code>{commandRunId || '请选择运行'}</code>
+        </div>
+        <div className="control-row compact">
+          <button className="button" type="button" disabled={!selectedJobId || controlBusy} onClick={() => void runControlAction('job-admit', async () => client.admitJob(selectedJobId))}>准入</button>
+          {(['start', 'pause', 'resume', 'stop', 'retry', 'terminate'] as const).map((command) => (
+            <button
+              key={command}
+              className={`button${command === 'start' || command === 'resume' ? ' primary' : command === 'terminate' ? ' danger' : ''}`}
+              type="button"
+              disabled={!selectedJobId || !commandRunId || controlBusy}
+              onClick={() => void runControlAction(`job-${command}`, async () => client.applyJobCommand(selectedJobId, commandRunId, command))}
+            >
+              {commandLabel(command)}
+            </button>
+          ))}
+        </div>
+      </section>
+      <div className="job-workspace">
+        <Panel className="job-list-panel" title="任务列表" subtitle={`${visibleJobs.length} 项可见`} actions={<input className="list-search" aria-label="搜索任务" value={jobSearch} onChange={(event) => setJobSearch(event.target.value)} placeholder="搜索名称或编号" />}>
           <SurfaceStateBoundary result={jobsQuery.result} retry={jobsQuery.retry}>
             {(jobs) => (
               <div className="stack-list">
-                {(jobs ?? []).map((job) => (
+                {(jobs ? visibleJobs : []).map((job) => (
                   <SelectCardButton
                     key={job.id}
+                    className="job-row"
                     selected={job.id === selectedJobId}
                     onClick={() => {
                       void navigate(`/jobs/${job.id}`);
@@ -202,9 +230,9 @@ export function JobDetailPage() {
                         <h3>{job.name}</h3>
                         <p>{job.id}</p>
                       </div>
-                      <SourceBadge kind={job.dataKind} />
                     </div>
                     <div className="tag-row">
+                      <SourceBadge kind={job.dataKind} />
                       <Pill>{titleCase(job.state)}</Pill>
                       <Pill tone={job.health === 'healthy' ? 'good' : job.health === 'degraded' ? 'warn' : 'critical'}>
                         {titleCase(job.health)}
@@ -216,36 +244,25 @@ export function JobDetailPage() {
             )}
           </SurfaceStateBoundary>
         </Panel>
-        <Panel title="任务详情" subtitle="所有决策、链路事件和沙箱都限定在当前任务与运行范围。">
+        <Panel className="job-detail-panel" title="任务详情" subtitle="状态、运行、调度证据与资源绑定。">
           <SurfaceStateBoundary result={detailQuery.result} retry={detailQuery.retry}>
             {(detail) =>
               detail ? (
                 <>
-                  <div className="list-card">
-                    <div className="list-card-header">
-                      <div>
+                  <div className="job-identity">
+                    <div>
                         <h3>{detail.job.name}</h3>
-                        <p>{detail.job.id}</p>
-                      </div>
-                      <SourceBadge kind={detail.job.dataKind} />
+                        <code>{detail.job.id}</code>
+                        <div className="job-identity-meta"><span>队列 {detail.job.queue}</span><span>所有者 {detail.job.owner}</span><span>创建于 {formatTimestamp(detail.job.createdAt)}</span></div>
                     </div>
-                    <div className="tag-row">
-                      <Pill>{detail.job.algorithm}</Pill>
-                      <Pill>{titleCase(detail.job.rolloutMode)}</Pill>
-                      <Pill tone={detail.job.gpuRequired ? 'warn' : 'neutral'}>
-                        {detail.job.gpuRequired ? '需要加速卡' : '仅需处理器'}
-                      </Pill>
-                    </div>
-                    <p className="body-copy">
-                      队列 {detail.job.queue} · 所有者 {detail.job.owner} · 创建于 {formatTimestamp(detail.job.createdAt)}
-                    </p>
+                    <div className="tag-row"><SourceBadge kind={detail.job.dataKind} /><Pill>{detail.job.algorithm.toUpperCase()}</Pill><Pill>{titleCase(detail.job.rolloutMode)}</Pill><Pill tone={detail.job.gpuRequired ? 'warn' : 'neutral'}>{detail.job.gpuRequired ? '需要加速卡' : '仅需处理器'}</Pill></div>
                   </div>
                   <section className="metric-grid">
                     {detail.metrics.map((item) => (
                       <MetricCard key={item.label} {...item} />
                     ))}
                   </section>
-                  <div className="tag-row">
+                  <nav className="job-nav" aria-label="任务视图">
                     <Link to={jobTimelinePath(detail.job.id, detail.selectedRunId)} className="button">
                       事件时间线
                     </Link>
@@ -261,12 +278,12 @@ export function JobDetailPage() {
                     <Link to={jobDecisionsPath(detail.job.id, detail.selectedRunId)} className="button">
                       调度决策
                     </Link>
-                  </div>
-                  <section className="stack-list" aria-labelledby="job-runs-heading">
-                    <div>
+                  </nav>
+                  <section className="job-section" aria-labelledby="job-runs-heading">
+                    <header>
                       <h3 id="job-runs-heading">运行记录（{detail.runs.length}）</h3>
                       <p className="body-copy">选择一次运行后，详情、链路和控制操作会同步切换。</p>
-                    </div>
+                    </header>
                     <DataTable
                       columns={['运行编号', '状态', '开始时间', '策略版本']}
                       rows={detail.runs.map((run) => [
@@ -322,8 +339,9 @@ export function JobDetailPage() {
           </SurfaceStateBoundary>
         </Panel>
       </div>
-      <Panel title="控制操作" subtitle="通过真实 HTTP 接口管理任务与回放；模拟模式会明确标记演示响应。">
-        <div className="two-column">
+      <details className="advanced-operations">
+        <summary>高级操作 <small>创建任务、运行和回放</small></summary>
+        <div className="advanced-content"><div className="two-column">
           <div className="stack-list">
             <div className="list-card">
               <div className="list-card-header">
@@ -357,45 +375,6 @@ export function JobDetailPage() {
                 >
                   新建运行
                 </button>
-              </div>
-            </div>
-            <div className="list-card">
-              <div className="list-card-header">
-                <div>
-                  <h3>运行控制</h3>
-                  <p>所有命令都作用于当前选中的任务和运行。</p>
-                </div>
-              </div>
-              <div className="tag-row">
-                <Pill>{selectedJobId || '未选择任务'}</Pill>
-                <Pill>{commandRunId || '未选择有效运行'}</Pill>
-              </div>
-              <div className="control-row compact">
-                <button
-                  className="button"
-                  type="button"
-                  disabled={!selectedJobId || controlBusy}
-                  onClick={() =>
-                    void runControlAction('job-admit', async () => client.admitJob(selectedJobId))
-                  }
-                >
-                  准入
-                </button>
-                {(['start', 'pause', 'resume', 'stop', 'retry', 'terminate'] as const).map((command) => (
-                  <button
-                    key={command}
-                    className="button"
-                    type="button"
-                    disabled={!selectedJobId || !commandRunId || controlBusy}
-                    onClick={() =>
-                      void runControlAction(`job-${command}`, async () =>
-                        client.applyJobCommand(selectedJobId, commandRunId, command),
-                      )
-                    }
-                  >
-                    {commandLabel(command)}
-                  </button>
-                ))}
               </div>
             </div>
           </div>
@@ -468,7 +447,8 @@ export function JobDetailPage() {
           </div>
         ) : null}
         {controlError ? <AsyncState state="error" message={controlError} /> : null}
-      </Panel>
+        </div>
+      </details>
     </ShellFrame>
   );
 }
