@@ -293,3 +293,8 @@ sequence 和 cursor 原子写入 `decision-cursor.json`。状态目录还包括�
 
 更多状态边界见[配置、持久化与恢复](configuration-and-recovery.md)，真实集成状态见
 [当前能力与限制](../reference/current-capabilities.md)。
+
+> 当前代码 Review 发现：`KubernetesBackend.Cleanup` 会删除 Workload、ResourceClaim 和
+> JobRunBundle marker，但 Helm 与原生 manifest 的 Role 尚未给这三类资源 `delete`。在补齐最小
+> RBAC 并完成真实 ServiceAccount smoke 前，不应把 generation replacement 或 terminal cleanup
+> 判定为可用。

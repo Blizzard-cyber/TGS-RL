@@ -184,9 +184,10 @@ veRL package、Kubernetes 或 GPU Gate 通过的证据。
 `make gate-campaign` 校验并汇总 E1–E8 硬件实验合同；没有目标环境报告时八项均保持
 `NOT_RUN`，未校准的数值门槛保持 `BLOCKED`。
 GPU/Kubernetes 环境准备完成后，通过
-`make gate-campaign-run GATE_CAMPAIGN_DRIVER=/path/to/driver` 执行全部场景；仓库内 executor
-拥有 baseline/variant、warmup/measurement、动作和故障顺序，环境 driver 只负责目标集群的
-原子操作与结构化观察；runner 负责锁定输入、隔离输出、证据校验、归档和 release 判定。
+`TGSRL_HARDWARE_DRIVER_CONFIG=/path/to/environment.json make gate-campaign-run` 使用仓库 driver
+执行全部场景；也可以通过 `GATE_CAMPAIGN_DRIVER=/path/to/driver` 替换环境适配器。仓库内
+executor 拥有 baseline/variant、warmup/measurement、动作和故障顺序，环境 driver 只负责目标
+集群的原子操作与结构化观察；runner 负责锁定输入、隔离输出、证据校验、归档和 release 判定。
 
 发布镜像由 `Dockerfile.services` 的 `scheduler`、`job-controller`、`runtime`、
 `gateway`、`console` targets，以及独立的 Operator/worker-bootstrap Dockerfile 构建。
@@ -228,6 +229,7 @@ generation 和 cursor，并在恢复后核对 Decision、Provider 与 backend �
 ## 文档
 
 - [文档导航](docs/README.md)
+- [项目设计、代码导读与工程 Review](docs/project-design-and-code-review.md)
 - [快速上手](docs/getting-started.md)
 - [API、CLI 与 Console](docs/guides/api-and-console.md)
 - [Python Runtime](docs/guides/python-runtime.md)
