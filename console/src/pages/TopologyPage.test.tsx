@@ -25,6 +25,14 @@ function renderPage(initialEntry = '/topology?jobId=job-live-017', client = crea
 }
 
 describe('TopologyPage', () => {
+  it('does not query an empty job scope', async () => {
+    const getTopology = vi.fn();
+    renderPage('/topology', createTestApiClient({ getTopology }));
+
+    expect(await screen.findByText('Select a job to view its topology.')).toBeInTheDocument();
+    expect(getTopology).not.toHaveBeenCalled();
+  });
+
   it('requests topology with selected run and filters GPU-only nodes in the UI', async () => {
     const user = userEvent.setup();
     const topology: TopologySnapshot = {

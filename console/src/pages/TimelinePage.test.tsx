@@ -25,6 +25,14 @@ function renderPage(initialEntry = '/timeline?jobId=job-live-017', client = crea
 }
 
 describe('TimelinePage', () => {
+  it('does not query an empty job scope', async () => {
+    const listTimeline = vi.fn();
+    renderPage('/timeline', createTestApiClient({ listTimeline }));
+
+    expect(await screen.findByText('Select a job to view its timeline.')).toBeInTheDocument();
+    expect(listTimeline).not.toHaveBeenCalled();
+  });
+
   it('passes job and run filters into the timeline query', async () => {
     const user = userEvent.setup();
     const timelineResponse: TimelineResponse = {

@@ -12,14 +12,16 @@ export function SandboxViewPage() {
   const { jobId, runId, setRunId } = useRunScopedSearchParams();
   const { result, retry } = useQuery(
     (signal) =>
-      client.listSandboxes(jobId, {
-        filters: toQueryFilters({
-          data_kind: dataKind !== 'all' ? dataKind : undefined,
-          mode,
-          run_id: runId || undefined,
-        }),
-        signal,
-      }),
+      jobId
+        ? client.listSandboxes(jobId, {
+            filters: toQueryFilters({
+              data_kind: dataKind !== 'all' ? dataKind : undefined,
+              mode,
+              run_id: runId || undefined,
+            }),
+            signal,
+          })
+        : Promise.resolve({ state: 'empty' as const, message: 'Select a job to view its sandboxes.' }),
     [client, dataKind, mode, jobId, runId],
   );
 

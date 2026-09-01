@@ -16,15 +16,17 @@ export function DecisionExplorerPage() {
 
   const decisionsQuery = useQuery(
     (signal) =>
-      client.listDecisions(jobId, {
-        limit: 2,
-        pageToken,
-        filters: toQueryFilters({
-          mode,
-          run_id: runId || undefined,
-        }),
-        signal,
-      }),
+      jobId
+        ? client.listDecisions(jobId, {
+            limit: 2,
+            pageToken,
+            filters: toQueryFilters({
+              mode,
+              run_id: runId || undefined,
+            }),
+            signal,
+          })
+        : Promise.resolve({ state: 'empty' as const, message: 'Select a job to inspect its decisions.' }),
     [client, pageToken, jobId, mode, runId],
   );
   const hasCurrentPage =

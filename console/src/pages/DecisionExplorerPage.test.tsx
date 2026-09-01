@@ -287,14 +287,16 @@ describe('DecisionExplorerPage', () => {
   });
 
   it('renders empty candidate analysis when no decision is selected', async () => {
+    const listDecisions = vi.fn();
     renderPage(
       '/decisions',
       createTestApiClient({
-        listDecisions: async () => ({ state: 'empty', message: 'No decisions matched the active filters.' }),
+        listDecisions,
       }),
     );
 
-    expect(await screen.findByText('No decisions matched the active filters.')).toBeInTheDocument();
+    expect(await screen.findByText('Select a job to inspect its decisions.')).toBeInTheDocument();
     expect(await screen.findByText('Select a decision to inspect candidates.')).toBeInTheDocument();
+    expect(listDecisions).not.toHaveBeenCalled();
   });
 });

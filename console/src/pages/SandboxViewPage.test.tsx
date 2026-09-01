@@ -25,6 +25,14 @@ function renderPage(initialEntry = '/sandboxes?jobId=job-live-017', client = cre
 }
 
 describe('SandboxViewPage', () => {
+  it('does not query an empty job scope', async () => {
+    const listSandboxes = vi.fn();
+    renderPage('/sandboxes', createTestApiClient({ listSandboxes }));
+
+    expect(await screen.findByText('Select a job to view its sandboxes.')).toBeInTheDocument();
+    expect(listSandboxes).not.toHaveBeenCalled();
+  });
+
   it('passes source and run filters to sandbox queries and renders retained rows', async () => {
     const user = userEvent.setup();
     const sandboxResponse: SandboxResponse = {

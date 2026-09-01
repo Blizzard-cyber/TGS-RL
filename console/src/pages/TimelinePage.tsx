@@ -12,14 +12,16 @@ export function TimelinePage() {
   const { jobId, runId, setRunId } = useRunScopedSearchParams();
   const { result, retry } = useQuery(
     (signal) =>
-      client.listTimeline(jobId, {
-        filters: toQueryFilters({
-          data_kind: dataKind !== 'all' ? dataKind : undefined,
-          mode,
-          run_id: runId || undefined,
-        }),
-        signal,
-      }),
+      jobId
+        ? client.listTimeline(jobId, {
+            filters: toQueryFilters({
+              data_kind: dataKind !== 'all' ? dataKind : undefined,
+              mode,
+              run_id: runId || undefined,
+            }),
+            signal,
+          })
+        : Promise.resolve({ state: 'empty' as const, message: 'Select a job to view its timeline.' }),
     [client, dataKind, mode, jobId, runId],
   );
 

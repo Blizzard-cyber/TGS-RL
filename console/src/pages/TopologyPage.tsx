@@ -12,14 +12,16 @@ export function TopologyPage() {
   const { jobId, runId, setRunId } = useRunScopedSearchParams();
   const { result, retry } = useQuery(
     (signal) =>
-      client.getTopology(jobId, {
-        filters: toQueryFilters({
-          mode,
-          require_gpu: showGpuOnly ? 'true' : undefined,
-          run_id: runId || undefined,
-        }),
-        signal,
-      }),
+      jobId
+        ? client.getTopology(jobId, {
+            filters: toQueryFilters({
+              mode,
+              require_gpu: showGpuOnly ? 'true' : undefined,
+              run_id: runId || undefined,
+            }),
+            signal,
+          })
+        : Promise.resolve({ state: 'empty' as const, message: 'Select a job to view its topology.' }),
     [client, jobId, mode, showGpuOnly, runId],
   );
 
