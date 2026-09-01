@@ -348,10 +348,7 @@ func retireRunFromTerminalEventLocked(intents map[intentKey]*tgsrlv1.SchedulingI
 		keptPending = append(keptPending, unit)
 	}
 	working.PendingUnits = keptPending
-	if !changed {
-		return false
-	}
-	return true
+	return changed
 }
 
 func allRunAllocationsTerminal(allocations []*tgsrlv1.Allocation, observed map[string]*tgsrlv1.Sandbox, current *tgsrlv1.SandboxEvent) bool {
