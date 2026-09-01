@@ -42,6 +42,7 @@ for (const width of [1366, 1180, 1024, 820, 390]) {
 
     await expect(page.getByRole('heading', { name: '调度决策', level: 1 })).toBeVisible();
     await expect(page.locator('.trace-workbench')).toBeVisible();
+    await expect(page.locator('.decision-list-panel .select-card').first()).toBeVisible();
 
     const layout = await page.evaluate(() => {
       const panels = [...document.querySelectorAll<HTMLElement>('.trace-workbench > .panel')].map((panel) => {
@@ -61,7 +62,7 @@ for (const width of [1366, 1180, 1024, 820, 390]) {
       expect(panel.left).toBeGreaterThanOrEqual(0);
       expect(panel.right).toBeLessThanOrEqual(layout.viewportWidth);
     }
-    if (width <= 1180) {
+    if (width <= 1024) {
       expect(Math.abs(layout.panels[0].left - layout.panels[1].left)).toBeLessThanOrEqual(1);
     } else {
       expect(layout.panels[1].left).toBeGreaterThan(layout.panels[0].left);

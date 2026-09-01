@@ -633,9 +633,11 @@ Console 的信息架构按运维工作流组织，而不是按后端模块平铺
 1366、1180、1024、820 和 390 像素，并断言页面不产生横向溢出。移动端将侧栏转换为可横向
 滚动的功能导航，不压缩表格字段或 Trace 轨道。
 
-交互结构参考成熟运维产品的共同模式：Ray Dashboard 按 Job、Actor 和 Cluster 区分对象入口；
-Argo Workflows 使用筛选、运行列表、DAG 与节点详情逐级下钻；Jaeger 和 Grafana Tempo 将统一
-时间轴与选中 span 详情分离。Console 借鉴这些信息组织方式，但保留 TGS-RL 独有的
+交互结构参考成熟运维产品的共同模式：[Ray Dashboard](https://docs.ray.io/en/latest/ray-observability/getting-started.html)
+按 Job、Actor 和 Cluster 区分对象入口；[Argo Workflows](https://argo-workflows.readthedocs.io/en/latest/quick-start/)
+使用筛选、运行列表、DAG 与节点详情逐级下钻；[Jaeger](https://www.jaegertracing.io/docs/2.2/deployment/frontend-ui/)
+和 [Grafana Tempo](https://grafana.com/docs/grafana/latest/datasources/tempo/) 将统一时间轴与选中
+span 详情分离。Console 借鉴这些信息组织方式，但保留 TGS-RL 独有的
 任务 → 运行 → 决策 → 沙箱 → 设备关联，以及训练步骤、请求、执行器和 worker 多轨 Trace。
 
 ## 12. 存储、恢复与一致性

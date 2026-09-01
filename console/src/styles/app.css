@@ -236,8 +236,8 @@ code { font-family: ui-monospace, "SFMono-Regular", Consolas, monospace; font-si
 .subtle { font-size: .74rem; }
 
 .trace-workbench { min-width: 0; display: flex; flex-wrap: wrap; gap: 12px; align-items: flex-start; }
-.trace-workbench > .panel:first-child { min-width: min(100%, 260px); flex: 0 1 320px; }
-.trace-workbench > .panel:last-child { min-width: min(100%, 560px); flex: 1 1 640px; }
+.trace-workbench > .panel:first-child { width: 320px; min-width: min(100%, 260px); max-width: 320px; flex: 1 1 280px; }
+.trace-workbench > .panel:last-child { min-width: min(100%, 560px); flex: 1 1 600px; }
 .decision-list-panel .panel-header { align-items: flex-start; flex-wrap: wrap; }
 .decision-list-panel .panel-header > div:first-child { flex: 1 1 160px; }
 .decision-list-panel .panel-header > div:last-child { flex: 0 0 auto; }
@@ -245,6 +245,7 @@ code { font-family: ui-monospace, "SFMono-Regular", Consolas, monospace; font-si
 .decision-list-panel > .stack-list { max-height: calc(100vh - 190px); overflow-y: auto; padding-right: 3px; }
 .decision-record-heading { min-width: 0; display: flex; align-items: center; justify-content: space-between; gap: 8px; }
 .decision-record-heading code { min-width: 0; overflow: hidden; color: var(--ink); font-size: .78rem; font-weight: 700; text-overflow: ellipsis; white-space: nowrap; }
+.decision-record-heading .pill { flex: 0 0 auto; }
 .decision-record-meta { font-family: ui-monospace, "SFMono-Regular", monospace; }
 .decision-list-panel .select-card .body-copy { display: -webkit-box; overflow: hidden; -webkit-box-orient: vertical; -webkit-line-clamp: 2; }
 .decision-detail-panel { overflow: hidden; }
@@ -334,10 +335,12 @@ code { font-family: ui-monospace, "SFMono-Regular", Consolas, monospace; font-si
 .raw-attributes summary { padding-top: 10px; cursor: pointer; color: var(--muted); font-size: .72rem; font-weight: 600; }
 .trace-notice { display: flex; align-items: center; gap: 12px; padding: 10px 12px; border: 1px solid #eed3a5; color: #7a4700; background: var(--warn-soft); font-size: .74rem; }
 
+@media (max-width: 1120px) {
+  .trace-workbench > .panel:first-child, .trace-workbench > .panel:last-child { width: auto; max-width: none; flex-basis: 100%; }
+}
+
 @media (max-width: 1180px) {
   .overview-layout > .overview-rail { max-width: none; }
-  .trace-layout > .trace-panel, .trace-layout > .trace-inspector-panel, .topology-workspace > .topology-map-panel, .topology-workspace > .topology-edge-panel { flex-basis: 100%; }
-  .job-workspace > .job-list-panel, .job-workspace > .job-detail-panel, .trace-workbench > .panel:first-child, .trace-workbench > .panel:last-child { flex-basis: 100%; }
   .job-list-panel { position: static; max-height: none; }
   .job-list-panel .stack-list { max-height: 320px; }
   .decision-list-panel { position: static; max-height: none; }
