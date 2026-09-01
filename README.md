@@ -90,6 +90,15 @@ curl -fsS http://127.0.0.1:8080/health
 curl -fsS http://127.0.0.1:8080/v1/capabilities
 ```
 
+执行一次经 Console 反向代理、Gateway 和全部 gRPC 服务的真实生命周期 smoke：
+
+```bash
+make compose-smoke
+```
+
+该命令创建独立的 CPU/Mock Job，并验证 `start → pause → resume → stop`、Scheduler
+Decision、两个 Sandbox 以及终态资源回收；不会删除既有 Job 或 named volumes。
+
 Compose 把所有宿主机端口绑定到 `127.0.0.1`，并通过 named volumes 保存四个有状态
 组件的数据。停止服务时保留数据：
 
@@ -198,10 +207,10 @@ registry 的不可变 digest，并预装 Kueue 与所选 GPU 资源控制器。
 
 | 组件 | 持久化方式 | 重启后的行为 |
 |---|---|---|
-| Scheduler | checkpoint + journal | 恢复 Snapshot、Intent、Decision、provider projection/cursor 和 reservation；调和未完成 reservation，并重新排队 Intent |
+| Scheduler | checkpoint + journal | 恢复 Snapshot、Intent、Decision、provider projection/cursor 和 reservation；调和未完成 reservation，按 live provider 状态回收遗留终态 allocation，并重新排队仍有效的 Intent |
 | Job Controller | snapshot + journal | 恢复 Job、Run、Operation、事件与幂等记录；启动时按 Runtime 观察与原幂等键调和中间态，未知结果显式要求人工处理 |
 | Runtime / Experiment | SQLite | 分页恢复 manifest、unit、Sandbox、Trace、Intent、Checkpoint、Replay、Experiment 与必要水位；仅补投未确认的 Start Intent |
-| Operator | cursor、delivery 与 backend-control 文件 | 恢复决策位置、未完成 delivery、观察注册与 lifecycle 幂等记录；fake backend 对象不持久化 |
+| Operator | cursor、delivery 与 backend-control 文件 | 恢复决策位置、未完成 delivery、观察注册与 lifecycle 幂等记录；过期且依赖已不存在的孤儿 delivery 会记录告警后推进；fake backend 对象不持久化 |
 | Gateway / Console | 无业务状态 | 重启后从后端读取 |
 
 这些机制不提供跨服务事务、HA、灾备或任意中断点的无损续跑。调用方应使用幂等键、

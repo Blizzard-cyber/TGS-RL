@@ -16,7 +16,7 @@
 | 执行语义 | **支持** | PPO、GRPO；sync、partially async、fully async；ExecutionContract、typed contract observation/evaluation、Trace、DAG、Gap、Intent 与调度预览 Replay | Synthetic Trace 和 Replay 只表达协议与决策语义，不代表训练工作负载；没有 typed predicate 的旧式字符串规则不会被解释执行 |
 | Scheduler | **支持** | 硬约束、候选评分、per-unit TopK、周期 fast/medium/slow tick、Admission/Fast/Medium/Slow Planner、L1–L4 ActionLevel 授权、有界 Decision/Planner evidence、fallback、mutation protection、幂等 action、补偿、Decision cursor、provider projection 恢复和调和 | 默认 evidence budget 为 candidate/rejection 合计 4096 条且始终保留选中候选；用 totals 与 truncation 标志判断完整性。阻断性 pause 必须覆盖全部活跃 allocation，任何目标缺失、观测过期或超预算都会整体 fail closed。默认 preemption 为 `noop`；无法原子表达 replacement 时 fail closed |
 | 配置图 | **支持** | Scheduler 与 Runtime 从 compatibility manifest 加载 BOM、profile、capabilities、policy 和 scenario | 配置在启动时读取，不支持热更新；未知能力和冲突引用会被拒绝 |
-| 单机持久化 | **支持** | Scheduler checkpoint/journal、Job Controller 文件状态、Runtime/Experiment SQLite、Operator cursor 与 ledger | 不提供跨服务事务、HA 或灾备；fake backend 对象只存在于进程内 |
+| 单机持久化 | **支持** | Scheduler checkpoint/journal、Job Controller 文件状态、Runtime/Experiment SQLite、Operator cursor 与 ledger；启动时调和遗留 delivery、终态 allocation 和已淘汰的重复 failure audit | 不提供跨服务事务、HA 或灾备；fake backend 对象只存在于进程内，Scheduler 通过 provider readback 保守修复其投影 |
 | Job、Runtime 与 Experiment 控制 | **支持** | JobControl、RuntimeControl、RuntimeBackendControl 和 Experiment gRPC 服务 | Runtime `start` 发布 Intent；workload 必须由 Operator/backend 启动并通过观察事件回报 |
 | HTTP Gateway | **支持** | Job、Run、Timeline、DAG、Topology、Sandbox、Decision、Replay、Experiment、OpenAPI、CLI 与 Python SDK | gRPC 模式要求四个逻辑后端可达；内存模式不持久化 |
 | Web Console | **支持** | 概览、任务详情、时间线、拓扑、Sandbox、Decision、实验比较，以及 Job/Run 准入和生命周期操作 | 静态 `mock` adapter 不访问 Gateway；静态部署需自行提供同源 API 代理 |
@@ -36,6 +36,9 @@
 - 用 fake Operator backend 完成 bundle 编译、生命周期控制和 Sandbox 状态回传；
 - 使用固定 seed 的 Synthetic Trace 和 Scheduler `Schedule` RPC 执行无资源副作用的 Replay；
 - 保存并恢复各组件的单机状态。
+
+服务健康后执行 `make compose-smoke` 可从 Console 同源入口验证
+`create → admit → start → pause → resume → stop`、Decision、Sandbox 终态和 allocation 回收。
 
 Mock Provider 支持 `bind`、`release`、`set_share`、`set_priority`、`resize`、
 `pause`、`resume`、`sleep`、`offload`、`rebind` 和 `recreate`。这些动作修改逻辑

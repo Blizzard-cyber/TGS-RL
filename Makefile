@@ -6,7 +6,7 @@ UV_VERSION := 0.12.7
 STATICCHECK_VERSION := 2026.1
 GATE_CAMPAIGN_DRIVER ?= scripts/tgsrl-hardware-environment-driver
 GO_PACKAGES := ./gen/go/... ./internal/... ./scheduler-go/... ./job-controller-go/... ./operator-go/... ./storage/... ./scripts ./cmd/...
-PYTHON_PATHS := adapters runtime-python gateway-python tests/python tests/api tests/storage tests/e2e tests/governance scripts/check-proto-roundtrip.py scripts/check-oci-platforms.py scripts/generate-sbom.py scripts/check-compatibility.py scripts/check-upstream-patches.py scripts/gate-tools.py scripts/hardware-campaign-executor.py scripts/hardware_environment_driver.py scripts/tgsrl-hardware-environment-driver scripts/verl-reference-workload.py scripts/gate-full-stack-workload.py scripts/gate-managed-workload.py
+PYTHON_PATHS := adapters runtime-python gateway-python tests/python tests/api tests/storage tests/e2e tests/governance scripts/check-proto-roundtrip.py scripts/check-oci-platforms.py scripts/generate-sbom.py scripts/check-compatibility.py scripts/check-upstream-patches.py scripts/gate-tools.py scripts/hardware-campaign-executor.py scripts/hardware_environment_driver.py scripts/tgsrl-hardware-environment-driver scripts/verl-reference-workload.py scripts/gate-full-stack-workload.py scripts/gate-managed-workload.py scripts/compose-smoke.py
 GO_FORMAT_PATHS := scheduler-go job-controller-go operator-go storage cmd internal
 SCHEDULER_PACKAGE := ./scheduler-go/cmd/scheduler
 NVIDIA_BINDING_PACKAGE := ./cmd/tgsrl-nvidia-binding
@@ -21,7 +21,7 @@ GATEWAY_LISTEN ?= 127.0.0.1:8080
 OPERATOR_LISTEN ?= 127.0.0.1:50081
 SCHEDULER_FALLBACK ?= noop
 
-.PHONY: help doctor proto check-generated check-openapi proto-roundtrip check-migrations check-compose check-deploy render-kubernetes check-public-content sbom check-governance gate-campaign gate-campaign-run gate-campaign-calibrate test-go test-performance test-python test-api test-console test-console-browser lint staticcheck test race build-nvidia-binding build-nvidia-runtime build-nvidia-mig build-worker-bootstrap demo product-e2e gate-cpu-integration run-scheduler run-controller run-runtime run-gateway run-operator run-console
+.PHONY: help doctor proto check-generated check-openapi proto-roundtrip check-migrations check-compose compose-smoke check-deploy render-kubernetes check-public-content sbom check-governance gate-campaign gate-campaign-run gate-campaign-calibrate test-go test-performance test-python test-api test-console test-console-browser lint staticcheck test race build-nvidia-binding build-nvidia-runtime build-nvidia-mig build-worker-bootstrap demo product-e2e gate-cpu-integration run-scheduler run-controller run-runtime run-gateway run-operator run-console
 
 help:
 	@printf '%s\n' \
@@ -33,6 +33,7 @@ help:
 	  '  make proto-roundtrip  verify Go/Python deterministic protobuf compatibility' \
 	  '  make check-migrations validate the runtime SQLite schema' \
 	  '  make check-compose    validate the complete local Compose stack' \
+	  '  make compose-smoke    verify a running Compose stack through the Console origin' \
 	  '  make check-deploy     validate full-stack and Operator Kubernetes/Helm contracts' \
 	  '  make render-kubernetes render the complete Kubernetes control plane' \
 	  '  make check-public-content reject private links, paths, and credential-like content' \
@@ -100,6 +101,9 @@ check-migrations:
 
 check-compose:
 	docker compose config -q
+
+compose-smoke:
+	PYTHONPATH=.:runtime-python:gateway-python:gen/python uv run --frozen python scripts/compose-smoke.py
 
 check-deploy:
 	@command -v helm >/dev/null 2>&1 || { \
@@ -196,7 +200,7 @@ lint:
 	uv sync --frozen
 	uv run --frozen ruff format --check $(PYTHON_PATHS)
 	uv run --frozen ruff check $(PYTHON_PATHS)
-	uv run --frozen mypy adapters runtime-python/tgsrl_runtime gateway-python/tgsrl_gateway tests/python tests/api tests/storage tests/e2e
+	uv run --frozen mypy adapters runtime-python/tgsrl_runtime gateway-python/tgsrl_gateway tests/python tests/api tests/storage tests/e2e scripts/compose-smoke.py
 
 staticcheck:
 	@command -v staticcheck >/dev/null 2>&1 || { \

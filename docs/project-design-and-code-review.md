@@ -626,10 +626,10 @@ Decision Explorer、Experiment Compare。`HttpApiClient` 通过 Gateway 获取�
 
 | 组件 | 持久化 | 关键恢复行为 |
 |---|---|---|
-| Scheduler | checkpoint + journal | 恢复 Snapshot/Intent/Decision/transaction/protection，再调和 in-flight |
+| Scheduler | checkpoint + journal | 恢复 Snapshot/Intent/Decision/transaction/protection，调和 in-flight，并以 live provider Sandbox 列表修复遗留终态 allocation |
 | Job Controller | snapshot + journal | 恢复 Job/Run/Operation/Event/idempotency，调和中间态 Operation |
 | Runtime/Experiment | SQLite WAL | 恢复 manifest/unit/sandbox/trace/intent/checkpoint/replay/experiment/outbox |
-| Operator | cursor、delivery、backend-control ledger | 恢复 Decision 消费、delivery、watch registration 和 control progress |
+| Operator | cursor、delivery、backend-control ledger | 恢复 Decision 消费、delivery、watch registration 和 control progress；从未完成 delivery 的 sequence 精确恢复，过期孤儿按明确 `NOT_FOUND` 收敛 |
 | NVIDIA helper/registry | 原子 JSON state | 恢复 worker、binding、receipt 和 generation head |
 | Kubernetes | API Server | 保存 workload 实际对象，供 Operator 重建 watch |
 | Gateway/Console | 无业务状态 | 重启后从后端查询 |
@@ -663,6 +663,9 @@ Job/Operation、Runtime Sandbox、Scheduler Decision/transaction、Operator bund
 
 `compose.yaml` 启动六个服务：Scheduler、Runtime/Experiment、Job Controller、Operator、Gateway、
 Console。默认是 CPU Mock Provider + fake Operator backend，并用四个 named volumes 保存状态。
+`make compose-smoke` 通过 Console 同源代理执行 Job 创建、准入、`start/pause/resume/stop`，并
+断言 Decision、两个 Sandbox 终态和 Scheduler allocation 回收。该命令可在保留 named volumes 的
+整栈重启后重复执行，用于验证跨组件恢复不会阻塞后续任务。
 
 本地进程模式由 `scripts/gate-full-stack.sh` 使用 process backend 和真实 bootstrap 子进程，覆盖
 跨服务调用、Unix socket、trace、pause/resume、重启和恢复，但仍不创建 Kubernetes/GPU 资源。

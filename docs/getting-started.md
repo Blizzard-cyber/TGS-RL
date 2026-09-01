@@ -19,6 +19,26 @@ Compose 启动 Scheduler、Runtime/Experiment、Job Controller、Operator、Gate
 Console。首次启动需要下载基础镜像和依赖。所有宿主机端口只绑定到 `127.0.0.1`，
 四个有状态组件使用 named volumes。服务就绪后打开 <http://127.0.0.1:4173>。
 
+用 Console 同源代理执行六服务生命周期验收：
+
+```bash
+make compose-smoke
+```
+
+该 smoke 会新建一个 CPU/Mock Job，依次完成 `start`、`pause`、`resume`、`stop`，并验证
+Scheduler Decision、两个 Sandbox 的终态以及 Scheduler allocation 回收。它保留现有数据，
+适合每次重启或升级后重复运行。建议至少执行一次以下恢复检查：
+
+```bash
+make compose-smoke
+docker compose restart
+docker compose up -d --wait
+make compose-smoke
+```
+
+第二次 smoke 能继续获得资源，说明各组件从原 named volumes 恢复后没有被旧 delivery、
+已终止 allocation 或已淘汰的 Decision 审计阻塞。
+
 停止并保留数据：
 
 ```bash
