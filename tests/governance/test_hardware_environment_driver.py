@@ -604,6 +604,24 @@ def test_hardware_job_identity_is_stable_and_attempt_scoped() -> None:
     assert len(first) <= 63
 
 
+def test_driver_checkpoints_job_identity_before_gateway_create(
+    driver_environment: tuple[Any, _GatewayState, Path],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    driver, _state, root = driver_environment
+    request = _request("provision", 1)
+
+    def fail_create(*_args: object, **_kwargs: object) -> JsonObject:
+        raise DRIVER.DriverError("response lost after create")
+
+    monkeypatch.setattr(DRIVER.Gateway, "post", fail_create)
+    with pytest.raises(DRIVER.DriverError, match="response lost after create"):
+        _execute(driver, root, request)
+    state = json.loads((root / "state/state.json").read_text(encoding="utf-8"))
+    persisted = next(iter(state["runs"].values()))
+    assert persisted["job_id"] == DRIVER._job_id(request, 1)
+
+
 def test_driver_runs_e2_through_gateway_dra_worker_and_scheduler_hook(
     driver_environment: tuple[Any, _GatewayState, Path],
 ) -> None:

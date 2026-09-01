@@ -801,6 +801,14 @@ class HardwareEnvironmentDriver:
                 run = {"attempt": 1, "receipts": {}}
                 runs[state_key] = run
                 receipts = cast(JsonObject, run["receipts"])
+            if request_value["operation"] == "provision":
+                expected_job_id = _job_id(request_value, int(run.get("attempt", 1)))
+                if run.get("job_id") not in {None, "", expected_job_id}:
+                    raise DriverError("persisted hardware Job identity is inconsistent")
+                run["job_id"] = expected_job_id
+                # Checkpoint the identity before the external create side effect.
+                # This survives a process crash after Gateway accepts the Job.
+                _write_json(self.store.path, state)
             response = self._dispatch(request_value, target, run, response_path)
             receipts[request_id] = {
                 "request_digest": request_digest,
@@ -972,9 +980,6 @@ class HardwareEnvironmentDriver:
         attempt = int(run.get("attempt", 1))
         expected_job_id = _job_id(request_value, attempt)
         job["jobId"] = expected_job_id
-        # Persist the deterministic identity before the create call so cleanup
-        # can reconcile a successful request whose HTTP response was lost.
-        run["job_id"] = expected_job_id
         key_prefix = f"hardware-{request_value['request_id']}-a{attempt}"
         created = gateway.post("/v1/jobs", job, key_prefix + "-create")
         job_id = _string(
