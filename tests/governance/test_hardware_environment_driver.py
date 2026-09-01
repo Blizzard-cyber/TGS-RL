@@ -56,8 +56,9 @@ def _decision(sequence: int, action: str, device_id: str, generation: int) -> Js
 
 
 class _GatewayState:
-    def __init__(self, marker: Path) -> None:
+    def __init__(self, marker: Path, job_id: str) -> None:
         self.marker = marker
+        self.job_id = job_id
         self.requests: list[tuple[str, str]] = []
 
     @property
@@ -116,7 +117,7 @@ def _gateway_server(
                         }
                     }
                 )
-            elif path == "/v1/jobs/job-a/runs":
+            elif path == f"/v1/jobs/{state.job_id}/runs":
                 self._write(
                     {
                         "runs": [
@@ -128,12 +129,12 @@ def _gateway_server(
                         ]
                     }
                 )
-            elif path == "/v1/jobs/job-a/decisions":
+            elif path == f"/v1/jobs/{state.job_id}/decisions":
                 decisions = [_decision(1, "bind", "MIG-1/1/0", 1)]
                 if state.marker.exists():
                     decisions.append(_decision(2, "rebind", "MIG-2/1/0", 2))
                 self._write({"decisions": decisions})
-            elif path == "/v1/jobs/job-a/topology":
+            elif path == f"/v1/jobs/{state.job_id}/topology":
                 generation = state.generation
                 self._write(
                     {
@@ -163,8 +164,9 @@ def _gateway_server(
             body = json.loads(self.rfile.read(length) or b"{}")
             if self.path == "/v1/jobs":
                 assert body["dataKind"] == "DATA_KIND_LIVE"
-                self._write({"job": {"jobId": "job-a"}}, 201)
-            elif self.path == "/v1/jobs/job-a/admit":
+                assert body["jobId"] == state.job_id
+                self._write({"job": {"jobId": state.job_id}}, 201)
+            elif self.path == f"/v1/jobs/{state.job_id}/admit":
                 self._write(
                     {
                         "operation": {
@@ -224,6 +226,7 @@ if args[-2:] == ["-o", "json"]:
 if "--ignore-not-found=true" in args:
     args.remove("--ignore-not-found=true")
 marker = Path(os.environ["TGSRL_FAKE_REBIND_MARKER"])
+job_id = os.environ["TGSRL_FAKE_JOB_ID"]
 generation = 2 if marker.exists() else 1
 device_id = f"MIG-{generation}/1/0"
 device_name = f"mig-{generation}"
@@ -269,7 +272,7 @@ elif args == ["get", "jobrunbundles.tgsrl.io"]:
             "metadata": {"name": f"bundle-{current}"},
             "spec": {"bundle": {
                 "generation": current,
-                "sourceJobId": "job-a",
+                "sourceJobId": job_id,
                 "sourceRunId": "run-a",
                 "runtimeTargets": [{
                     "runtimeUnitId": "unit-a",
@@ -286,14 +289,14 @@ elif args == ["get", "pods"]:
     emit({"items": [{
         "metadata": {
             "name": f"pod-{generation}",
-            "labels": {"tgsrl.io/job-id": "job-a", "tgsrl.io/run-id": "run-a"},
+            "labels": {"tgsrl.io/job-id": job_id, "tgsrl.io/run-id": "run-a"},
             "ownerReferences": [{"kind": "Job", "name": job_name}],
         },
         "spec": {"nodeName": "gpu-node-a"},
         "status": {"conditions": [{"type": "Ready", "status": "True"}]},
     }]})
 elif len(args) == 3 and args[:2] == ["get", "resourceclaims.resource.k8s.io"]:
-    owner = "other-job" if os.environ.get("TGSRL_FAKE_BAD_OWNER") else "job-a"
+    owner = "other-job" if os.environ.get("TGSRL_FAKE_BAD_OWNER") else job_id
     emit({
         "metadata": {
             "name": claim_name,
@@ -314,7 +317,7 @@ elif len(args) == 3 and args[0] == "get" and args[1] in {
     "jobs.batch",
     "workloads.kueue.x-k8s.io",
 }:
-    owner = "other-job" if os.environ.get("TGSRL_FAKE_BAD_OWNER") else "job-a"
+    owner = "other-job" if os.environ.get("TGSRL_FAKE_BAD_OWNER") else job_id
     emit({
         "metadata": {
             "name": args[2],
@@ -325,7 +328,7 @@ elif args[:1] == ["exec"] and args[-2:] == ["nvidia-smi", "-L"]:
     print(f"MIG 1g.10gb Device 0: (UUID: {device_id})")
 elif args[:1] == ["exec"]:
     common = {
-        "job_id": "job-a",
+        "job_id": job_id,
         "run_id": "run-a",
         "sandbox_id": "sandbox-a",
         "generation": generation,
@@ -504,7 +507,8 @@ def driver_environment(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> tuple[Any, _GatewayState, Path]:
     marker = tmp_path / "rebound"
-    state = _GatewayState(marker)
+    expected_job_id = DRIVER._job_id(_request("provision", 1), 1)
+    state = _GatewayState(marker, expected_job_id)
     server, thread = _gateway_server(state)
     kubectl = tmp_path / "kubectl"
     hook = tmp_path / "rebind-hook"
@@ -548,6 +552,7 @@ def driver_environment(
         encoding="utf-8",
     )
     monkeypatch.setenv("TGSRL_FAKE_REBIND_MARKER", str(marker))
+    monkeypatch.setenv("TGSRL_FAKE_JOB_ID", expected_job_id)
     monkeypatch.setattr(DRIVER, "_git_fingerprint", lambda: ("commit-a", False))
     selected = DRIVER.HardwareEnvironmentDriver(DRIVER.load_config(config))
     try:
@@ -562,6 +567,17 @@ def _execute(driver: Any, root: Path, request: JsonObject) -> JsonObject:
     operation_root = root / request["request_id"]
     operation_root.mkdir()
     return cast(JsonObject, driver.execute(request, operation_root / "response.json"))
+
+
+def test_hardware_job_identity_is_stable_and_attempt_scoped() -> None:
+    request = _request("provision", 1)
+    first = DRIVER._job_id(request, 1)
+    assert first == DRIVER._job_id(request, 1)
+    assert first != DRIVER._job_id(request, 2)
+    changed = dict(request)
+    changed["run_key"] = "other-run"
+    assert first != DRIVER._job_id(changed, 1)
+    assert len(first) <= 63
 
 
 def test_driver_runs_e2_through_gateway_dra_worker_and_scheduler_hook(

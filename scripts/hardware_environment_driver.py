@@ -150,6 +150,16 @@ def _canonical_digest(value: object) -> str:
     return hashlib.sha256(payload).hexdigest()
 
 
+def _job_id(request_value: Mapping[str, Any], attempt: int) -> str:
+    identity = {
+        "campaign_id": request_value["campaign_id"],
+        "experiment_id": request_value["experiment_id"],
+        "run_key": request_value["run_key"],
+        "attempt": attempt,
+    }
+    return "hardware-" + _canonical_digest(identity)[:24]
+
+
 def _is_sensitive_name(value: object) -> bool:
     normalized = str(value).casefold().replace("-", "_")
     compact = normalized.replace("_", "")
@@ -954,13 +964,19 @@ class HardwareEnvironmentDriver:
         job["displayName"] = f"{job.get('displayName', 'hardware-gate')}-{request_value['run_key']}"
         gateway = Gateway(target.gateway_url, target.timeout)
         attempt = int(run.get("attempt", 1))
+        expected_job_id = _job_id(request_value, attempt)
+        job["jobId"] = expected_job_id
+        # Persist the deterministic identity before the create call so cleanup
+        # can reconcile a successful request whose HTTP response was lost.
+        run["job_id"] = expected_job_id
         key_prefix = f"hardware-{request_value['request_id']}-a{attempt}"
         created = gateway.post("/v1/jobs", job, key_prefix + "-create")
         job_id = _string(
             _mapping(created.get("job"), label="created job").get("jobId"),
             label="created job ID",
         )
-        run["job_id"] = job_id
+        if job_id != expected_job_id:
+            raise DriverError("Gateway changed the deterministic hardware Job identity")
         admitted = gateway.post(
             f"/v1/jobs/{parse.quote(job_id, safe='')}/admit",
             {"reason": "hardware Gate admission"},
