@@ -14,6 +14,7 @@ from tgsrl_runtime.runtime_app import (
     DEFAULT_RUNTIME_STATE_DB,
     DEFAULT_SCHEDULER_TARGET,
     _allows_mock_component_projection,
+    _operator_timeout_seconds,
     _parser,
     _require_product_server_dependencies,
     _run_server,
@@ -31,6 +32,19 @@ def test_server_cli_defaults_to_explicit_local_state_database() -> None:
     assert args.operator_target == DEFAULT_OPERATOR_TARGET == "127.0.0.1:50081"
     assert args.job_control_target == DEFAULT_JOB_CONTROL_TARGET == "127.0.0.1:50061"
     assert args.config_root == DEFAULT_CONFIG_ROOT == "."
+
+
+def test_runtime_operator_timeout_has_safe_default_and_env_override(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("TGSRL_RUNTIME_OPERATOR_TIMEOUT_SECONDS", raising=False)
+    assert _operator_timeout_seconds() == 30.0
+    monkeypatch.setenv("TGSRL_RUNTIME_OPERATOR_TIMEOUT_SECONDS", "45")
+    assert _operator_timeout_seconds() == 45.0
+    for invalid in ("0", "-1", "nan", "inf"):
+        monkeypatch.setenv("TGSRL_RUNTIME_OPERATOR_TIMEOUT_SECONDS", invalid)
+        with pytest.raises(ValueError, match="must be positive and finite"):
+            _operator_timeout_seconds()
 
 
 def test_server_state_database_resolves_empty_value_to_persistent_default(

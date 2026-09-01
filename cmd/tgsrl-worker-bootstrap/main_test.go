@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -211,6 +212,75 @@ func TestSupervisorControlsProcessAndFencesIdentity(t *testing.T) {
 	}
 	if status, body := postControl(t, server.URL, "control-token", runtimehelper.ControlRequest{Action: "status", SandboxID: "sandbox-a", Generation: 3}); status != http.StatusOK || !strings.Contains(body, "generation mismatch") {
 		t.Fatalf("stale generation response = %d %s", status, body)
+	}
+}
+
+func TestSupervisorSnapshotDoesNotBlockOnCooperativeControl(t *testing.T) {
+	directory, err := os.MkdirTemp("/tmp", "tgsrl-bootstrap-test-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(directory) })
+	socketPath := filepath.Join(directory, "worker.sock")
+	listener, err := net.Listen("unix", socketPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+	requestReceived := make(chan struct{})
+	releaseResponse := make(chan struct{})
+	go func() {
+		connection, acceptErr := listener.Accept()
+		if acceptErr != nil {
+			return
+		}
+		defer connection.Close()
+		var request runtimehelper.ControlRequest
+		if json.NewDecoder(connection).Decode(&request) != nil {
+			return
+		}
+		close(requestReceived)
+		<-releaseResponse
+		_ = json.NewEncoder(connection).Encode(runtimehelper.ControlResponse{
+			Accepted: true, Generation: 4, State: "running", Ready: true,
+		})
+	}()
+	s := &supervisor{
+		worker: runtimehelper.Worker{
+			SandboxID: "sandbox-a", Generation: 4, State: "running", Ready: true,
+		},
+		controlSocket: socketPath, controlTimeout: time.Second, receipts: map[string]receipt{},
+	}
+	done := make(chan runtimehelper.ControlResponse, 1)
+	go func() {
+		done <- s.handle(context.Background(), runtimehelper.ControlRequest{
+			Action: "prepare_pause", SandboxID: "sandbox-a", Generation: 4,
+			IdempotencyKey: "pause-a",
+		})
+	}()
+	select {
+	case <-requestReceived:
+	case <-time.After(time.Second):
+		t.Fatal("cooperative control request was not received")
+	}
+	snapshotDone := make(chan runtimehelper.Worker, 1)
+	go func() { snapshotDone <- s.snapshot() }()
+	select {
+	case worker := <-snapshotDone:
+		if worker.SandboxID != "sandbox-a" {
+			t.Fatalf("snapshot = %+v", worker)
+		}
+	case <-time.After(200 * time.Millisecond):
+		t.Fatal("worker snapshot blocked behind cooperative control I/O")
+	}
+	close(releaseResponse)
+	select {
+	case response := <-done:
+		if !response.Accepted {
+			t.Fatalf("control response = %+v", response)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("cooperative control did not finish")
 	}
 }
 

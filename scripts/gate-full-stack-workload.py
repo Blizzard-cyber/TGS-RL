@@ -225,8 +225,8 @@ def execute(args: argparse.Namespace) -> list[JsonObject]:
     work_root.mkdir(parents=True, exist_ok=True)
     trace_path = work_root / "worker.ndjson"
     checkpoint_root = work_root / "checkpoints"
-    client = GatewayClient(os.environ["TGSRL_GATE_GATEWAY_URL"], timeout=3.0)
     timeout = float(os.environ.get("TGSRL_GATE_TIMEOUT", "30"))
+    client = GatewayClient(os.environ["TGSRL_GATE_GATEWAY_URL"], timeout=timeout + 5.0)
     created = client.create_job(
         _job(args, trace_path, checkpoint_root),
         idempotency_key=f"gate-create-{args.label}-{args.phase}-{args.iteration}",

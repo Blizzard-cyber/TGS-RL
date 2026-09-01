@@ -130,8 +130,10 @@ Scheduler 的 Prometheus 输出为指标名添加 `tgsrl_` 前缀。三档 loop 
 | `TGSRL_GATEWAY_RUNTIME_TARGET` | `127.0.0.1:50071` |
 | `TGSRL_GATEWAY_EXPERIMENT_TARGET` | `127.0.0.1:50071` |
 | `TGSRL_GATEWAY_GRPC_TIMEOUT_SECONDS` | `2.0` |
+| `TGSRL_GATEWAY_COMMAND_TIMEOUT_SECONDS` | `30.0` |
 | `TGSRL_GATEWAY_HEALTH_TIMEOUT_SECONDS` | `0.5` |
 | `TGSRL_GATEWAY_DECISIONS_TIMEOUT_SECONDS` | `0.25` |
+| `TGSRL_RUNTIME_OPERATOR_TIMEOUT_SECONDS` | `30.0` |
 
 `serve` 子命令的 `--backend-mode`、`--job-control-target`、
 `--scheduler-target`、`--runtime-target` 和 `--experiment-target` 会覆盖相应环境变量。

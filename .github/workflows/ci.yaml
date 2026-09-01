@@ -367,6 +367,7 @@ jobs:
           path: |
             .cache/tgsrl/gate-gi-process/report.json
             .cache/tgsrl/gate-gi-process/artifacts/raw/archive.tar.gz
+            .cache/tgsrl/gate-gi-process/artifacts/logs/**
             .cache/tgsrl/gate-gi-process/artifacts/traces/*.json
 
   console:

@@ -425,6 +425,7 @@ class GrpcGatewayBackend:
                 request_id=request_id,
                 idempotency_key=idempotency_key,
             ),
+            timeout=self.config.command_timeout_seconds,
         )
         return {"operation": clone_message(response.operation), "run": clone_message(response.run)}
 

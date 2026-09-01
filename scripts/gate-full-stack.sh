@@ -124,6 +124,9 @@ RUNTIME_TARGET="127.0.0.1:$RUNTIME_PORT"
 CONTROLLER_TARGET="127.0.0.1:$CONTROLLER_PORT"
 OPERATOR_TARGET="127.0.0.1:$OPERATOR_PORT"
 GATEWAY_URL="http://127.0.0.1:$GATEWAY_PORT"
+export TGSRL_GATE_TIMEOUT=${TGSRL_GATE_TIMEOUT:-30}
+export TGSRL_GATEWAY_COMMAND_TIMEOUT_SECONDS="$TGSRL_GATE_TIMEOUT"
+export TGSRL_RUNTIME_OPERATOR_TIMEOUT_SECONDS="$TGSRL_GATE_TIMEOUT"
 
 go build -o "$BIN_DIR/scheduler" ./scheduler-go/cmd/scheduler
 go build -o "$BIN_DIR/job-controller" ./job-controller-go/cmd/job-controller
@@ -193,7 +196,6 @@ export TGSRL_GATE_SERVICE_LOG_DIR="$LOG_DIR"
 export TGSRL_GATE_PROCESS_LOG_ROOT="$STATE_DIR/workloads"
 export TGSRL_GATE_PYTHON="$PYTHON_BIN"
 export TGSRL_GATE_REPO_ROOT="$ROOT_DIR"
-export TGSRL_GATE_TIMEOUT=${TGSRL_GATE_TIMEOUT:-30}
 
 if ! "$PYTHON_BIN" scripts/gate-tools.py \
   --manifest configs/gates/gate-gi-process.json \

@@ -53,6 +53,7 @@ type config struct {
 
 type supervisor struct {
 	mu             sync.Mutex
+	controlMu      sync.Mutex
 	worker         runtimehelper.Worker
 	controlToken   string
 	traceToken     string
@@ -228,7 +229,7 @@ func runWorker(cfg config) error {
 	port := listener.Addr().(*net.TCPAddr).Port
 	worker.ControlURL = "http://" + net.JoinHostPort(cfg.advertiseHost, strconv.Itoa(port)) + "/v1/control"
 	supervisor := &supervisor{worker: worker, controlToken: controlToken, traceToken: traceToken, registryURL: cfg.registryURL, registryToken: cfg.registryToken, controlSocket: cfg.controlSocket, safePointFile: cfg.safePointFile, readinessFile: cfg.readinessFile, controlTimeout: cfg.controlTimeout, receipts: make(map[string]receipt)}
-	server := &http.Server{Handler: supervisor, ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 10 * time.Second, WriteTimeout: 10 * time.Second, IdleTimeout: 30 * time.Second}
+	server := &http.Server{Handler: supervisor, ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 10 * time.Second, WriteTimeout: cfg.controlTimeout + 5*time.Second, IdleTimeout: 30 * time.Second}
 	go func() { _ = server.Serve(listener) }()
 	command := exec.Command(cfg.command[0], cfg.command[1:]...)
 	command.Env = append(
@@ -510,8 +511,9 @@ func (s *supervisor) waitUntilRegistered(ctx context.Context) error {
 }
 
 func (s *supervisor) handle(ctx context.Context, request runtimehelper.ControlRequest) runtimehelper.ControlResponse {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	s.controlMu.Lock()
+	defer s.controlMu.Unlock()
+
 	if _, bounded := ctx.Deadline(); !bounded {
 		var cancel context.CancelFunc
 		timeout := s.controlTimeout
@@ -521,123 +523,140 @@ func (s *supervisor) handle(ctx context.Context, request runtimehelper.ControlRe
 		ctx, cancel = context.WithTimeout(ctx, timeout)
 		defer cancel()
 	}
-	generationMatches := request.Generation == s.worker.Generation || request.Action == "reload" && request.Generation == s.worker.Generation+1
-	if request.SandboxID != s.worker.SandboxID || !generationMatches {
-		return s.response(false, "worker identity or generation mismatch")
+
+	s.mu.Lock()
+	worker := s.worker
+	worker.DeviceIDs = append([]string(nil), worker.DeviceIDs...)
+	generationMatches := request.Generation == worker.Generation || request.Action == "reload" && request.Generation == worker.Generation+1
+	if request.SandboxID != worker.SandboxID || !generationMatches {
+		s.mu.Unlock()
+		return workerResponse(worker, false, "worker identity or generation mismatch")
 	}
 	if request.Action == "status" {
+		s.mu.Unlock()
 		if s.controlSocket != "" {
 			response, err := callUnixControl(ctx, s.controlSocket, request)
 			if err != nil {
-				return s.response(false, err.Error())
+				return workerResponse(worker, false, err.Error())
 			}
-			if !response.Accepted || response.Generation != 0 && response.Generation != s.worker.Generation {
-				return s.response(false, firstNonEmpty(response.Error, "cooperative worker identity mismatch"))
+			if !response.Accepted || response.Generation != 0 && response.Generation != worker.Generation {
+				return workerResponse(worker, false, firstNonEmpty(response.Error, "cooperative worker identity mismatch"))
 			}
-			s.worker.State, s.worker.SafePoint, s.worker.Offloaded, s.worker.Ready = response.State, response.SafePoint, response.Offloaded, response.Ready
-			s.worker.CheckpointRef = response.CheckpointRef
+			worker.State, worker.SafePoint, worker.Offloaded, worker.Ready = response.State, response.SafePoint, response.Offloaded, response.Ready
+			worker.CheckpointRef = response.CheckpointRef
 		} else {
-			if token, err := runtimehelper.ProcessToken(ctx, s.worker.PID); err != nil || token != s.worker.ProcessToken {
-				return s.response(false, "worker process identity changed")
+			if token, err := runtimehelper.ProcessToken(ctx, worker.PID); err != nil || token != worker.ProcessToken {
+				return workerResponse(worker, false, "worker process identity changed")
 			}
-			s.worker.SafePoint, _ = readMarker(s.safePointFile)
+			worker.SafePoint, _ = readMarker(s.safePointFile)
 			if s.readinessFile == "" {
-				s.worker.Ready = true
+				worker.Ready = true
 			} else {
-				s.worker.Ready, _ = readMarker(s.readinessFile)
+				worker.Ready, _ = readMarker(s.readinessFile)
 			}
 		}
-		return s.response(true, "")
+		s.mu.Lock()
+		s.worker = worker
+		s.mu.Unlock()
+		return workerResponse(worker, true, "")
 	}
 	if request.IdempotencyKey == "" {
-		return s.response(false, "idempotency_key is required")
+		s.mu.Unlock()
+		return workerResponse(worker, false, "idempotency_key is required")
 	}
 	digestBytes, _ := json.Marshal(request)
 	digest := fmt.Sprintf("%x", sha256.Sum256(digestBytes))
 	if previous, exists := s.receipts[request.IdempotencyKey]; exists {
+		s.mu.Unlock()
 		if previous.digest != digest {
-			return s.response(false, "idempotency key was reused with different content")
+			return workerResponse(worker, false, "idempotency key was reused with different content")
 		}
 		return previous.response
 	}
-	response := s.apply(ctx, request)
+	s.mu.Unlock()
+	updated, response := s.apply(ctx, worker, request)
+	s.mu.Lock()
+	if response.Accepted {
+		s.worker = updated
+	}
 	if response.Accepted || !strings.Contains(response.Error, "outcome is not confirmed") {
 		s.receipts[request.IdempotencyKey] = receipt{digest: digest, response: response}
 	}
+	s.mu.Unlock()
 	return response
 }
 
-func (s *supervisor) apply(ctx context.Context, request runtimehelper.ControlRequest) runtimehelper.ControlResponse {
+func (s *supervisor) apply(ctx context.Context, worker runtimehelper.Worker, request runtimehelper.ControlRequest) (runtimehelper.Worker, runtimehelper.ControlResponse) {
 	if s.controlSocket != "" {
 		response, err := callUnixControl(ctx, s.controlSocket, request)
 		if err != nil {
-			return s.response(false, "worker mutation outcome is not confirmed: "+err.Error())
+			return worker, workerResponse(worker, false, "worker mutation outcome is not confirmed: "+err.Error())
 		}
 		if response.Accepted {
-			s.worker.State, s.worker.SafePoint, s.worker.Offloaded, s.worker.Ready = response.State, response.SafePoint, response.Offloaded, response.Ready
-			s.worker.CheckpointRef = response.CheckpointRef
+			worker.State, worker.SafePoint, worker.Offloaded, worker.Ready = response.State, response.SafePoint, response.Offloaded, response.Ready
+			worker.CheckpointRef = response.CheckpointRef
 			if response.Generation != 0 {
-				s.worker.Generation = response.Generation
+				worker.Generation = response.Generation
 			}
 			if response.BindingID != "" {
-				s.worker.BindingID = response.BindingID
+				worker.BindingID = response.BindingID
 			}
 			if response.DeviceID != "" {
-				s.worker.DeviceID, s.worker.DeviceIDs = response.DeviceID, []string{response.DeviceID}
+				worker.DeviceID, worker.DeviceIDs = response.DeviceID, []string{response.DeviceID}
 			}
 			if response.Share != 0 {
-				s.worker.Share = response.Share
+				worker.Share = response.Share
 			}
 		}
-		identity := s.response(response.Accepted, response.Error)
+		identity := workerResponse(worker, response.Accepted, response.Error)
 		identity.State, identity.SafePoint, identity.Offloaded, identity.Ready, identity.CheckpointRef = response.State, response.SafePoint, response.Offloaded, response.Ready, response.CheckpointRef
-		return identity
+		return worker, identity
 	}
 	switch request.Action {
 	case "prepare_pause":
 		value, ok := readMarker(s.safePointFile)
 		if !ok || !value {
-			return s.response(false, "signal-managed worker is not at a safe point")
+			return worker, workerResponse(worker, false, "signal-managed worker is not at a safe point")
 		}
-		s.worker.SafePoint, s.worker.Ready = true, false
+		worker.SafePoint, worker.Ready = true, false
 	case "pause", "sleep":
-		if !s.worker.SafePoint {
-			return s.response(false, request.Action+" requires a safe point")
+		if !worker.SafePoint {
+			return worker, workerResponse(worker, false, request.Action+" requires a safe point")
 		}
-		if err := signalGroup(s.worker.PID, syscall.SIGSTOP); err != nil {
-			return s.response(false, err.Error())
+		if err := signalGroup(worker.PID, syscall.SIGSTOP); err != nil {
+			return worker, workerResponse(worker, false, err.Error())
 		}
-		s.worker.State, s.worker.Ready = map[bool]string{true: "sleeping", false: "paused"}[request.Action == "sleep"], false
+		worker.State, worker.Ready = map[bool]string{true: "sleeping", false: "paused"}[request.Action == "sleep"], false
 	case "resume":
-		if err := signalGroup(s.worker.PID, syscall.SIGCONT); err != nil {
-			return s.response(false, err.Error())
+		if err := signalGroup(worker.PID, syscall.SIGCONT); err != nil {
+			return worker, workerResponse(worker, false, err.Error())
 		}
 		if s.readinessFile != "" {
 			value, ok := readMarker(s.readinessFile)
 			if !ok || !value {
-				return s.response(false, "worker readiness is not confirmed")
+				return worker, workerResponse(worker, false, "worker readiness is not confirmed")
 			}
 		}
-		s.worker.State, s.worker.SafePoint, s.worker.Ready = "running", false, true
+		worker.State, worker.SafePoint, worker.Ready = "running", false, true
 	case "stop":
 		if !request.PreserveProcess {
-			if err := signalGroup(s.worker.PID, syscall.SIGTERM); err != nil {
-				return s.response(false, err.Error())
+			if err := signalGroup(worker.PID, syscall.SIGTERM); err != nil {
+				return worker, workerResponse(worker, false, err.Error())
 			}
 		}
-		s.worker.State, s.worker.Ready = "terminated", false
+		worker.State, worker.Ready = "terminated", false
 	default:
-		return s.response(false, request.Action+" requires a cooperative worker control socket")
+		return worker, workerResponse(worker, false, request.Action+" requires a cooperative worker control socket")
 	}
-	return s.response(true, "")
+	return worker, workerResponse(worker, true, "")
 }
 
-func (s *supervisor) response(accepted bool, detail string) runtimehelper.ControlResponse {
-	deviceID := s.worker.DeviceID
-	if deviceID == "" && len(s.worker.DeviceIDs) == 1 {
-		deviceID = s.worker.DeviceIDs[0]
+func workerResponse(worker runtimehelper.Worker, accepted bool, detail string) runtimehelper.ControlResponse {
+	deviceID := worker.DeviceID
+	if deviceID == "" && len(worker.DeviceIDs) == 1 {
+		deviceID = worker.DeviceIDs[0]
 	}
-	return runtimehelper.ControlResponse{Accepted: accepted, State: s.worker.State, Generation: s.worker.Generation, SafePoint: s.worker.SafePoint, Offloaded: s.worker.Offloaded, Ready: s.worker.Ready, CheckpointRef: s.worker.CheckpointRef, BindingID: s.worker.BindingID, DeviceID: deviceID, Share: s.worker.Share, InstanceID: s.worker.InstanceID, PID: s.worker.PID, ProcessToken: s.worker.ProcessToken, Error: detail}
+	return runtimehelper.ControlResponse{Accepted: accepted, State: worker.State, Generation: worker.Generation, SafePoint: worker.SafePoint, Offloaded: worker.Offloaded, Ready: worker.Ready, CheckpointRef: worker.CheckpointRef, BindingID: worker.BindingID, DeviceID: deviceID, Share: worker.Share, InstanceID: worker.InstanceID, PID: worker.PID, ProcessToken: worker.ProcessToken, Error: detail}
 }
 
 func (s *supervisor) snapshot() runtimehelper.Worker {

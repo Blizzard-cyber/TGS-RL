@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import math
 import os
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -30,6 +31,7 @@ DEFAULT_SCHEDULER_TARGET = "127.0.0.1:50051"
 DEFAULT_OPERATOR_TARGET = "127.0.0.1:50081"
 DEFAULT_JOB_CONTROL_TARGET = "127.0.0.1:50061"
 DEFAULT_CONFIG_ROOT = "."
+DEFAULT_OPERATOR_TIMEOUT_SECONDS = 30.0
 _RUNTIME_COMPONENT_FIELDS = (
     "framework",
     "execution_backend",
@@ -45,6 +47,16 @@ def _trace_signing_key(path: str) -> bytes:
     if configured and len(configured.encode()) < 32:
         raise ValueError("worker trace signing key must contain at least 32 bytes")
     return configured.encode()
+
+
+def _operator_timeout_seconds() -> float:
+    raw = os.environ.get(
+        "TGSRL_RUNTIME_OPERATOR_TIMEOUT_SECONDS", str(DEFAULT_OPERATOR_TIMEOUT_SECONDS)
+    ).strip()
+    value = float(raw or DEFAULT_OPERATOR_TIMEOUT_SECONDS)
+    if not math.isfinite(value) or value <= 0:
+        raise ValueError("Runtime Operator timeout must be positive and finite")
+    return value
 
 
 def _server_state_db(value: str | None) -> str:
@@ -276,7 +288,7 @@ async def _run_server(
         config_load_options=config_load_options,
         trace_signing_key=_trace_signing_key(worker_registry_signing_key_file),
     )
-    operator_client = OperatorClient(target=operator_target)
+    operator_client = OperatorClient(target=operator_target, timeout=_operator_timeout_seconds())
     job_control_reporter = JobControlClient(target=job_control_target)
     server = await serve_runtime(
         bind=bind,

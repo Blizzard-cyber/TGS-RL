@@ -42,7 +42,7 @@ from tgsrl_gateway.contracts import (
     sdk_method_names,
 )
 from tgsrl_gateway.errors import GatewayError
-from tgsrl_gateway.grpc_backend import _grpc_status_to_gateway_error
+from tgsrl_gateway.grpc_backend import GrpcGatewayBackend, _grpc_status_to_gateway_error
 from tgsrl_gateway.sdk import GatewayClient
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -902,6 +902,58 @@ def test_gateway_config_defaults_runtime_and_experiment_to_same_local_target() -
     config = GatewayConfig()
     assert config.runtime_target == "127.0.0.1:50071"
     assert config.experiment_target == "127.0.0.1:50071"
+    assert config.grpc_timeout_seconds == 2.0
+    assert config.command_timeout_seconds == 30.0
+
+
+def test_gateway_config_loads_independent_command_timeout(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("TGSRL_GATEWAY_GRPC_TIMEOUT_SECONDS", "3.5")
+    monkeypatch.setenv("TGSRL_GATEWAY_COMMAND_TIMEOUT_SECONDS", "45")
+
+    config = GatewayConfig.from_env()
+
+    assert config.grpc_timeout_seconds == 3.5
+    assert config.command_timeout_seconds == 45.0
+
+
+@pytest.mark.parametrize("timeout", [0.0, -1.0, float("inf"), float("nan")])
+def test_gateway_config_rejects_invalid_command_timeout(timeout: float) -> None:
+    with pytest.raises(ValueError, match="command_timeout_seconds"):
+        GatewayConfig(command_timeout_seconds=timeout)
+
+
+def test_grpc_gateway_uses_lifecycle_timeout_for_job_commands() -> None:
+    captured: dict[str, float] = {}
+
+    class Call:
+        def __call__(
+            self, request: control_pb2.ApplyJobCommandRequest, *, timeout: float
+        ) -> control_pb2.ApplyJobCommandResponse:
+            del request
+            captured["timeout"] = timeout
+            return control_pb2.ApplyJobCommandResponse()
+
+    class JobControlStub:
+        ApplyJobCommand = Call()
+
+    config = GatewayConfig(grpc_timeout_seconds=2.0, command_timeout_seconds=30.0)
+    backend = GrpcGatewayBackend.__new__(GrpcGatewayBackend)
+    backend.config = config
+    backend._job_control = JobControlStub()
+
+    backend.apply_job_command(
+        "job-a",
+        "run-a",
+        control_pb2.JOB_COMMAND_TYPE_PAUSE,
+        actor="test",
+        reason="test",
+        request_id="request-a",
+        idempotency_key="key-a",
+    )
+
+    assert captured["timeout"] == 30.0
 
 
 def test_contract_registry_stays_aligned_with_openapi_sdk_and_cli() -> None:
