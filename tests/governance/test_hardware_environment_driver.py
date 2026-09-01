@@ -411,6 +411,30 @@ Path(args.response).write_text(json.dumps({
     )
 
 
+def _write_worker_hook(path: Path) -> None:
+    _write_executable(
+        path,
+        """#!/usr/bin/env python3
+import argparse
+import json
+from pathlib import Path
+parser = argparse.ArgumentParser()
+parser.add_argument("--request", required=True)
+parser.add_argument("--response", required=True)
+args = parser.parse_args()
+request = json.loads(Path(args.request).read_text(encoding="utf-8"))
+Path(args.response).write_text(json.dumps({
+    "schema_version": "tgsrl.io/hardware-driver-hook-response/v1alpha1",
+    "request_id": request["request_id"],
+    "status": "SUCCEEDED",
+    "authority": "managed-worker-control",
+    "receipt_id": "worker-receipt",
+    "ready": True,
+}), encoding="utf-8")
+""",
+    )
+
+
 def _job_template(path: Path) -> None:
     path.write_text(
         json.dumps(
@@ -680,6 +704,28 @@ def test_driver_rejects_hook_without_scheduler_observation_authority(
     )
     with pytest.raises(DRIVER.DriverError, match="invalid authority receipt"):
         _execute(driver, root, _request("apply_action", 4, action="rebind"))
+
+
+def test_worker_lifecycle_hook_uses_receipt_without_fake_scheduler_action(
+    driver_environment: tuple[Any, _GatewayState, Path],
+) -> None:
+    driver, _state, root = driver_environment
+    _execute(driver, root, _request("provision", 1))
+    _execute(driver, root, _request("apply_action", 2, action="bind"))
+    hook = root / "worker-hook"
+    _write_worker_hook(hook)
+    driver.config.targets["E2"].action_hooks["checkpoint"] = (
+        str(hook),
+        "--request",
+        "${REQUEST_PATH}",
+        "--response",
+        "${RESPONSE_PATH}",
+    )
+    response = _execute(driver, root, _request("apply_action", 4, action="checkpoint"))
+    event = response["events"][-1]
+    assert event["action"] == "checkpoint"
+    assert event["receipt_id"] == "worker-receipt"
+    assert event["decision_id"] == "decision-1"
 
 
 def test_driver_rejects_resourceclaim_device_identity_mismatch(

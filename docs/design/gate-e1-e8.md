@@ -79,8 +79,10 @@ action/fault ID；response 必须使用 `tgsrl.io/hardware-driver-response/v1alp
 - 故障注入同样使用显式、按 fault ID 配置的 hook，仓库默认不携带集群破坏命令。
 
 环境 hook 接受 `${REQUEST_PATH}` / `${RESPONSE_PATH}`，response 使用
-`tgsrl.io/hardware-driver-hook-response/v1alpha1`。动作 hook 必须回传
-`authority: scheduler-observation`；fault hook 必须回传 `authority: target-environment`。
+`tgsrl.io/hardware-driver-hook-response/v1alpha1`。会形成 Scheduler Action 的 hook 必须回传
+`authority: scheduler-observation`；`checkpoint`、`reload`、`rollback` 这类训练进程操作必须回传
+`authority: managed-worker-control` 和非空 receipt ID；fault hook 必须回传
+`authority: target-environment`。
 hook 必须以 request ID 实现幂等；driver 或 runner 在响应丢失、超时或重启后可能重放同一请求。
 
 ## 证据流

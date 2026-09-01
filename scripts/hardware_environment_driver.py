@@ -52,15 +52,21 @@ RUN_OPERATIONS = frozenset(
     }
 )
 DIRECT_COMMANDS = {"pause": "pause", "resume": "resume"}
-ADAPTIVE_ACTIONS = frozenset(
+SCHEDULER_HOOK_ACTIONS = frozenset({"rebind", "set_share", "set_priority", "offload"})
+WORKER_HOOK_ACTIONS = frozenset({"checkpoint", "reload", "rollback"})
+PROVIDER_ACTIONS = frozenset(
     {
+        "bind",
         "rebind",
         "set_share",
         "set_priority",
-        "checkpoint",
         "offload",
-        "reload",
-        "rollback",
+        "pause",
+        "resume",
+        "sleep",
+        "recreate",
+        "release",
+        "resize",
     }
 )
 UUID_PATTERN = re.compile(r"(?:GPU|MIG)-[A-Za-z0-9][A-Za-z0-9./_-]*")
@@ -1026,7 +1032,7 @@ class HardwareEnvironmentDriver:
             decision = self._latest_decision(target, run) or {}
             source = "operator"
             receipt_id = _operation_id(operation)
-        elif action in ADAPTIVE_ACTIONS:
+        elif action in SCHEDULER_HOOK_ACTIONS:
             before = int(run.get("last_decision_sequence", 0))
             hook = target.action_hooks.get(action)
             if hook is None:
@@ -1044,6 +1050,20 @@ class HardwareEnvironmentDriver:
             decision = self._wait_decision(target, run, action, after_sequence=before)
             source = "operator"
             receipt_id = str(hook_result.get("receipt_id") or request_value["request_id"])
+        elif action in WORKER_HOOK_ACTIONS:
+            hook = target.action_hooks.get(action)
+            if hook is None:
+                raise DriverError(f"{action} requires an explicit managed-worker control hook")
+            hook_result = self._run_hook(
+                hook,
+                request_value,
+                run,
+                response_path,
+                authority="managed-worker-control",
+            )
+            decision = self._latest_decision(target, run) or {}
+            source = "operator"
+            receipt_id = _string(hook_result.get("receipt_id"), label=f"{action} hook receipt_id")
         else:
             raise DriverError(f"unsupported hardware action {action!r}")
         run["last_decision_sequence"] = max(
@@ -1848,7 +1868,7 @@ class HardwareEnvironmentDriver:
         ]
         supported = capabilities.get("supportedActions", [])
         if not isinstance(supported, list) or not (
-            {"bind"} | {str(item) for item in required_actions_raw}
+            {"bind"} | {str(item) for item in required_actions_raw if str(item) in PROVIDER_ACTIONS}
         ).issubset(set(supported)):
             raise DriverError("job template does not declare the scenario actions")
         if target.gpu_profile == "mig" and "nvidia-mig" not in names:
