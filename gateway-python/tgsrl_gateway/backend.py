@@ -204,6 +204,17 @@ class GatewayBackend(Protocol):
         limit: int | None,
     ) -> dict[str, object]: ...
 
+    def list_traces(
+        self,
+        job_id: str,
+        *,
+        run_id: str | None,
+        trace_id: str | None,
+        data_kind: int | None,
+        page_token: str | None,
+        limit: int | None,
+    ) -> dict[str, object]: ...
+
     def get_dag(self, job_id: str, *, run_id: str | None) -> dict[str, object]: ...
 
     def get_topology(self, job_id: str, *, run_id: str | None) -> dict[str, object]: ...
@@ -508,6 +519,37 @@ class InMemoryGatewayBackend:
             after_event_id=after_event_id,
             page_token=page_token,
             limit=limit,
+        )
+
+    def list_traces(
+        self,
+        job_id: str,
+        *,
+        run_id: str | None,
+        trace_id: str | None,
+        data_kind: int | None,
+        page_token: str | None,
+        limit: int | None,
+    ) -> dict[str, object]:
+        self.get_job(job_id)
+        selected_run_id = run_id
+        if selected_run_id is None:
+            latest = self.list_runs(job_id, limit=1, page_token=None, after_run_id=None)["runs"]
+            latest_runs = cast(list[control_pb2.JobRun], latest)
+            if not latest_runs:
+                from tgsrl_gateway.errors import NotFoundError
+
+                raise NotFoundError("run", "latest")
+            selected_run_id = latest_runs[0].run_id
+        self.get_run(job_id, selected_run_id)
+        expected_trace_id = trace_id or ""
+        return self.runtime_service.list_traces(
+            job_id=job_id,
+            run_id=selected_run_id,
+            trace_id=expected_trace_id,
+            data_kind=data_kind,
+            limit=limit,
+            page_token=page_token,
         )
 
     def get_dag(self, job_id: str, *, run_id: str | None) -> dict[str, object]:

@@ -251,7 +251,7 @@ jobs:
             sleep 1
           done
           test "${console_ready}" -eq 1
-          curl --fail --silent --show-error "http://127.0.0.1:${console_port}/" | grep -F '<title>TGS-RL Console</title>'
+          curl --fail --silent --show-error "http://127.0.0.1:${console_port}/" | grep -F '<title>TGS-RL 训练控制台</title>'
 
   demo:
     name: Process E2E
@@ -322,7 +322,7 @@ jobs:
         run: |
           curl --fail --silent --show-error http://127.0.0.1:8080/health
           curl --fail --silent --show-error http://127.0.0.1:8080/v1/capabilities
-          curl --fail --silent --show-error http://127.0.0.1:4173/ | grep -F '<title>TGS-RL Console</title>'
+          curl --fail --silent --show-error http://127.0.0.1:4173/ | grep -F '<title>TGS-RL 训练控制台</title>'
       - name: Print Compose logs on failure
         if: failure()
         run: docker compose logs --no-color

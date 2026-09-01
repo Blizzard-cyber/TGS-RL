@@ -444,6 +444,45 @@ describe('HttpApiClient contract', () => {
     expect(result.data?.events).toHaveLength(0);
   });
 
+  it('maps persisted runtime trace events and forwards trace filters', async () => {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = new URL(String(input), 'http://localhost');
+      expect(url.pathname).toBe('/v1/jobs/job-live-017/traces');
+      expect(url.searchParams.get('run_id')).toBe('run-live-017-a');
+      expect(url.searchParams.get('trace_id')).toBe('trace-live-017');
+      expect(url.searchParams.get('data_kind')).toBe('DATA_KIND_LIVE');
+      expect(url.searchParams.get('mode')).toBeNull();
+      return jsonResponse({
+        events: [{
+          eventId: 'trace-event-9', jobId: 'job-live-017', runId: 'run-live-017-a',
+          traceId: 'trace-live-017', executionId: 'exec-live-017', sequence: 9,
+          occurredAt: '2026-08-27T08:20:00Z', eventType: 'TRACE_EVENT_TYPE_DECISION_APPLIED',
+          phaseId: 'actor', stageId: 'actor', algorithm: 'PPO', rolloutMode: 'ROLLOUT_MODE_PARTIALLY_ASYNC',
+          policyVersion: 'policy-5', bufferLevel: 12, safePoint: true, decisionId: 'dec-9',
+          sandboxId: 'sbx-9', generation: '3', dataKind: 'DATA_KIND_LIVE', attributes: {
+            source: 'runtime', requestId: 'req-9', executorId: 'executor-0', workerId: 'worker-0',
+            durationMs: '42.5', batchSize: '8', parentSpanId: 'span-parent',
+          },
+        }],
+      });
+    });
+    globalThis.fetch = fetchMock as typeof fetch;
+
+    const result = await new HttpApiClient('').listTraces('job-live-017', {
+      filters: { run_id: 'run-live-017-a', trace_id: 'trace-live-017', data_kind: 'live', mode: 'ready' },
+    });
+
+    expect(result.state).toBe('ready');
+    expect(result.data?.events[0]).toMatchObject({
+      id: 'trace-event-9', type: 'decision_applied', traceId: 'trace-live-017',
+      decisionId: 'dec-9', sandboxId: 'sbx-9', safePoint: true, dataKind: 'live', generation: 3,
+      attributes: {
+        source: 'runtime', request_id: 'req-9', executor_id: 'executor-0', worker_id: 'worker-0',
+        duration_ms: '42.5', batch_size: '8', parent_span_id: 'span-parent',
+      },
+    });
+  });
+
   it('uses nested topology and sandbox routes', async () => {
     const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
       const url = new URL(String(input), 'http://localhost');
@@ -720,12 +759,12 @@ describe('HttpApiClient contract', () => {
     const result = await client.listJobs();
 
     expect(result.state).toBe('error');
-    expect(result.message).toBe('Request aborted.');
+    expect(result.message).toBe('请求已取消。');
     expect(result.retryable).toBe(true);
     expect(result.apiError).toEqual({
       status: 0,
       code: 'transport_error',
-      message: 'Request aborted.',
+      message: '请求已取消。',
       details: undefined,
       requestId: undefined,
     });
@@ -807,12 +846,12 @@ describe('HttpApiClient contract', () => {
     const result = await client.listJobs();
 
     expect(result.state).toBe('error');
-    expect(result.message).toBe('Gateway returned an invalid JSON response body.');
+    expect(result.message).toBe('网关返回了无效的 JSON 响应。');
     expect(result.retryable).toBe(false);
     expect(result.apiError).toEqual({
       status: 0,
       code: 'transport_error',
-      message: 'Gateway returned an invalid JSON response body.',
+      message: '网关返回了无效的 JSON 响应。',
       details: undefined,
       requestId: undefined,
     });

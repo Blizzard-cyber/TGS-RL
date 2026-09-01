@@ -19,7 +19,7 @@
 | 单机持久化 | **支持** | Scheduler checkpoint/journal、Job Controller 文件状态、Runtime/Experiment SQLite、Operator cursor 与 ledger；启动时调和遗留 delivery、终态 allocation 和已淘汰的重复 failure audit | 不提供跨服务事务、HA 或灾备；fake backend 对象只存在于进程内，Scheduler 通过 provider readback 保守修复其投影 |
 | Job、Runtime 与 Experiment 控制 | **支持** | JobControl、RuntimeControl、RuntimeBackendControl 和 Experiment gRPC 服务 | Runtime `start` 发布 Intent；workload 必须由 Operator/backend 启动并通过观察事件回报 |
 | HTTP Gateway | **支持** | Job、Run、Timeline、DAG、Topology、Sandbox、Decision、Replay、Experiment、OpenAPI、CLI 与 Python SDK | gRPC 模式要求四个逻辑后端可达；内存模式不持久化 |
-| Web Console | **支持** | 概览、任务详情、时间线、拓扑、Sandbox、Decision、实验比较，以及 Job/Run 准入和生命周期操作 | 静态 `mock` adapter 不访问 Gateway；静态部署需自行提供同源 API 代理 |
+| Web Console | **支持** | 中文运行总览、任务详情、Trace 多轨时间轴、时间线、拓扑、Sandbox、Decision、实验比较，以及 Job/Run 准入和生命周期操作 | Trace 页面读取 Runtime 持久化事件；只有事件携带真实 duration 属性时才显示耗时条。静态 `mock` adapter 不访问 Gateway；静态部署需自行提供同源 API 代理 |
 | 性能回归门禁 | **支持（CI 回归）** | 独立非 race CI 检查 Scheduler 8 devices/100 units、1000 devices/1000 units 与 NVIDIA Provider observation apply 的 P95 预算 | 预算只约束固定 CPU fixture 的代码回退，不是生产 SLA、GPU 性能或训练收益证明 |
 | CPU Mock Provider | **支持** | 能力匹配、逻辑资源绑定、L1–L4 逻辑模拟动作、故障注入、generation fence 和逐动作 rollback | Adaptive Planner 会在满足观测、能力与安全条件时生成 L1–L4 动作；这些结果只验证控制逻辑，不代表真实硬件行为或性能 |
 | NVIDIA Provider（默认） | **有条件（Conditional）** | `LocalDriver` 可通过 `nvidia-smi` 形成设备快照 | 需要 NVIDIA 驱动和 `nvidia-smi`；默认不声明资源动作 |
@@ -151,6 +151,11 @@ gate-tools/campaign/gate/scenario/executor/driver digest，拒绝旧 commit、�
 原子链、持久 receipt 和 identity fail-closed，但这不构成真实 GPU 证据。部署者需要从
 `configs/hardware/environment.example.json` 创建本地配置，并提供真实 workload 模板、trace
 导出命令与必要的 observation/fault hook；未配置的自适应动作会直接拒绝。
+
+Console 的链路追踪读取 Runtime 的真实 `TraceEvent`，支持 Trainer、Request、Executor、Worker
+四类轨道、统一时间标尺、长耗时与空泡提示，以及基于 `request_id` 的跨轨关联。veRL adapter
+会透传 duration、batch size、GPU active time、span 和执行身份；未上报持续时间的事件只显示
+真实时间点。静态演示模式仅用于验证交互和布局，不作为真实性能证据。
 
 ## 明确不支持
 

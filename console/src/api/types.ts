@@ -280,6 +280,33 @@ export interface TimelineResponse {
   events: TimelineEvent[];
 }
 
+export interface TraceEventRecord {
+  id: string;
+  jobId: string;
+  runId: string;
+  traceId: string;
+  executionId: string;
+  sequence: number;
+  occurredAt: string;
+  type: string;
+  phaseId: string;
+  stageId: string;
+  algorithm: string;
+  rolloutMode: string;
+  policyVersion: string;
+  bufferLevel: number;
+  safePoint: boolean;
+  decisionId?: string;
+  sandboxId?: string;
+  generation: number;
+  dataKind: DataKind;
+  attributes: Record<string, string>;
+}
+
+export interface TraceResponse {
+  events: TraceEventRecord[];
+}
+
 export interface SandboxResponse {
   sandboxes: SandboxRecord[];
 }
@@ -290,6 +317,7 @@ export interface ApiClient {
   getJobDetail(jobId: string, options?: QueryOptions): Promise<QueryResult<JobDetailResponse>>;
   listRuns(jobId: string, options?: QueryOptions): Promise<QueryResult<RunSummary[]>>;
   listTimeline(jobId: string, options?: QueryOptions): Promise<QueryResult<TimelineResponse>>;
+  listTraces(jobId: string, options?: QueryOptions): Promise<QueryResult<TraceResponse>>;
   getTopology(jobId: string, options?: QueryOptions): Promise<QueryResult<TopologySnapshot>>;
   listSandboxes(jobId: string, options?: QueryOptions): Promise<QueryResult<SandboxResponse>>;
   getDecisionExplorer(jobId: string, decisionId: string, options?: QueryOptions): Promise<QueryResult<DecisionExplorerResult>>;

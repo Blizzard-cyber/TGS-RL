@@ -616,8 +616,8 @@ snake_case。分页 token 是带 scope/filter 的 opaque token，不能跨资源
 invalid argument、not found、conflict、permission、rate limit、unimplemented、timeout 等状态映射为
 对应 HTTP 语义。
 
-Console 位于 `console/src/`，七个主要页面是 Overview、Job Detail、Timeline、Topology、Sandbox、
-Decision Explorer、Experiment Compare。`HttpApiClient` 通过 Gateway 获取真实数据，`MockApiClient`
+Console 位于 `console/src/`，八个主要页面是运行总览、任务详情、链路追踪、事件时间线、资源拓扑、
+运行沙箱、调度决策和实验对比。`HttpApiClient` 通过 Gateway 获取真实数据，`MockApiClient`
 只用于静态预览和浏览器 fixture。Console 没有独立业务状态权威。
 
 ## 12. 存储、恢复与一致性
@@ -663,8 +663,19 @@ Job/Operation、Runtime Sandbox、Scheduler Decision/transaction、Operator bund
 
 `compose.yaml` 启动六个服务：Scheduler、Runtime/Experiment、Job Controller、Operator、Gateway、
 Console。默认是 CPU Mock Provider + fake Operator backend，并用四个 named volumes 保存状态。
+Console 默认使用中文。链路追踪通过 `/v1/jobs/{job_id}/traces` 读取 Runtime 持久化的
+`TraceEvent`，按训练阶段、请求处理、推理调度和工作进程分轨展示；持续时间仅来自事件的
+`duration_ms`、`duration_us` 或 `duration_ns` 属性，没有时长时显示为瞬时事件。
+页面采用统一时间标尺，并把 `request_id` 相同的请求、执行器和工作进程片段联动高亮；
+`executor_id`、`worker_id`、`span_id`、`parent_span_id`、`batch_size` 和 `device_id` 用于
+还原请求到推理执行的因果链。`display_name` 提供面向人的片段名称，`component`/`track`
+决定分轨。Console 不根据相邻事件时间推测持续时间，也不会把普通 JobEvent 伪装成 Trace。
+veRL adapter 会把真实训练指标中的 duration、batch size、GPU active time 和上述关联身份
+保留到 protobuf `TraceEvent.attributes`，因此接入真实 worker 后可直接形成多轨瀑布图。
 `make compose-smoke` 通过 Console 同源代理执行 Job 创建、准入、`start/pause/resume/stop`，并
-断言 Decision、两个 Sandbox 终态和 Scheduler allocation 回收。该命令可在保留 named volumes 的
+断言 Decision、两个 Sandbox 终态和 Scheduler allocation 回收；它还使用真实 managed-worker Trace
+RPC、HMAC、Runtime 身份校验和 SQLite 持久化写入一组明确标记为 Synthetic 的多轨 span，供本机
+验证请求—执行器—工作进程关联，但不构成真实 GPU 性能证据。该命令可在保留 named volumes 的
 整栈重启后重复执行，用于验证跨组件恢复不会阻塞后续任务。
 
 本地进程模式由 `scripts/gate-full-stack.sh` 使用 process backend 和真实 bootstrap 子进程，覆盖
@@ -781,7 +792,7 @@ identity、Scheduler plan、worker identity、动作、故障和节点集合。
 | `cmd/tgsrl-worker-bootstrap/` | 子进程监管 | signal、socket、device verification、exit cleanup |
 | `adapters/` | 框架/执行/训练/rollout 适配 | LaunchSpec 和 lifecycle protocol |
 | `gateway-python/tgsrl_gateway/` | HTTP、CLI、SDK | Proto JSON、分页、错误映射 |
-| `console/src/` | 七个产品页面 | API mapping、run scope、错误展示 |
+| `console/src/` | 八个产品页面 | API mapping、run scope、错误展示 |
 | `storage/` | Go 共享日志/快照存储 | checksum、atomic replace、recovery |
 | `scripts/` | Gate、部署、生成、兼容性工具 | 证据不可伪造、输入锁定 |
 | `deploy/` | Helm、CRD、原生 manifest | RBAC、PVC、probe、immutable image |

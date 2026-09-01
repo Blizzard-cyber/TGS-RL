@@ -2,8 +2,8 @@ import { useDeferredValue, useEffect, useRef, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 import { useApiClient } from '../app/apiContext';
 import { useQuery, useRunScopedSearchParams } from '../app/hooks';
-import { jobDecisionsPath, jobSandboxesPath, jobTimelinePath, jobTopologyPath } from '../app/routes';
-import { dataKindOptions, formatTimestamp, simulationOptions, toQueryFilters, titleCase } from '../app/utils';
+import { jobDecisionsPath, jobSandboxesPath, jobTimelinePath, jobTopologyPath, jobTracesPath } from '../app/routes';
+import { commandLabel, dataKindOptions, formatTimestamp, simulationOptions, toQueryFilters, titleCase } from '../app/utils';
 import { SurfaceStateBoundary, SurfaceStateControl } from '../app/surface';
 import { AsyncState, DataTable, MetricCard, Panel, Pill, SelectCardButton, ShellFrame, SourceBadge } from '../components/primitives';
 import type { JobDetailResponse, QueryResult } from '../api/types';
@@ -17,7 +17,7 @@ function buildReplayDraft(jobId?: string) {
     {
       replayId: 'replay-console-new',
       ...(jobId ? { jobId } : {}),
-      displayName: 'Console Replay',
+      displayName: '控制台回放',
     },
     null,
     2,
@@ -35,7 +35,7 @@ export function JobDetailPage() {
     JSON.stringify(
       {
         jobId: 'job-console-new',
-        displayName: 'Console Created Job',
+        displayName: '控制台创建的任务',
         algorithm: 'PPO',
         dataKind: 'DATA_KIND_LIVE',
       },
@@ -84,7 +84,7 @@ export function JobDetailPage() {
   const detailQuery = useQuery<LoadedJobDetail>(
     async (signal) => {
       if (!deferredJobId) {
-        return { state: 'empty' as const, message: 'Select a job to inspect retained detail.' };
+        return { state: 'empty' as const, message: '请选择一个任务查看运行详情。' };
       }
       const requestedRunIdForQuery = requestedRunId;
       const result = await client.getJobDetail(
@@ -148,13 +148,13 @@ export function JobDetailPage() {
         return;
       }
       if (result.state === 'ready') {
-        setControlMessage(result.data?.message ?? `${actionKey} succeeded.`);
+        setControlMessage(result.data?.message ?? `${actionKey} 已完成。`);
       } else {
-        setControlError(result.message ?? `${actionKey} failed.`);
+        setControlError(result.message ?? `${actionKey} 执行失败。`);
       }
     } catch (error) {
       if (activeControlRequest.current === request) {
-        setControlError(error instanceof Error ? error.message : `${actionKey} failed.`);
+        setControlError(error instanceof Error ? error.message : `${actionKey} 执行失败。`);
       }
     } finally {
       if (activeControlRequest.current === request) {
@@ -166,12 +166,12 @@ export function JobDetailPage() {
 
   return (
     <ShellFrame
-      title="Job Detail"
-      subtitle="Investigate one job’s retained state, decisions, runtime sandboxes, and current control-plane health."
+      title="任务中心"
+      subtitle="选择任务和运行，查看状态、链路追踪、调度决策、沙箱资源并执行控制操作。"
       actions={
         <div className="control-row">
           <label>
-            <span>Source</span>
+            <span>数据来源</span>
             <select value={dataKind} onChange={(event) => setDataKind(event.target.value)}>
               {dataKindOptions.map((option) => (
                 <option key={option.value} value={option.value}>
@@ -185,7 +185,7 @@ export function JobDetailPage() {
       }
     >
       <div className="two-column">
-        <Panel title="Jobs" subtitle="Select a retained job to inspect its runtime and decision surfaces.">
+        <Panel title="任务列表" subtitle="选择一项任务查看完整运行现场。">
           <SurfaceStateBoundary result={jobsQuery.result} retry={jobsQuery.retry}>
             {(jobs) => (
               <div className="stack-list">
@@ -216,7 +216,7 @@ export function JobDetailPage() {
             )}
           </SurfaceStateBoundary>
         </Panel>
-        <Panel title="Selected job" subtitle="Decisions and sandboxes stay tied to the chosen job boundary.">
+        <Panel title="任务详情" subtitle="所有决策、链路事件和沙箱都限定在当前任务与运行范围。">
           <SurfaceStateBoundary result={detailQuery.result} retry={detailQuery.retry}>
             {(detail) =>
               detail ? (
@@ -233,11 +233,11 @@ export function JobDetailPage() {
                       <Pill>{detail.job.algorithm}</Pill>
                       <Pill>{titleCase(detail.job.rolloutMode)}</Pill>
                       <Pill tone={detail.job.gpuRequired ? 'warn' : 'neutral'}>
-                        {detail.job.gpuRequired ? 'GPU required' : 'No accelerator requested'}
+                        {detail.job.gpuRequired ? '需要加速卡' : '仅需处理器'}
                       </Pill>
                     </div>
                     <p className="body-copy">
-                      Queue {detail.job.queue}, owner {detail.job.owner}, created {formatTimestamp(detail.job.createdAt)}.
+                      队列 {detail.job.queue} · 所有者 {detail.job.owner} · 创建于 {formatTimestamp(detail.job.createdAt)}
                     </p>
                   </div>
                   <section className="metric-grid">
@@ -247,25 +247,28 @@ export function JobDetailPage() {
                   </section>
                   <div className="tag-row">
                     <Link to={jobTimelinePath(detail.job.id, detail.selectedRunId)} className="button">
-                      Timeline
+                      事件时间线
+                    </Link>
+                    <Link to={jobTracesPath(detail.job.id, detail.selectedRunId)} className="button primary">
+                      链路追踪
                     </Link>
                     <Link to={jobTopologyPath(detail.job.id, detail.selectedRunId)} className="button">
-                      Topology
+                      资源拓扑
                     </Link>
                     <Link to={jobSandboxesPath(detail.job.id, detail.selectedRunId)} className="button">
-                      Sandboxes
+                      运行沙箱
                     </Link>
                     <Link to={jobDecisionsPath(detail.job.id, detail.selectedRunId)} className="button">
-                      Decisions
+                      调度决策
                     </Link>
                   </div>
                   <section className="stack-list" aria-labelledby="job-runs-heading">
                     <div>
-                      <h3 id="job-runs-heading">Runs ({detail.runs.length})</h3>
-                      <p className="body-copy">All retained runs are available; select one to scope detail and commands.</p>
+                      <h3 id="job-runs-heading">运行记录（{detail.runs.length}）</h3>
+                      <p className="body-copy">选择一次运行后，详情、链路和控制操作会同步切换。</p>
                     </div>
                     <DataTable
-                      columns={['Run', 'State', 'Started', 'Policy']}
+                      columns={['运行编号', '状态', '开始时间', '策略版本']}
                       rows={detail.runs.map((run) => [
                         <button
                           key={`${run.id}-select`}
@@ -277,17 +280,17 @@ export function JobDetailPage() {
                             setRunId(run.id);
                           }}
                         >
-                          {run.id}{run.id === detail.selectedRunId ? ' (selected)' : ''}
+                          {run.id}{run.id === detail.selectedRunId ? '（已选择）' : ''}
                         </button>,
                         <Pill key={`${run.id}-state`}>{titleCase(run.state)}</Pill>,
                         formatTimestamp(run.startedAt ?? run.createdAt),
                         run.policyVersion,
                       ])}
-                      emptyLabel="No runs retained for this job."
+                      emptyLabel="该任务没有保留运行记录。"
                     />
                   </section>
                   <DataTable
-                    columns={['Decision', 'Outcome', 'Stage', 'Plan']}
+                    columns={['决策编号', '结果', '阶段', '计划']}
                     rows={detail.decisions.map((decision) => [
                       <Link
                         key={`${decision.id}-link`}
@@ -296,22 +299,22 @@ export function JobDetailPage() {
                         {decision.id}
                       </Link>,
                       <Pill key={`${decision.id}-outcome`} tone={decision.fallback ? 'critical' : 'good'}>
-                        {decision.fallback ? 'Fallback' : 'Applied'}
+                        {decision.fallback ? '已回退' : '已应用'}
                       </Pill>,
                       decision.stageId,
-                      decision.selectedPlanId ?? 'none',
+                      decision.selectedPlanId ?? '无',
                     ])}
-                    emptyLabel="No decisions retained for this job."
+                    emptyLabel="该任务没有保留调度决策。"
                   />
                   <DataTable
-                    columns={['Sandbox', 'State', 'Node', 'Binding']}
+                    columns={['沙箱编号', '状态', '节点', '资源绑定']}
                     rows={detail.sandboxes.map((sandbox) => [
                       sandbox.id,
                       <Pill key={`${sandbox.id}-state`}>{titleCase(sandbox.state)}</Pill>,
                       sandbox.nodeLabel,
                       sandbox.bindingSummary,
                     ])}
-                    emptyLabel="No sandboxes are currently associated with this job."
+                    emptyLabel="当前任务没有关联沙箱。"
                   />
                 </>
               ) : null
@@ -319,14 +322,14 @@ export function JobDetailPage() {
           </SurfaceStateBoundary>
         </Panel>
       </div>
-      <Panel title="Control Plane" subtitle="Real HTTP mutations for jobs and replays; mock mode shows explicit demonstration responses.">
+      <Panel title="控制操作" subtitle="通过真实 HTTP 接口管理任务与回放；模拟模式会明确标记演示响应。">
         <div className="two-column">
           <div className="stack-list">
             <div className="list-card">
               <div className="list-card-header">
                 <div>
-                  <h3>Create Job</h3>
-                  <p>Submit a raw Gateway job JSON payload through the real HTTP client.</p>
+                  <h3>创建任务</h3>
+                  <p>通过 Gateway 提交任务定义，JSON 字段保持协议原名。</p>
                 </div>
               </div>
               <textarea
@@ -344,7 +347,7 @@ export function JobDetailPage() {
                     void runControlAction('create-job', async () => client.createJob(JSON.parse(jobDraft)))
                   }
                 >
-                  Create Job
+                  创建任务
                 </button>
                 <button
                   className="button"
@@ -352,20 +355,20 @@ export function JobDetailPage() {
                   disabled={!selectedJobId || controlBusy}
                   onClick={() => void runControlAction('create-run', async () => client.createRun(selectedJobId))}
                 >
-                  Create Run
+                  新建运行
                 </button>
               </div>
             </div>
             <div className="list-card">
               <div className="list-card-header">
                 <div>
-                  <h3>Job Run Commands</h3>
-                  <p>Commands use the selected job and current run boundary.</p>
+                  <h3>运行控制</h3>
+                  <p>所有命令都作用于当前选中的任务和运行。</p>
                 </div>
               </div>
               <div className="tag-row">
-                <Pill>{selectedJobId || 'No job selected'}</Pill>
-                <Pill>{commandRunId || 'No valid run selected'}</Pill>
+                <Pill>{selectedJobId || '未选择任务'}</Pill>
+                <Pill>{commandRunId || '未选择有效运行'}</Pill>
               </div>
               <div className="control-row compact">
                 <button
@@ -376,7 +379,7 @@ export function JobDetailPage() {
                     void runControlAction('job-admit', async () => client.admitJob(selectedJobId))
                   }
                 >
-                  Admit
+                  准入
                 </button>
                 {(['start', 'pause', 'resume', 'stop', 'retry', 'terminate'] as const).map((command) => (
                   <button
@@ -390,7 +393,7 @@ export function JobDetailPage() {
                       )
                     }
                   >
-                    {titleCase(command)}
+                    {commandLabel(command)}
                   </button>
                 ))}
               </div>
@@ -400,8 +403,8 @@ export function JobDetailPage() {
             <div className="list-card">
               <div className="list-card-header">
                 <div>
-                  <h3>Create Replay</h3>
-                  <p>Submit replay JSON directly to the Gateway replay endpoint.</p>
+                  <h3>创建回放</h3>
+                  <p>通过 Gateway 创建独立回放，输入字段保持协议原名。</p>
                 </div>
               </div>
               <textarea
@@ -421,10 +424,10 @@ export function JobDetailPage() {
                     void runControlAction('create-replay', async () => client.createReplay(JSON.parse(replayDraft)))
                   }
                 >
-                  Create Replay
+                  创建回放
                 </button>
                 <label>
-                  <span>Replay ID</span>
+                  <span>回放编号</span>
                   <input value={replayId} onChange={(event) => setReplayId(event.target.value)} />
                 </label>
               </div>
@@ -432,8 +435,8 @@ export function JobDetailPage() {
             <div className="list-card">
               <div className="list-card-header">
                 <div>
-                  <h3>Replay Commands</h3>
-                  <p>Direct replay control uses the real replay command route.</p>
+                  <h3>回放控制</h3>
+                  <p>直接调用真实回放控制接口。</p>
                 </div>
               </div>
               <div className="control-row compact">
@@ -449,7 +452,7 @@ export function JobDetailPage() {
                       )
                     }
                   >
-                    {titleCase(command)}
+                    {commandLabel(command)}
                   </button>
                 ))}
               </div>
@@ -459,7 +462,7 @@ export function JobDetailPage() {
         {controlMessage ? (
           <div className="async-state state-ready" role="status" aria-live="polite">
             <div className="async-copy">
-              <h3>Control action succeeded</h3>
+              <h3>控制操作已完成</h3>
               <p>{controlMessage}</p>
             </div>
           </div>

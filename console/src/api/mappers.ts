@@ -7,6 +7,7 @@ import type {
   RunSummary,
   SandboxResponse,
   TimelineResponse,
+  TraceResponse,
   TopologySnapshot,
 } from './types';
 import {
@@ -29,8 +30,8 @@ export function mapJob(job: unknown, run?: RunSummary): JobSummary {
   const desiredUnits = typeof input.desiredUnits === 'number' ? input.desiredUnits : 0;
   return {
     id: String(input.jobId ?? ''),
-    name: String(input.displayName ?? input.jobId ?? 'Unnamed job'),
-    algorithm: String(input.algorithm ?? 'Unknown'),
+    name: String(input.displayName ?? input.jobId ?? '未命名任务'),
+    algorithm: String(input.algorithm ?? '未知'),
     state: toJobState(typeof input.state === 'string' ? input.state : undefined),
     rolloutMode: toRolloutMode(typeof input.rolloutMode === 'string' ? input.rolloutMode : undefined),
     dataKind: toDataKind(typeof input.dataKind === 'string' ? input.dataKind : undefined),
@@ -140,7 +141,7 @@ export function mapDecision(inputValue: unknown): DecisionRecord {
       sandboxId: String(plannedAction.sandboxId ?? sandbox.sandboxId ?? ''),
       targetId: String(plannedAction.targetId ?? target.targetId ?? target.deviceId ?? ''),
       status: toDecisionActionStatus(actionResult.status),
-      detail: String(actionResult.errorMessage ?? actionResult.errorCode ?? plannedAction.detail ?? 'Action completed'),
+      detail: String(actionResult.errorMessage ?? actionResult.errorCode ?? plannedAction.detail ?? '动作已完成'),
     };
   });
   const selectedPlanId = typeof selectedPlan.planId === 'string' ? selectedPlan.planId : undefined;
@@ -162,8 +163,8 @@ export function mapDecision(inputValue: unknown): DecisionRecord {
     selectedCandidate: typeof selectedCandidate?.candidateId === 'string' ? selectedCandidate.candidateId : undefined,
     policyVersion: String(input.policyVersion ?? ''),
     summary: input.fallback
-      ? String(input.fallbackReason ?? 'Fallback decision')
-      : `Selected ${String(selectedPlanId ?? 'plan')} for stage ${String(input.stageId ?? '')}.`,
+      ? String(input.fallbackReason ?? '调度器执行了回退策略')
+      : `阶段 ${String(input.stageId ?? '')} 已选择计划 ${String(selectedPlanId ?? '未命名计划')}。`,
     actions,
   };
 }
@@ -259,6 +260,56 @@ export function mapTimelineEvent(inputValue: unknown, jobId: string): TimelineRe
   };
 }
 
+export function mapTraceEvent(inputValue: unknown, jobId: string): TraceResponse['events'][number] {
+  const input = ensureObject(inputValue);
+  const sourceAttributes = ensureObject(input.attributes);
+  const traceAttributeKeys: Record<string, string> = {
+    durationMs: 'duration_ms',
+    durationUs: 'duration_us',
+    durationNs: 'duration_ns',
+    requestId: 'request_id',
+    executorId: 'executor_id',
+    workerId: 'worker_id',
+    spanId: 'span_id',
+    parentSpanId: 'parent_span_id',
+    batchSize: 'batch_size',
+    gpuActiveMs: 'gpu_active_ms',
+    deviceId: 'device_id',
+    deviceIds: 'device_ids',
+    runtimeUnitId: 'runtime_unit_id',
+    bindingId: 'binding_id',
+    displayName: 'display_name',
+  };
+  const attributes = Object.fromEntries(
+    Object.entries(sourceAttributes).map(([key, value]) => [
+      traceAttributeKeys[key] ?? key,
+      String(value),
+    ]),
+  );
+  return {
+    id: String(input.eventId ?? ''),
+    jobId: String(input.jobId ?? jobId),
+    runId: String(input.runId ?? ''),
+    traceId: String(input.traceId ?? ''),
+    executionId: String(input.executionId ?? ''),
+    sequence: Number(input.sequence ?? 0),
+    occurredAt: toTimestamp(input.occurredAt),
+    type: String(input.eventType ?? 'TRACE_EVENT_TYPE_UNKNOWN').replace(/^TRACE_EVENT_TYPE_/, '').toLowerCase(),
+    phaseId: String(input.phaseId ?? ''),
+    stageId: String(input.stageId ?? ''),
+    algorithm: String(input.algorithm ?? ''),
+    rolloutMode: String(input.rolloutMode ?? '').replace(/^ROLLOUT_MODE_/, '').toLowerCase(),
+    policyVersion: String(input.policyVersion ?? ''),
+    bufferLevel: Number(input.bufferLevel ?? 0),
+    safePoint: Boolean(input.safePoint),
+    decisionId: typeof input.decisionId === 'string' && input.decisionId ? input.decisionId : undefined,
+    sandboxId: typeof input.sandboxId === 'string' && input.sandboxId ? input.sandboxId : undefined,
+    generation: Number(input.generation ?? 0),
+    dataKind: toDataKind(typeof input.dataKind === 'string' ? input.dataKind : undefined),
+    attributes,
+  };
+}
+
 export function mapSandbox(inputValue: unknown, jobId: string): SandboxResponse['sandboxes'][number] {
   const input = ensureObject(inputValue);
   const binding = ensureObject(input.binding);
@@ -283,7 +334,7 @@ export function mapSandbox(inputValue: unknown, jobId: string): SandboxResponse[
     runId: typeof input.runId === 'string' ? input.runId : undefined,
     state: sandboxState,
     generation: typeof input.generation === 'number' ? input.generation : 0,
-    nodeLabel: deviceIds[0] ?? 'unbound',
+    nodeLabel: deviceIds[0] ?? '未绑定',
     gpuAttached:
       acceleratorUnits > 0 ||
       deviceIds.some((id) => /(^mig-)|gpu|nvidia|cuda|a100|h100/i.test(id)),
@@ -292,7 +343,7 @@ export function mapSandbox(inputValue: unknown, jobId: string): SandboxResponse[
     safePoint: Boolean(input.safePoint),
     offloaded: Boolean(input.offloaded),
     updatedAt: toTimestamp(input.observedAt),
-    bindingSummary: `devices=${deviceIds.join(', ') || 'none'}, cpu=${String(resources.cpuMillis ?? 0)}m`,
+    bindingSummary: `设备=${deviceIds.join(', ') || '无'}，处理器=${String(resources.cpuMillis ?? 0)}m`,
   };
 }
 
@@ -409,12 +460,12 @@ export function mapExperiment(inputValue: unknown): ExperimentSummary {
   }));
   return {
     id: String(input.experimentId ?? ''),
-    name: String(input.displayName ?? input.experimentId ?? 'Experiment'),
+    name: String(input.displayName ?? input.experimentId ?? '未命名实验'),
     state:
       String(input.state ?? 'EXPERIMENT_STATE_PENDING').replace(/^EXPERIMENT_STATE_/, '').toLowerCase() as ExperimentSummary['state'],
     createdAt: toTimestamp(input.createdAt),
     completedAt: typeof input.completedAt === 'string' ? input.completedAt : undefined,
-    summary: String(input.summary ?? 'No summary provided.'),
+    summary: String(input.summary ?? '暂无实验摘要。'),
     runs,
   };
 }
@@ -432,7 +483,7 @@ export function mapDecisionExplorer(decision: unknown, jobId: string): DecisionE
         id: String(candidate.candidateId ?? ''),
         deviceLabel: deviceIds.join(', ') || String(candidate.candidateId ?? 'candidate'),
         score: typeof candidate.score === 'number' ? candidate.score : 0,
-        reason: String(candidate.detail ?? 'Feasible candidate'),
+        reason: String(candidate.detail ?? '候选资源满足约束'),
         selected: candidateMatchesSelectedBindings(
           candidate,
           ensureArray<Record<string, unknown>>(ensureObject(rawDecision.selectedPlan).bindings),
@@ -443,7 +494,7 @@ export function mapDecisionExplorer(decision: unknown, jobId: string): DecisionE
       (candidate) => ({
         id: String(candidate.candidateId ?? ''),
         reason: String(candidate.reason ?? 'CANDIDATE_REJECTION_REASON_UNKNOWN'),
-        detail: String(candidate.detail ?? 'Candidate rejected'),
+        detail: String(candidate.detail ?? '候选资源被拒绝'),
       }),
     ),
     relatedActions: mappedDecision.actions,
@@ -458,18 +509,18 @@ export function buildOverview(
 ): OverviewResponse {
   return {
     metrics: [
-      { label: 'Retained jobs', value: String(mappedJobs.length), tone: 'good' },
+      { label: '保留任务', value: String(mappedJobs.length), tone: 'good' },
       {
-        label: 'Gateway status',
-        value: String(health.status ?? 'unknown').toUpperCase(),
+        label: '网关状态',
+        value: String(health.status ?? '') === 'ok' ? '正常' : '异常',
         tone: String(health.status ?? '') === 'ok' ? 'good' : 'critical',
       },
       {
-        label: 'Protocol',
+        label: '协议版本',
         value: String(capabilities.protocolVersion ?? 'v0.0'),
       },
       {
-        label: 'Experiments',
+        label: '实验数量',
         value: String(mappedExperiments.length),
       },
     ],

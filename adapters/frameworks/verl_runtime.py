@@ -68,6 +68,13 @@ class VerlObservation:
     duration_ms: float = 0.0
     items: int = 1
     gpu_active_ms: float = 0.0
+    request_id: str = ""
+    executor_id: str = ""
+    span_id: str = ""
+    parent_span_id: str = ""
+    batch_size: int = 0
+    component: str = "worker"
+    display_name: str = ""
 
 
 @dataclass
@@ -250,6 +257,13 @@ class VerlTrainerCallbacks:
         duration_ms: float = 0.0,
         items: int = 1,
         gpu_active_ms: float = 0.0,
+        request_id: str = "",
+        executor_id: str = "",
+        span_id: str = "",
+        parent_span_id: str = "",
+        batch_size: int = 0,
+        component: str = "worker",
+        display_name: str = "",
         policy_lag: int = 0,
         sample_stale: bool = False,
         effective_sample_size: float | None = None,
@@ -272,6 +286,13 @@ class VerlTrainerCallbacks:
             duration_ms=duration_ms,
             items=items,
             gpu_active_ms=gpu_active_ms,
+            request_id=request_id,
+            executor_id=executor_id,
+            span_id=span_id,
+            parent_span_id=parent_span_id,
+            batch_size=batch_size,
+            component=component,
+            display_name=display_name,
         )
 
     def emit_step_observation(
@@ -574,6 +595,12 @@ def observation_from_metrics(
                 return value
         return default
 
+    def text(names: Sequence[str], default: str = "") -> str:
+        for name in names:
+            if name in metrics:
+                return str(metrics[name]).strip()
+        return default
+
     policy_lag = max(
         0,
         int(
@@ -602,6 +629,7 @@ def observation_from_metrics(
     )
     duration_ms = max(0.0, number(("duration_ms", "perf/time_per_step_ms"), 0.0))
     gpu_active_ms = max(0.0, number(("gpu_active_ms",), 0.0))
+    batch_size = max(0, int(number(("batch_size", "rollout/batch_size"), float(items))))
     return VerlObservation(
         event_type=event_type,
         policy_lag=policy_lag,
@@ -612,4 +640,11 @@ def observation_from_metrics(
         duration_ms=duration_ms,
         items=items,
         gpu_active_ms=gpu_active_ms,
+        request_id=text(("request_id", "trace/request_id", "rollout/request_id")),
+        executor_id=text(("executor_id", "trace/executor_id", "inference/executor_id")),
+        span_id=text(("span_id", "trace/span_id")),
+        parent_span_id=text(("parent_span_id", "trace/parent_span_id")),
+        batch_size=batch_size,
+        component=text(("component", "trace/component"), "worker"),
+        display_name=text(("display_name", "trace/display_name")),
     )

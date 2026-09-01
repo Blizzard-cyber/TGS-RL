@@ -7,6 +7,7 @@ import { OverviewPage } from '../pages/OverviewPage';
 import { SandboxViewPage } from '../pages/SandboxViewPage';
 import { TimelinePage } from '../pages/TimelinePage';
 import { TopologyPage } from '../pages/TopologyPage';
+import { TraceExplorerPage } from '../pages/TraceExplorerPage';
 
 export const router = createBrowserRouter([
   {
@@ -20,11 +21,13 @@ export const router = createBrowserRouter([
       { path: 'jobs/:jobId/topology', element: <TopologyPage /> },
       { path: 'jobs/:jobId/sandboxes', element: <SandboxViewPage /> },
       { path: 'jobs/:jobId/decisions', element: <DecisionExplorerPage /> },
+      { path: 'jobs/:jobId/traces', element: <TraceExplorerPage /> },
       { path: 'experiments', element: <ExperimentComparePage /> },
       { path: 'timeline', element: <TimelinePage /> },
       { path: 'topology', element: <TopologyPage /> },
       { path: 'sandboxes', element: <SandboxViewPage /> },
       { path: 'decisions', element: <DecisionExplorerPage /> },
+      { path: 'traces', element: <TraceExplorerPage /> },
     ],
   },
 ]);

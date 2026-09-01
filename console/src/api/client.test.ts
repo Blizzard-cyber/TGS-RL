@@ -64,7 +64,7 @@ describe('MockApiClient', () => {
     });
 
     expect(result.state).toBe('empty');
-    expect(result.message).toBe('No topology matched the selected job and run filters.');
+    expect(result.message).toBe('当前任务与运行没有匹配的拓扑。');
   });
 
   it('surfaces invalid or cross-surface mock page tokens as errors', async () => {

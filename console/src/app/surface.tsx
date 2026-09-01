@@ -21,7 +21,7 @@ export function SurfaceStateControl({
   }
   return (
     <label>
-      <span>Surface state</span>
+      <span>模拟状态</span>
       <select value={mode} onChange={(event) => onChange(event.target.value)}>
         {options.map((option) => (
           <option key={option.value} value={option.value}>

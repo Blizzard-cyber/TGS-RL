@@ -11,6 +11,7 @@ from tgsrl.v1 import (
     job_pb2,
     runtime_pb2,
     scheduling_pb2,
+    trace_pb2,
 )
 
 from tgsrl_gateway.errors import NotFoundError
@@ -26,6 +27,7 @@ class MemorySchedulerRuntimeState:
     sandboxes_by_run: dict[str, list[runtime_pb2.Sandbox]] = field(default_factory=dict)
     decisions: dict[str, scheduling_pb2.DecisionRecord] = field(default_factory=dict)
     decision_ids_by_job: dict[str, list[str]] = field(default_factory=dict)
+    trace_events_by_run: dict[str, list[trace_pb2.TraceEvent]] = field(default_factory=dict)
 
     def next_decision_id(self) -> str:
         return f"decision-{next(self.decision_counter):04d}"
@@ -164,6 +166,29 @@ class MemorySchedulerRuntimeState:
         )
         self.decisions[decision_id] = decision
         self.decision_ids_by_job.setdefault(job.job_id, []).append(decision_id)
+        self.trace_events_by_run[run.run_id] = [
+            trace_pb2.TraceEvent(
+                event_id=f"trace-{run.run_id}-start",
+                job_id=job.job_id,
+                execution_id=run.run_id,
+                phase_id="decode",
+                occurred_at=run.started_at if run.HasField("started_at") else run.created_at,
+                event_type=trace_pb2.TRACE_EVENT_TYPE_PHASE_STARTED,
+                algorithm="grpo",
+                rollout_mode=trace_pb2.ROLLOUT_MODE_PARTIALLY_ASYNC,
+                policy_version=run.policy_version,
+                buffer_level=1,
+                safe_point=True,
+                decision_id=decision_id,
+                sequence=1,
+                stage_id="decode",
+                run_id=run.run_id,
+                data_kind=run.data_kind,
+                trace_id=run.trace_id,
+                generation=1,
+                attributes={"source": "memory-runtime"},
+            )
+        ]
 
     def get_topology(
         self,
@@ -244,6 +269,36 @@ class MemorySchedulerRuntimeState:
         )
         return {"decisions": items, "next_page_token": next_token}
 
+    def list_traces(
+        self,
+        *,
+        job_id: str,
+        run_id: str,
+        trace_id: str,
+        data_kind: int | None,
+        limit: int | None,
+        page_token: str | None,
+    ) -> dict[str, object]:
+        events = [clone_message(event) for event in self.trace_events_by_run.get(run_id, [])]
+        events = [event for event in events if event.job_id == job_id]
+        if trace_id:
+            events = [event for event in events if event.trace_id == trace_id]
+        if data_kind:
+            events = [event for event in events if event.data_kind == data_kind]
+        items, next_token = paginate(
+            events,
+            page_token=page_token,
+            limit=limit,
+            scope="traces",
+            filters={
+                "job_id": job_id,
+                "run_id": run_id,
+                "trace_id": trace_id,
+                "data_kind": data_kind,
+            },
+        )
+        return {"events": items, "next_page_token": next_token}
+
     def get_decision(self, *, job_id: str, decision_id: str) -> scheduling_pb2.DecisionRecord:
         if decision_id not in self.decision_ids_by_job.get(job_id, []):
             raise NotFoundError("decision", decision_id)
@@ -301,6 +356,25 @@ class MemoryRuntimeService:
         return self.state.list_decisions(
             job_id=job_id,
             run_id=run_id,
+            limit=limit,
+            page_token=page_token,
+        )
+
+    def list_traces(
+        self,
+        *,
+        job_id: str,
+        run_id: str,
+        trace_id: str,
+        data_kind: int | None,
+        limit: int | None,
+        page_token: str | None,
+    ) -> dict[str, object]:
+        return self.state.list_traces(
+            job_id=job_id,
+            run_id=run_id,
+            trace_id=trace_id,
+            data_kind=data_kind,
             limit=limit,
             page_token=page_token,
         )

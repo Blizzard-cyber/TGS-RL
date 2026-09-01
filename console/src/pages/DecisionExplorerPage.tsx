@@ -8,25 +8,25 @@ import { DataTable, Panel, Pill, SelectCardButton, ShellFrame } from '../compone
 export function DecisionExplorerPage() {
   const client = useApiClient();
   const [mode, setMode] = useState('ready');
-  const { jobId, runId, decisionId, setRunId, setDecisionId } = useRunScopedSearchParams();
-  const paginationScope = `${jobId}\u0000${runId}`;
+  const { jobId, runId, decisionId, setJobId, setRunId, setDecisionId } =
+    useRunScopedSearchParams();
+  const paginationScope = `${jobId}\0${runId}`;
   const [pagination, setPagination] = useState({ scope: paginationScope, tokens: [''] });
   const pageTokens = pagination.scope === paginationScope ? pagination.tokens : [''];
-  const pageToken = pageTokens[pageTokens.length - 1] || undefined;
-
+  const pageToken = pageTokens.at(-1) || undefined;
   const decisionsQuery = useQuery(
     (signal) =>
       jobId
         ? client.listDecisions(jobId, {
-            limit: 2,
+            limit: 8,
             pageToken,
-            filters: toQueryFilters({
-              mode,
-              run_id: runId || undefined,
-            }),
+            filters: toQueryFilters({ mode, run_id: runId || undefined }),
             signal,
           })
-        : Promise.resolve({ state: 'empty' as const, message: 'Select a job to inspect its decisions.' }),
+        : Promise.resolve({
+            state: 'empty' as const,
+            message: '输入任务编号后即可查看调度决策。',
+          }),
     [client, pageToken, jobId, mode, runId],
   );
   const hasCurrentPage =
@@ -48,40 +48,41 @@ export function DecisionExplorerPage() {
     (signal) =>
       selectedDecisionId && jobId
         ? client.getDecisionExplorer(jobId, selectedDecisionId, { filters: { mode }, signal })
-        : Promise.resolve({ state: 'empty' as const, message: 'Select a decision to inspect candidates.' }),
+        : Promise.resolve({ state: 'empty' as const, message: '请选择一条决策查看候选与动作。' }),
     [client, jobId, selectedDecisionId, mode],
   );
-
   const nextPageToken = decisionsQuery.result.pageInfo?.nextPageToken;
 
   return (
     <ShellFrame
-      title="Decision Explorer"
-      subtitle="Inspect retained decisions, candidate scoring, fallback reasoning, and action results."
+      title="调度决策"
+      subtitle="还原候选评分、拒绝原因、回退路径和动作执行结果。"
       actions={
         <div className="control-row">
           <label>
-            <span>Job</span>
-            <input value={jobId} readOnly />
+            <span>任务编号</span>
+            <input
+              value={jobId}
+              onChange={(event) => setJobId(event.target.value || undefined)}
+              placeholder="job-…"
+            />
           </label>
           <label>
-            <span>Run filter</span>
+            <span>运行编号</span>
             <input
               value={runId}
-              onChange={(event) => {
-                setRunId(event.target.value || undefined);
-              }}
-              placeholder="run-live-017-a"
+              onChange={(event) => setRunId(event.target.value || undefined)}
+              placeholder="run-…"
             />
           </label>
           <SurfaceStateControl mode={mode} onChange={setMode} options={simulationOptions} />
         </div>
       }
     >
-      <div className="two-column">
+      <div className="trace-workbench">
         <Panel
-          title="Retained decisions"
-          subtitle="Cursor-based pagination mirrors the server-side retained sequence boundary."
+          title="决策记录"
+          subtitle="按服务端保留序列分页，选择一条查看完整证据。"
           actions={
             <div className="control-row compact">
               <button
@@ -95,18 +96,21 @@ export function DecisionExplorerPage() {
                 }
                 disabled={pageTokens.length <= 1}
               >
-                Prev
+                上一页
               </button>
               <button
                 className="button"
                 type="button"
                 onClick={() =>
                   nextPageToken &&
-                  setPagination({ scope: paginationScope, tokens: [...pageTokens, nextPageToken] })
+                  setPagination({
+                    scope: paginationScope,
+                    tokens: [...pageTokens, nextPageToken],
+                  })
                 }
                 disabled={!nextPageToken}
               >
-                Next
+                下一页
               </button>
             </div>
           }
@@ -123,12 +127,10 @@ export function DecisionExplorerPage() {
                     <div className="list-card-header">
                       <div>
                         <h3>{decision.id}</h3>
-                        <p>
-                          {decision.jobId} · {formatTimestamp(decision.decidedAt)}
-                        </p>
+                        <p>序列 {decision.sequence} · {formatTimestamp(decision.decidedAt)}</p>
                       </div>
                       <Pill tone={decision.fallback ? 'critical' : 'good'}>
-                        {decision.fallback ? 'Fallback' : 'Applied'}
+                        {decision.fallback ? '已回退' : '已应用'}
                       </Pill>
                     </div>
                     <p className="body-copy">{decision.summary}</p>
@@ -138,61 +140,57 @@ export function DecisionExplorerPage() {
             )}
           </SurfaceStateBoundary>
         </Panel>
-        <Panel title="Candidate analysis" subtitle="Feasible candidates, rejected candidates, and action results.">
+        <Panel title="决策证据" subtitle="可行候选、拒绝原因与动作回读。">
           <SurfaceStateBoundary result={explorerQuery.result} retry={explorerQuery.retry}>
             {(data) => (
               <>
                 {data?.selectedDecision ? (
-                  <div className="list-card">
-                    <div className="list-card-header">
-                      <div>
-                        <h3>{data.selectedDecision.id}</h3>
-                        <p>{data.selectedDecision.jobId}</p>
-                      </div>
-                      <Pill tone={data.selectedDecision.fallback ? 'critical' : 'good'}>
-                        {data.selectedDecision.fallback ? 'Fallback' : 'Applied'}
-                      </Pill>
+                  <div className="trace-inspector-hero">
+                    <div>
+                      <span className="eyebrow">调度结论</span>
+                      <h3>{data.selectedDecision.id}</h3>
+                      <code>{data.selectedDecision.traceId}</code>
                     </div>
-                    <div className="tag-row">
-                      <Pill>{data.selectedDecision.stageId}</Pill>
-                      <Pill>{data.selectedDecision.policyVersion}</Pill>
-                      <Pill>{titleCase(data.selectedDecision.selectedCandidate ?? 'none')}</Pill>
-                    </div>
-                    <p className="body-copy">{data.selectedDecision.summary}</p>
+                    <Pill tone={data.selectedDecision.fallback ? 'critical' : 'good'}>
+                      {data.selectedDecision.fallback ? '已回退' : '已应用'}
+                    </Pill>
                   </div>
                 ) : null}
                 <DataTable
-                  columns={['Candidate', 'Score', 'Selection', 'Reason']}
+                  columns={['候选资源', '评分', '结论', '原因']}
                   rows={(data?.candidates ?? []).map((candidate) => [
                     candidate.deviceLabel,
                     candidate.score.toFixed(2),
                     <Pill key={`${candidate.id}-selection`} tone={candidate.selected ? 'good' : 'warn'}>
-                      {candidate.selected ? 'Selected' : 'Feasible'}
+                      {candidate.selected ? '已选择' : '可行'}
                     </Pill>,
                     candidate.reason,
                   ])}
-                  emptyLabel="No candidate records were retained for this decision."
+                  emptyLabel="该决策没有保留候选记录。"
                 />
                 <DataTable
-                  columns={['Rejected candidate', 'Reason', 'Detail']}
+                  columns={['被拒候选', '原因', '说明']}
                   rows={(data?.rejectedCandidates ?? []).map((candidate) => [
                     candidate.id,
                     titleCase(candidate.reason.replace(/^CANDIDATE_REJECTION_REASON_/, '')),
                     candidate.detail,
                   ])}
-                  emptyLabel="No rejected candidate evidence was retained for this decision."
+                  emptyLabel="该决策没有被拒候选。"
                 />
                 <DataTable
-                  columns={['Action', 'Sandbox', 'Status', 'Detail']}
+                  columns={['动作', '沙箱', '状态', '回读详情']}
                   rows={(data?.relatedActions ?? []).map((action) => [
                     titleCase(action.type),
                     action.sandboxId,
-                    <Pill key={`${action.actionId}-status`} tone={action.status === 'succeeded' ? 'good' : action.status === 'failed' ? 'critical' : 'warn'}>
+                    <Pill
+                      key={`${action.actionId}-status`}
+                      tone={action.status === 'succeeded' ? 'good' : action.status === 'failed' ? 'critical' : 'warn'}
+                    >
                       {titleCase(action.status)}
                     </Pill>,
                     action.detail,
                   ])}
-                  emptyLabel="No action results were recorded for this decision."
+                  emptyLabel="该决策没有动作执行记录。"
                 />
               </>
             )}

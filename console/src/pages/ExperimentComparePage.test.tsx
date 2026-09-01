@@ -76,14 +76,14 @@ describe('ExperimentComparePage', () => {
     renderPage(createTestApiClient({ listExperiments }));
 
     expect((await screen.findAllByText('PPO rollout policy compare')).length).toBeGreaterThan(0);
-    expect(screen.getByText('Reward: 0.81')).toBeInTheDocument();
+    expect(screen.getByText('Reward：0.81')).toBeInTheDocument();
 
     const experimentButtons = screen.getAllByRole('button');
     expect(experimentButtons[1]).toBeDefined();
     await user.click(experimentButtons[1] as HTMLElement);
-    expect(await screen.findByText('Fallbacks: 17')).toBeInTheDocument();
+    expect(await screen.findByText('Fallbacks：17')).toBeInTheDocument();
 
-    await user.selectOptions(screen.getByLabelText('Source'), 'synthetic');
+    await user.selectOptions(screen.getByLabelText('数据来源'), 'synthetic');
     await waitFor(() =>
       expect(listExperiments).toHaveBeenLastCalledWith({
         filters: {
@@ -103,6 +103,6 @@ describe('ExperimentComparePage', () => {
       }),
     );
 
-    expect(await screen.findByText('Select an experiment to compare retained runs.')).toBeInTheDocument();
+    expect(await screen.findByText('请选择一个实验查看运行对比。')).toBeInTheDocument();
   });
 });

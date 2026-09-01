@@ -73,7 +73,7 @@ describe('OverviewPage', () => {
         () =>
           resolve(
             ready({
-              metrics: [{ label: 'Retained jobs', value: '2' }],
+              metrics: [{ label: '保留任务', value: '2' }],
               jobs: [
                 {
                   id: 'job-live-017',
@@ -102,7 +102,7 @@ describe('OverviewPage', () => {
               decisions: [],
               capabilities: { protocolVersion: 'v0.3', dataKinds: ['DATA_KIND_LIVE'], pagination: 'opaque' },
               systemHealth: { status: 'ok', observedAt: '2026-08-27T00:00:00Z', counts: { jobs: 2 } },
-              alerts: [{ id: 'alert-1', title: 'GPU pressure', tone: 'warn', detail: 'GPU headroom is low.' }],
+              alerts: [{ id: 'alert-1', title: '加速卡压力', tone: 'warn', detail: '加速卡余量偏低。' }],
             }),
           ),
         0,
@@ -114,17 +114,17 @@ describe('OverviewPage', () => {
 
     renderPage(client);
 
-    expect(screen.getByText('Loading control-plane surface')).toBeInTheDocument();
+    expect(screen.getByText('正在加载控制面数据')).toBeInTheDocument();
     expect(await screen.findByText('PPO Actor-Critic Burst')).toBeInTheDocument();
-    expect(screen.getByText('GPU pressure')).toBeInTheDocument();
-    expect(screen.getByText('Retained jobs')).toBeInTheDocument();
+    expect(screen.getByText('加速卡压力')).toBeInTheDocument();
+    expect(screen.getByText('保留任务')).toBeInTheDocument();
   });
 
   it('hides mock-only surface controls outside mock mode', async () => {
     renderPage();
 
-    expect(await screen.findByRole('heading', { name: 'Overview' })).toBeInTheDocument();
-    expect(screen.queryByLabelText('Surface state')).not.toBeInTheDocument();
+    expect(await screen.findByRole('heading', { name: '运行总览' })).toBeInTheDocument();
+    expect(screen.queryByLabelText('模拟状态')).not.toBeInTheDocument();
   });
 
   it('switches into forbidden state rendering in mock mode', async () => {
@@ -132,11 +132,11 @@ describe('OverviewPage', () => {
     vi.stubEnv('VITE_TGSRL_API_ADAPTER', 'mock');
     renderPage();
 
-    expect(await screen.findByRole('heading', { name: 'Overview' })).toBeInTheDocument();
+    expect(await screen.findByRole('heading', { name: '运行总览' })).toBeInTheDocument();
 
-    await user.selectOptions(screen.getByLabelText('Surface state'), 'forbidden');
+    await user.selectOptions(screen.getByLabelText('模拟状态'), 'forbidden');
 
-    expect(await screen.findByText('Access forbidden')).toBeInTheDocument();
+    expect(await screen.findByText('没有访问权限')).toBeInTheDocument();
   });
 
   it('passes selected source kind through overview query filters', async () => {
@@ -154,9 +154,9 @@ describe('OverviewPage', () => {
     );
 
     renderPage(createTestApiClient({ listOverview }));
-    await screen.findByRole('heading', { name: 'Overview' });
+    await screen.findByRole('heading', { name: '运行总览' });
 
-    await user.selectOptions(screen.getByLabelText('Source'), 'replay');
+    await user.selectOptions(screen.getByLabelText('数据来源'), 'replay');
 
     expect(listOverview).toHaveBeenLastCalledWith({
       filters: {
@@ -176,7 +176,7 @@ describe('OverviewPage', () => {
       }),
     );
 
-    expect(await screen.findByText('Request failed')).toBeInTheDocument();
+    expect(await screen.findByText('请求失败')).toBeInTheDocument();
     expect(screen.getByText('overview exploded')).toBeInTheDocument();
   });
 
@@ -210,7 +210,7 @@ describe('OverviewPage', () => {
 
     renderPage(createTestApiClient({ listOverview }));
     await waitFor(() => expect(listOverview).toHaveBeenCalledTimes(1));
-    await user.selectOptions(screen.getByLabelText('Source'), 'replay');
+    await user.selectOptions(screen.getByLabelText('数据来源'), 'replay');
     await waitFor(() => expect(listOverview).toHaveBeenCalledTimes(2));
     expect(requestSignals[0]?.aborted).toBe(true);
 

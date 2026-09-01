@@ -15,7 +15,7 @@ async function readJsonBody(response: Response): Promise<unknown> {
   try {
     return JSON.parse(text);
   } catch {
-    throw new Error('Gateway returned an invalid JSON response body.');
+    throw new Error('网关返回了无效的 JSON 响应。');
   }
 }
 
@@ -87,12 +87,12 @@ async function fetchWithContract(input: URL, init: RequestInit): Promise<Respons
     return await fetch(input, init);
   } catch (error) {
     if (error instanceof DOMException && error.name === 'AbortError') {
-      return toTransportErrorResult('Request aborted.', true);
+      return toTransportErrorResult('请求已取消。', true);
     }
     if (error instanceof Error) {
-      return toTransportErrorResult(error.message || 'Network request failed.', true);
+      return toTransportErrorResult(error.message || '网络请求失败。', true);
     }
-    return toTransportErrorResult('Network request failed.', true);
+    return toTransportErrorResult('网络请求失败。', true);
   }
 }
 
@@ -136,7 +136,7 @@ export class GatewayTransport {
       } else if (error instanceof Error) {
         return toTransportErrorResult<T>(error.message, false);
       } else {
-        return toTransportErrorResult<T>('Gateway returned an invalid JSON response body.', false);
+        return toTransportErrorResult<T>('网关返回了无效的 JSON 响应。', false);
       }
     }
     if (!fetchResult.ok) {
@@ -181,7 +181,7 @@ export class GatewayTransport {
       } else if (error instanceof Error) {
         return toTransportErrorResult<T>(error.message, false);
       } else {
-        return toTransportErrorResult<T>('Gateway returned an invalid JSON response body.', false);
+        return toTransportErrorResult<T>('网关返回了无效的 JSON 响应。', false);
       }
     }
     if (!fetchResult.ok) {

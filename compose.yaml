@@ -53,6 +53,10 @@ services:
       dockerfile: Dockerfile.local
       target: python-service
     working_dir: /workspace
+    environment:
+      # Development-only HMAC shared with compose-smoke.py. Override this value
+      # when exercising a custom local worker registry.
+      TGSRL_WORKER_REGISTRY_SIGNING_KEY: "${TGSRL_WORKER_REGISTRY_SIGNING_KEY:-tgsrl-local-worker-trace-signing-key-v1}"
     command:
       - /bin/sh
       - -ceu

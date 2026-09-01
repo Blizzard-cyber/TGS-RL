@@ -29,7 +29,7 @@ describe('TimelinePage', () => {
     const listTimeline = vi.fn();
     renderPage('/timeline', createTestApiClient({ listTimeline }));
 
-    expect(await screen.findByText('Select a job to view its timeline.')).toBeInTheDocument();
+    expect(await screen.findByText('输入任务编号后即可查看事件时间线。')).toBeInTheDocument();
     expect(listTimeline).not.toHaveBeenCalled();
   });
 
@@ -58,7 +58,7 @@ describe('TimelinePage', () => {
 
     renderPage('/jobs/job-live-017/timeline?runId=run-live-017-a', createTestApiClient({ listTimeline }));
 
-    expect(await screen.findByText('Decision applied')).toBeInTheDocument();
+    expect(await screen.findAllByText('决策应用')).toHaveLength(2);
     expect(listTimeline).toHaveBeenLastCalledWith('job-live-017', {
       filters: {
         mode: 'ready',
@@ -67,7 +67,7 @@ describe('TimelinePage', () => {
       signal: expect.any(AbortSignal),
     });
 
-    await user.clear(screen.getByLabelText('Run filter'));
+    await user.clear(screen.getByLabelText('运行编号'));
     await waitFor(() =>
       expect(listTimeline).toHaveBeenLastCalledWith('job-live-017', {
         filters: {
@@ -86,7 +86,7 @@ describe('TimelinePage', () => {
       }),
     );
 
-    expect(await screen.findByText('Request failed')).toBeInTheDocument();
+    expect(await screen.findByText('请求失败')).toBeInTheDocument();
     expect(screen.getByText('timeline failed')).toBeInTheDocument();
   });
 
@@ -100,7 +100,7 @@ describe('TimelinePage', () => {
       }),
     );
 
-    expect(await screen.findByText('Request failed')).toBeInTheDocument();
+    expect(await screen.findByText('请求失败')).toBeInTheDocument();
     expect(screen.getByText('timeline blew up')).toBeInTheDocument();
   });
 });

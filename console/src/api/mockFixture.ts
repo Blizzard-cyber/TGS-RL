@@ -11,6 +11,7 @@ import type {
   SandboxRecord,
   TimelineEvent,
   TimelineResponse,
+  TraceEventRecord,
   TopologySnapshot,
 } from './types';
 
@@ -27,7 +28,7 @@ function kindSuffix(dataKind: DataKind): string {
 export const jobs: JobSummary[] = [
   {
     id: 'job-live-017',
-    name: 'PPO Actor-Critic Burst',
+    name: 'PPO 策略突发训练',
     algorithm: 'PPO',
     state: 'running',
     rolloutMode: 'partially_async',
@@ -49,7 +50,7 @@ export const jobs: JobSummary[] = [
   },
   {
     id: 'job-replay-204',
-    name: 'Replay Latency Audit',
+    name: '回放延迟审计',
     algorithm: 'GRPO',
     state: 'running',
     rolloutMode: 'sync',
@@ -71,7 +72,7 @@ export const jobs: JobSummary[] = [
   },
   {
     id: 'job-sim-031',
-    name: 'Synthetic Capacity Soak',
+    name: '合成容量稳态压测',
     algorithm: 'A3C',
     state: 'paused',
     rolloutMode: 'fully_async',
@@ -105,8 +106,8 @@ export const runs: RunSummary[] = [
     startedAt: '2026-08-27T08:18:00Z',
     dataKind: 'live',
     componentHealth: [
-      { component: 'scheduler', health: 'degraded', detail: 'GPU contention on actor pool' },
-      { component: 'runtime', health: 'healthy', detail: 'Runtimes converged' },
+      { component: 'scheduler', health: 'degraded', detail: '采样单元存在加速卡竞争' },
+      { component: 'runtime', health: 'healthy', detail: '运行单元已收敛' },
     ],
   },
   {
@@ -120,8 +121,8 @@ export const runs: RunSummary[] = [
     startedAt: '2026-08-27T07:03:00Z',
     dataKind: 'replay',
     componentHealth: [
-      { component: 'scheduler', health: 'healthy', detail: 'Stable CPU placement' },
-      { component: 'runtime', health: 'healthy', detail: 'Replay stream active' },
+      { component: 'scheduler', health: 'healthy', detail: '处理器放置稳定' },
+      { component: 'runtime', health: 'healthy', detail: '回放流运行中' },
     ],
   },
   {
@@ -135,8 +136,8 @@ export const runs: RunSummary[] = [
     startedAt: '2026-08-26T23:49:00Z',
     dataKind: 'synthetic',
     componentHealth: [
-      { component: 'scheduler', health: 'failed', detail: 'No READY GPU capacity' },
-      { component: 'runtime', health: 'progressing', detail: 'Paused at safe point' },
+      { component: 'scheduler', health: 'failed', detail: '没有就绪的加速卡容量' },
+      { component: 'runtime', health: 'progressing', detail: '已在安全点暂停' },
     ],
   },
 ];
@@ -153,7 +154,7 @@ export const decisions: DecisionRecord[] = [
     selectedPlanId: 'plan-7104',
     selectedCandidate: 'gpu-cell-4',
     policyVersion: 'policy-2026.08.27.5',
-    summary: 'Bound two actor units onto gpu-cell-4 with reduced share headroom.',
+    summary: '将两个采样单元绑定到 gpu-cell-4，并保留资源份额余量。',
     actions: [
       {
         actionId: 'act-7104-a',
@@ -161,7 +162,7 @@ export const decisions: DecisionRecord[] = [
         sandboxId: 'sbx-live-a14',
         targetId: 'gpu-cell-4',
         status: 'succeeded',
-        detail: 'Generation 7 binding applied with one A100 slice.',
+        detail: '第 7 代绑定已应用，使用一个 A100 切片。',
       },
       {
         actionId: 'act-7104-b',
@@ -169,7 +170,7 @@ export const decisions: DecisionRecord[] = [
         sandboxId: 'sbx-live-a09',
         targetId: 'gpu-cell-4',
         status: 'succeeded',
-        detail: 'Raised CPU reservation to 2400 millicores.',
+        detail: '处理器预留已提高到 2400 毫核。',
       },
     ],
   },
@@ -183,7 +184,7 @@ export const decisions: DecisionRecord[] = [
     fallback: true,
     fallbackReason: 'NO_READY_GPU_CAPACITY',
     policyVersion: 'sim-2026.08.26.9',
-    summary: 'Returned fallback because no compatible GPU device stayed READY.',
+    summary: '没有兼容且保持就绪的加速卡，调度器返回回退结果。',
     actions: [],
   },
   {
@@ -197,7 +198,7 @@ export const decisions: DecisionRecord[] = [
     selectedPlanId: 'plan-7084',
     selectedCandidate: 'cpu-bank-2',
     policyVersion: 'replay-2026.08.27.2',
-    summary: 'Replay workers converged on cpu-bank-2 with no additional mutations.',
+    summary: '回放工作单元已在 cpu-bank-2 收敛，无需额外变更。',
     actions: [
       {
         actionId: 'act-7084-a',
@@ -205,7 +206,7 @@ export const decisions: DecisionRecord[] = [
         sandboxId: 'sbx-replay-4',
         targetId: 'cpu-bank-2',
         status: 'succeeded',
-        detail: 'Resumed from safe point at sequence 18232.',
+        detail: '已从序列 18232 的安全点恢复。',
       },
     ],
   },
@@ -266,7 +267,7 @@ export const sandboxes: SandboxRecord[] = [
     safePoint: true,
     offloaded: true,
     updatedAt: '2026-08-27T13:52:07Z',
-    bindingSummary: 'Offloaded while waiting for GPU capacity',
+    bindingSummary: '等待加速卡容量时已卸载',
   },
 ];
 
@@ -274,31 +275,34 @@ export const timelineEvents: TimelineEvent[] = [
   {
     id: 'evt-901',
     jobId: 'job-live-017',
-    title: 'Policy published',
+    runId: 'run-live-017-a',
+    title: '策略已发布',
     type: 'policy-published',
     occurredAt: '2026-08-27T14:20:00Z',
     sequence: 901,
     phase: 'learner',
     dataKind: 'live',
     severity: 'info',
-    summary: 'Published policy-2026.08.27.5 to actors.',
+    summary: '策略 policy-2026.08.27.5 已发布到采样单元。',
   },
   {
     id: 'evt-904',
     jobId: 'job-live-017',
-    title: 'Backpressure changed',
+    runId: 'run-live-017-a',
+    title: '背压发生变化',
     type: 'backpressure',
     occurredAt: '2026-08-27T14:26:11Z',
     sequence: 904,
     phase: 'actor-rollout',
     dataKind: 'live',
     severity: 'warn',
-    summary: 'Replay buffer saturation crossed 78 percent.',
+    summary: '回放缓冲区水位超过 78%。',
   },
   {
     id: 'evt-909',
     jobId: 'job-live-017',
-    title: 'Decision applied',
+    runId: 'run-live-017-a',
+    title: '决策已应用',
     type: 'decision-applied',
     occurredAt: '2026-08-27T14:28:31Z',
     sequence: 909,
@@ -307,12 +311,13 @@ export const timelineEvents: TimelineEvent[] = [
     decisionId: 'dec-7104',
     dataKind: 'live',
     severity: 'info',
-    summary: 'Applied decision dec-7104 to rebalance actor capacity.',
+    summary: '已应用决策 dec-7104，重新平衡采样容量。',
   },
   {
     id: 'evt-915',
     jobId: 'job-sim-031',
-    title: 'Safe point reached',
+    runId: 'run-sim-031-a',
+    title: '已到达安全点',
     type: 'safe-point',
     occurredAt: '2026-08-27T13:50:30Z',
     sequence: 915,
@@ -320,12 +325,13 @@ export const timelineEvents: TimelineEvent[] = [
     sandboxId: 'sbx-sim-2',
     dataKind: 'synthetic',
     severity: 'warn',
-    summary: 'Synthetic learner moved to safe point while waiting on GPUs.',
+    summary: '合成训练单元在等待加速卡时进入安全点。',
   },
   {
     id: 'evt-920',
     jobId: 'job-replay-204',
-    title: 'Sample consumed',
+    runId: 'run-replay-204-a',
+    title: '样本已消费',
     type: 'sample-consumed',
     occurredAt: '2026-08-27T13:07:01Z',
     sequence: 920,
@@ -333,7 +339,151 @@ export const timelineEvents: TimelineEvent[] = [
     sandboxId: 'sbx-replay-4',
     dataKind: 'replay',
     severity: 'info',
-    summary: 'Consumed 1200 replay samples without drift.',
+    summary: '已消费 1200 个回放样本，未检测到漂移。',
+  },
+];
+
+// Trace 使用独立的 span 数据，不从控制事件时间线推测。每个持续时间、父子关系和
+// request/worker 身份都代表采集端实际应上报的字段，便于在没有 GPU 的本机环境验证
+// Perfetto 风格的多轨交互；真实 HTTP 模式始终读取 Runtime 持久化的 TraceEvent。
+export const traceEvents: TraceEventRecord[] = [
+  {
+    id: 'trace-trainer-step-42', jobId: 'job-live-017', runId: 'run-live-017-a',
+    traceId: 'trace-live-017', executionId: 'exec-live-017', sequence: 1001,
+    occurredAt: '2026-08-27T14:28:30.000Z', type: 'phase_started', phaseId: 'actor-rollout',
+    stageId: 'actor-rollout', algorithm: 'PPO', rolloutMode: 'partially_async',
+    policyVersion: 'policy-2026.08.27.5', bufferLevel: 42, safePoint: false, generation: 7,
+    dataKind: 'live', attributes: {
+      component: 'trainer', track: '训练步骤 #42', display_name: '采样与训练迭代',
+      span_id: 'span-train-42', duration_ms: '3200', batch_size: '32',
+    },
+  },
+  {
+    id: 'trace-request-1842', jobId: 'job-live-017', runId: 'run-live-017-a',
+    traceId: 'trace-live-017', executionId: 'exec-live-017', sequence: 1002,
+    occurredAt: '2026-08-27T14:28:30.120Z', type: 'sample_produced', phaseId: 'actor-rollout',
+    stageId: 'agent-loop', algorithm: 'PPO', rolloutMode: 'partially_async',
+    policyVersion: 'policy-2026.08.27.5', bufferLevel: 43, safePoint: false, generation: 7,
+    dataKind: 'live', attributes: {
+      component: 'request', track: '请求 req-1842', display_name: '智能体请求', request_id: 'req-1842',
+      span_id: 'span-request-1842', parent_span_id: 'span-train-42', duration_ms: '1380',
+    },
+  },
+  {
+    id: 'trace-agent-1842', jobId: 'job-live-017', runId: 'run-live-017-a',
+    traceId: 'trace-live-017', executionId: 'exec-live-017', sequence: 1003,
+    occurredAt: '2026-08-27T14:28:30.170Z', type: 'phase_started', phaseId: 'actor-rollout',
+    stageId: 'agent-loop', algorithm: 'PPO', rolloutMode: 'partially_async',
+    policyVersion: 'policy-2026.08.27.5', bufferLevel: 43, safePoint: false, generation: 7,
+    dataKind: 'live', attributes: {
+      component: 'request', track: '智能体循环 / req-1842', display_name: '提示词与工具编排', request_id: 'req-1842',
+      span_id: 'span-agent-1842', parent_span_id: 'span-request-1842', duration_ms: '260',
+    },
+  },
+  {
+    id: 'trace-executor-1842', jobId: 'job-live-017', runId: 'run-live-017-a',
+    traceId: 'trace-live-017', executionId: 'exec-live-017', sequence: 1004,
+    occurredAt: '2026-08-27T14:28:30.460Z', type: 'decision_applied', phaseId: 'decode',
+    stageId: 'executor', algorithm: 'PPO', rolloutMode: 'partially_async',
+    policyVersion: 'policy-2026.08.27.5', bufferLevel: 44, safePoint: false,
+    decisionId: 'dec-7104', generation: 7, dataKind: 'live', attributes: {
+      component: 'executor', track: '推理执行器 #0', display_name: '连续批处理调度', request_id: 'req-1842',
+      executor_id: 'executor-0', span_id: 'span-executor-1842', parent_span_id: 'span-request-1842',
+      duration_ms: '690', batch_size: '16',
+    },
+  },
+  {
+    id: 'trace-worker-0-1842', jobId: 'job-live-017', runId: 'run-live-017-a',
+    traceId: 'trace-live-017', executionId: 'exec-live-017', sequence: 1005,
+    occurredAt: '2026-08-27T14:28:30.510Z', type: 'sample_consumed', phaseId: 'decode',
+    stageId: 'model-forward', algorithm: 'PPO', rolloutMode: 'partially_async',
+    policyVersion: 'policy-2026.08.27.5', bufferLevel: 44, safePoint: false,
+    sandboxId: 'sbx-live-a14', generation: 7, dataKind: 'live', attributes: {
+      component: 'worker', track: '工作进程 #0', display_name: '模型前向计算', request_id: 'req-1842',
+      executor_id: 'executor-0', worker_id: 'worker-0', span_id: 'span-worker-0-1842',
+      parent_span_id: 'span-executor-1842', duration_ms: '310', batch_size: '8', device_id: 'GPU-0',
+    },
+  },
+  {
+    id: 'trace-worker-1-1842', jobId: 'job-live-017', runId: 'run-live-017-a',
+    traceId: 'trace-live-017', executionId: 'exec-live-017', sequence: 1006,
+    occurredAt: '2026-08-27T14:28:30.510Z', type: 'sample_consumed', phaseId: 'decode',
+    stageId: 'model-forward', algorithm: 'PPO', rolloutMode: 'partially_async',
+    policyVersion: 'policy-2026.08.27.5', bufferLevel: 44, safePoint: false,
+    sandboxId: 'sbx-live-a14', generation: 7, dataKind: 'live', attributes: {
+      component: 'worker', track: '工作进程 #1', display_name: '模型前向计算', request_id: 'req-1842',
+      executor_id: 'executor-0', worker_id: 'worker-1', span_id: 'span-worker-1-1842',
+      parent_span_id: 'span-executor-1842', duration_ms: '470', batch_size: '8', device_id: 'GPU-1',
+    },
+  },
+  {
+    id: 'trace-request-1843', jobId: 'job-live-017', runId: 'run-live-017-a',
+    traceId: 'trace-live-017', executionId: 'exec-live-017', sequence: 1007,
+    occurredAt: '2026-08-27T14:28:30.480Z', type: 'sample_produced', phaseId: 'actor-rollout',
+    stageId: 'agent-loop', algorithm: 'PPO', rolloutMode: 'partially_async',
+    policyVersion: 'policy-2026.08.27.5', bufferLevel: 46, safePoint: false, generation: 7,
+    dataKind: 'live', attributes: {
+      component: 'request', track: '请求 req-1843', display_name: '智能体请求（长尾）', request_id: 'req-1843',
+      span_id: 'span-request-1843', parent_span_id: 'span-train-42', duration_ms: '2320',
+    },
+  },
+  {
+    id: 'trace-tool-1843', jobId: 'job-live-017', runId: 'run-live-017-a',
+    traceId: 'trace-live-017', executionId: 'exec-live-017', sequence: 1008,
+    occurredAt: '2026-08-27T14:28:30.520Z', type: 'backpressure_changed', phaseId: 'actor-rollout',
+    stageId: 'agent-loop', algorithm: 'PPO', rolloutMode: 'partially_async',
+    policyVersion: 'policy-2026.08.27.5', bufferLevel: 78, safePoint: false, generation: 7,
+    dataKind: 'live', attributes: {
+      component: 'request', track: '工具调用 / req-1843', display_name: '工具调用等待', request_id: 'req-1843',
+      span_id: 'span-tool-1843', parent_span_id: 'span-request-1843', duration_ms: '280',
+    },
+  },
+  {
+    id: 'trace-executor-1843', jobId: 'job-live-017', runId: 'run-live-017-a',
+    traceId: 'trace-live-017', executionId: 'exec-live-017', sequence: 1009,
+    occurredAt: '2026-08-27T14:28:30.860Z', type: 'decision_applied', phaseId: 'decode',
+    stageId: 'executor', algorithm: 'PPO', rolloutMode: 'partially_async',
+    policyVersion: 'policy-2026.08.27.5', bufferLevel: 70, safePoint: false,
+    decisionId: 'dec-7104', generation: 7, dataKind: 'live', attributes: {
+      component: 'executor', track: '推理执行器 #0', display_name: '长尾批次调度', request_id: 'req-1843',
+      executor_id: 'executor-0', span_id: 'span-executor-1843', parent_span_id: 'span-request-1843',
+      duration_ms: '1420', batch_size: '16',
+    },
+  },
+  {
+    id: 'trace-worker-0-1843', jobId: 'job-live-017', runId: 'run-live-017-a',
+    traceId: 'trace-live-017', executionId: 'exec-live-017', sequence: 1010,
+    occurredAt: '2026-08-27T14:28:30.930Z', type: 'sample_consumed', phaseId: 'decode',
+    stageId: 'model-forward', algorithm: 'PPO', rolloutMode: 'partially_async',
+    policyVersion: 'policy-2026.08.27.5', bufferLevel: 70, safePoint: false,
+    sandboxId: 'sbx-live-a14', generation: 7, dataKind: 'live', attributes: {
+      component: 'worker', track: '工作进程 #0', display_name: '模型前向计算', request_id: 'req-1843',
+      executor_id: 'executor-0', worker_id: 'worker-0', span_id: 'span-worker-0-1843',
+      parent_span_id: 'span-executor-1843', duration_ms: '840', batch_size: '8', device_id: 'GPU-0',
+    },
+  },
+  {
+    id: 'trace-worker-1-1843', jobId: 'job-live-017', runId: 'run-live-017-a',
+    traceId: 'trace-live-017', executionId: 'exec-live-017', sequence: 1011,
+    occurredAt: '2026-08-27T14:28:30.930Z', type: 'sample_consumed', phaseId: 'decode',
+    stageId: 'model-forward', algorithm: 'PPO', rolloutMode: 'partially_async',
+    policyVersion: 'policy-2026.08.27.5', bufferLevel: 70, safePoint: false,
+    sandboxId: 'sbx-live-a14', generation: 7, dataKind: 'live', attributes: {
+      component: 'worker', track: '工作进程 #1', display_name: '模型前向计算（长尾）', request_id: 'req-1843',
+      executor_id: 'executor-0', worker_id: 'worker-1', span_id: 'span-worker-1-1843',
+      parent_span_id: 'span-executor-1843', duration_ms: '1120', batch_size: '8', device_id: 'GPU-1',
+    },
+  },
+  {
+    id: 'trace-safe-point-42', jobId: 'job-live-017', runId: 'run-live-017-a',
+    traceId: 'trace-live-017', executionId: 'exec-live-017', sequence: 1012,
+    occurredAt: '2026-08-27T14:28:33.200Z', type: 'safe_point_reached', phaseId: 'learner',
+    stageId: 'trainer', algorithm: 'PPO', rolloutMode: 'partially_async',
+    policyVersion: 'policy-2026.08.27.5', bufferLevel: 35, safePoint: true, generation: 7,
+    dataKind: 'live', attributes: {
+      component: 'trainer', track: '训练步骤 #42', display_name: '到达安全点',
+      span_id: 'span-safe-point-42', parent_span_id: 'span-train-42',
+    },
   },
 ];
 
@@ -341,8 +491,8 @@ export const topology: TopologySnapshot = {
   nodes: [
     { id: 'queue-priority', label: 'priority-train', kind: 'queue', status: 'busy', gpu: false, utilization: 0.92 },
     { id: 'queue-audit', label: 'audit', kind: 'queue', status: 'ready', gpu: false, utilization: 0.48 },
-    { id: 'job-live-017', label: 'PPO Actor-Critic Burst', kind: 'job', status: 'degraded', gpu: true, utilization: 0.88 },
-    { id: 'job-replay-204', label: 'Replay Latency Audit', kind: 'job', status: 'ready', gpu: false, utilization: 0.51 },
+    { id: 'job-live-017', label: 'PPO 策略突发训练', kind: 'job', status: 'degraded', gpu: true, utilization: 0.88 },
+    { id: 'job-replay-204', label: '回放延迟审计', kind: 'job', status: 'ready', gpu: false, utilization: 0.51 },
     { id: 'gpu-cell-4', label: 'gpu-cell-4', kind: 'device', status: 'busy', gpu: true, share: 0.94, utilization: 0.97 },
     { id: 'cpu-bank-2', label: 'cpu-bank-2', kind: 'device', status: 'ready', gpu: false, share: 0.61, utilization: 0.59 },
     { id: 'sbx-live-a14', label: 'sbx-live-a14', kind: 'sandbox', status: 'busy', gpu: true, share: 0.5, utilization: 0.72 },
@@ -362,10 +512,10 @@ export const topology: TopologySnapshot = {
 export const experiments: ExperimentSummary[] = [
   {
     id: 'exp-ppo-compare',
-    name: 'PPO rollout policy compare',
+    name: 'PPO 采样策略对比',
     state: 'running',
     createdAt: '2026-08-27T05:00:00Z',
-    summary: 'Comparing live PPO against replayed baseline under identical queue pressure.',
+    summary: '在相同队列压力下对比真实 PPO 与回放基线。',
     runs: [
       {
         id: 'run-live-ppo',
@@ -377,11 +527,11 @@ export const experiments: ExperimentSummary[] = [
         policyVersion: 'policy-2026.08.27.5',
         configHash: 'cfg-a9f4',
         codeRevision: 'rev-a13bc1',
-        summary: 'Highest throughput, elevated replay buffer pressure.',
+        summary: '吞吐最高，但回放缓冲区压力有所上升。',
         metrics: [
-          metric('Reward', '0.81', '+0.04', 'good'),
-          metric('Samples/s', '18.4k', '+2.3k', 'good'),
-          metric('P95 decision latency', '211ms', '+44ms', 'warn'),
+          metric('奖励值', '0.81', '+0.04', 'good'),
+          metric('每秒样本', '18.4k', '+2.3k', 'good'),
+          metric('决策延迟 P95', '211ms', '+44ms', 'warn'),
         ],
       },
       {
@@ -396,20 +546,20 @@ export const experiments: ExperimentSummary[] = [
         codeRevision: 'rev-a13bc1',
         summary: 'Lower throughput but stable decision latency envelope.',
         metrics: [
-          metric('Reward', '0.76', '-0.01', 'neutral'),
-          metric('Samples/s', '11.1k', '-1.2k', 'warn'),
-          metric('P95 decision latency', '128ms', '-12ms', 'good'),
+          metric('奖励值', '0.76', '-0.01', 'neutral'),
+          metric('每秒样本', '11.1k', '-1.2k', 'warn'),
+          metric('决策延迟 P95', '128ms', '-12ms', 'good'),
         ],
       },
     ],
   },
   {
     id: 'exp-capacity-sim',
-    name: 'Synthetic GPU scarcity drill',
+    name: '合成加速卡紧缺演练',
     state: 'failed',
     createdAt: '2026-08-26T21:10:00Z',
     completedAt: '2026-08-27T13:53:00Z',
-    summary: 'Synthetic drill exhausted READY GPU capacity before learner convergence.',
+    summary: '合成演练在训练单元收敛前耗尽了就绪加速卡容量。',
     runs: [
       {
         id: 'run-sim-a3c',
@@ -421,11 +571,11 @@ export const experiments: ExperimentSummary[] = [
         policyVersion: 'sim-2026.08.26.9',
         configHash: 'cfg-b29d',
         codeRevision: 'rev-ff02a1',
-        summary: 'Stopped on GPU unavailable fallback path.',
+        summary: '因加速卡不可用，沿回退路径停止。',
         metrics: [
-          metric('GPU ready ratio', '0.02', '-0.11', 'critical'),
-          metric('Fallbacks', '17', '+12', 'critical'),
-          metric('Checkpoint drift', '0.0', 'stable', 'good'),
+          metric('加速卡就绪率', '0.02', '-0.11', 'critical'),
+          metric('回退次数', '17', '+12', 'critical'),
+          metric('检查点漂移', '0.0', '稳定', 'good'),
         ],
       },
     ],
@@ -434,10 +584,10 @@ export const experiments: ExperimentSummary[] = [
 
 export const overview: OverviewResponse = {
   metrics: [
-    metric('Active jobs', '3', '+1', 'good'),
-    metric('Decision stream lag', '214ms', '+37ms', 'warn'),
-    metric('GPU headroom', '6%', '-4%', 'critical'),
-    metric('Replay drift', '0.3%', '-0.1%', 'good'),
+    metric('活动任务', '3', '+1', 'good'),
+    metric('决策流延迟', '214ms', '+37ms', 'warn'),
+    metric('加速卡余量', '6%', '-4%', 'critical'),
+    metric('回放漂移', '0.3%', '-0.1%', 'good'),
   ],
   jobs,
   experiments,
@@ -462,15 +612,15 @@ export const overview: OverviewResponse = {
   alerts: [
     {
       id: 'al-1',
-      title: 'GPU capacity degraded',
+      title: '加速卡容量降级',
       tone: 'critical',
-      detail: 'Synthetic learner traffic is being fenced off because READY GPU capacity dropped below policy floor.',
+      detail: '就绪加速卡容量低于策略下限，合成训练流量已被隔离。',
     },
     {
       id: 'al-2',
-      title: 'Replay path stable',
+      title: '回放链路稳定',
       tone: 'info',
-      detail: 'Replay workload remains within target latency envelope and can be used for safe comparison.',
+      detail: '回放工作负载保持在目标延迟范围内，可用于安全对比。',
     },
   ],
 };
@@ -487,9 +637,9 @@ export function getJobDetail(jobId: string): JobDetailResponse | undefined {
     decisions: decisions.filter((entry) => entry.jobId === jobId),
     sandboxes: sandboxes.filter((entry) => entry.jobId === jobId),
     metrics: [
-      metric('Desired units', String(job.desiredUnits)),
-      metric('Priority', `${job.priority}`),
-      metric('Health', job.health.toUpperCase(), undefined, job.health === 'healthy' ? 'good' : job.health === 'degraded' ? 'warn' : 'critical'),
+      metric('期望单元', String(job.desiredUnits)),
+      metric('优先级', `${job.priority}`),
+      metric('健康状态', job.health === 'healthy' ? '健康' : job.health === 'degraded' ? '降级' : '停滞', undefined, job.health === 'healthy' ? 'good' : job.health === 'degraded' ? 'warn' : 'critical'),
     ],
   };
 }
@@ -508,11 +658,11 @@ export function getDecisionExplorer(decisionId: string): DecisionExplorerResult 
   return {
     selectedDecision: decision,
     candidates: [
-      { id: 'gpu-cell-4', deviceLabel: 'gpu-cell-4', score: 0.91, reason: 'Highest headroom among READY GPU cells.', selected: true },
-      { id: 'gpu-cell-2', deviceLabel: 'gpu-cell-2', score: 0.72, reason: 'Feasible candidate not selected by policy.', selected: false },
+      { id: 'gpu-cell-4', deviceLabel: 'gpu-cell-4', score: 0.91, reason: '在所有就绪加速卡节点中余量最高。', selected: true },
+      { id: 'gpu-cell-2', deviceLabel: 'gpu-cell-2', score: 0.72, reason: '满足约束，但未被策略选中。', selected: false },
     ],
     rejectedCandidates: [
-      { id: 'cpu-bank-2', reason: 'CAPABILITY_MISMATCH', detail: 'GPU capability is required.' },
+      { id: 'cpu-bank-2', reason: 'CAPABILITY_MISMATCH', detail: '该工作负载需要加速卡能力。' },
     ],
     relatedActions: decision.actions,
   };

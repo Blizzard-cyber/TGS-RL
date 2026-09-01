@@ -18,6 +18,13 @@ docker compose up --build
 Compose 启动 Scheduler、Runtime/Experiment、Job Controller、Operator、Gateway 和
 Console。首次启动需要下载基础镜像和依赖。所有宿主机端口只绑定到 `127.0.0.1`，
 四个有状态组件使用 named volumes。服务就绪后打开 <http://127.0.0.1:4173>。
+Console 默认使用中文，主导航包含运行总览、任务中心、链路追踪和实验对比。启动任务后，
+可以从任务详情进入链路追踪，查看 Runtime 持久化的 `TraceEvent` 时间轨，并关联对应的
+Run、Decision 和 Sandbox。
+链路页面在一条统一横向时间轴上展示训练阶段、请求处理、推理调度和工作进程轨道。
+点击“跨轨调用关联”中的请求，可以同时高亮该请求对应的 Executor 与 Worker 片段；
+事件详情会显示耗时、批量大小、设备、span/parent span 和代际。真实事件未携带
+`duration_ms`、`duration_us` 或 `duration_ns` 时会显示为菱形瞬时事件，不会推测时长。
 
 用 Console 同源代理执行六服务生命周期验收：
 
@@ -26,7 +33,10 @@ make compose-smoke
 ```
 
 该 smoke 会新建一个 CPU/Mock Job，依次完成 `start`、`pause`、`resume`、`stop`，并验证
-Scheduler Decision、两个 Sandbox 的终态以及 Scheduler allocation 回收。它保留现有数据，
+Scheduler Decision、Runtime Trace、两个 Sandbox 的终态以及 Scheduler allocation 回收。启动成功后，
+它还会以当前 RuntimeUnit、Sandbox、Binding 和 generation 身份，通过正式 HMAC 鉴权 RPC 发布一组
+`DATA_KIND_SYNTHETIC` 多轨 Trace，供本机验证请求到 Executor/Worker 的可视化；这些数据明确是
+CPU/Mock 合成证据，不能解释为 GPU 性能。它保留现有数据，
 适合每次重启或升级后重复运行。建议至少执行一次以下恢复检查：
 
 ```bash

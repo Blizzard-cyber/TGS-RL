@@ -8,6 +8,7 @@ import {
   overview,
   sandboxes,
   timeline,
+  traceEvents,
   topology,
 } from './mockFixture';
 import {
@@ -36,10 +37,11 @@ import type {
   RunSummary,
   SandboxResponse,
   TimelineResponse,
+  TraceResponse,
   TopologySnapshot,
 } from './types';
 
-type MockSurface = 'jobs' | 'runs' | 'timeline' | 'sandboxes' | 'decisions' | 'experiments';
+type MockSurface = 'jobs' | 'runs' | 'timeline' | 'traces' | 'sandboxes' | 'decisions' | 'experiments';
 
 function filterDecisions(entries: DecisionRecord[], options?: QueryOptions): DecisionRecord[] {
   return entries.filter((entry) => {
@@ -109,7 +111,7 @@ export class MockApiClient implements ApiClient {
   async listOverview(options?: QueryOptions): Promise<QueryResult<OverviewResponse>> {
     await delay(180, options?.signal);
     const mode = parseSimulation(options?.filters);
-    return applySimulation(mode, overview, 'No overview metrics matched the selected source.');
+    return applySimulation(mode, overview, '当前数据来源下没有总览指标。');
   }
 
   async listJobs(options?: QueryOptions): Promise<QueryResult<JobSummary[]>> {
@@ -125,7 +127,7 @@ export class MockApiClient implements ApiClient {
       };
     }
     const mode = parseSimulation(options?.filters);
-    const result = applySimulation(mode, paged.data?.entries ?? [], 'No jobs matched the active filters.');
+    const result = applySimulation(mode, paged.data?.entries ?? [], '当前筛选条件下没有任务。');
     return { ...result, pageInfo: { nextPageToken: paged.data?.nextPageToken, totalApprox: paged.data?.totalApprox } };
   }
 
@@ -133,7 +135,7 @@ export class MockApiClient implements ApiClient {
     await delay(180, options?.signal);
     const detail = getJobDetail(jobId);
     if (!detail) {
-      return { state: 'empty', message: 'The requested job was not retained by the console dataset.' };
+      return { state: 'empty', message: '控制台数据中没有保留该任务。' };
     }
     const jobRuns = sortRunsByServerOrder(getRunList(jobId));
     const requestedRunId = getSelectedRunId(options?.filters);
@@ -147,7 +149,7 @@ export class MockApiClient implements ApiClient {
         runs: jobRuns,
         selectedRunId: selectedRun?.id,
       },
-      'The selected job has no detail surface to render.',
+      '当前任务没有可展示的详情。',
     );
   }
 
@@ -164,7 +166,7 @@ export class MockApiClient implements ApiClient {
       };
     }
     const mode = parseSimulation(options?.filters);
-    const result = applySimulation(mode, paged.data?.entries ?? [], 'No runs matched the selected job.');
+    const result = applySimulation(mode, paged.data?.entries ?? [], '当前任务没有匹配的运行记录。');
     return { ...result, pageInfo: { nextPageToken: paged.data?.nextPageToken, totalApprox: paged.data?.totalApprox } };
   }
 
@@ -184,7 +186,27 @@ export class MockApiClient implements ApiClient {
       };
     }
     const mode = parseSimulation(options?.filters);
-    const result = applySimulation(mode, { events: paged.data?.entries ?? [] }, 'No timeline events matched the filters.');
+    const result = applySimulation(mode, { events: paged.data?.entries ?? [] }, '当前条件下没有控制事件。');
+    return { ...result, pageInfo: { nextPageToken: paged.data?.nextPageToken, totalApprox: paged.data?.totalApprox } };
+  }
+
+  async listTraces(jobId: string, options?: QueryOptions): Promise<QueryResult<TraceResponse>> {
+    await delay(180, options?.signal);
+    const runId = getSelectedRunId(options?.filters);
+    const traceId = options?.filters?.trace_id;
+    const requestedKind = options?.filters?.data_kind as DataKind | undefined;
+    const filteredTraceEvents: TraceResponse['events'] = traceEvents.filter((event) =>
+      event.jobId === jobId &&
+      (!runId || event.runId === runId) &&
+      (!traceId || event.traceId === traceId) &&
+      (!requestedKind || event.dataKind === requestedKind),
+    );
+    const paged = paginateMockEntries('traces', `job=${jobId}|run=${runId ?? ''}|trace=${traceId ?? ''}`, filteredTraceEvents, options);
+    if (paged.state !== 'ready') {
+      return { state: paged.state, message: paged.message, retryable: paged.retryable, apiError: paged.apiError };
+    }
+    const mode = parseSimulation(options?.filters);
+    const result = applySimulation(mode, { events: paged.data?.entries ?? [] }, '没有找到符合条件的链路事件。');
     return { ...result, pageInfo: { nextPageToken: paged.data?.nextPageToken, totalApprox: paged.data?.totalApprox } };
   }
 
@@ -192,10 +214,10 @@ export class MockApiClient implements ApiClient {
     await delay(180, options?.signal);
     const runId = getSelectedRunId(options?.filters);
     if (runId && topology.runId !== runId) {
-      return { state: 'empty', message: 'No topology matched the selected job and run filters.' };
+      return { state: 'empty', message: '当前任务与运行没有匹配的拓扑。' };
     }
     const mode = parseSimulation(options?.filters);
-    return applySimulation(mode, topology, 'Topology has no active nodes to display.');
+    return applySimulation(mode, topology, '当前拓扑没有可展示的活动节点。');
   }
 
   async listSandboxes(jobId: string, options?: QueryOptions): Promise<QueryResult<SandboxResponse>> {
@@ -214,7 +236,7 @@ export class MockApiClient implements ApiClient {
       };
     }
     const mode = parseSimulation(options?.filters);
-    const result = applySimulation(mode, { sandboxes: paged.data?.entries ?? [] }, 'No sandboxes matched the active filters.');
+    const result = applySimulation(mode, { sandboxes: paged.data?.entries ?? [] }, '当前筛选条件下没有沙箱。');
     return { ...result, pageInfo: { nextPageToken: paged.data?.nextPageToken, totalApprox: paged.data?.totalApprox } };
   }
 
@@ -222,10 +244,10 @@ export class MockApiClient implements ApiClient {
     await delay(180, options?.signal);
     const detail = getDecisionExplorer(decisionId);
     if (!detail) {
-      return { state: 'empty', message: 'The requested decision was not retained.' };
+      return { state: 'empty', message: '系统没有保留该决策。' };
     }
     const mode = parseSimulation(options?.filters);
-    return applySimulation(mode, detail, 'No candidate set exists for the selected decision.');
+    return applySimulation(mode, detail, '当前决策没有候选集合。');
   }
 
   async listDecisions(jobId: string, options?: QueryOptions): Promise<QueryResult<DecisionRecord[]>> {
@@ -241,7 +263,7 @@ export class MockApiClient implements ApiClient {
       };
     }
     const mode = parseSimulation(options?.filters);
-    const result = applySimulation(mode, paged.data?.entries ?? [], 'No decisions matched the active filters.');
+    const result = applySimulation(mode, paged.data?.entries ?? [], '当前筛选条件下没有调度决策。');
     return { ...result, pageInfo: { nextPageToken: paged.data?.nextPageToken, totalApprox: paged.data?.totalApprox } };
   }
 
@@ -261,7 +283,7 @@ export class MockApiClient implements ApiClient {
       };
     }
     const mode = parseSimulation(options?.filters);
-    const result = applySimulation(mode, paged.data?.entries ?? [], 'No experiments matched the active filters.');
+    const result = applySimulation(mode, paged.data?.entries ?? [], '当前筛选条件下没有实验。');
     return { ...result, pageInfo: { nextPageToken: paged.data?.nextPageToken, totalApprox: paged.data?.totalApprox } };
   }
 
@@ -272,7 +294,7 @@ export class MockApiClient implements ApiClient {
       data: {
         status: 'accepted',
         id: String(job.jobId ?? 'mock-job'),
-        message: 'Mock mode: job creation is a console-only demonstration.',
+        message: '模拟模式：任务创建仅用于控制台演示。',
         job,
       },
     };
@@ -285,7 +307,7 @@ export class MockApiClient implements ApiClient {
       data: {
         status: 'accepted',
         id: `${jobId}-run-mock`,
-        message: 'Mock mode: create run is a console-only demonstration.',
+        message: '模拟模式：运行创建仅用于控制台演示。',
       },
     };
   }
@@ -297,7 +319,7 @@ export class MockApiClient implements ApiClient {
       data: {
         status: 'accepted',
         id: jobId,
-        message: `Mock mode: admit job for ${jobId} is a console-only demonstration.`,
+        message: `模拟模式：任务 ${jobId} 的准入仅用于控制台演示。`,
       },
     };
   }
@@ -309,7 +331,7 @@ export class MockApiClient implements ApiClient {
       data: {
         status: 'accepted',
         id: runId,
-        message: `Mock mode: job command ${command} for ${jobId} is a console-only demonstration.`,
+        message: `模拟模式：任务 ${jobId} 的 ${command} 命令仅用于控制台演示。`,
       },
     };
   }
@@ -321,7 +343,7 @@ export class MockApiClient implements ApiClient {
       data: {
         status: 'accepted',
         id: String(replay.replayId ?? 'mock-replay'),
-        message: 'Mock mode: replay creation is a console-only demonstration.',
+        message: '模拟模式：回放创建仅用于控制台演示。',
         replay,
       },
     };
@@ -334,7 +356,7 @@ export class MockApiClient implements ApiClient {
       data: {
         status: 'accepted',
         id: replayId,
-        message: `Mock mode: replay command ${command} is a console-only demonstration.`,
+        message: `模拟模式：回放命令 ${command} 仅用于控制台演示。`,
       },
     };
   }

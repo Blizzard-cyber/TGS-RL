@@ -104,6 +104,14 @@ def build_parser() -> argparse.ArgumentParser:
     timeline.add_argument("--page-token")
     timeline.add_argument("--limit", type=int)
 
+    traces = subparsers.add_parser("traces", parents=[client_parent])
+    traces.add_argument("job_id")
+    traces.add_argument("--run-id")
+    traces.add_argument("--trace-id")
+    traces.add_argument("--data-kind")
+    traces.add_argument("--page-token")
+    traces.add_argument("--limit", type=int)
+
     dag = subparsers.add_parser("dag", parents=[client_parent])
     dag.add_argument("job_id")
     dag.add_argument("--run-id")
@@ -285,6 +293,17 @@ def main(argv: list[str] | None = None) -> int:
                 args.job_id,
                 run_id=args.run_id,
                 after_event_id=args.after_event_id,
+                page_token=args.page_token,
+                limit=args.limit,
+            )
+        )
+    if args.command == "traces":
+        return _print(
+            client.list_traces(
+                args.job_id,
+                run_id=args.run_id,
+                trace_id=args.trace_id,
+                data_kind=args.data_kind,
                 page_token=args.page_token,
                 limit=args.limit,
             )

@@ -440,6 +440,23 @@ message PublishTraceBatchResponse {
   uint64 accepted_event_count = 4;
 }
 
+// ListTraceEventsRequest scopes immutable runtime Trace evidence to one Run.
+// job_id and trace_id are defensive ownership filters for northbound callers.
+message ListTraceEventsRequest {
+  string run_id = 1;
+  string job_id = 2;
+  string trace_id = 3;
+  DataKind data_kind = 4;
+  uint64 limit = 5;
+  string page_token = 6;
+}
+
+message ListTraceEventsResponse {
+  repeated TraceEvent events = 1;
+  string next_page_token = 2;
+  string cursor = 3;
+}
+
 message ObserveSandboxRequest {
   SandboxEvent event = 1;
 }
@@ -516,6 +533,7 @@ service RuntimeControlService {
   rpc WatchRuntimeEvents(WatchRuntimeEventsRequest) returns (stream WatchRuntimeEventsResponse);
   rpc PublishSandboxEvent(PublishSandboxEventRequest) returns (PublishSandboxEventResponse);
   rpc PublishTraceBatch(PublishTraceBatchRequest) returns (PublishTraceBatchResponse);
+  rpc ListTraceEvents(ListTraceEventsRequest) returns (ListTraceEventsResponse);
 }
 
 // SchedulerObservationService projects execution-substrate observations into

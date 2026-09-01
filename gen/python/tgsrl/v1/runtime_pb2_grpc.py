@@ -111,6 +111,11 @@ class RuntimeControlServiceStub(object):
                 request_serializer=tgsrl_dot_v1_dot_runtime__pb2.PublishTraceBatchRequest.SerializeToString,
                 response_deserializer=tgsrl_dot_v1_dot_runtime__pb2.PublishTraceBatchResponse.FromString,
                 _registered_method=True)
+        self.ListTraceEvents = channel.unary_unary(
+                '/tgsrl.v1.RuntimeControlService/ListTraceEvents',
+                request_serializer=tgsrl_dot_v1_dot_runtime__pb2.ListTraceEventsRequest.SerializeToString,
+                response_deserializer=tgsrl_dot_v1_dot_runtime__pb2.ListTraceEventsResponse.FromString,
+                _registered_method=True)
 
 
 class RuntimeControlServiceServicer(object):
@@ -232,6 +237,12 @@ class RuntimeControlServiceServicer(object):
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
 
+    def ListTraceEvents(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
 
 def add_RuntimeControlServiceServicer_to_server(servicer, server):
     rpc_method_handlers = {
@@ -329,6 +340,11 @@ def add_RuntimeControlServiceServicer_to_server(servicer, server):
                     servicer.PublishTraceBatch,
                     request_deserializer=tgsrl_dot_v1_dot_runtime__pb2.PublishTraceBatchRequest.FromString,
                     response_serializer=tgsrl_dot_v1_dot_runtime__pb2.PublishTraceBatchResponse.SerializeToString,
+            ),
+            'ListTraceEvents': grpc.unary_unary_rpc_method_handler(
+                    servicer.ListTraceEvents,
+                    request_deserializer=tgsrl_dot_v1_dot_runtime__pb2.ListTraceEventsRequest.FromString,
+                    response_serializer=tgsrl_dot_v1_dot_runtime__pb2.ListTraceEventsResponse.SerializeToString,
             ),
     }
     generic_handler = grpc.method_handlers_generic_handler(
@@ -846,6 +862,33 @@ class RuntimeControlService(object):
             '/tgsrl.v1.RuntimeControlService/PublishTraceBatch',
             tgsrl_dot_v1_dot_runtime__pb2.PublishTraceBatchRequest.SerializeToString,
             tgsrl_dot_v1_dot_runtime__pb2.PublishTraceBatchResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def ListTraceEvents(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/tgsrl.v1.RuntimeControlService/ListTraceEvents',
+            tgsrl_dot_v1_dot_runtime__pb2.ListTraceEventsRequest.SerializeToString,
+            tgsrl_dot_v1_dot_runtime__pb2.ListTraceEventsResponse.FromString,
             options,
             channel_credentials,
             insecure,

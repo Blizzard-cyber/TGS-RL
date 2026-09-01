@@ -25,3 +25,7 @@ export function jobSandboxesPath(jobId: string, runId?: string) {
 export function jobDecisionsPath(jobId: string, runId?: string) {
   return withOptionalRunId(`/jobs/${jobId}/decisions`, runId);
 }
+
+export function jobTracesPath(jobId: string, runId?: string) {
+  return withOptionalRunId(`/jobs/${jobId}/traces`, runId);
+}

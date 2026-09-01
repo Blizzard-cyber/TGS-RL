@@ -380,6 +380,20 @@ class GatewayApplication:
         if (
             len(segments) == 4
             and segments[1] == "jobs"
+            and segments[3] == "traces"
+            and method == "GET"
+        ):
+            return self.backend.list_traces(
+                segments[2],
+                run_id=query.get("run_id", [None])[0],
+                trace_id=query.get("trace_id", [None])[0],
+                data_kind=_normalize_data_kind(query.get("data_kind", [None])[0]),
+                page_token=query.get("page_token", [None])[0],
+                limit=_optional_limit(query.get("limit", [None])[0]),
+            )
+        if (
+            len(segments) == 4
+            and segments[1] == "jobs"
             and segments[3] == "dag"
             and method == "GET"
         ):

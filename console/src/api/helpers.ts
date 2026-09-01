@@ -255,21 +255,21 @@ export function deriveOverviewHealth(jobs: JobSummary[], health: Record<string, 
     degradedJobs > 0
       ? {
           id: 'overview-degraded-jobs',
-          title: 'Jobs degraded',
+          title: '部分任务处于降级状态',
           tone: 'warn' as const,
-          detail: `${degradedJobs} retained jobs are not fully healthy.`,
+          detail: `当前有 ${degradedJobs} 个保留任务未达到完全健康状态。`,
         }
       : {
           id: 'overview-jobs-healthy',
-          title: 'Jobs healthy',
+          title: '任务运行正常',
           tone: 'info' as const,
-          detail: 'Retained jobs are currently healthy.',
+          detail: '当前保留任务均处于健康状态。',
         },
     {
       id: 'overview-system-status',
-      title: `Gateway ${String(health.status ?? 'unknown')}`,
+      title: `网关${String(health.status ?? '') === 'ok' ? '运行正常' : '状态异常'}`,
       tone: String(health.status ?? '') === 'ok' ? 'info' as const : 'critical' as const,
-      detail: `Gateway backend reports ${String(health.backend ?? 'unknown')} at ${String(health.observedAt ?? '')}.`,
+      detail: `当前后端模式为 ${String(health.backend ?? '未知')}，观测时间 ${String(health.observedAt ?? '未知')}。`,
     },
   ];
 }

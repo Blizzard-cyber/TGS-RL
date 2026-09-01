@@ -29,7 +29,7 @@ describe('SandboxViewPage', () => {
     const listSandboxes = vi.fn();
     renderPage('/sandboxes', createTestApiClient({ listSandboxes }));
 
-    expect(await screen.findByText('Select a job to view its sandboxes.')).toBeInTheDocument();
+    expect(await screen.findByText('输入任务编号后即可查看运行沙箱。')).toBeInTheDocument();
     expect(listSandboxes).not.toHaveBeenCalled();
   });
 
@@ -67,7 +67,7 @@ describe('SandboxViewPage', () => {
       signal: expect.any(AbortSignal),
     });
 
-    await user.selectOptions(screen.getByLabelText('Source'), 'live');
+    await user.selectOptions(screen.getByLabelText('数据来源'), 'live');
 
     await waitFor(() =>
       expect(listSandboxes).toHaveBeenLastCalledWith('job-live-017', {
@@ -79,8 +79,8 @@ describe('SandboxViewPage', () => {
         signal: expect.any(AbortSignal),
       }),
     );
-    expect(screen.getByText('Safe point')).toBeInTheDocument();
-    expect(screen.getByRole('columnheader', { name: 'Sandbox' })).toHaveAttribute('scope', 'col');
+    expect(screen.getByText('安全点')).toBeInTheDocument();
+    expect(screen.getByRole('columnheader', { name: '沙箱编号' })).toHaveAttribute('scope', 'col');
   });
 
   it('renders empty table label for empty retained sandboxes', async () => {
@@ -91,7 +91,7 @@ describe('SandboxViewPage', () => {
       }),
     );
 
-    expect(await screen.findByText('No sandboxes matched the current job and source filters.')).toBeInTheDocument();
+    expect(await screen.findByText('当前任务和来源下没有沙箱记录。')).toBeInTheDocument();
   });
 
   it('renders an error state when the sandbox query rejects', async () => {
@@ -104,7 +104,7 @@ describe('SandboxViewPage', () => {
       }),
     );
 
-    expect(await screen.findByText('Request failed')).toBeInTheDocument();
+    expect(await screen.findByText('请求失败')).toBeInTheDocument();
     expect(screen.getByText('sandbox fetch failed')).toBeInTheDocument();
   });
 });

@@ -333,6 +333,22 @@ class RuntimeControlServicer(runtime_pb2_grpc.RuntimeControlServiceServicer):
             await context.abort(grpc.StatusCode.INVALID_ARGUMENT, str(error))
             raise AssertionError("context.abort returned unexpectedly") from error
 
+    async def ListTraceEvents(
+        self,
+        request: runtime_pb2.ListTraceEventsRequest,
+        context: grpc.aio.ServicerContext[
+            runtime_pb2.ListTraceEventsRequest, runtime_pb2.ListTraceEventsResponse
+        ],
+    ) -> runtime_pb2.ListTraceEventsResponse:
+        try:
+            return self._supervisor.list_trace_events(request)
+        except KeyError as error:
+            await context.abort(grpc.StatusCode.NOT_FOUND, str(error))
+            raise AssertionError("context.abort returned unexpectedly") from error
+        except (RuntimeLifecycleError, ValueError) as error:
+            await context.abort(grpc.StatusCode.INVALID_ARGUMENT, str(error))
+            raise AssertionError("context.abort returned unexpectedly") from error
+
     async def PublishSandboxEvent(
         self,
         request: runtime_pb2.PublishSandboxEventRequest,

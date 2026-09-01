@@ -40,7 +40,7 @@ export function useQuery<T>(factory: (signal: AbortSignal) => Promise<QueryResul
           deps: requestDeps,
           result: {
             state: 'error',
-            message: error instanceof Error ? error.message : 'Request failed.',
+            message: error instanceof Error ? error.message : '请求失败。',
             retryable: true,
           },
         });
@@ -65,9 +65,10 @@ export function useRunScopedSearchParams() {
   const jobId = routeJobId ?? searchParams.get('jobId') ?? '';
   const runId = searchParams.get('runId') ?? '';
   const decisionId = searchParams.get('decisionId') ?? '';
+  const traceId = searchParams.get('traceId') ?? '';
 
   const updateScopedParams = useCallback(
-    (nextValues: { jobId?: string; runId?: string; decisionId?: string }) => {
+    (nextValues: { jobId?: string; runId?: string; decisionId?: string; traceId?: string }) => {
       const next = new URLSearchParams(searchParams);
       for (const [key, value] of Object.entries(nextValues)) {
         if (value) {
@@ -87,11 +88,13 @@ export function useRunScopedSearchParams() {
       jobId,
       runId,
       decisionId,
+      traceId,
       setJobId: (value?: string) => updateScopedParams({ jobId: value }),
       setRunId: (value?: string) => updateScopedParams({ runId: value }),
       setDecisionId: (value?: string) => updateScopedParams({ decisionId: value }),
+      setTraceId: (value?: string) => updateScopedParams({ traceId: value }),
       setScopedParams: updateScopedParams,
     }),
-    [searchParams, jobId, runId, decisionId, updateScopedParams],
+    [searchParams, jobId, runId, decisionId, traceId, updateScopedParams],
   );
 }

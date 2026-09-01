@@ -195,6 +195,28 @@ class GatewayClient:
             },
         )
 
+    def list_traces(
+        self,
+        job_id: str,
+        *,
+        run_id: str | None = None,
+        trace_id: str | None = None,
+        data_kind: str | None = None,
+        page_token: str | None = None,
+        limit: int | None = None,
+    ) -> dict[str, object]:
+        return self._request(
+            "GET",
+            route_path("list_traces", job_id=job_id),
+            query={
+                "run_id": run_id,
+                "trace_id": trace_id,
+                "data_kind": data_kind,
+                "page_token": page_token,
+                "limit": limit,
+            },
+        )
+
     def get_dag(self, job_id: str, *, run_id: str | None = None) -> dict[str, object]:
         return self._request("GET", route_path("get_dag", job_id=job_id), query={"run_id": run_id})
 

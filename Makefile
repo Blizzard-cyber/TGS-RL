@@ -50,7 +50,7 @@ help:
 	  '  make staticcheck      run the pinned Go static analyzer' \
 	  '  make test-api         run northbound API tests' \
 	  '  make test-console     type-check, lint, test, and build the web console' \
-	  '  make test-console-browser smoke all seven Console routes in Chromium' \
+	  '  make test-console-browser smoke all eight Console routes in Chromium' \
 	  '  make test             run all Go, Python, API, and console tests' \
 	  '  make race             run Go tests with the race detector' \
 	  '  make build-nvidia-binding build the durable NVIDIA binding helper' \

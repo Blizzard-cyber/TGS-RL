@@ -29,7 +29,7 @@ describe('TopologyPage', () => {
     const getTopology = vi.fn();
     renderPage('/topology', createTestApiClient({ getTopology }));
 
-    expect(await screen.findByText('Select a job to view its topology.')).toBeInTheDocument();
+    expect(await screen.findByText('输入任务编号后即可查看资源拓扑。')).toBeInTheDocument();
     expect(getTopology).not.toHaveBeenCalled();
   });
 
@@ -62,7 +62,7 @@ describe('TopologyPage', () => {
       signal: expect.any(AbortSignal),
     });
 
-    await user.click(screen.getByLabelText('GPU path only'));
+    await user.click(screen.getByLabelText('仅看加速卡链路'));
 
     expect(screen.queryByText('cpu-bank-2')).not.toBeInTheDocument();
     expect(screen.getAllByText('gpu-cell-4').length).toBeGreaterThan(0);
@@ -112,11 +112,11 @@ describe('TopologyPage', () => {
     renderPage(
       '/topology?jobId=job-live-017',
       createTestApiClient({
-        getTopology: async () => ({ state: 'gpu-unavailable', message: 'GPU capacity is currently unavailable.' }),
+        getTopology: async () => ({ state: 'gpu-unavailable', message: '当前没有可用的加速卡容量。' }),
       }),
     );
 
-    expect(await screen.findByText('GPU capacity unavailable')).toBeInTheDocument();
-    expect(screen.getByText('GPU capacity is currently unavailable.')).toBeInTheDocument();
+    expect(await screen.findByText('加速卡资源不可用')).toBeInTheDocument();
+    expect(screen.getByText('当前没有可用的加速卡容量。')).toBeInTheDocument();
   });
 });

@@ -116,7 +116,7 @@ CI 分别验证：
 - 独立非 race Scheduler/Provider P95 回归预算；
 - Runtime、Adapter、Gateway/SDK/HTTP API 的 Python lint、类型检查与测试；
 - Console 的类型检查、lint、测试和构建；
-- Chromium 中七个产品路由的真实页面加载、主标题与浏览器错误 smoke；
+- Chromium 中八个产品路由的真实页面加载、主标题与浏览器错误 smoke；
 - 跨语言 Proto round-trip 与最小进程演示；
 - 完整后端产品流、重启恢复和幂等性；
 - SBOM、兼容性证据、patch ledger 与公开内容检查。

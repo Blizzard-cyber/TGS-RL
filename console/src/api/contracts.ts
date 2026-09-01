@@ -11,7 +11,7 @@ export interface FetchResponse {
   [key: string]: Json | undefined;
 }
 
-export type GatewayFilterKey = 'after_event_id' | 'data_kind' | 'run_id';
+export type GatewayFilterKey = 'after_event_id' | 'data_kind' | 'run_id' | 'trace_id';
 
 export interface ApiError {
   code?: string;

@@ -28,7 +28,7 @@ describe('DecisionExplorerPage', () => {
 
     expect(await screen.findByText('dec-7104')).toBeInTheDocument();
     expect(screen.queryByText('dec-7098')).not.toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Next' })).toBeDisabled();
+    expect(screen.getByRole('button', { name: '下一页' })).toBeDisabled();
   });
 
   it('uses page token and selected decision to drive explorer fetches', async () => {
@@ -124,7 +124,7 @@ describe('DecisionExplorerPage', () => {
     );
 
     expect(await screen.findByText('dec-7104')).toBeInTheDocument();
-    expect(await screen.findByText('Feasible')).toBeInTheDocument();
+    expect(await screen.findByText('可行')).toBeInTheDocument();
     expect(screen.getByText('CAPABILITY MISMATCH')).toBeInTheDocument();
     expect(screen.getByText('GPU capability is required.')).toBeInTheDocument();
     await waitFor(() =>
@@ -134,7 +134,7 @@ describe('DecisionExplorerPage', () => {
       }),
     );
     expect(listDecisions).toHaveBeenNthCalledWith(1, 'job-live-017', {
-      limit: 2,
+      limit: 8,
       pageToken: undefined,
       filters: {
         mode: 'ready',
@@ -157,10 +157,10 @@ describe('DecisionExplorerPage', () => {
       expect(screen.getByRole('button', { name: /dec-7103/i })).toHaveAttribute('aria-pressed', 'true'),
     );
 
-    await user.click(screen.getByRole('button', { name: 'Next' }));
+    await user.click(screen.getByRole('button', { name: '下一页' }));
     await waitFor(() =>
       expect(listDecisions).toHaveBeenLastCalledWith('job-live-017', {
-        limit: 2,
+        limit: 8,
         pageToken: 'opaque-2',
         filters: {
           mode: 'ready',
@@ -172,7 +172,7 @@ describe('DecisionExplorerPage', () => {
     await waitFor(() =>
       expect(screen.getByRole('button', { name: /dec-7102/i })).toHaveAttribute('aria-pressed', 'true'),
     );
-    expect(screen.getByRole('button', { name: 'Prev' })).toBeEnabled();
+    expect(screen.getByRole('button', { name: '上一页' })).toBeEnabled();
   });
 
   it('falls back to the first decision on the new page when the prior selection is no longer present', async () => {
@@ -273,7 +273,7 @@ describe('DecisionExplorerPage', () => {
       }),
     );
 
-    await user.click(screen.getByRole('button', { name: 'Next' }));
+    await user.click(screen.getByRole('button', { name: '下一页' }));
 
     await waitFor(() =>
       expect(screen.getByRole('button', { name: /dec-7102/i })).toHaveAttribute('aria-pressed', 'true'),
@@ -295,8 +295,8 @@ describe('DecisionExplorerPage', () => {
       }),
     );
 
-    expect(await screen.findByText('Select a job to inspect its decisions.')).toBeInTheDocument();
-    expect(await screen.findByText('Select a decision to inspect candidates.')).toBeInTheDocument();
+    expect(await screen.findByText('输入任务编号后即可查看调度决策。')).toBeInTheDocument();
+    expect(await screen.findByText('请选择一条决策查看候选与动作。')).toBeInTheDocument();
     expect(listDecisions).not.toHaveBeenCalled();
   });
 });

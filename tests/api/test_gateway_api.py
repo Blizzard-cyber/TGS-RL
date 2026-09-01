@@ -393,6 +393,22 @@ class _RuntimeServicer(runtime_pb2_grpc.RuntimeControlServiceServicer):
             next_page_token=f"downstream-sandboxes:{request.job_id}:{request.run_id or 'all'}",
         )
 
+    def ListTraceEvents(
+        self, request: runtime_pb2.ListTraceEventsRequest, context: grpc.ServicerContext
+    ) -> runtime_pb2.ListTraceEventsResponse:
+        payload = self.backend.list_traces(
+            request.job_id,
+            run_id=request.run_id or None,
+            trace_id=request.trace_id or None,
+            data_kind=request.data_kind or None,
+            limit=request.limit or None,
+            page_token=None,
+        )
+        return runtime_pb2.ListTraceEventsResponse(
+            events=payload["events"],
+            next_page_token=f"downstream-traces:{request.run_id}:{request.page_token or 'start'}",
+        )
+
     def GetRuntimeStatus(
         self, request: runtime_pb2.GetRuntimeStatusRequest, context: grpc.ServicerContext
     ) -> runtime_pb2.GetRuntimeStatusResponse:
@@ -1091,6 +1107,13 @@ def test_gateway_routes_cover_jobs_runtime_decisions_and_operations() -> None:
     )
     assert timeline_status == 200
     assert len(timeline["events"]) >= 3
+
+    trace_status, traces = harness.request(
+        "GET", f"/v1/jobs/{job_id}/traces?run_id={run_id}&limit=10"
+    )
+    assert trace_status == 200
+    assert len(traces["events"]) == 1
+    assert traces["events"][0]["traceId"] == started["run"]["traceId"]
 
     dag_status, dag = harness.request("GET", f"/v1/jobs/{job_id}/dag?run_id={run_id}")
     assert dag_status == 200
@@ -1840,10 +1863,12 @@ def test_sdk_against_wsgi_harness_backend() -> None:
     topology = client.get_topology(job_id, run_id=run_id)
     decisions = client.list_decisions(job_id, run_id=run_id)
     timeline = client.list_timeline(job_id, run_id=run_id, limit=1)
+    traces = client.list_traces(job_id, run_id=run_id, limit=1)
     sandboxes = client.list_sandboxes(job_id, run_id=run_id, limit=1)
     assert cast(JsonObject, topology["manifest"])["runId"] == run_id
     assert len(cast(list[object], decisions["decisions"])) == 1
     assert len(cast(list[object], timeline["events"])) >= 1
+    assert len(cast(list[object], traces["events"])) == 1
     assert len(cast(list[object], sandboxes["sandboxes"])) == 1
     assert cast(str, timeline["next_page_token"])
     assert cast(str, sandboxes["next_page_token"])

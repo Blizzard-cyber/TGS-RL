@@ -1,13 +1,14 @@
 import { expect, test } from '@playwright/test';
 
 const routes = [
-  ['/', 'Overview'],
-  ['/jobs', 'Job Detail'],
-  ['/timeline', 'Timeline'],
-  ['/topology', 'Topology'],
-  ['/sandboxes', 'Sandbox View'],
-  ['/decisions', 'Decision Explorer'],
-  ['/experiments', 'Experiment Compare'],
+  ['/', '运行总览'],
+  ['/jobs', '任务中心'],
+  ['/traces', '链路追踪'],
+  ['/timeline', '事件时间线'],
+  ['/topology', '资源拓扑'],
+  ['/sandboxes', '运行沙箱'],
+  ['/decisions', '调度决策'],
+  ['/experiments', '实验对比'],
 ] as const;
 
 for (const [path, heading] of routes) {
@@ -23,6 +24,13 @@ for (const [path, heading] of routes) {
     expect(response?.ok()).toBe(true);
     await expect(page.getByRole('heading', { name: heading, level: 1 })).toBeVisible();
     await expect(page.locator('main')).toBeVisible();
+    if (path === '/traces') {
+      await expect(page.locator('.trace-waterfall')).toBeVisible();
+      await expect(page.locator('.track-group')).toHaveCount(4);
+      if (process.env.VITE_TGSRL_API_ADAPTER === 'mock') {
+        await expect(page.getByRole('region', { name: '跨轨调用关联' })).toBeVisible();
+      }
+    }
     expect(errors).toEqual([]);
   });
 }

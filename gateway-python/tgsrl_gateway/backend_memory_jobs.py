@@ -609,6 +609,7 @@ class MemoryJobService:
                 "/openapi.json",
                 "/v1/capabilities",
                 "/v1/jobs",
+                "/v1/jobs/{job_id}/traces",
                 "/v1/operations",
                 "/v1/replays",
                 "/v1/experiments",

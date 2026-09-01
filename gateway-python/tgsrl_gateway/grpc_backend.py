@@ -513,6 +513,51 @@ class GrpcGatewayBackend:
             ),
         }
 
+    def list_traces(
+        self,
+        job_id: str,
+        *,
+        run_id: str | None,
+        trace_id: str | None,
+        data_kind: int | None,
+        page_token: str | None,
+        limit: int | None,
+    ) -> dict[str, object]:
+        selected_run_id = run_id
+        if selected_run_id is None:
+            runs_value = self.list_runs(job_id, limit=1, page_token=None, after_run_id=None)["runs"]
+            runs = cast(list[Any], runs_value)
+            if not runs:
+                raise NotFoundError("run", "latest")
+            selected_run_id = cast(Any, runs[0]).run_id
+        self.get_run(job_id, selected_run_id)
+        selected_trace_id = trace_id or ""
+        filters = {
+            "job_id": job_id,
+            "run_id": selected_run_id,
+            "trace_id": selected_trace_id,
+            "data_kind": data_kind,
+        }
+        response = self._call(
+            self._runtime.ListTraceEvents,
+            runtime_pb2.ListTraceEventsRequest(
+                run_id=selected_run_id,
+                job_id=job_id,
+                trace_id=selected_trace_id,
+                data_kind=data_kind or trace_pb2.DATA_KIND_UNKNOWN,
+                limit=100 if limit is None else limit,
+                page_token=self._decode_northbound_page_token(
+                    page_token, scope="traces", filters=filters
+                ),
+            ),
+        )
+        return {
+            "events": [clone_message(event) for event in response.events],
+            "next_page_token": self._wrap_next_page_token(
+                response.next_page_token, scope="traces", filters=filters
+            ),
+        }
+
     def get_dag(self, job_id: str, *, run_id: str | None) -> dict[str, object]:
         job = self.get_job(job_id)
         selected_run = self.get_run(job_id, run_id) if run_id else None
@@ -825,6 +870,7 @@ class GrpcGatewayBackend:
                 "/openapi.json",
                 "/v1/capabilities",
                 "/v1/jobs",
+                "/v1/jobs/{job_id}/traces",
                 "/v1/operations",
                 "/v1/replays",
                 "/v1/experiments",

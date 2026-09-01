@@ -318,6 +318,13 @@ class VerlWorkerBridge:
         duration_ms: float = 0.0,
         items: int = 1,
         gpu_active_ms: float = 0.0,
+        request_id: str = "",
+        executor_id: str = "",
+        span_id: str = "",
+        parent_span_id: str = "",
+        batch_size: int = 0,
+        component: str = "worker",
+        display_name: str = "",
     ) -> None:
         """Append one raw, scheduler-consumable quality observation."""
         with self._lock:
@@ -337,6 +344,13 @@ class VerlWorkerBridge:
                 duration_ms=duration_ms,
                 items=items,
                 gpu_active_ms=gpu_active_ms,
+                request_id=request_id,
+                executor_id=executor_id,
+                span_id=span_id,
+                parent_span_id=parent_span_id,
+                batch_size=batch_size,
+                component=component,
+                display_name=display_name,
                 contract_observation=contract_observation,
             )
             phase_id = self.identity.phase_id
@@ -390,7 +404,18 @@ class VerlWorkerBridge:
                 trace_id=str(emitted["trace_id"]),
                 generation=int(emitted["generation"]),
                 contract_observation=observation,
-                attributes=self._trace_attributes(),
+                attributes=self._trace_attributes(
+                    component=component,
+                    duration_ms=duration_ms,
+                    items=items,
+                    gpu_active_ms=gpu_active_ms,
+                    request_id=request_id,
+                    executor_id=executor_id,
+                    span_id=span_id,
+                    parent_span_id=parent_span_id,
+                    batch_size=batch_size,
+                    display_name=display_name,
+                ),
             )
             trace_event.occurred_at.FromDatetime(observed_at)
             self.trace_sink(trace_event)
@@ -460,7 +485,7 @@ class VerlWorkerBridge:
             data_kind=data_kind,
             trace_id=str(emitted["trace_id"]),
             generation=int(emitted["generation"]),
-            attributes=self._trace_attributes(),
+            attributes=self._trace_attributes(**extra),
         )
         event.occurred_at.FromDatetime(observed_at)
         self.trace_sink(event)
@@ -538,7 +563,7 @@ class VerlWorkerBridge:
             },
         }
 
-    def _trace_attributes(self) -> dict[str, str]:
+    def _trace_attributes(self, **metrics: Any) -> dict[str, str]:
         attributes = {
             key: value
             for key, value in (
@@ -557,6 +582,32 @@ class VerlWorkerBridge:
         ):
             if value >= minimum:
                 attributes[key] = str(value)
+        component = str(metrics.get("component", "worker")).strip()
+        if component:
+            attributes["component"] = component
+        duration_ms = float(metrics.get("duration_ms", metrics.get("elapsed_ms", 0.0)) or 0.0)
+        if duration_ms > 0:
+            attributes["duration_ms"] = format(duration_ms, "g")
+        items = int(metrics.get("items", metrics.get("item_count", 0)) or 0)
+        if items > 0:
+            attributes["items"] = str(items)
+            attributes["batch_size"] = str(items)
+        gpu_active_ms = float(metrics.get("gpu_active_ms", 0.0) or 0.0)
+        if gpu_active_ms > 0:
+            attributes["gpu_active_ms"] = format(gpu_active_ms, "g")
+        batch_size = int(metrics.get("batch_size", 0) or 0)
+        if batch_size > 0:
+            attributes["batch_size"] = str(batch_size)
+        for key in (
+            "request_id",
+            "executor_id",
+            "span_id",
+            "parent_span_id",
+            "display_name",
+        ):
+            text_value = str(metrics.get(key, "")).strip()
+            if text_value:
+                attributes[key] = text_value
         return attributes
 
     def _persist_state(self) -> None:

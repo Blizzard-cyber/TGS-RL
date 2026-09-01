@@ -545,8 +545,12 @@ def test_verl_worker_bridge_controls_lifecycle_and_emits_quality_observations(
     assert typed_events[-1].contract_observation.HasField("observed_at")
     assert typed_events[-1].attributes == {
         "binding_id": "binding-1",
+        "batch_size": "1",
+        "component": "worker",
         "device_id": "MIG-a",
         "device_ids": "MIG-a",
+        "duration_ms": "4",
+        "items": "1",
         "local_rank": "0",
         "rank": "0",
         "runtime_unit_id": "unit-1",
@@ -1424,6 +1428,14 @@ def test_verl_runtime_maps_native_metrics_without_guessing() -> None:
             "accepted_samples": 7,
             "expected_samples": 8,
             "perf/time_per_step_ms": 12.5,
+            "gpu_active_ms": 10.25,
+            "request_id": "req-42",
+            "executor_id": "executor-0",
+            "trace/span_id": "span-worker-42",
+            "trace/parent_span_id": "span-executor-42",
+            "trace/component": "worker",
+            "trace/display_name": "模型前向计算",
+            "rollout/batch_size": 16,
         },
         items=8,
     )
@@ -1433,6 +1445,14 @@ def test_verl_runtime_maps_native_metrics_without_guessing() -> None:
     assert observation.accepted_samples == 7
     assert observation.expected_samples == 8
     assert observation.duration_ms == 12.5
+    assert observation.gpu_active_ms == 10.25
+    assert observation.request_id == "req-42"
+    assert observation.executor_id == "executor-0"
+    assert observation.span_id == "span-worker-42"
+    assert observation.parent_span_id == "span-executor-42"
+    assert observation.batch_size == 16
+    assert observation.component == "worker"
+    assert observation.display_name == "模型前向计算"
 
 
 def test_fake_framework_exposes_executable_lifecycle_contract() -> None:

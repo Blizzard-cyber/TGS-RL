@@ -2273,6 +2273,87 @@ def test_sandbox_list_page_tokens_reject_cross_scope_and_filter_reuse() -> None:
         )
 
 
+def test_trace_events_are_scoped_filtered_and_pageable() -> None:
+    supervisor = RuntimeSupervisor(scheduler_client=_SchedulerStub())
+    manifest = _manifest()
+    supervisor.validate_runtime(runtime_pb2.ValidateRuntimeRequest(manifest=manifest))
+    supervisor.compile_runtime(runtime_pb2.CompileRuntimeRequest(manifest=manifest))
+    events = [
+        trace_pb2.TraceEvent(
+            event_id=f"trace-event-{index}",
+            job_id=manifest.job_id,
+            execution_id="execution-1",
+            phase_id="decode",
+            occurred_at=to_timestamp(datetime(2026, 8, 27, 12, 0, index, tzinfo=UTC)),
+            event_type=trace_pb2.TRACE_EVENT_TYPE_SAMPLE_PRODUCED,
+            algorithm="grpo",
+            rollout_mode=trace_pb2.ROLLOUT_MODE_PARTIALLY_ASYNC,
+            policy_version="policy-1",
+            decision_id=f"decision-{index}",
+            sequence=index,
+            stage_id="decode",
+            run_id=manifest.run_id,
+            trace_id=manifest.trace_id,
+            data_kind=manifest.data_kind,
+            generation=1,
+        )
+        for index in range(1, 4)
+    ]
+    supervisor.trace_ingestor.ingest(manifest.run_id, events)
+
+    first = supervisor.list_trace_events(
+        runtime_pb2.ListTraceEventsRequest(
+            run_id=manifest.run_id,
+            job_id=manifest.job_id,
+            trace_id=manifest.trace_id,
+            data_kind=manifest.data_kind,
+            limit=2,
+        )
+    )
+    assert [event.sequence for event in first.events] == [1, 2]
+    assert first.next_page_token
+    second = supervisor.list_trace_events(
+        runtime_pb2.ListTraceEventsRequest(
+            run_id=manifest.run_id,
+            job_id=manifest.job_id,
+            trace_id=manifest.trace_id,
+            data_kind=manifest.data_kind,
+            limit=2,
+            page_token=first.next_page_token,
+        )
+    )
+    assert [event.sequence for event in second.events] == [3]
+    with pytest.raises(KeyError, match="does not belong to job"):
+        supervisor.list_trace_events(
+            runtime_pb2.ListTraceEventsRequest(run_id=manifest.run_id, job_id="other-job")
+        )
+    with pytest.raises(ValueError, match="page_token"):
+        supervisor.list_trace_events(
+            runtime_pb2.ListTraceEventsRequest(
+                run_id=manifest.run_id, job_id=manifest.job_id, page_token=first.next_page_token
+            )
+        )
+
+
+def test_start_trace_carries_trace_identity_and_generation() -> None:
+    supervisor = RuntimeSupervisor(scheduler_client=_SchedulerStub())
+    manifest = _manifest()
+    supervisor.validate_runtime(runtime_pb2.ValidateRuntimeRequest(manifest=manifest))
+    supervisor.compile_runtime(runtime_pb2.CompileRuntimeRequest(manifest=manifest))
+
+    response = asyncio.run(
+        supervisor.start_runtime(
+            runtime_pb2.StartRuntimeRequest(
+                run_id=manifest.run_id, request_id="trace-start", idempotency_key="trace-start"
+            )
+        )
+    )
+    events = supervisor.trace_ingestor.list_causal(manifest.run_id)
+    assert events
+    assert {event.trace_id for event in events} == {manifest.trace_id}
+    assert {event.generation for event in events} == {response.runtime_units[0].generation}
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("method_name", "list_request"),

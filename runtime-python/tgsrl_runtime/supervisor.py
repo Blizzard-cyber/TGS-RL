@@ -285,6 +285,8 @@ def _trace_event(
         stage_id=runtime_unit.stage_id,
         run_id=run_id,
         data_kind=manifest.data_kind or trace_pb2.DATA_KIND_SYNTHETIC,
+        trace_id=manifest.trace_id,
+        generation=runtime_unit.generation,
     )
     event.contract_observation.CopyFrom(
         execution_pb2.ContractObservation(
@@ -1106,6 +1108,43 @@ class RuntimeSupervisor:
             sandboxes=page,
             next_page_token=next_page_token,
             cursor=_cursor("sandboxes", request.run_id, request.job_id, next_page_token),
+        )
+
+    def list_trace_events(
+        self, request: runtime_pb2.ListTraceEventsRequest
+    ) -> runtime_pb2.ListTraceEventsResponse:
+        if not request.run_id.strip():
+            raise ValueError("run_id is required")
+        manifest = self._ensure_run(request.run_id)
+        if request.job_id and request.job_id != manifest.job_id:
+            raise KeyError(f"run {request.run_id} does not belong to job {request.job_id}")
+        if request.trace_id and request.trace_id != manifest.trace_id:
+            raise KeyError(f"run {request.run_id} does not belong to trace {request.trace_id}")
+        items = self.trace_ingestor.list_causal(request.run_id)
+        if request.trace_id:
+            items = [event for event in items if event.trace_id == request.trace_id]
+        if request.data_kind:
+            items = [event for event in items if event.data_kind == request.data_kind]
+        scope = "trace-events"
+        filters = (
+            request.run_id,
+            request.job_id,
+            request.trace_id,
+            str(request.data_kind),
+        )
+        start = decode_page_token(request.page_token, scope=scope, filters=filters)
+        limit = int(request.limit or len(items) or 1)
+        page = items[start : start + limit]
+        next_offset = start + len(page)
+        next_page_token = (
+            encode_page_token(scope=scope, filters=filters, offset=next_offset)
+            if next_offset < len(items)
+            else ""
+        )
+        return runtime_pb2.ListTraceEventsResponse(
+            events=page,
+            next_page_token=next_page_token,
+            cursor=_cursor("trace-events", request.run_id, next_page_token),
         )
 
     def publish_sandbox_event(

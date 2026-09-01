@@ -107,6 +107,7 @@ describe('JobDetailPage controls', () => {
       getJobDetail: async () => ready(detail),
       listRuns: async () => ready(runs),
       listTimeline: async () => ready({ events: [] }),
+      listTraces: async () => ready({ events: [] }),
       getTopology: async () => ready({ nodes: [], edges: [], lastUpdated: '' }),
       listSandboxes: async () => ready({ sandboxes: [] }),
       getDecisionExplorer: async () => ready({ candidates: [], rejectedCandidates: [], relatedActions: [] }),
@@ -122,32 +123,32 @@ describe('JobDetailPage controls', () => {
 
     renderPage(client);
 
-    expect(await screen.findByRole('button', { name: 'Create Job' })).toBeInTheDocument();
+    expect(await screen.findByRole('button', { name: '创建任务' })).toBeInTheDocument();
 
-    await user.click(screen.getByRole('button', { name: 'Create Job' }));
+    await user.click(screen.getByRole('button', { name: '创建任务' }));
     await waitFor(() => expect(createJob).toHaveBeenCalledTimes(1));
 
-    await user.click(screen.getByRole('button', { name: 'Create Run' }));
+    await user.click(screen.getByRole('button', { name: '新建运行' }));
     await waitFor(() => expect(createRun).toHaveBeenCalledWith('job-live-017'));
     expect(screen.getByRole('button', { name: /ppo actor-critic burst/i })).toHaveAttribute('aria-pressed', 'true');
 
-    const jobRunCommands = screen.getByText('Job Run Commands').closest('.list-card');
+    const jobRunCommands = screen.getByText('运行控制').closest('.list-card');
     expect(jobRunCommands).not.toBeNull();
-    await user.click(within(jobRunCommands as HTMLElement).getByRole('button', { name: 'Admit' }));
+    await user.click(within(jobRunCommands as HTMLElement).getByRole('button', { name: '准入' }));
     await waitFor(() => expect(admitJob).toHaveBeenCalledWith('job-live-017'));
-    await user.click(within(jobRunCommands as HTMLElement).getByRole('button', { name: 'Start' }));
+    await user.click(within(jobRunCommands as HTMLElement).getByRole('button', { name: '启动' }));
     await waitFor(() => expect(applyJobCommand).toHaveBeenCalledWith('job-live-017', 'run-live-017-a', 'start'));
-    await user.click(within(jobRunCommands as HTMLElement).getByRole('button', { name: 'Pause' }));
+    await user.click(within(jobRunCommands as HTMLElement).getByRole('button', { name: '暂停' }));
     await waitFor(() => expect(applyJobCommand).toHaveBeenCalledWith('job-live-017', 'run-live-017-a', 'pause'));
 
-    await user.click(screen.getByRole('button', { name: 'Create Replay' }));
+    await user.click(screen.getByRole('button', { name: '创建回放' }));
     await waitFor(() => expect(createReplay).toHaveBeenCalledTimes(1));
-    expect(await screen.findByRole('status')).toHaveTextContent('Control action succeeded');
+    expect(await screen.findByRole('status')).toHaveTextContent('控制操作已完成');
     expect(screen.getByRole('status')).toHaveAttribute('aria-live', 'polite');
 
-    const replayCommands = screen.getByText('Replay Commands').closest('.list-card');
+    const replayCommands = screen.getByText('回放控制').closest('.list-card');
     expect(replayCommands).not.toBeNull();
-    await user.click(within(replayCommands as HTMLElement).getByRole('button', { name: 'Start' }));
+    await user.click(within(replayCommands as HTMLElement).getByRole('button', { name: '启动' }));
     await waitFor(() => expect(applyReplayCommand).toHaveBeenCalledWith('replay-console-new', 'start'));
   });
 
@@ -183,13 +184,13 @@ describe('JobDetailPage controls', () => {
     renderPage(client, '/jobs/job-replay-204');
 
     expect((await screen.findAllByText('Replay Latency Audit')).length).toBeGreaterThan(0);
-    await user.click(screen.getByRole('button', { name: 'Create Replay' }));
+    await user.click(screen.getByRole('button', { name: '创建回放' }));
 
     await waitFor(() =>
       expect(createReplay).toHaveBeenCalledWith({
         replayId: 'replay-console-new',
         jobId: 'job-replay-204',
-        displayName: 'Console Replay',
+        displayName: '控制台回放',
       }),
     );
   });
@@ -219,7 +220,7 @@ describe('JobDetailPage controls', () => {
 
     renderPage(client);
 
-    expect(await screen.findByText('Job Run Commands')).toBeInTheDocument();
+    expect(await screen.findByText('运行控制')).toBeInTheDocument();
     await waitFor(() =>
       expect(listJobs).toHaveBeenCalledWith({
         limit: 50,
@@ -240,18 +241,18 @@ describe('JobDetailPage controls', () => {
       }),
     );
 
-    const jobRunCommands = screen.getByText('Job Run Commands').closest('.list-card');
-    const replayCommands = screen.getByText('Replay Commands').closest('.list-card');
+    const jobRunCommands = screen.getByText('运行控制').closest('.list-card');
+    const replayCommands = screen.getByText('回放控制').closest('.list-card');
     expect(jobRunCommands).not.toBeNull();
     expect(replayCommands).not.toBeNull();
 
-    for (const command of ['Admit', 'Start', 'Pause', 'Resume', 'Stop', 'Retry', 'Terminate']) {
+    for (const command of ['准入', '启动', '暂停', '恢复', '停止', '重试', '强制终止']) {
       await user.click(within(jobRunCommands as HTMLElement).getByRole('button', { name: command }));
       await waitFor(() => expect(within(jobRunCommands as HTMLElement).getByRole('button', { name: command })).toBeEnabled());
     }
     expect(await screen.findByText('terminate rejected')).toBeInTheDocument();
 
-    for (const command of ['Start', 'Pause', 'Resume', 'Stop', 'Terminate']) {
+    for (const command of ['启动', '暂停', '恢复', '停止', '强制终止']) {
       await user.click(within(replayCommands as HTMLElement).getByRole('button', { name: command }));
       await waitFor(() => expect(within(replayCommands as HTMLElement).getByRole('button', { name: command })).toBeEnabled());
     }
@@ -280,7 +281,7 @@ describe('JobDetailPage controls', () => {
 
     renderPage(client, initialEntry);
 
-    const commands = await screen.findByText('Job Run Commands');
+    const commands = await screen.findByText('运行控制');
     const commandCard = commands.closest('.list-card') as HTMLElement;
     await waitFor(() => expect(within(commandCard).getByText('run-live-017-a')).toBeInTheDocument());
     await waitFor(() =>
@@ -290,7 +291,7 @@ describe('JobDetailPage controls', () => {
       }),
     );
 
-    await user.click(within(commandCard).getByRole('button', { name: 'Start' }));
+    await user.click(within(commandCard).getByRole('button', { name: '启动' }));
     await waitFor(() => expect(applyJobCommand).toHaveBeenCalledWith('job-live-017', 'run-live-017-a', 'start'));
     if (initialRunId) {
       expect(applyJobCommand).not.toHaveBeenCalledWith('job-live-017', initialRunId, 'start');
@@ -336,14 +337,14 @@ describe('JobDetailPage controls', () => {
       }),
     );
     await screen.findByText('queried run-live-017-01');
-    await screen.findByRole('button', { name: 'run-live-017-01 (selected)' });
+    await screen.findByRole('button', { name: 'run-live-017-01（已选择）' });
     const lastRun = await screen.findByRole('button', { name: 'run-live-017-21' });
     await user.click(lastRun);
     await waitFor(() =>
       expect(router.state.location.search).toBe('?runId=run-live-017-21'),
     );
     await waitFor(() =>
-      expect(screen.getByRole('button', { name: 'run-live-017-21 (selected)' })).toHaveAttribute('aria-pressed', 'true'),
+      expect(screen.getByRole('button', { name: 'run-live-017-21（已选择）' })).toHaveAttribute('aria-pressed', 'true'),
     );
   });
 
@@ -439,7 +440,7 @@ describe('JobDetailPage controls', () => {
 
     renderPage(client, '/jobs/job-live-017?runId=run-live-017-a');
 
-    expect(await screen.findByText('Runs (2)')).toBeInTheDocument();
+    expect(await screen.findByText('运行记录（2）')).toBeInTheDocument();
     await user.click(screen.getByRole('button', { name: 'run-live-017-b' }));
 
     await waitFor(() =>
@@ -453,10 +454,11 @@ describe('JobDetailPage controls', () => {
       }),
     );
 
-    expect(screen.getByRole('link', { name: 'Timeline' })).toHaveAttribute('href', '/jobs/job-live-017/timeline?runId=run-live-017-b');
-    expect(screen.getByRole('link', { name: 'Topology' })).toHaveAttribute('href', '/jobs/job-live-017/topology?runId=run-live-017-b');
-    expect(screen.getByRole('link', { name: 'Sandboxes' })).toHaveAttribute('href', '/jobs/job-live-017/sandboxes?runId=run-live-017-b');
-    expect(screen.getAllByRole('link', { name: 'Decisions' })[0]).toHaveAttribute('href', '/jobs/job-live-017/decisions?runId=run-live-017-b');
+    expect(screen.getByRole('link', { name: '事件时间线' })).toHaveAttribute('href', '/jobs/job-live-017/timeline?runId=run-live-017-b');
+    expect(screen.getByRole('link', { name: '资源拓扑' })).toHaveAttribute('href', '/jobs/job-live-017/topology?runId=run-live-017-b');
+    expect(screen.getByRole('link', { name: '运行沙箱' })).toHaveAttribute('href', '/jobs/job-live-017/sandboxes?runId=run-live-017-b');
+    expect(screen.getAllByRole('link', { name: '调度决策' })[0]).toHaveAttribute('href', '/jobs/job-live-017/decisions?runId=run-live-017-b');
+    expect(screen.getByRole('link', { name: '链路追踪' })).toHaveAttribute('href', '/jobs/job-live-017/traces?runId=run-live-017-b');
     expect(screen.getByRole('link', { name: 'dec-7104' })).toHaveAttribute(
       'href',
       '/jobs/job-live-017/decisions?runId=run-live-017-b&decisionId=dec-7104',
@@ -478,10 +480,10 @@ describe('JobDetailPage controls', () => {
     });
 
     renderPage(client);
-    const commandCard = (await screen.findByText('Job Run Commands')).closest('.list-card') as HTMLElement;
-    const start = within(commandCard).getByRole('button', { name: 'Start' });
-    const pause = within(commandCard).getByRole('button', { name: 'Pause' });
-    const admit = within(commandCard).getByRole('button', { name: 'Admit' });
+    const commandCard = (await screen.findByText('运行控制')).closest('.list-card') as HTMLElement;
+    const start = within(commandCard).getByRole('button', { name: '启动' });
+    const pause = within(commandCard).getByRole('button', { name: '暂停' });
+    const admit = within(commandCard).getByRole('button', { name: '准入' });
 
     await user.click(start);
     expect(pause).toBeDisabled();
@@ -504,6 +506,6 @@ describe('JobDetailPage controls', () => {
     renderPage(client, '/jobs');
 
     expect(await screen.findByText('No jobs matched the active filters.')).toBeInTheDocument();
-    expect(screen.getByText('Select a job to inspect retained detail.')).toBeInTheDocument();
+    expect(screen.getByText('请选择一个任务查看运行详情。')).toBeInTheDocument();
   });
 });

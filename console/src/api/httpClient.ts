@@ -8,6 +8,7 @@ import {
   mapRun,
   mapSandbox,
   mapTimelineEvent,
+  mapTraceEvent,
   mapTopology,
 } from './mappers';
 import { GatewayTransport } from './transport';
@@ -27,6 +28,7 @@ import type {
   RunSummary,
   SandboxResponse,
   TimelineResponse,
+  TraceResponse,
   TopologySnapshot,
 } from './types';
 
@@ -217,9 +219,9 @@ export class HttpApiClient implements ApiClient {
         decisions: decisionsResult.data ?? [],
         sandboxes: sandboxesResult.data?.sandboxes ?? [],
         metrics: [
-          { label: 'Runs', value: String(allRuns.length) },
-          { label: 'Current run', value: selectedRunId || 'none', tone: selectedRun ? toMetricToneByHealth(mappedJob.health) : 'warn' },
-          { label: 'Health', value: mappedJob.health.toUpperCase(), tone: toMetricToneByHealth(mappedJob.health) },
+          { label: '运行次数', value: String(allRuns.length) },
+          { label: '当前运行', value: selectedRunId || '无', tone: selectedRun ? toMetricToneByHealth(mappedJob.health) : 'warn' },
+          { label: '健康状态', value: selectedRun ? mappedJob.health === 'healthy' ? '健康' : mappedJob.health === 'degraded' ? '降级' : '停滞' : '未知', tone: toMetricToneByHealth(mappedJob.health) },
         ],
       },
     };
@@ -240,6 +242,22 @@ export class HttpApiClient implements ApiClient {
       state: 'ready',
       data: {
         events: ensureArray<Record<string, unknown>>(result.data?.events).map((event) => mapTimelineEvent(event, jobId)),
+      },
+      pageInfo: result.pageInfo,
+    };
+  }
+
+  async listTraces(jobId: string, options?: QueryOptions): Promise<QueryResult<TraceResponse>> {
+    const result = await this.transport.get<{ events?: unknown[]; nextPageToken?: string }>(`/v1/jobs/${jobId}/traces`, options, {
+      allowedFilters: ['run_id', 'trace_id', 'data_kind'],
+    });
+    if (result.state !== 'ready') {
+      return asResult<TraceResponse>(result);
+    }
+    return {
+      state: 'ready',
+      data: {
+        events: ensureArray<Record<string, unknown>>(result.data?.events).map((event) => mapTraceEvent(event, jobId)),
       },
       pageInfo: result.pageInfo,
     };
@@ -328,7 +346,7 @@ export class HttpApiClient implements ApiClient {
     if (result.state !== 'ready') {
       return asResult<ControlActionResult>(result);
     }
-    return { state: 'ready', data: createControlResult(result.data ?? {}, 'Job created.') };
+    return { state: 'ready', data: createControlResult(result.data ?? {}, '任务已创建。') };
   }
 
   async createRun(jobId: string): Promise<QueryResult<ControlActionResult>> {
@@ -336,7 +354,7 @@ export class HttpApiClient implements ApiClient {
     if (result.state !== 'ready') {
       return asResult<ControlActionResult>(result);
     }
-    return { state: 'ready', data: createControlResult(result.data ?? {}, 'Run created.', jobId) };
+    return { state: 'ready', data: createControlResult(result.data ?? {}, '运行已创建。', jobId) };
   }
 
   async admitJob(
@@ -354,7 +372,7 @@ export class HttpApiClient implements ApiClient {
     if (result.state !== 'ready') {
       return asResult<ControlActionResult>(result);
     }
-    return { state: 'ready', data: createControlResult(result.data ?? {}, 'Job admitted.', jobId) };
+    return { state: 'ready', data: createControlResult(result.data ?? {}, '任务已准入。', jobId) };
   }
 
   async applyJobCommand(
@@ -374,7 +392,7 @@ export class HttpApiClient implements ApiClient {
     if (result.state !== 'ready') {
       return asResult<ControlActionResult>(result);
     }
-    return { state: 'ready', data: createControlResult(result.data ?? {}, `Job command ${command} applied.`, runId) };
+    return { state: 'ready', data: createControlResult(result.data ?? {}, `运行命令 ${command} 已应用。`, runId) };
   }
 
   async createReplay(replay: Record<string, unknown>): Promise<QueryResult<ControlActionResult>> {
@@ -382,7 +400,7 @@ export class HttpApiClient implements ApiClient {
     if (result.state !== 'ready') {
       return asResult<ControlActionResult>(result);
     }
-    return { state: 'ready', data: createControlResult(result.data ?? {}, 'Replay created.') };
+    return { state: 'ready', data: createControlResult(result.data ?? {}, '回放已创建。') };
   }
 
   async applyReplayCommand(replayId: string, command: ReplayCommand): Promise<QueryResult<ControlActionResult>> {
@@ -390,6 +408,6 @@ export class HttpApiClient implements ApiClient {
     if (result.state !== 'ready') {
       return asResult<ControlActionResult>(result);
     }
-    return { state: 'ready', data: createControlResult(result.data ?? {}, `Replay command ${command} applied.`, replayId) };
+    return { state: 'ready', data: createControlResult(result.data ?? {}, `回放命令 ${command} 已应用。`, replayId) };
   }
 }

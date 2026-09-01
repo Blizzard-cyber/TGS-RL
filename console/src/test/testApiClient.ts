@@ -11,6 +11,7 @@ import type {
   RunSummary,
   SandboxResponse,
   TimelineResponse,
+  TraceResponse,
   TopologySnapshot,
 } from '../api/types';
 
@@ -63,6 +64,7 @@ export function createTestApiClient(overrides: Partial<ApiClient> = {}): ApiClie
       }),
     listRuns: async () => ready<RunSummary[]>([]),
     listTimeline: async () => ready<TimelineResponse>({ events: [] }),
+    listTraces: async () => ready<TraceResponse>({ events: [] }),
     getTopology: async () => ready<TopologySnapshot>({ nodes: [], edges: [], lastUpdated: '' }),
     listSandboxes: async () => ready<SandboxResponse>({ sandboxes: [] }),
     getDecisionExplorer: async () => ready<DecisionExplorerResult>({ candidates: [], rejectedCandidates: [], relatedActions: [] }),
