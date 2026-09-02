@@ -75,14 +75,22 @@ def assert_namespaced_rbac(role, binding, expected_namespace)
   assert(subject["kind"] == "ServiceAccount", "RoleBinding subject must be the operator ServiceAccount")
   assert(subject["namespace"] == expected_namespace, "RoleBinding subject must stay in the target namespace")
 
-  bundle_rule = role.fetch("rules").find do |rule|
-    rule["apiGroups"] == ["tgsrl.io"] && rule["resources"] == ["jobrunbundles"]
+  expected_mutation_verbs = %w[get list watch create update patch delete]
+  managed_resource_rules = {
+    ["resource.k8s.io"] => "resourceclaims",
+    ["kueue.x-k8s.io"] => "workloads",
+    ["tgsrl.io"] => "jobrunbundles"
+  }
+  managed_resource_rules.each do |api_groups, resource|
+    rule = role.fetch("rules").find do |candidate|
+      candidate["apiGroups"] == api_groups && candidate["resources"] == [resource]
+    end
+    assert(!rule.nil?, "missing dedicated #{resource} RBAC rule")
+    assert(
+      rule["verbs"] == expected_mutation_verbs,
+      "#{resource} RBAC verbs do not match the operator read/upsert/delete contract"
+    )
   end
-  assert(!bundle_rule.nil?, "missing dedicated jobrunbundles RBAC rule")
-  assert(
-    bundle_rule["verbs"] == %w[get list watch create update patch],
-    "jobrunbundles RBAC verbs do not match the operator read/upsert contract"
-  )
 
   status_rule = role.fetch("rules").find do |rule|
     rule["apiGroups"] == ["tgsrl.io"] && rule["resources"] == ["jobrunbundles/status"]
@@ -286,7 +294,10 @@ rbac_template = File.read(File.join(CHART_DIR, "templates/rbac.yaml"))
 assert(rbac_template.include?('resources: ["jobrunbundles"]'), "Helm RBAC does not isolate jobrunbundles")
 assert(rbac_template.include?('resources: ["pods"]'), "Helm RBAC must read Pod readiness for managed-worker workloads")
 assert(rbac_template.include?('resources: ["deviceclasses", "resourceslices"]'), "Helm discovery RBAC must cover DRA identity readback")
-assert(rbac_template.include?('verbs: ["get", "list", "watch", "create", "update", "patch"]'), "Helm RBAC lacks jobrunbundles create")
+assert(
+  rbac_template.scan('verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]').length == 4,
+  "Helm RBAC must grant read/upsert/delete only to jobs and the three managed resource kinds"
+)
 assert(rbac_template.include?("kind: Role"), "Helm RBAC must default to a namespaced Role")
 assert(rbac_template.include?("kind: RoleBinding"), "Helm RBAC must default to a namespaced RoleBinding")
 assert(rbac_template.include?('{{- if .Values.controller.runtimeClassCreate }}'), "Helm RBAC must gate RuntimeClass write access on runtimeClassCreate")
