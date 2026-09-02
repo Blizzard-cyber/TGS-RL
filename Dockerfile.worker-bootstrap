@@ -14,5 +14,7 @@ RUN CGO_ENABLED=0 GOOS="${TARGETOS}" GOARCH="${TARGETARCH}" \
     go build -trimpath -ldflags='-s -w' -o /out/tgsrl-worker-bootstrap ./cmd/tgsrl-worker-bootstrap
 
 FROM gcr.io/distroless/static-debian12:nonroot@sha256:afa5c872c891853ca7fcf1f12c3edb23f7eeef36189728842dd51042ff57f7ab
+LABEL org.opencontainers.image.licenses="Apache-2.0"
 COPY --from=build /out/tgsrl-worker-bootstrap /usr/local/bin/tgsrl-worker-bootstrap
+COPY LICENSE /licenses/TGS-RL/LICENSE
 ENTRYPOINT ["/usr/local/bin/tgsrl-worker-bootstrap"]

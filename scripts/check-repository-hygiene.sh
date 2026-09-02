@@ -18,6 +18,7 @@ required_files=(
   compatibility/sbom/lockfiles.spdx.json
   configs/hardware/environment.example.json
   README.md
+  LICENSE
   docs/README.md
   docs/getting-started.md
   docs/reference/current-capabilities.md
@@ -37,6 +38,36 @@ for path in "${required_files[@]}"; do
   else
     fail "required repository input is neither tracked nor visible as a new file: $path"
   fi
+done
+
+grep -Fqx '                           Version 2.0, January 2004' LICENSE ||
+  fail "LICENSE is not the Apache License 2.0 text"
+grep -Fqx 'license = "Apache-2.0"' pyproject.toml ||
+  fail "pyproject.toml must declare the Apache-2.0 SPDX expression"
+grep -Fqx 'license-files = ["LICENSE"]' pyproject.toml ||
+  fail "the Python distribution must include LICENSE"
+grep -Fq '"license": "Apache-2.0"' console/package.json ||
+  fail "console/package.json must declare Apache-2.0"
+grep -Fq '"license": "Apache-2.0"' console/package-lock.json ||
+  fail "console/package-lock.json must preserve the root package license"
+grep -Fqx '!LICENSE' .dockerignore ||
+  fail "LICENSE must be included in Docker build contexts"
+
+distributable_stages=(
+  "Dockerfile.local:3"
+  "Dockerfile.operator:1"
+  "Dockerfile.services:5"
+  "Dockerfile.worker-bootstrap:1"
+)
+for stage_spec in "${distributable_stages[@]}"; do
+  dockerfile=${stage_spec%:*}
+  expected=${stage_spec##*:}
+  label_count=$(grep -Fc 'org.opencontainers.image.licenses="Apache-2.0"' "$dockerfile" || true)
+  license_count=$(grep -Fc 'COPY LICENSE /licenses/TGS-RL/LICENSE' "$dockerfile" || true)
+  [[ "$label_count" -eq "$expected" ]] ||
+    fail "expected $expected Apache-2.0 OCI labels in $dockerfile, found $label_count"
+  [[ "$license_count" -eq "$expected" ]] ||
+    fail "expected $expected LICENSE copies in $dockerfile, found $license_count"
 done
 
 for directory in proto/tgsrl/v1 gen/go/tgsrl/v1 gen/python/tgsrl/v1; do

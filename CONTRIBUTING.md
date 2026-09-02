@@ -67,6 +67,7 @@ Use a focused Conventional Commit message and keep unrelated changes out of the 
 
 ## Licensing
 
-The repository is publicly readable but does not yet contain a redistribution license. Contributions are
-accepted only after the project owner selects and adds a license; until then, opening a pull request does
-not grant third parties a right to copy, redistribute or create derivative works from the repository.
+TGS-RL is licensed under the [Apache License 2.0](LICENSE). Unless explicitly stated otherwise, any
+contribution intentionally submitted for inclusion in this project is provided under the same license,
+as described by Section 5 of the license. Do not submit code or assets that you do not have the right to
+license on these terms.

@@ -319,7 +319,7 @@
     },
     {
       "path": "console/package-lock.json",
-      "sha256": "3e3afaef1842a64cab612ba7d8fa6276e2d99e60663c350c97223597ffba24cd"
+      "sha256": "bc0671a3bb3a95b529a36a404c812bc5b2102e3b2472ba24340546895feec97f"
     }
   ],
   "name": "TGS-RL-lockfile-sbom",

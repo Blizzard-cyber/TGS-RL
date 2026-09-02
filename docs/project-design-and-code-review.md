@@ -8,11 +8,11 @@
 4. 崩溃、重试、重复消息和部分失败如何处理；
 5. 当前哪些能力已经闭环，哪些仍需真实 GPU/Kubernetes/veRL 证据。
 
-本文审查的代码基线是 `5bff4630e9dd1ec76c267004e6cb077621444952`。该基线的 GitHub
-Actions run `33471081130` 共 10 个 job 全部成功，包括 Proto compatibility、Go race、
+本文最近一次完整 CPU 行为验证基线是 `v0.1.0-rc1`（commit
+`2a62a2ab558e6f1310d9d3e5b862bec19e713ae2`）。对应 GitHub Actions run `33603176617`
+共 10 个 job 全部成功，包括 Proto compatibility、Go race、
 staticcheck、Python、Console、性能预算、部署镜像、Process E2E、Full-stack CPU Gate 和
 Product E2E。这个结果证明代码回归通过，不等于真实 NVIDIA、Kubernetes 或训练效果已经验证。
-后续文档提交只更新说明和索引；上述 SHA 仍是本次代码行为审查与测试证据的实现基线。
 
 ## 1. Review 结论
 
@@ -32,19 +32,17 @@ managed-worker bootstrap、Gateway/SDK/CLI、Console、全栈部署工件和硬�
 | Scheduler 与事务 | 已闭环 | admission/adaptive planner、约束、预算、reservation、receipt、补偿和恢复完整 |
 | CPU Mock / process E2E | 已验证 | 包括真实子进程、worker bootstrap、Unix socket 和服务重启 |
 | NVIDIA Provider/helper | 代码完成，待硬件验证 | inventory、MPS/MIG/runtime/binding helper 与 worker registry 已实现 |
-| Kubernetes/DRA | 主链完成，存在测试前 P0 | Full GPU/MIG typed inventory、UUID selector、allocation readback 已实现；cleanup RBAC 缺 delete |
+| Kubernetes/DRA | 代码主链完成，待环境验证 | Full GPU/MIG typed inventory、UUID selector、allocation readback 与 cleanup RBAC 已实现 |
 | 硬件 Campaign | runner 和 driver 主体已实现 | 仍需环境输入 digest/集群 identity 加固、目标 workload、hook 和真实 E1–E8 证据 |
 | 生产发布 | 尚未准入 | 无真实 GPU/MIG/veRL 证据；E3–E8 有 9 条阈值待标定 |
 
-CPU/Mock 主链没有发现新的 P0 结构断点。Kubernetes 路径发现一项确定的 P0：backend cleanup
-会删除 Workload、ResourceClaim 和 JobRunBundle，但 Helm 与原生 manifest 的 namespaced Role 没有
-为这三类资源授予 `delete`。因此真实终态 cleanup 和 rebind 的旧 generation 清理可能被 RBAC
-拒绝。硬件证据链还有一个 P0：environment config、Job template、action/fault hook 和最终渲染
+CPU/Mock 主链没有发现新的 P0 结构断点。Kubernetes backend cleanup 所需的 Workload、
+ResourceClaim 和 JobRunBundle 最小 `delete` 权限已经同时进入 Helm、原生 manifest 和部署契约测试。
+硬件证据链仍有一个 P0：environment config、Job template、action/fault hook 和最终渲染
 workload 尚未进入锁定 digest；当前 `host_hash` 也是 runner 主机而不是目标集群 identity。缺少这些
 字段时，报告不能证明复跑使用了同一集群和同一 workload。除此之外，发布层面的阻塞项是：
 
 - 在目标集群提供真实 workload Job 模板和容器内 trace 导出器；
-- 修复并验证 Operator 对 Workload、ResourceClaim、JobRunBundle 的最小 delete RBAC；
 - 配置 E2 rebind 的 Scheduler-observation hook；
 - 为 E4–E8 配置动作或故障 hook，并证明它们作用于真实 worker/环境；
 - 依次执行 E1 Full GPU、E2 MIG，再运行 E3–E8；
@@ -59,7 +57,7 @@ workload 尚未进入锁定 digest；当前 `host_hash` 也是 runner 主机而�
 | P0 验证阻塞 | 仓库不能提供目标 workload、E2 observation hook 和 E4–E8 action/fault hook | 这些是环境特定集成，不应写死在核心代码；受保护环境必须配置并审计 |
 | P0 验证阻塞 | E3–E8 有 9 条阈值未标定 | 保持 `BLOCKED`；只读 calibration report 不自动修改策略 |
 | P0 证据完整性 | hardware report 未锁定 environment config、Job template、hook 和 rendered workload digest，且 `host_hash` 不是集群身份 | 在正式 E1 前扩展 fingerprint/artifact；否则只能作为探索性 smoke |
-| P0 代码/部署 | `KubernetesBackend.Cleanup` 删除 Workload、ResourceClaim、JobRunBundle，但 Role 不含对应 `delete` | 补最小 RBAC 和 Helm/native contract test；否则 rebind/终态 cleanup 会 forbidden |
+| 已关闭 | `KubernetesBackend.Cleanup` 所需的 Workload、ResourceClaim、JobRunBundle `delete` 权限 | Helm 与原生 manifest 已补齐，部署 contract test 逐类约束 |
 | P1 生产阻塞 | 服务端点没有内建 TLS、用户认证、授权、租户隔离或限流 | 仅允许本机/隔离网络；生产前增加统一入口和服务间身份 |
 | P1 生产阻塞 | Job 只提供字符串环境变量，没有通用 Secret/ConfigMap 引用模型 | 依赖凭据的真实训练必须由 namespace/service account 或平台注入；后续应设计显式 secret refs |
 | P1 生产阻塞 | Helm 服务固定单副本且没有容器 CPU/memory requests/limits、PDB 或 HA | 当前 chart 是验证部署形态；容量规划和高可用需另行设计 |
@@ -558,9 +556,9 @@ generation、再清理旧 generation，而不会把多个 unit 的身份混入�
 Kubernetes backend 的 completion marker 是 `JobRunBundle`。更新时先准备新 generation 对象，旧
 对象清理成功后才更新 marker；同 generation fingerprint 变化会拒绝。lifecycle control 对每个目标
 保存 pending/in-flight/ambiguous/completed progress，重启后根据 Job readback 决定是否安全重试。
-当前部署 RBAC 与这条 cleanup 路径不完全一致：Job 有 `delete`，Workload、ResourceClaim 和
-JobRunBundle 没有。正式 Kubernetes 测试前必须修复，并用 ServiceAccount impersonation 或真实
-namespace smoke 验证，而不能只依赖内存 Client 测试。
+部署 RBAC 已与这条 cleanup 路径对齐：Job、Workload、ResourceClaim 和 JobRunBundle 均具备
+最小 read/upsert/delete 权限，Pod、status 子资源和集群 discovery 权限仍保持收敛。真实 Kubernetes
+测试仍需用 ServiceAccount impersonation 或 namespace smoke 验证实际准入，而不能只依赖内存 Client。
 
 ### 10.3 DRA 精确设备兑现
 
@@ -925,7 +923,7 @@ resume、stop、observation。只有实际 callback 成功才能推进 observed 
 ### 18.1 建议执行顺序
 
 ```text
-修复 cleanup RBAC 与 evidence provenance
+补齐 evidence provenance
 → 冻结 commit 与镜像 digest
 → 部署全栈控制面
 → preflight Kueue/DRA/DeviceClass/ResourceSlice
@@ -956,9 +954,9 @@ resume、stop、observation。只有实际 callback 成功才能推进 observed 
 Scheduler 不启动训练进程，Mock 不冒充硬件，desired state 不冒充 observed state。围绕这些原则，
 幂等、generation、cursor、receipt 和 readback 已形成一致的恢复模型。
 
-当前工程风险已从“核心控制链缺失”转为“部署权限和真实环境证据不足”。下一阶段不应继续扩大
-Scheduler 策略或产品页面，而应先修复 cleanup RBAC 和 evidence provenance，再冻结核心协议，
-完成目标环境配置、真实 workload/hook、E1–E8 执行与阈值标定。只有这部分完成，项目才从
+当前工程风险已从“核心控制链缺失”转为“真实环境集成和硬件证据不足”。下一阶段不应继续扩大
+Scheduler 策略或产品页面，而应先补齐 evidence provenance，再冻结核心协议，完成目标环境配置、
+真实 workload/hook、E1–E8 执行与阈值标定。只有这部分完成，项目才从
 “实现基本完成”进入“经过硬件证据支持的发布候选”。
 
 ## 20. 相关文档

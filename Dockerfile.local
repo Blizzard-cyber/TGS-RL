@@ -1,10 +1,14 @@
 FROM golang:1.26.4-bookworm@sha256:b305420a68d0f229d91eb3b3ed9e519fcf2cf5461da4bef997bf927e8c0bfd2b AS go-service
+LABEL org.opencontainers.image.licenses="Apache-2.0"
+COPY LICENSE /licenses/TGS-RL/LICENSE
 
 WORKDIR /workspace
 COPY go.mod go.sum ./
 RUN go mod download
 
 FROM python:3.12.14-slim-bookworm@sha256:0f5b26b9518d002b6173fd61daad821fa340635ebfec5bba471013f9ca114579 AS python-service
+LABEL org.opencontainers.image.licenses="Apache-2.0"
+COPY LICENSE /licenses/TGS-RL/LICENSE
 
 ARG UV_VERSION=0.12.7
 RUN python -m pip install --disable-pip-version-check --no-cache-dir "uv==${UV_VERSION}"
@@ -17,6 +21,8 @@ ENV UV_PROJECT_ENVIRONMENT=/workspace/.venv
 ENV PATH=/workspace/.venv/bin:$PATH
 
 FROM node:24.20.0-bookworm-slim@sha256:ba849c60be29959425b8734d57b8b4b7d56f98edd9504c9af091d5281095a71e AS console
+LABEL org.opencontainers.image.licenses="Apache-2.0"
+COPY LICENSE /licenses/TGS-RL/LICENSE
 
 WORKDIR /workspace/console
 COPY console ./

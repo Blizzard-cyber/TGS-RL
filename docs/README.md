@@ -12,6 +12,7 @@ Docker Compose 启动单机栈，再根据需要选择 Console、CLI、Python SD
   方案前需要满足的条件。
 - [贡献指南](../CONTRIBUTING.md)：开发环境、变更边界与提交前检查。
 - [安全策略](../SECURITY.md)：漏洞报告入口与部署安全边界。
+- [Apache License 2.0](../LICENSE)：使用、修改与分发本项目的许可证条款。
 
 ## 配置各组件
 

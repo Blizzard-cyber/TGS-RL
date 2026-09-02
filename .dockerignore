@@ -8,6 +8,8 @@
 !go.sum
 !pyproject.toml
 !uv.lock
+!README.md
+!LICENSE
 !adapters/
 !adapters/**
 !compatibility/

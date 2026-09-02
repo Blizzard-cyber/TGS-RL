@@ -14,7 +14,7 @@ enforces the high-confidence parts of this contract.
 | Runtime compatibility | `compatibility/`, `configs/`, `upstream/` | Capability, policy, scenario and patch provenance |
 | Database migrations | `runtime-python/tgsrl_runtime/storage/migrations/` | Existing state can be upgraded deterministically |
 | Deployment contracts | Dockerfiles, `compose.yaml`, `deploy/` | Local and Kubernetes packaging |
-| Open-source entry points | `README.md`, `CONTRIBUTING.md`, `SECURITY.md`, `.gitattributes` | First-run, contribution, security and cross-platform behavior |
+| Open-source entry points | `README.md`, `LICENSE`, `CONTRIBUTING.md`, `SECURITY.md`, `.gitattributes` | First-run, licensing, contribution, security and cross-platform behavior |
 | Safe examples | files ending in `.example.*`, such as `configs/hardware/environment.example.json` | Document required shape without real environment data |
 
 Generated Proto, OpenAPI and deterministic SBOM artifacts are intentional source-controlled outputs.
