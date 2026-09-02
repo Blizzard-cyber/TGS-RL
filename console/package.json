@@ -2,6 +2,12 @@
   "name": "tgsrl-console",
   "private": true,
   "version": "0.0.0",
+  "description": "Web console for the TGS-RL reinforcement-learning orchestration system",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Blizzard-cyber/TGS-RL.git",
+    "directory": "console"
+  },
   "type": "module",
   "scripts": {
     "dev": "vite",

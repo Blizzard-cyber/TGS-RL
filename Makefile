@@ -21,19 +21,28 @@ GATEWAY_LISTEN ?= 127.0.0.1:8080
 OPERATOR_LISTEN ?= 127.0.0.1:50081
 SCHEDULER_FALLBACK ?= noop
 
-.PHONY: help doctor proto check-generated check-openapi proto-roundtrip check-migrations check-compose compose-smoke check-deploy render-kubernetes check-public-content sbom check-governance gate-campaign gate-campaign-run gate-campaign-calibrate test-go test-performance test-python test-api test-console test-console-browser lint staticcheck test race build-nvidia-binding build-nvidia-runtime build-nvidia-mig build-worker-bootstrap demo product-e2e gate-cpu-integration run-scheduler run-controller run-runtime run-gateway run-operator run-console
+.PHONY: help doctor doctor-dev doctor-kubernetes local-up local-status local-stop local-down local-reset proto check-generated check-openapi proto-roundtrip check-migrations check-compose compose-smoke compose-smoke-host check-repository check-deploy render-kubernetes check-public-content sbom check-governance gate-campaign gate-campaign-run gate-campaign-calibrate test-go test-performance test-python test-api test-console test-console-browser lint staticcheck test race build-nvidia-binding build-nvidia-runtime build-nvidia-mig build-worker-bootstrap demo product-e2e gate-cpu-integration run-scheduler run-controller run-runtime run-gateway run-operator run-console
 
 help:
 	@printf '%s\n' \
 	  'TGS-RL commands:' \
-	  '  make doctor           verify the local development toolchain' \
+	  '  make doctor           verify the Docker-only local runtime' \
+	  '  make doctor-dev       verify the source-development toolchain' \
+	  '  make doctor-kubernetes verify the Kubernetes integration toolchain' \
+	  '  make local-up         build and start the six local services' \
+	  '  make local-status     show local service health' \
+	  '  make local-stop       stop services while preserving containers and data' \
+	  '  make local-down       remove containers while preserving named volumes' \
+	  '  make local-reset      remove local containers and named volumes' \
 	  '  make proto            lint and regenerate protobuf outputs' \
 	  '  make check-generated  regenerate and verify committed outputs are current' \
 	  '  make check-openapi    verify committed OpenAPI artifact is current' \
 	  '  make proto-roundtrip  verify Go/Python deterministic protobuf compatibility' \
 	  '  make check-migrations validate the runtime SQLite schema' \
 	  '  make check-compose    validate the complete local Compose stack' \
-	  '  make compose-smoke    verify a running Compose stack through the Console origin' \
+	  '  make compose-smoke    verify a running stack entirely inside Docker' \
+	  '  make compose-smoke-host verify it from a prepared host Python environment' \
+	  '  make check-repository enforce tracked/untracked repository boundaries' \
 	  '  make check-deploy     validate full-stack and Operator Kubernetes/Helm contracts' \
 	  '  make render-kubernetes render the complete Kubernetes control plane' \
 	  '  make check-public-content reject private links, paths, and credential-like content' \
@@ -67,7 +76,32 @@ help:
 	  '  make run-console      start the web console dev server'
 
 doctor:
-	./scripts/check-environment.sh
+	./scripts/check-environment.sh local
+
+doctor-dev:
+	./scripts/check-environment.sh dev
+
+doctor-kubernetes:
+	./scripts/check-environment.sh kubernetes
+
+local-up:
+	docker compose up -d --build --wait
+
+local-status:
+	docker compose ps
+
+local-stop:
+	docker compose stop
+
+local-down:
+	docker compose down
+
+local-reset:
+	@test "$(CONFIRM_RESET)" = "1" || { \
+	  printf '%s\n' 'error: local-reset deletes all local TGS-RL named volumes; rerun with CONFIRM_RESET=1' >&2; \
+	  exit 1; \
+	}
+	docker compose down --volumes --remove-orphans
 
 proto:
 	@if command -v buf >/dev/null 2>&1 && [ "$$(buf --version)" != "$(BUF_VERSION)" ]; then \
@@ -103,7 +137,13 @@ check-compose:
 	docker compose config -q
 
 compose-smoke:
+	docker compose --profile tools run --rm --no-deps smoke
+
+compose-smoke-host:
 	PYTHONPATH=.:runtime-python:gateway-python:gen/python uv run --frozen python scripts/compose-smoke.py
+
+check-repository:
+	./scripts/check-repository-hygiene.sh
 
 check-deploy:
 	@command -v helm >/dev/null 2>&1 || { \
@@ -123,6 +163,7 @@ sbom:
 	python3 scripts/generate-sbom.py
 
 check-governance:
+	./scripts/check-repository-hygiene.sh
 	python3 scripts/generate-sbom.py --check
 	python3 scripts/check-compatibility.py
 	python3 scripts/check-upstream-patches.py

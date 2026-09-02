@@ -11,6 +11,11 @@ const routes = [
   ['/experiments', '实验对比'],
 ] as const;
 
+test('Compose service hostname is accepted by the local Console server', async ({ request }) => {
+  const response = await request.get('/', { headers: { Host: 'console:4173' } });
+  expect(response.ok()).toBe(true);
+});
+
 for (const [path, heading] of routes) {
   test(`${heading} route renders without browser errors`, async ({ page }) => {
     const errors: string[] = [];

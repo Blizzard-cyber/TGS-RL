@@ -6,11 +6,18 @@ build-backend = "setuptools.build_meta"
 name = "tgsrl-runtime"
 version = "0.1.0"
 description = "End-to-end reinforcement-learning orchestration runtime for TGS-RL"
+readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
   "grpcio>=1.70,<2",
   "protobuf>=5.29.3,<6",
 ]
+
+[project.urls]
+Homepage = "https://github.com/Blizzard-cyber/TGS-RL"
+Repository = "https://github.com/Blizzard-cyber/TGS-RL"
+Documentation = "https://github.com/Blizzard-cyber/TGS-RL/tree/main/docs"
+Issues = "https://github.com/Blizzard-cyber/TGS-RL/issues"
 
 [dependency-groups]
 dev = [

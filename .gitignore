@@ -8,6 +8,7 @@
 .env
 .env.*
 !.env.example
+.envrc
 .direnv/
 *.pem
 *.key
@@ -16,8 +17,11 @@
 *.pfx
 *.jks
 credentials.json
+*.credentials.json
 kubeconfig
 kubeconfig.*
+configs/hardware/environment.json
+values.production.yaml
 
 # Go build and test output
 bin/
@@ -26,7 +30,11 @@ bin/
 /job-controller
 *.test
 *.out
+*.prof
+*.pprof
+*.trace
 coverage/
+coverage.xml
 playwright-report/
 test-results/
 
@@ -42,6 +50,7 @@ __pycache__/
 .uv-temp-cache/
 .proto-gen.*/
 .coverage
+.coverage.*
 htmlcov/
 dist/
 build/
@@ -55,6 +64,8 @@ node_modules/
 .tmp/
 tmp/
 /artifacts/
+/evidence/
+/reports/
 *.db
 *.sqlite
 *.sqlite3
@@ -63,3 +74,8 @@ tmp/
 *.journal
 *.checkpoint
 *.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+*.pid
+*.sock

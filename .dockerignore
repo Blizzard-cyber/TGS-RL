@@ -53,3 +53,31 @@ console/*.tsbuildinfo
 !upstream/**
 !gateway-python/
 !gateway-python/**
+
+# Re-included source trees may contain local caches and runtime output. Keep
+# them out of every build context even when their parent directory is needed.
+**/__pycache__
+**/*.py[cod]
+**/.pytest_cache
+**/.mypy_cache
+**/.ruff_cache
+**/.hypothesis
+**/.cache
+**/.venv
+**/venv
+**/node_modules
+**/dist
+**/build
+**/coverage
+**/htmlcov
+**/playwright-report
+**/test-results
+**/*.tsbuildinfo
+**/*.db
+**/*.sqlite
+**/*.sqlite3
+**/*.db-shm
+**/*.db-wal
+**/*.journal
+**/*.checkpoint
+**/*.log

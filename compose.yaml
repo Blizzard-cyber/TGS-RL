@@ -1,4 +1,4 @@
-name: tgsrl-local
+name: "${COMPOSE_PROJECT_NAME:-tgsrl-local}"
 
 # Complete local product stack. It exercises the production control flow while
 # replacing external hardware and Kubernetes with deterministic local backends.
@@ -247,6 +247,41 @@ services:
       timeout: 2s
       retries: 60
       start_period: 5s
+    init: true
+
+  # Optional Docker-only verification runner. It is excluded from normal
+  # `docker compose up` and uses the already-running six-service stack.
+  smoke:
+    profiles: ["tools"]
+    image: "tgsrl-python:local"
+    build:
+      context: .
+      dockerfile: Dockerfile.local
+      target: python-service
+    working_dir: /workspace
+    environment:
+      PYTHONPATH: /workspace:/workspace/runtime-python:/workspace/gateway-python:/workspace/gen/python
+      TGSRL_WORKER_REGISTRY_SIGNING_KEY: "${TGSRL_WORKER_REGISTRY_SIGNING_KEY:-tgsrl-local-worker-trace-signing-key-v1}"
+    command:
+      - python
+      - /workspace/scripts/compose-smoke.py
+      - --base-url
+      - http://console:4173
+      - --scheduler-target
+      - scheduler:50051
+      - --runtime-target
+      - runtime:50071
+    volumes:
+      - ./pyproject.toml:/workspace/pyproject.toml:ro
+      - ./uv.lock:/workspace/uv.lock:ro
+      - ./adapters:/workspace/adapters:ro
+      - ./gateway-python:/workspace/gateway-python:ro
+      - ./gen/python:/workspace/gen/python:ro
+      - ./runtime-python:/workspace/runtime-python:ro
+      - ./scripts:/workspace/scripts:ro
+    depends_on:
+      console:
+        condition: service_healthy
     init: true
 
 volumes:

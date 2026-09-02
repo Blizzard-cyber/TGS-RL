@@ -37,7 +37,7 @@
 - 使用固定 seed 的 Synthetic Trace 和 Scheduler `Schedule` RPC 执行无资源副作用的 Replay；
 - 保存并恢复各组件的单机状态。
 
-服务健康后执行 `make compose-smoke` 可从 Console 同源入口验证
+服务健康后执行 `make compose-smoke` 可在 Docker 内从 Console 同源入口验证
 `create → admit → start → pause → resume → stop`、Decision、Sandbox 终态和 allocation 回收。
 
 Mock Provider 支持 `bind`、`release`、`set_share`、`set_priority`、`resize`、

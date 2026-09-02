@@ -12,7 +12,7 @@ Kubernetes。该方案运行完整控制链，但不会创建真实基础设施�
 无需在主机安装 Go、Python、`uv` 或 Node.js。
 
 ```bash
-docker compose up --build
+docker compose up -d --build --wait
 ```
 
 Compose 启动 Scheduler、Runtime/Experiment、Job Controller、Operator、Gateway 和
@@ -26,10 +26,11 @@ Run、Decision 和 Sandbox。
 事件详情会显示耗时、批量大小、设备、span/parent span 和代际。真实事件未携带
 `duration_ms`、`duration_us` 或 `duration_ns` 时会显示为菱形瞬时事件，不会推测时长。
 
-用 Console 同源代理执行六服务生命周期验收：
+用 Console 同源代理执行六服务生命周期验收。该命令完全在 Docker 中运行，宿主机不需要
+安装 Python 或 `uv`：
 
 ```bash
-make compose-smoke
+docker compose --profile tools run --rm --no-deps smoke
 ```
 
 该 smoke 会新建一个 CPU/Mock Job，依次完成 `start`、`pause`、`resume`、`stop`，并验证
@@ -40,16 +41,22 @@ CPU/Mock 合成证据，不能解释为 GPU 性能。它保留现有数据，
 适合每次重启或升级后重复运行。建议至少执行一次以下恢复检查：
 
 ```bash
-make compose-smoke
+docker compose --profile tools run --rm --no-deps smoke
 docker compose restart
 docker compose up -d --wait
-make compose-smoke
+docker compose --profile tools run --rm --no-deps smoke
 ```
 
 第二次 smoke 能继续获得资源，说明各组件从原 named volumes 恢复后没有被旧 delivery、
 已终止 allocation 或已淘汰的 Decision 审计阻塞。
 
-停止并保留数据：
+停止进程并保留容器与数据：
+
+```bash
+docker compose stop
+```
+
+删除容器与网络但保留 named volumes：
 
 ```bash
 docker compose down
@@ -101,12 +108,15 @@ Helm revision 使用 `scripts/deploy-full-stack.sh rollback REVISION`。脚本�
 从项目根目录准备依赖与私有状态目录：
 
 ```bash
-make doctor
+make doctor-dev
 uv sync --frozen
 npm --prefix console ci
 umask 077
 mkdir -p .cache/tgsrl
 ```
+
+只有 Docker 的本机用户可用 `make doctor` 检查运行条件。需要 Kubernetes/Helm 集成时使用
+`make doctor-kubernetes` 检查完整集群工具链。
 
 ## 2. 手动启动组件
 

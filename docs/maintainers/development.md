@@ -12,7 +12,7 @@ make lint             # Go vet、Buf lint、Ruff 与 mypy
 make staticcheck      # 固定版本 Go staticcheck
 make race             # Go race detector
 make test-performance # 非 race Scheduler/Provider P95 回归预算
-make test-console-browser # Chromium 七路由 smoke（需先安装 Playwright browser）
+make test-console-browser # Chromium 八路由与多宽度 smoke（需先安装 Playwright browser）
 make demo             # Python → Scheduler → Mock Provider 最小进程演示
 make product-e2e      # 完整后端产品流与恢复检查
 make gate-campaign    # 校验 E1-E8 campaign 并汇总已有硬件证据
@@ -20,6 +20,7 @@ make gate-campaign-run # 通过仓库 executor + 目标环境 driver 执行并�
 make check-generated  # 验证 Proto 生成物
 make check-governance # 校验 SBOM、兼容性证据与 patch ledger
 make check-public-content # 扫描工作树与可达历史中的私有链接、路径和凭据样式
+make check-repository # 检查必须提交与禁止提交的仓库内容
 ```
 
 Scheduler benchmark 可用于分析算法变化：
@@ -47,6 +48,7 @@ make demo > /tmp/tgsrl-demo.json
 make product-e2e
 make check-generated
 docker compose config -q
+make check-repository
 make check-governance
 make check-public-content
 ```

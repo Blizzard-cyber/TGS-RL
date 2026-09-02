@@ -94,7 +94,7 @@ const server = createServer((request, response) => {
     response.end(JSON.stringify({ status: 'ok' }));
     return;
   }
-  if (url.pathname === '/health' || url.pathname.startsWith('/v1/')) {
+  if (url.pathname === '/health' || url.pathname === '/openapi.json' || url.pathname.startsWith('/v1/')) {
     proxy(request, response, url);
     return;
   }

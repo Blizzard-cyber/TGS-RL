@@ -318,6 +318,8 @@ jobs:
         run: docker compose config -q
       - name: Start local product stack
         run: docker compose up -d --build --wait
+      - name: Run Docker-only lifecycle smoke
+        run: docker compose --profile tools run --rm --no-deps smoke
       - name: Smoke test local product stack
         run: |
           curl --fail --silent --show-error http://127.0.0.1:8080/health
