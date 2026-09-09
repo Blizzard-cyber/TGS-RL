@@ -787,7 +787,7 @@ async def test_supervisor_full_fake_lifecycle_publishes_intents() -> None:
     assert status.cursor
 
 
-def test_supervisor_rejects_unavailable_runtime_before_compile() -> None:
+def test_supervisor_accepts_managed_workload_dependencies_without_control_plane_packages() -> None:
     supervisor = RuntimeSupervisor()
     manifest = _manifest()
     manifest.framework = "verl"
@@ -799,13 +799,20 @@ def test_supervisor_rejects_unavailable_runtime_before_compile() -> None:
         runtime_pb2.ValidateRuntimeRequest(manifest=manifest, request_id="validate-real")
     )
 
-    assert not validated.valid
-    assert any(":UNAVAILABLE:" in item for item in validated.diagnostics)
-    assert not supervisor.manifests.has(manifest.run_id)
-    with pytest.raises(RuntimeLifecycleError, match="runtime adapters are not executable"):
-        supervisor.compile_runtime(runtime_pb2.CompileRuntimeRequest(manifest=manifest))
-    assert not supervisor.manifests.has(manifest.run_id)
-    assert supervisor.runtime_units.list(manifest.run_id) == []
+    assert validated.valid
+    assert not any(":UNAVAILABLE:" in item for item in validated.diagnostics)
+    assert supervisor.manifests.has(manifest.run_id)
+    compiled = supervisor.compile_runtime(runtime_pb2.CompileRuntimeRequest(manifest=manifest))
+    assert compiled.runtime_units
+
+    prepared = supervisor.prepare_runtime(
+        runtime_pb2.PrepareRuntimeRequest(
+            run_id=manifest.run_id, idempotency_key="prepare-managed-workload"
+        )
+    )
+
+    assert prepared.runtime_units
+    assert all(unit.status_reason == "preparing" for unit in prepared.runtime_units)
 
 
 @pytest.mark.asyncio

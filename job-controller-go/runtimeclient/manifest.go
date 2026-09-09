@@ -2,6 +2,7 @@ package runtimeclient
 
 import (
 	"fmt"
+	"strings"
 
 	tgsrlv1 "github.com/Blizzard-cyber/TGS-RL/gen/go/tgsrl/v1"
 	"google.golang.org/protobuf/proto"
@@ -45,6 +46,15 @@ func BuildManifest(run *tgsrlv1.JobRun) (*tgsrlv1.RuntimeManifest, error) {
 		Args:                 append([]string(nil), run.GetRuntime().GetArgs()...),
 		Environment:          mergeMaps(run.GetRuntime().GetEnvironment(), nil),
 		WorkingDirectory:     run.GetRuntime().GetWorkingDirectory(),
+	}
+	if image := strings.TrimSpace(run.GetRuntime().GetArtifactUri()); image != "" {
+		manifest.Artifacts = append(manifest.Artifacts, &tgsrlv1.RuntimeArtifact{
+			ArtifactId: "workload-image:" + run.GetRunId(),
+			Kind:       "oci_image",
+			Uri:        image,
+			Digest:     run.GetRuntime().GetImageDigest(),
+			Attributes: map[string]string{"purpose": "workload"},
+		})
 	}
 	return manifest, nil
 }

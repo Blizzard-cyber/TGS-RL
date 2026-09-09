@@ -13,6 +13,7 @@ from adapters.compliance.runtime import (
     dependency_available,
     ensure_nonblank,
     manifest_has_explicit_bridge_target,
+    manifest_uses_managed_workload,
 )
 from adapters.control import BridgeKind
 
@@ -64,12 +65,17 @@ class BaseRolloutEngineAdapter(BaseComponentAdapter, RolloutEngineAdapter):
         explicit_bridge = manifest_has_explicit_bridge_target(
             normalized, component="rollout_engine", adapter=self.component_name
         )
-        if self.component_name != "fake" and not explicit_bridge:
+        managed_workload = manifest_uses_managed_workload(normalized)
+        if self.component_name != "fake" and not explicit_bridge and not managed_workload:
             return SupportReport(
                 status=AdapterSupport.UNAVAILABLE,
                 summary=f"{self.component_name} requires an explicit rollout-engine bridge",
             )
-        if not dependency_available(self.dependency_name) and not explicit_bridge:
+        if (
+            not dependency_available(self.dependency_name)
+            and not explicit_bridge
+            and not managed_workload
+        ):
             return SupportReport(
                 status=AdapterSupport.UNAVAILABLE,
                 summary=f"{self.component_name} dependency is unavailable",
@@ -90,6 +96,11 @@ class BaseRolloutEngineAdapter(BaseComponentAdapter, RolloutEngineAdapter):
                 f"policy_version={normalized.policy_version or '<unset>'}",
                 f"desired_units={max(normalized.desired_units, 1)}",
                 f"queue={normalized.queue or 'default'}",
+                *(
+                    (f"dependency_scope=workload_image:{self.dependency_name}",)
+                    if managed_workload and self.dependency_name
+                    else ()
+                ),
             ),
         )
 

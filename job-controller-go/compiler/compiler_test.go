@@ -1,6 +1,8 @@
 package compiler
 
 import (
+	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -33,6 +35,17 @@ func TestValidateJobRejectsInvalidDigest(t *testing.T) {
 	diagnostics := ValidateJob(job)
 	if len(diagnostics) == 0 {
 		t.Fatal("ValidateJob() diagnostics empty, want invalid digest error")
+	}
+}
+
+func TestValidateJobRejectsMismatchedImmutableImageReference(t *testing.T) {
+	t.Parallel()
+
+	job := validJob()
+	job.Runtime.ArtifactUri = "registry.example.test/verl@sha256:" + strings.Repeat("f", 64)
+	diagnostics := ValidateJob(job)
+	if !slices.Contains(diagnostics, "runtime.artifact_uri must be an immutable OCI image reference ending in @runtime.image_digest") {
+		t.Fatalf("ValidateJob() diagnostics = %v, want image reference mismatch", diagnostics)
 	}
 }
 
@@ -70,6 +83,7 @@ func validJob() *tgsrlv1.RLTrainingJob {
 			RolloutEngine:           "ray",
 			RolloutEngineVersion:    "2.20.0",
 			ImageDigest:             "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+			ArtifactUri:             "registry.example.test/verl@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
 			PatchSet:                []string{"patch-b", "patch-a"},
 		},
 		ExecutionContract: &tgsrlv1.ExecutionContract{

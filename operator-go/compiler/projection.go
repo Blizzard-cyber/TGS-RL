@@ -53,10 +53,13 @@ func actionIDForBinding(plan *tgsrlv1.PlacementPlan, binding *tgsrlv1.Binding) s
 }
 
 func primaryImage(manifest *tgsrlv1.RuntimeManifest) string {
-	if len(manifest.GetImageDigests()) == 0 {
-		return ""
+	for _, artifact := range manifest.GetArtifacts() {
+		if artifact == nil || !strings.EqualFold(strings.TrimSpace(artifact.GetKind()), "oci_image") || strings.TrimSpace(artifact.GetAttributes()["purpose"]) != "workload" {
+			continue
+		}
+		return strings.TrimSpace(artifact.GetUri())
 	}
-	return manifest.GetImageDigests()[0]
+	return ""
 }
 
 func buildLabels(input *normalizedInput) map[string]string {

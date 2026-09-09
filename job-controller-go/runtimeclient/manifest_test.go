@@ -19,6 +19,7 @@ func TestBuildManifest(t *testing.T) {
 			Trainer:              "torchtune",
 			RolloutEngine:        "ray",
 			ImageDigest:          "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+			ArtifactUri:          "registry.example.test/verl@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
 			CompatibilityProfile: "profile-1",
 			PatchSet:             []string{"patch-a"},
 			Command:              []string{"python", "train.py"},
@@ -49,6 +50,9 @@ func TestBuildManifest(t *testing.T) {
 	}
 	if len(manifest.GetImageDigests()) != 1 || manifest.GetImageDigests()[0] != run.GetRuntime().GetImageDigest() {
 		t.Fatalf("manifest image_digests = %v", manifest.GetImageDigests())
+	}
+	if len(manifest.GetArtifacts()) != 1 || manifest.GetArtifacts()[0].GetUri() != run.GetRuntime().GetArtifactUri() || manifest.GetArtifacts()[0].GetDigest() != run.GetRuntime().GetImageDigest() {
+		t.Fatalf("manifest workload image artifact = %v", manifest.GetArtifacts())
 	}
 	if manifest.GetAnnotations()["runtime"] != "1" || manifest.GetAnnotations()["job"] != "1" {
 		t.Fatalf("manifest annotations = %+v", manifest.GetAnnotations())

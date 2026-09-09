@@ -168,6 +168,25 @@ def dependency_available(module_name: str | None) -> bool:
     return module_name is None or find_spec(module_name) is not None
 
 
+def manifest_uses_managed_workload(manifest: runtime_pb2.RuntimeManifest) -> bool:
+    """Return whether execution is delegated to an immutable workload image.
+
+    Runtime adapters run in the control-plane image. Training packages such as
+    Ray, PyTorch, and vLLM belong to the workload image and are verified by the
+    worker bootstrap before the user process starts. Requiring those packages
+    to be importable by Runtime couples two deliberately separate images.
+    """
+    components = (
+        manifest.framework,
+        manifest.execution_backend,
+        manifest.trainer,
+        manifest.rollout_engine,
+    )
+    return any(component.casefold() not in {"fake", "mock"} for component in components) and any(
+        token.strip() for token in manifest.command
+    )
+
+
 def annotation_flag(manifest: runtime_pb2.RuntimeManifest, key: str) -> bool:
     """Interpret common true-ish annotations."""
     value = manifest.annotations.get(key, "").strip().casefold()

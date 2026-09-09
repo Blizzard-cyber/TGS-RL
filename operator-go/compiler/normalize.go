@@ -52,6 +52,15 @@ func normalize(input CompileInput, runtimeConfig RuntimeConfig) (*normalizedInpu
 	if input.ManifestHasNoImageDigests() {
 		return nil, fmt.Errorf("runtime manifest must include at least one image digest")
 	}
+	if runtimeConfig.Bootstrap.Enabled || profile != GPUProfileNone {
+		image := primaryImage(input.RuntimeManifest)
+		if image == "" {
+			return nil, fmt.Errorf("accelerated or managed workload requires one workload oci_image artifact")
+		}
+		if len(input.RuntimeManifest.GetImageDigests()) != 1 || !strings.HasSuffix(image, "@"+input.RuntimeManifest.GetImageDigests()[0]) {
+			return nil, fmt.Errorf("workload image must end in the manifest sha256 digest")
+		}
+	}
 	binding, err := workloadBinding(input.PlacementPlan)
 	if err != nil {
 		return nil, err

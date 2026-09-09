@@ -249,6 +249,28 @@ func TestCompileWrapsWorkloadWithManagedWorkerBootstrap(t *testing.T) {
 	}
 }
 
+func TestCompileAcceleratedWorkloadRequiresPullableImmutableImageReference(t *testing.T) {
+	c := New()
+	c.SetCapabilities(discoveredGPUCapabilities(GPUProfileNVIDIADevicePlugin))
+	input := singleBindingInput(testCompileInput(), 0)
+	input.RuntimeManifest.Artifacts = nil
+
+	if _, err := c.compileBinding(input); err == nil || !strings.Contains(err.Error(), "workload oci_image artifact") {
+		t.Fatalf("compile without workload image artifact error = %v", err)
+	}
+
+	input.RuntimeManifest.Artifacts = []*tgsrlv1.RuntimeArtifact{{
+		ArtifactId: "workload-image:run-1",
+		Kind:       "oci_image",
+		Uri:        "registry.example.test/repo/image@sha256:" + strings.Repeat("b", 64),
+		Digest:     "sha256:" + strings.Repeat("b", 64),
+		Attributes: map[string]string{"purpose": "workload"},
+	}}
+	if _, err := c.compileBinding(input); err == nil || !strings.Contains(err.Error(), "must end in the manifest sha256 digest") {
+		t.Fatalf("compile with mismatched workload digest error = %v", err)
+	}
+}
+
 func TestCompileDRAV1Beta1UsesLegacyFlatRequest(t *testing.T) {
 	c := New()
 	capabilities := discoveredGPUCapabilities(GPUProfileKubernetesDRA)
@@ -616,11 +638,17 @@ func testCompileInput() CompileInput {
 			JobId:            "job-1",
 			TraceId:          "trace-1",
 			ExecutionBackend: "kubernetes",
-			ImageDigests:     []string{"repo/image@sha256:abc"},
-			Annotations:      map[string]string{"team": "rl"},
-			Command:          []string{"python", "train.py"},
-			Args:             []string{"--steps", "10"},
-			Environment:      map[string]string{"alpha.beta/value": "1"},
+			ImageDigests:     []string{"sha256:" + strings.Repeat("a", 64)},
+			Artifacts: []*tgsrlv1.RuntimeArtifact{{
+				ArtifactId: "workload-image:run-1", Kind: "oci_image",
+				Uri:        "registry.example.test/repo/image@sha256:" + strings.Repeat("a", 64),
+				Digest:     "sha256:" + strings.Repeat("a", 64),
+				Attributes: map[string]string{"purpose": "workload"},
+			}},
+			Annotations: map[string]string{"team": "rl"},
+			Command:     []string{"python", "train.py"},
+			Args:        []string{"--steps", "10"},
+			Environment: map[string]string{"alpha.beta/value": "1"},
 		},
 		PlacementPlan: &tgsrlv1.PlacementPlan{
 			PlanId:           "plan-1",

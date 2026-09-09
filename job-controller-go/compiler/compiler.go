@@ -42,6 +42,7 @@ func NormalizeJob(job *tgsrlv1.RLTrainingJob, now time.Time) (*tgsrlv1.RLTrainin
 		normalized.Runtime.RolloutEngine = strings.TrimSpace(normalized.Runtime.GetRolloutEngine())
 		normalized.Runtime.RolloutEngineVersion = strings.TrimSpace(normalized.Runtime.GetRolloutEngineVersion())
 		normalized.Runtime.ImageDigest = strings.TrimSpace(normalized.Runtime.GetImageDigest())
+		normalized.Runtime.ArtifactUri = strings.TrimSpace(normalized.Runtime.GetArtifactUri())
 		sort.Strings(normalized.Runtime.PatchSet)
 	}
 	if normalized.RequiredCapabilities != nil {
@@ -120,6 +121,12 @@ func ValidateJob(job *tgsrlv1.RLTrainingJob) []string {
 		}
 		if runtime.GetImageDigest() != "" && !digestPattern.MatchString(runtime.GetImageDigest()) {
 			diagnostics = append(diagnostics, "runtime.image_digest must be an immutable sha256 digest")
+		}
+		if runtime.GetArtifactUri() != "" {
+			expectedSuffix := "@" + runtime.GetImageDigest()
+			if !strings.HasSuffix(runtime.GetArtifactUri(), expectedSuffix) || strings.HasPrefix(runtime.GetArtifactUri(), "@") {
+				diagnostics = append(diagnostics, "runtime.artifact_uri must be an immutable OCI image reference ending in @runtime.image_digest")
+			}
 		}
 	}
 	if job.GetExecutionContract() == nil {

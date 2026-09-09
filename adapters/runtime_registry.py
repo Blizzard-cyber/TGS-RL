@@ -192,6 +192,17 @@ def runtime_manifest_from_job(
         schema_version="v1",
         type_name="tgsrl.v1.RuntimeManifest",
     )
+    artifacts: list[runtime_pb2.RuntimeArtifact] = []
+    if runtime.artifact_uri:
+        artifacts.append(
+            runtime_pb2.RuntimeArtifact(
+                artifact_id=f"workload-image:{job.job_id}",
+                kind="oci_image",
+                uri=runtime.artifact_uri,
+                digest=runtime.image_digest,
+                attributes={"purpose": "workload"},
+            )
+        )
     return runtime_pb2.RuntimeManifest(
         manifest_id=f"manifest:{job.job_id}",
         run_id=f"run:{job.job_id}",
@@ -215,6 +226,7 @@ def runtime_manifest_from_job(
         queue=job.queue,
         rollout_mode=job.rollout_mode,
         policy_version=job.policy_ref,
+        artifacts=artifacts,
         command=list(runtime.command),
         args=list(runtime.args),
         environment=dict(runtime.environment),

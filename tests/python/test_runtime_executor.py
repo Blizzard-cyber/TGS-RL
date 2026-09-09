@@ -99,7 +99,7 @@ def test_executor_fake_lifecycle_and_idempotency() -> None:
     assert all(unit.status_reason == "checkpointing" for unit in checkpointed.runtime_units)
 
 
-def test_executor_normalizes_unavailable_dependencies_without_real_processes() -> None:
+def test_executor_prepares_managed_workload_without_control_plane_training_packages() -> None:
     executor = RuntimeExecutor()
     executor.register_runtime(
         _manifest(
@@ -112,12 +112,10 @@ def test_executor_normalizes_unavailable_dependencies_without_real_processes() -
 
     prepared = executor.prepare("run-1", idempotency_key="prepare-real")
 
-    assert not prepared.ok
-    assert {item.error.kind for item in prepared.component_results if item.error is not None} == {
-        AdapterErrorKind.UNAVAILABLE
-    }
+    assert prepared.ok
+    assert prepared.component_results == ()
     assert all(unit.state == runtime_pb2.RUNTIME_STATE_REQUESTED for unit in prepared.runtime_units)
-    assert all(unit.error_code == AdapterErrorKind.UNAVAILABLE for unit in prepared.runtime_units)
+    assert all(not unit.error_code for unit in prepared.runtime_units)
     assert all(unit.status_reason == "preparing" for unit in prepared.runtime_units)
 
 

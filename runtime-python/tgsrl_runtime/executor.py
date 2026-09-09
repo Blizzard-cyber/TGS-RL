@@ -20,6 +20,7 @@ from adapters import (
 from adapters.compliance.runtime import (
     ComponentAdapter,
     ErrorContract,
+    manifest_uses_managed_workload,
     runtime_state_contract,
 )
 from tgsrl_runtime.execution_types import (
@@ -327,7 +328,9 @@ class RuntimeExecutor:
             return cached
         generation = self._generations.get(run_id, 0)
         desired_state = runtime_state_contract(action).requested_state
-        if action is LifecycleAction.LAUNCH:
+        if action is LifecycleAction.LAUNCH or (
+            action is LifecycleAction.PREPARE and manifest_uses_managed_workload(manifest)
+        ):
             return self._finalize(
                 run_id,
                 action=action,

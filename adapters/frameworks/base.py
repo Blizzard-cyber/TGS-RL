@@ -13,6 +13,7 @@ from adapters.compliance.runtime import (
     dependency_available,
     ensure_nonblank,
     manifest_has_explicit_bridge_target,
+    manifest_uses_managed_workload,
 )
 from adapters.control import BridgeKind
 
@@ -63,12 +64,17 @@ class BaseFrameworkAdapter(BaseComponentAdapter, FrameworkAdapter):
         explicit_bridge = manifest_has_explicit_bridge_target(
             normalized, component="framework", adapter=self.component_name
         )
-        if self.component_name != "fake" and not explicit_bridge:
+        managed_workload = manifest_uses_managed_workload(normalized)
+        if self.component_name != "fake" and not explicit_bridge and not managed_workload:
             return SupportReport(
                 status=AdapterSupport.UNAVAILABLE,
                 summary=f"{self.component_name} requires an explicit framework bridge",
             )
-        if not dependency_available(self.dependency_name) and not explicit_bridge:
+        if (
+            not dependency_available(self.dependency_name)
+            and not explicit_bridge
+            and not managed_workload
+        ):
             return SupportReport(
                 status=AdapterSupport.UNAVAILABLE,
                 summary=f"{self.component_name} dependency is unavailable",
@@ -78,6 +84,11 @@ class BaseFrameworkAdapter(BaseComponentAdapter, FrameworkAdapter):
                 ),
                 missing_dependencies=(self.dependency_name,) if self.dependency_name else (),
             )
+        dependency_diagnostics = (
+            (f"dependency_scope=workload_image:{self.dependency_name}",)
+            if managed_workload and self.dependency_name
+            else ()
+        )
         return SupportReport(
             status=AdapterSupport.SUPPORT,
             summary=f"{self.component_name} manifest is supported",
@@ -85,6 +96,7 @@ class BaseFrameworkAdapter(BaseComponentAdapter, FrameworkAdapter):
                 f"policy_version={normalized.policy_version or '<unset>'}",
                 f"deterministic_seed={normalized.deterministic_seed}",
                 f"desired_units={max(normalized.desired_units, 1)}",
+                *dependency_diagnostics,
             ),
         )
 

@@ -229,6 +229,26 @@ def test_runtime_manifest_preserves_all_declared_component_version_pins() -> Non
     assert runtime_manifest_from_job(job, observed_at=datetime(2025, 1, 1, tzinfo=UTC)) == manifest
 
 
+def test_runtime_manifest_preserves_pullable_workload_image_separately_from_digest() -> None:
+    digest = "sha256:" + "a" * 64
+    image = f"registry.example.test/verl@{digest}"
+    job = job_pb2.RLTrainingJob(
+        job_id="job-image",
+        runtime=job_pb2.FrameworkRuntimeSpec(
+            framework="verl", image_digest=digest, artifact_uri=image
+        ),
+    )
+
+    manifest = runtime_manifest_from_job(job)
+
+    assert manifest.image_digests == [digest]
+    assert len(manifest.artifacts) == 1
+    assert manifest.artifacts[0].kind == "oci_image"
+    assert manifest.artifacts[0].uri == image
+    assert manifest.artifacts[0].digest == digest
+    assert manifest.artifacts[0].attributes["purpose"] == "workload"
+
+
 def test_runtime_manifest_requires_authoritative_declaration_time() -> None:
     job = job_pb2.RLTrainingJob(
         job_id="job-1",
@@ -365,13 +385,24 @@ def test_first_party_verl_bridge_is_degraded_without_runtime_socket() -> None:
         trainer="pytorch",
         rollout_engine="vllm",
     )
+    manifest.command.append("python")
 
     _, diagnostics = RuntimeAdapterRegistry().validate(manifest)
 
     assert any("framework:DEGRADED" in diagnostic for diagnostic in diagnostics)
-    assert any("execution:UNAVAILABLE" in diagnostic for diagnostic in diagnostics)
-    assert any("trainer:UNAVAILABLE" in diagnostic for diagnostic in diagnostics)
-    assert any("rollout_engine:UNAVAILABLE" in diagnostic for diagnostic in diagnostics)
+    assert any("execution:REQUIRES_RECREATE" in diagnostic for diagnostic in diagnostics)
+    assert any("trainer:SUPPORT" in diagnostic for diagnostic in diagnostics)
+    assert any("rollout_engine:REQUIRES_RECREATE" in diagnostic for diagnostic in diagnostics)
+    assert any(
+        "execution:dependency_scope=workload_image:ray" in diagnostic for diagnostic in diagnostics
+    )
+    assert any(
+        "trainer:dependency_scope=workload_image:torch" in diagnostic for diagnostic in diagnostics
+    )
+    assert any(
+        "rollout_engine:dependency_scope=workload_image:vllm" in diagnostic
+        for diagnostic in diagnostics
+    )
 
 
 def test_global_command_is_owned_by_execution_backend() -> None:
