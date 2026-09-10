@@ -6,7 +6,7 @@ UV_VERSION := 0.12.7
 STATICCHECK_VERSION := 2026.1
 GATE_CAMPAIGN_DRIVER ?= scripts/tgsrl-hardware-environment-driver
 GO_PACKAGES := ./gen/go/... ./internal/... ./scheduler-go/... ./job-controller-go/... ./operator-go/... ./storage/... ./scripts ./cmd/...
-PYTHON_PATHS := adapters runtime-python gateway-python tests/python tests/api tests/storage tests/e2e tests/governance scripts/check-proto-roundtrip.py scripts/check-oci-platforms.py scripts/generate-sbom.py scripts/check-compatibility.py scripts/check-upstream-patches.py scripts/gate-tools.py scripts/hardware-campaign-executor.py scripts/hardware_environment_driver.py scripts/tgsrl-hardware-environment-driver scripts/verl-reference-workload.py scripts/gate-full-stack-workload.py scripts/gate-managed-workload.py scripts/gpu-smoke-workload.py scripts/compose-smoke.py
+PYTHON_PATHS := adapters runtime-python gateway-python tests/python tests/api tests/storage tests/e2e tests/governance scripts/check-proto-roundtrip.py scripts/check-oci-platforms.py scripts/check-docs.py scripts/generate-sbom.py scripts/check-compatibility.py scripts/check-upstream-patches.py scripts/gate-tools.py scripts/hardware-campaign-executor.py scripts/hardware_environment_driver.py scripts/tgsrl-hardware-environment-driver scripts/verl-reference-workload.py scripts/gate-full-stack-workload.py scripts/gate-managed-workload.py scripts/gpu-smoke-workload.py scripts/compose-smoke.py
 GO_FORMAT_PATHS := scheduler-go job-controller-go operator-go storage cmd internal
 SCHEDULER_PACKAGE := ./scheduler-go/cmd/scheduler
 NVIDIA_BINDING_PACKAGE := ./cmd/tgsrl-nvidia-binding
@@ -21,7 +21,7 @@ GATEWAY_LISTEN ?= 127.0.0.1:8080
 OPERATOR_LISTEN ?= 127.0.0.1:50081
 SCHEDULER_FALLBACK ?= noop
 
-.PHONY: help doctor doctor-dev doctor-kubernetes gpu-install-host gpu-create-cluster gpu-prepare-cluster gpu-configure-access gpu-configure-registry gpu-preflight gpu-build-images gpu-render-config gpu-up gpu-status gpu-smoke gpu-down local-up local-status local-stop local-down local-reset proto check-generated check-openapi proto-roundtrip check-migrations check-compose compose-smoke compose-smoke-host check-repository check-deploy render-kubernetes check-public-content sbom check-governance gate-campaign gate-campaign-run gate-campaign-calibrate test-go test-performance test-python test-api test-console test-console-browser lint staticcheck test race build-nvidia-binding build-nvidia-runtime build-nvidia-mig build-worker-bootstrap demo product-e2e gate-cpu-integration run-scheduler run-controller run-runtime run-gateway run-operator run-console
+.PHONY: help doctor doctor-dev doctor-kubernetes gpu-install-host gpu-create-cluster gpu-prepare-cluster gpu-configure-access gpu-configure-registry gpu-preflight gpu-build-images gpu-render-config gpu-up gpu-status gpu-smoke gpu-down local-up local-status local-stop local-down local-reset proto check-generated check-openapi proto-roundtrip check-migrations check-compose compose-smoke compose-smoke-host check-repository check-deploy render-kubernetes check-docs check-public-content sbom check-governance gate-campaign gate-campaign-run gate-campaign-calibrate test-go test-performance test-python test-api test-console test-console-browser lint staticcheck test race build-nvidia-binding build-nvidia-runtime build-nvidia-mig build-worker-bootstrap demo product-e2e gate-cpu-integration run-scheduler run-controller run-runtime run-gateway run-operator run-console
 
 help:
 	@printf '%s\n' \
@@ -57,6 +57,7 @@ help:
 	  '  make check-repository enforce tracked/untracked repository boundaries' \
 	  '  make check-deploy     validate full-stack and Operator Kubernetes/Helm contracts' \
 	  '  make render-kubernetes render the complete Kubernetes control plane' \
+	  '  make check-docs       validate Markdown links and documented commands' \
 	  '  make check-public-content reject private links, paths, and credential-like content' \
 	  '  make sbom             regenerate the deterministic lockfile SBOM' \
 	  '  make check-governance validate SBOM, compatibility evidence, and patch ledger' \
@@ -132,6 +133,8 @@ gpu-smoke:
 		--campaign configs/gates/e1-e8.json \
 		--reports-dir .cache/tgsrl/gpu-smoke \
 		--driver "$(GATE_CAMPAIGN_DRIVER)" --experiment E1
+	jq -e '.experiments[] | select(.experiment_id == "E1") | .status == "PASSED"' \
+		.cache/tgsrl/gpu-smoke/campaign-report.json >/dev/null
 
 gpu-down:
 	./scripts/gpu-stack.sh down
@@ -211,11 +214,15 @@ render-kubernetes:
 check-public-content:
 	./scripts/check-public-content.sh
 
+check-docs:
+	python3 scripts/check-docs.py
+
 sbom:
 	python3 scripts/generate-sbom.py
 
 check-governance:
 	./scripts/check-repository-hygiene.sh
+	python3 scripts/check-docs.py
 	python3 scripts/generate-sbom.py --check
 	python3 scripts/check-compatibility.py
 	python3 scripts/check-upstream-patches.py

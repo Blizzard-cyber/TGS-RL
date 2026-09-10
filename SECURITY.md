@@ -21,3 +21,10 @@ and network policy.
 
 The development signing key in `compose.yaml` is intentionally local-only. Never reuse it outside the
 local CPU/Mock stack.
+
+The single-node GPU smoke additionally creates a short-lived kubeconfig, a worker-registry signing key,
+registry credentials and environment-specific configuration below `.cache/tgsrl/` or
+`configs/hardware/environment.json`; all are ignored local material and must not be committed. Its
+`compose.gpu.yaml` overlay deliberately uses host networking so Minikube workloads can reach the host
+registry during E1. Run it only on an isolated validation machine with a restrictive host firewall, and
+stop it with `make gpu-down` after collecting evidence.

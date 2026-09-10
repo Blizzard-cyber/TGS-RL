@@ -76,8 +76,8 @@ toolchain:
     artifact_digest: null
     license_spdx: "Apache-2.0"
     status: "development-only"
-    usage: "Local CPU Kubernetes integration environment"
-    evidence: "docs/guides/operator.md"
+    usage: "Pinned local-cluster tool for the intended Kubernetes and GPU smoke workflow"
+    evidence: "docs/guides/gpu-smoke.md"
 
   - name: "kubernetes"
     kind: "orchestrator"
@@ -86,13 +86,13 @@ toolchain:
     source_commit: null
     artifact_digest: null
     license_spdx: "Apache-2.0"
-    status: "cpu-integration"
-    usage: "Local Operator API-server validation; DRA resource.k8s.io/v1"
-    evidence: "docs/guides/operator.md"
+    status: "hardware-smoke-only"
+    usage: "Pinned target for the first single-node GPU smoke; DRA resource.k8s.io/v1"
+    evidence: "docs/guides/gpu-smoke.md"
 
   - name: "kubectl"
     kind: "deployment-tool"
-    version: "1.35.8"
+    version: "1.35.1"
     source: "https://github.com/kubernetes/kubernetes"
     source_commit: null
     artifact_digest: null
@@ -108,9 +108,9 @@ toolchain:
     source_commit: null
     artifact_digest: null
     license_spdx: "Apache-2.0"
-    status: "cpu-integration"
-    usage: "Local Workload API validation; v1beta2 preferred with v1beta1 compatibility"
-    evidence: "docs/guides/operator.md"
+    status: "hardware-smoke-only"
+    usage: "Pinned target for the first single-node GPU smoke; v1beta2 preferred with v1beta1 compatibility"
+    evidence: "docs/guides/gpu-smoke.md"
 
   - name: "protoc-gen-go"
     kind: "code-generator"
@@ -322,7 +322,7 @@ host_tooling:
   docker_engine: "29.6.1"
   docker_compose: "5.2.0"
   helm: "4.2.4"
-  kubectl: "1.35.8"
+  kubectl: "1.35.1"
   minikube: "1.38.1"
   nvidia_driver_minimum: "580.95.05"
   nvidia_container_toolkit_minimum: "1.18.0"

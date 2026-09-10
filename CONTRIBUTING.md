@@ -33,6 +33,7 @@ Run checks in proportion to the change. The complete local suite is:
 ```bash
 git diff --check
 make check-repository
+make check-docs
 make lint
 make test
 make race
@@ -45,6 +46,9 @@ make check-public-content
 Changes to the product path should also run `make product-e2e`. Console changes should run
 `make test-console-browser`. Compose or packaging changes should run `make local-up`,
 `make compose-smoke`, and `make local-down`.
+Changes to GPU setup, campaign or workload packaging should also run the governance GPU tests and
+ShellCheck locally; they must not be described as hardware-verified until accepted target-machine
+evidence exists.
 
 ## Change boundaries
 
@@ -64,6 +68,8 @@ virtual environments, caches, binaries, build output, databases, journals, logs,
 production values or credentials. See [repository hygiene](docs/maintainers/repository-hygiene.md).
 
 Use a focused Conventional Commit message and keep unrelated changes out of the same pull request.
+Do not add automated assistant attribution trailers; repository governance scans both the worktree and
+reachable commit metadata for this policy.
 
 ## Licensing
 

@@ -173,6 +173,7 @@ uv run --frozen tgsrl job-command "$JOB_ID" "$RUN_ID" start \
   --idempotency-key start-run-example-1
 uv run --frozen tgsrl list-runs "$JOB_ID" --limit 20
 uv run --frozen tgsrl timeline "$JOB_ID" --run-id "$RUN_ID" --limit 50
+uv run --frozen tgsrl traces "$JOB_ID" --run-id "$RUN_ID" --limit 200
 uv run --frozen tgsrl topology "$JOB_ID" --run-id "$RUN_ID"
 uv run --frozen tgsrl sandboxes "$JOB_ID" --run-id "$RUN_ID"
 uv run --frozen tgsrl list-decisions "$JOB_ID" --run-id "$RUN_ID" --limit 20
@@ -261,6 +262,7 @@ try:
         idempotency_key="sdk-start-run-1",
     )
     print(client.get_topology(job_id, run_id=run_id))
+    print(client.list_traces(job_id, run_id=run_id, limit=200))
     print(client.list_decisions(job_id, run_id=run_id, limit=20))
 except HTTPError as error:
     print(error.code, error.read().decode("utf-8"))
@@ -269,7 +271,7 @@ except HTTPError as error:
 
 `GatewayClient` 返回解码后的 JSON dictionary。HTTP 非成功响应不会转换成
 `GatewayError`，而是由标准库 `urllib` 抛出 `HTTPError`。SDK 还提供
-`openapi()`、Run、Timeline、DAG、Sandbox、Operation、Replay 和 Experiment 对应方法。
+`openapi()`、Run、Timeline、Trace、DAG、Sandbox、Operation、Replay 和 Experiment 对应方法。
 
 ## 5. HTTP 路由
 
@@ -300,6 +302,7 @@ except HTTPError as error:
 | 方法 | 路径 | 用途 |
 |---|---|---|
 | `GET` | `/v1/jobs/{job_id}/timeline` | 读取 Job 事件 |
+| `GET` | `/v1/jobs/{job_id}/traces` | 分页读取 Runtime 持久化的 TraceEvent，可按 Run、trace ID 和 data kind 过滤 |
 | `GET` | `/v1/jobs/{job_id}/dag` | 读取阶段图和依赖 |
 | `GET` | `/v1/jobs/{job_id}/topology` | 读取 Run、Manifest、Runtime 与最近决策 |
 | `GET` | `/v1/jobs/{job_id}/sandboxes` | 列出 Sandbox |
@@ -384,7 +387,7 @@ Gateway 的 JSON 请求体上限为 1 MiB；负数、非数字或超出上限的
 
 ### 分页
 
-Job、Run、Sandbox、Decision、Operation、Replay 和 Experiment 列表接受正整数 `limit` 和
+Job、Run、Trace、Sandbox、Decision、Operation、Replay 和 Experiment 列表接受正整数 `limit` 和
 不透明的 `page_token`。Gateway 未显式收到 `limit` 时通常向后端请求 50 条。响应包含
 资源数组和 `next_page_token`；空字符串表示没有下一页。Token 的编码属于实现细节，
 调用方应原样传回，不要解析或自行构造。
@@ -393,6 +396,11 @@ Job、Run、Replay 和 Experiment 列表还支持对应的 `after_*_id`；它与
 Timeline 支持 `run_id`、`limit`、`after_event_id` 和 `page_token`，其中后两者是两种互斥的
 续读方式：可以原样传回 `next_page_token`，也可以把上一批最后一条事件的 `eventId`
 作为 `after_event_id`。
+Trace 支持 `run_id`、`trace_id`、`data_kind`、`limit` 与 `page_token`；page token 绑定完整
+filter scope，改变筛选条件后必须从第一页重新查询。
+CLI 参数分别是 `--run-id`、`--trace-id`、`--data-kind`、`--limit` 和 `--page-token`。
+Job、Run、Replay、Experiment 的游标参数依次为 `--after-job-id`、`--after-run-id`、
+`--after-replay-id`、`--after-experiment-id`；Timeline 使用 `--after-event-id`。
 
 ## 7. OpenAPI
 
@@ -460,14 +468,14 @@ uv run --frozen tgsrl serve --backend-mode memory
 make run-console
 ```
 
-Job Detail 的 **Control Plane** 区域可提交原始 Job JSON；**Create Run** 调用
+任务中心的**高级操作**区域可提交原始 Job JSON；**新建运行**调用
 `POST /v1/jobs/{job_id}/runs`，只创建处于 validating 的 Run；其执行规格保持不变，
-但 lifecycle state、component status 和 operations 会继续演进。**Admit** 调用
-`POST /v1/jobs/{job_id}/admit` 完成准入与 Runtime 准备；独立的 **Start**
-按钮则向所选 Run 发送 `start` command。该区域也提供 `pause`、`resume`、`stop`、`retry`、
-`terminate` Run 命令，以及 Replay 创建和控制。新建 Job/Run 后应先执行 **Admit**，
-再选择该 Run 并发送 **Start**。部分界面筛选器只用于前端状态演示，并不等同于后端
-查询能力；成功写入后页面也不会自动刷新全部查询。
+但 lifecycle state、component status 和 operations 会继续演进。首屏**运行控制**中的**准入**
+调用 `POST /v1/jobs/{job_id}/admit` 完成准入与 Runtime 准备；独立的**启动**按钮向所选 Run
+发送 `start` command。该区域也提供暂停、恢复、停止、重试、终止，以及 Replay 创建和控制。
+新建 Job/Run 后应先准入，再选择该 Run 并启动。模拟状态筛选只在浏览器 Mock 模式出现；
+HTTP 模式下数据筛选会传给 Gateway。写操作成功后，重新进入当前视图或刷新浏览器读取最新
+观察态。
 
 Vite proxy 只在 `npm run dev` 中生效。`npm run preview` 和部署后的静态文件不能假定仍有
 这组代理；应由同源 Web 服务器转发 API。`VITE_*` 值会在 Vite 构建时写入前端包。

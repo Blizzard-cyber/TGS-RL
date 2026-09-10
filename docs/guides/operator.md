@@ -37,9 +37,10 @@ Operator 同时运行两个长期服务：它订阅 Scheduler Decision，并在 
 | `-kubeconfig` | 空 | 显式 kubeconfig；仅 `kubernetes` 模式使用 |
 | `-gpu-profile` | `none` | `none`、`nvidia-device-plugin`、`kubernetes-dra` 或 `volcano-hami` |
 | `-runtime-class-name` | 空 | 引用已有 RuntimeClass；默认不设置 |
+| `-runtime-class-handler` | 空 | `-runtime-class-create` 启用时必填的 RuntimeClass handler |
 | `-runtime-class-create` | `false` | 是否由 Operator 创建 RuntimeClass；启用时还需 handler 和额外集群权限 |
 | `-node-selector` | 空 | Pod node selector，使用可重复的 `key=value` 参数 |
-| `-worker-bootstrap` | `false` | 用 managed-worker bootstrap 包装 workload；`process` 模式与 DRA 会自动启用 |
+| `-worker-bootstrap` | `false` | 用 managed-worker bootstrap 包装 workload；`process` 模式自动启用，`kubernetes-dra` 未启用时拒绝启动 |
 | `-worker-bootstrap-image` | 空 | 只接受 `repository@sha256:...` 的 bootstrap installer 镜像 |
 | `-worker-registry-url` | 空 | workload 可访问的 Scheduler registry HTTP(S) base URL |
 | `-worker-registry-signing-key-file` | 空 | 派生 scoped registration token 的主 HMAC key；至少 32 bytes |
@@ -142,9 +143,10 @@ Scheduler registry 和 bootstrap control endpoint 都没有内建 TLS；明文 H
 
 ## Kubernetes 部署工件
 
-本地 CPU 集成推荐使用 minikube `1.38.1`、Kubernetes `1.35.1` 和 Kueue
-`0.19.2`；kubectl 应与 API server 保持在同一 minor 或相邻 minor。这个组合用于验证
-Operator 的真实 API/RBAC/恢复链路，不提供 GPU 或 CUDA 证据。
+本地 Kubernetes 工具链固定 Minikube `1.38.1`、Kubernetes `1.35.1` 和 Kueue
+`0.19.2`；kubectl 应与 API server 保持在同一 minor 或相邻 minor。仓库目前验证的是
+manifest/Helm、HTTP client 与 RBAC 契约；在实际集群完成 smoke 前，不应把这些静态和模拟
+检查写成真实 API Server、恢复、GPU 或 CUDA 证据。
 
 ```bash
 minikube start --profile tgsrl --driver=docker --kubernetes-version=v1.35.1
@@ -237,7 +239,7 @@ umbrella chart 的 `crds/` 会在首次安装时创建 CRD，但 Helm 不会自�
 - Operator `50081` ClusterIP Service；
 - Scheduler、Job Controller 与 Runtime 的 service address 参数；
 - 默认将 JobRunBundle、Workload、Job 与 ResourceClaim 权限限制在目标 namespace 的
-  `Role` / `RoleBinding`，其中 `jobrunbundles` 包含 `create`；
+  `Role` / `RoleBinding`，四类资源均具有 `get/list/watch/create/update/patch/delete`；
 - 默认只授予 Node、RuntimeClass、DeviceClass 和 ResourceSlice 的集群级 `list` 权限；不授予
   `RuntimeClass` 写权限。仅 Helm 显式启用 `runtimeClassCreate=true` 时，
   才追加只含 `get/create` 的 `ClusterRole` / `ClusterRoleBinding`。已有 RuntimeClass
@@ -293,9 +295,7 @@ sequence 和 cursor 原子写入 `decision-cursor.json`。状态目录还包括�
 基础设施实际状态。
 
 更多状态边界见[配置、持久化与恢复](configuration-and-recovery.md)，真实集成状态见
-[当前能力与限制](../reference/current-capabilities.md)。
-
-> 当前代码 Review 发现：`KubernetesBackend.Cleanup` 会删除 Workload、ResourceClaim 和
-> JobRunBundle marker，但 Helm 与原生 manifest 的 Role 尚未给这三类资源 `delete`。在补齐最小
-> RBAC 并完成真实 ServiceAccount smoke 前，不应把 generation replacement 或 terminal cleanup
-> 判定为可用。
+[当前能力与限制](../reference/current-capabilities.md)。Helm、原生 Operator manifest 与 GPU smoke
+ServiceAccount 已为 Job、Workload、ResourceClaim 和 JobRunBundle 提供最小 read/upsert/delete
+权限；`make check-deploy` 与 `make gpu-preflight` 分别校验静态规则和目标集群实际授权。真实
+generation replacement、terminal cleanup 与 ServiceAccount 行为仍须由 E1 集群运行证明。

@@ -22,6 +22,7 @@ required_files=(
   configs/hardware/gpu-requirements.lock
   compose.gpu.yaml
   Dockerfile.gpu-smoke
+  scripts/check-docs.py
   scripts/gpu-configure-registry.sh
   README.md
   LICENSE

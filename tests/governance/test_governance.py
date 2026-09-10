@@ -20,6 +20,12 @@ def run_script(name: str, *arguments: str) -> subprocess.CompletedProcess[str]:
     )
 
 
+def test_documentation_links_and_commands_match_repository() -> None:
+    checked = run_script("check-docs.py")
+    assert checked.returncode == 0, checked.stderr
+    assert "documentation-ok" in checked.stdout
+
+
 def test_sbom_is_current_and_covers_all_lockfile_ecosystems(tmp_path: Path) -> None:
     checked = run_script("generate-sbom.py", "--check")
     assert checked.returncode == 0, checked.stderr

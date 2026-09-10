@@ -41,3 +41,6 @@ Docker Compose 启动单机栈，再根据需要选择 Console、CLI、Python SD
 
 Gateway 运行后可通过 `GET /openapi.json` 获取 OpenAPI 3.1 文档。也可以直接查看
 [`api/openapi.json`](../api/openapi.json)。
+
+文档以当前代码和机器可读配置为准，不把历史 commit、某次 CI run 或本机实验结果当作永久
+能力声明。提交前运行 `make check-docs`，验证本地链接、Make 目标和 `tgsrl` CLI 命令引用。

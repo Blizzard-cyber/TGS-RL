@@ -8,15 +8,47 @@
 4. 崩溃、重试、重复消息和部分失败如何处理；
 5. 当前哪些能力已经闭环，哪些仍需真实 GPU/Kubernetes/veRL 证据。
 
-本文最近一次完整 CPU 行为验证基线是 `v0.1.0-rc1`（commit
-`2a62a2ab558e6f1310d9d3e5b862bec19e713ae2`）。对应 GitHub Actions run `33603176617`
-共 10 个 job 全部成功，包括 Proto compatibility、Go race、
-staticcheck、Python、Console、性能预算、部署镜像、Process E2E、Full-stack CPU Gate 和
-Product E2E。这个结果证明代码回归通过，不等于真实 NVIDIA、Kubernetes 或训练效果已经验证。
+本文按当前工作树代码维护，不把历史提交号或某次 CI run 当成永久事实。最近一次本地
+复核覆盖 Go、Python、API、静态分析、生成物、部署与治理门禁，并实际运行了 Full-stack CPU
+Gate；发布到远端后仍须以对应 commit 的 GitHub Actions 结果为准。任何 CPU 结果都不等于
+真实 NVIDIA、Kubernetes 或训练效果已经验证。
 
-## 1. Review 结论
+## 1. 问题、方案与当前结论
 
-### 1.1 总体判断
+### 1.1 要解决的问题
+
+RL 训练由 Trainer、Rollout、Reward、推理引擎和资源后端共同组成。各角色节奏不同，单看
+Pod 是否运行无法判断训练为什么等待、调度为什么选择某张卡、控制动作是否真的作用到目标
+进程，也无法在重启后安全地区分旧实例和新实例。TGS-RL 解决的是这条“从训练语义到资源
+执行，再回到可验证观察”的控制链。
+
+| 传统任务状态的盲区 | TGS-RL 提供的系统能力 |
+|---|---|
+| 只知道进程或 Pod 存活 | RuntimeUnit、Sandbox、Trace 和 observed state |
+| 不知道为什么调度 | 候选、约束、评分、Plan、ActionResult 和 fallback evidence |
+| 不知道动作是否落到目标进程 | binding/device/generation/PID/control endpoint 的端到端核验 |
+| 重试可能重复副作用 | idempotency key、durable receipt、cursor、generation fence 和 readback |
+| 性能变化无法归因 | worker、Runtime、Scheduler、Operator 的同一 Trace 因果链 |
+
+### 1.2 做了什么系统
+
+```mermaid
+flowchart LR
+  User[用户 / 实验脚本] --> Product[Job 与产品控制]
+  Product --> Runtime[Runtime、Trace 与实验]
+  Runtime --> Scheduler[调度与资源事务]
+  Scheduler --> Operator[Operator 与执行后端]
+  Operator --> Worker[受监管训练进程]
+  Worker -->|observation / Trace| Runtime
+  Runtime -->|observed status| Product
+```
+
+系统由 Proto 契约连接三个控制域，并把训练进程作为可注册、可控制、可观察的执行实体。
+Scheduler 是设备选择权威，Operator 负责兑现，worker/bootstrap 提供真实进程回执；任何一层
+缺少权威观察都不会被伪装为成功。后续章节按“领域边界 → 主调用链 → 模块实现 → 恢复与
+验证”从顶层向底层展开。
+
+### 1.3 总体判断
 
 TGS-RL 已经不是框架或演示原型。Job 控制面、Runtime/Trace、Scheduler、Provider、Operator、
 managed-worker bootstrap、Gateway/SDK/CLI、Console、全栈部署工件和硬件验证 runner 均有可执行
@@ -27,13 +59,13 @@ managed-worker bootstrap、Gateway/SDK/CLI、Console、全栈部署工件和硬�
 | 范围 | Review 判断 | 说明 |
 |---|---|---|
 | Proto 与领域契约 | 已闭环 | Go/Python 共用 `tgsrl.v1`，有 Buf breaking 和跨语言 round-trip |
-| Job/Product 控制面 | 已闭环 | Job、Run、Operation、Timeline、CLI/SDK/HTTP/Console 和重启恢复完整 |
+| Job/Product 控制面 | 已闭环 | Job、Run、Operation、Timeline/Trace 查询、CLI/SDK/HTTP/Console 和重启恢复完整 |
 | Runtime/Trace/Replay | 已闭环于单机代码路径 | desired/observed 分离、typed observation、Replay 和 SQLite 恢复完整 |
 | Scheduler 与事务 | 已闭环 | admission/adaptive planner、约束、预算、reservation、receipt、补偿和恢复完整 |
 | CPU Mock / process E2E | 已验证 | 包括真实子进程、worker bootstrap、Unix socket 和服务重启 |
 | NVIDIA Provider/helper | 代码完成，待硬件验证 | Full GPU/MPS/MIG inventory、runtime/binding helper 与 worker registry 已实现 |
 | Kubernetes/DRA | 代码主链完成，待环境验证 | Full GPU/MIG typed inventory、UUID selector、allocation readback 与 cleanup RBAC 已实现 |
-| 硬件 Campaign | runner 和 driver 主体已实现 | 仍需环境输入 digest/集群 identity 加固、目标 workload、hook 和真实 E1–E8 证据 |
+| 硬件 Campaign | runner 和 driver 主体已实现 | E1 有可执行最小 workload 与环境生成脚本；E2–E8 仍需目标 workload/hook 和真实证据 |
 | 生产发布 | 尚未准入 | 无真实 GPU/MIG/veRL 证据；E3–E8 有 9 条阈值待标定 |
 
 这里的“代码主链完成”表示仓库已经提供可执行入口，BOM 中的 `gpu_stack_integrated` 在真实
@@ -43,8 +75,9 @@ CPU/Mock 主链没有发现新的 P0 结构断点。Kubernetes backend cleanup �
 ResourceClaim 和 JobRunBundle 最小 `delete` 权限已经同时进入 Helm、原生 manifest 和部署契约测试。
 仓库现已提供单机 E1 的环境模板、GPU smoke workload、安装/预检/部署脚本，并要求
 workload 使用可拉取的 `repository@sha256:...`。这使首次 Full GPU 全链路验证具备可执行入口，
-但真实 GPU 证据仍必须在目标机生成。完整 E1–E8 的环境 config、动作/故障 hook 和最终渲染
-workload digest 仍需要随实验锁定；当前 `host_hash` 也仍是 runner 主机而不是完整集群 identity。
+但真实 GPU 证据仍必须在目标机生成。runner 已锁定仓库控制的 campaign/gate/scenario/executor/
+driver 输入和 workload image digest；本机 `environment.json`、Job template、外部 hook、渲染后 Job
+及目标 cluster UID/version 仍未全部进入证据指纹，`host_hash` 也只是 runner 主机身份。
 除此之外，发布层面的阻塞项是：
 
 - 按 [单机 GPU 全链路 Smoke](guides/gpu-smoke.md) 执行 E1 并归档证据；
@@ -54,14 +87,14 @@ workload digest 仍需要随实验锁定；当前 `host_hash` 也仍是 runner �
 - 使用真实数据评审并提交 E3–E8 的 9 条阈值；
 - 为完整模型的真实 veRL/Ray/PyTorch/vLLM、MPS 和多节点故障恢复形成证据；E1 只覆盖最小 adapter workload。
 
-### 1.2 Review 发现与优先级
+### 1.4 Review 发现与优先级
 
 | 级别 | 发现 | 影响与处置 |
 |---|---|---|
-| P0 验证阻塞 | 没有真实 E1–E8 运行；Hardware Validation workflow 当前运行记录为 0 | 代码不能被表述为硬件验证通过；先执行 E1/E2 |
+| P0 验证阻塞 | 仓库中没有可验收的真实 E1–E8 evidence bundle | 代码不能被表述为硬件验证通过；先执行 E1/E2 |
 | P0 验证阻塞 | 仓库只提供 E1 最小 CUDA/veRL adapter workload，尚无完整训练 workload、E2 observation hook 和 E4–E8 action/fault hook | E1 smoke 可复现；其余是环境与实验特定集成，受保护环境必须配置并审计 |
 | P0 验证阻塞 | E3–E8 有 9 条阈值未标定 | 保持 `BLOCKED`；只读 calibration report 不自动修改策略 |
-| P0 证据完整性 | E1 已锁定 workload image digest，但完整 campaign 尚未锁定 environment config、Job template、hook 和 cluster identity | 首轮仅作为流程 smoke；正式实验前扩展 fingerprint/artifact |
+| P0 证据完整性 | E1 已锁定 workload image digest，但完整 campaign 尚未锁定 environment config、Job template、外部 hook、渲染后 Job 和 cluster identity | 首轮仅作为流程 smoke；正式实验前扩展 fingerprint/artifact |
 | 已关闭 | `KubernetesBackend.Cleanup` 所需的 Workload、ResourceClaim、JobRunBundle `delete` 权限 | Helm 与原生 manifest 已补齐，部署 contract test 逐类约束 |
 | P1 生产阻塞 | 服务端点没有内建 TLS、用户认证、授权、租户隔离或限流 | 仅允许本机/隔离网络；生产前增加统一入口和服务间身份 |
 | P1 生产阻塞 | Job 只提供字符串环境变量，没有通用 Secret/ConfigMap 引用模型 | 依赖凭据的真实训练必须由 namespace/service account 或平台注入；后续应设计显式 secret refs |
@@ -71,13 +104,13 @@ workload digest 仍需要随实验锁定；当前 `host_hash` 也仍是 runner �
 | P1 可运维性 | 只有 Scheduler 暴露 Prometheus，跨服务日志字段和 lifecycle latency 未统一 | 补齐全栈 metrics、trace/span 或统一 correlation logging |
 | P1 数据规模 | Runtime 只有 SQLite 热存储和 retention/delete audit，没有 Parquet/Arrow 冷存储 | 长期、大规模 Trace 需 schema/version/partition/archive/replay 方案 |
 | P2 可维护性 | hardware environment driver 接近 2000 行 | 新增 E3–E8 平台实现前拆为 config/Gateway/Kubernetes/state/evidence/hook 模块 |
-| P2 可读性 | `_placeholder_launch_spec` 只用于异常上下文，但名字像未完成启动实现 | 后续重命名为 `_failure_context_spec`，无需改变行为 |
+| P2 可读性 | `_placeholder_launch_spec` 只用于 adapter 编译失败时构造诊断上下文，名字仍容易被误解为启动实现 | 可单独重命名为 `_failure_context_spec`；不影响当前执行链 |
 
 外部 hook 是受信任的环境扩展点。driver 会校验其 authority receipt，并等待真正的 Scheduler
 Decision 或 worker receipt，但无法静态证明 hook 内部没有执行额外集群操作。因此 hook 脚本本身必须
 纳入版本、权限、代码审查和证据归档；其 ServiceAccount 不应拥有不必要的 ResourceClaim 写权限。
 
-### 1.3 Review 证据入口
+### 1.5 Review 证据入口
 
 本次不是只审最近提交，而是沿主调用链检查了以下事实：
 
@@ -417,6 +450,10 @@ actor/critic offload、reload、replica sleep/wake 和 policy update 都必须�
 确认。结构化 typing 使 CPU double 可测试同一协议，但不能证明真实 veRL package、collective 或
 显存释放行为。
 
+控制请求通过独立 mutation lock 串行化；等待 `prepare_pause` 时不会持有 Trace/state lock，训练
+线程可以继续完成 observation、进入 safe point 并解除控制等待。safe-point 事件及其 typed
+observation 使用同一个真实布尔值，避免事件名称与状态字段互相矛盾。
+
 ### 7.5 Replay 与 Experiment
 
 Replay 输入是记录的 `TraceEvent + SchedulingIntent + ClusterSnapshot + EvaluationContext`，Scheduler
@@ -588,13 +625,14 @@ DeviceClass。Device Plugin/HAMi 只能表达数量，因此目前不开放精�
 
 1. 从环境读取 job/run/unit/sandbox/binding/generation/device identity；
 2. DRA 路径用 `nvidia-smi -L` 验证可见 UUID；
-3. 启动独立进程组，记录 PID 和防复用 process token；
-4. 启动 HTTP control/readiness endpoint；
-5. 等待 cooperative socket 或 signal-mode readiness；
-6. 用 scoped HMAC token 向 Scheduler registry 注册；
-7. 注册成功后 `/readyz` 才成功；
-8. 转发 worker trace，执行 generation-fenced lifecycle；
-9. 转发 SIGTERM/SIGINT，超时升级 SIGKILL，并上报终态。
+3. 对带 workload OCI artifact 的 Python 命令，用相同解释器验证声明的训练模块；
+4. 启动独立进程组，记录 PID 和防复用 process token；
+5. 启动 HTTP control/readiness endpoint；
+6. 等待 cooperative socket 或 signal-mode readiness；
+7. 用 scoped HMAC token 向 Scheduler registry 注册；
+8. 注册成功后 `/readyz` 才成功；
+9. 转发 worker trace，执行 generation-fenced lifecycle；
+10. 转发 SIGTERM/SIGINT，超时升级 SIGKILL，并上报终态。
 
 Operator 和 Scheduler 持有同一个主签名 key，Pod 只拿到绑定范围内的 token。worker 进程本身只
 拿 loopback trace URL 和独立随机 trace token，不拿 registry credential。registry 再次核对 Provider
@@ -610,7 +648,7 @@ Gateway 是无状态 northbound adapter。`GatewayApplication` 负责路由、�
 
 - Job 校验、创建、准入和 Run 创建；
 - start/pause/resume/stop/retry/terminate；
-- Job、Run、Operation、Timeline、DAG、Topology、Sandbox 和 Decision 查询；
+- Job、Run、Operation、Timeline、Trace、DAG、Topology、Sandbox 和 Decision 查询；
 - Replay、Experiment；
 - OpenAPI 3.1、CLI 和 dependency-free Python `GatewayClient`。
 
@@ -725,7 +763,8 @@ JobRunBundle CRD、RBAC、PVC、probe、Service 和 NetworkPolicy。`deploy/helm
 `scripts/tgsrl-hardware-environment-driver` 实现 campaign 的原子环境接口。配置示例位于
 `configs/hardware/environment.example.json`。它负责：
 
-- preflight Gateway、kubectl context/namespace、DeviceClass 和 typed DRA inventory；
+- preflight Gateway、kubectl context/namespace、DeviceClass 和 typed DRA inventory；首轮生成器
+  会写入显式 Minikube context，但通用配置 schema 仍允许空 context；
 - 通过 Gateway 创建、准入、启动和停止 Job；
 - 按 campaign/experiment/run 持久化 request receipt；
 - 使用确定性 Job ID，在 create 响应丢失后仍可恢复；
@@ -740,9 +779,10 @@ JobRunBundle CRD、RBAC、PVC、probe、Service 和 NetworkPolicy。`deploy/helm
 幂等。
 
 当前 evidence provenance 还有一项必须补齐：orchestrator 已锁定 gate-tools、executor、driver、
-campaign、gate manifest 和 scenario，但尚未锁定 environment config、Job template、hook 文件和每轮
+campaign、gate manifest、scenario 和 workload image digest，但尚未锁定 environment config、Job template、hook 文件和每轮
 rendered Job；environment fingerprint 也没有目标 cluster UID/version。因此在补齐前，driver 适合
-E1/E2 探索性 smoke，不能单独形成最终 release evidence。
+E1 探索性 smoke；E2 还必须提供受审查的 rebind observation hook，二者都不能单独形成最终
+release evidence。
 
 ## 14. 测试与证据模型
 
@@ -753,7 +793,7 @@ E1/E2 探索性 smoke，不能单独形成最终 release evidence。
 | Go 单元/集成 | `make test-go`、`make race` | Scheduler、Provider、Controller、Operator 状态与并发正确性 |
 | Python/Storage/Governance | `make test-python` | Runtime、Adapter、SQLite、Gate 和 driver contract |
 | API | `make test-api` | HTTP/gRPC/SDK/OpenAPI 行为 |
-| Console | `make test-console`、`make test-console-browser` | 类型、lint、组件与七页 browser smoke |
+| Console | `make test-console`、`make test-console-browser` | 类型、lint、组件、八个主路由与五档视口布局 |
 | 性能 | `make test-performance` | 固定 CPU fixture 的 P95 和 allocation 回归预算 |
 | Process/Product E2E | `make demo`、`make product-e2e` | 真实服务进程、重启、幂等和状态恢复 |
 | CPU full-stack Gate | `make gate-cpu-integration` | 实际服务链 + bootstrap + worker callback |
@@ -784,13 +824,17 @@ identity、Scheduler plan、worker identity、动作、故障和节点集合。
 
 ### 14.3 当前验证证据
 
-基线 `5bff463` 已验证：
+当前代码具备并在本地复核了：
 
-- GitHub CI 10/10 success，run `33471081130`；
-- Go race、staticcheck、Proto breaking、Python、API、Console、部署镜像和性能门禁；
-- 本地 Python/Storage/Governance 440 项、API 38 项、Console 63 项、浏览器 7 页；
-- Product E2E 和 Full-stack CPU Gate；
+- Go 全量测试、`go vet`、staticcheck、Python/Storage/Governance 与 API 全量回归；
+- 生成物、迁移、Helm 部署契约、SBOM、兼容矩阵、公开内容和仓库边界检查；
+- Scheduler/Provider 独立 P95 性能预算；
+- Full-stack CPU Gate，包括真实 bootstrap 子进程、worker 注册、safe-point、pause/resume/stop
+  和 Scheduler/Runtime/Operator/worker 多源 Trace；
 - hardware driver 的 fake Gateway/kubectl 原子合约。
+
+Console、race、容器镜像和 Product E2E 已由 CI workflow 定义为独立 regression jobs；本地复核
+不能替代本批 commit 推送后的远端 CI 结果，是否作为分支 required check 由仓库保护规则决定。
 
 尚未验证：真实 CUDA、Full GPU DRA、MIG DRA、MPS、完整模型的真实 veRL 训练、跨节点 E8。
 
@@ -807,7 +851,7 @@ identity、Scheduler plan、worker identity、动作、故障和节点集合。
 | `scheduler-go/state/` | Snapshot/reservation/transaction | revision/generation fence、before-image |
 | `scheduler-go/planexecutor/` | Provider 事务驱动 | pending checkpoint、receipt、逆序补偿 |
 | `scheduler-go/provider/` | Provider 抽象和 Mock | capability-gated 行为 |
-| `scheduler-go/provider/nvidia/` | NVIDIA Driver v1/v2 | inventory、helper handshake、readback |
+| `scheduler-go/provider/nvidia/` | NVIDIA LocalDriver/Driver v2 | inventory、helper handshake、readback |
 | `operator-go/compiler/` | Decision → Bundle | 每 binding 一 bundle、DRA UUID selector |
 | `operator-go/backend/` | fake/process/Kubernetes 副作用 | marker commit、control progress、readback |
 | `operator-go/worker/` | Decision 消费和观察恢复 | durable handoff before cursor |
@@ -906,7 +950,7 @@ resume、stop、observation。只有实际 callback 成功才能推进 observed 
 
 进入真实环境前应满足：
 
-- 当前 commit 的普通 CI 全绿，Proto breaking 实际执行；
+- 待验证 commit 的普通 CI 全绿，且 Proto breaking 实际执行；
 - Operator Role 已补齐 Workload、ResourceClaim、JobRunBundle 的最小 delete 权限，并有 RBAC
   contract/smoke；
 - `make gate-cpu-integration` 和 Product E2E 通过；
@@ -929,11 +973,11 @@ resume、stop、observation。只有实际 callback 成功才能推进 observed 
 ### 18.1 建议执行顺序
 
 ```text
-补齐 evidence provenance
-→ 冻结 commit 与镜像 digest
+冻结 commit 与镜像 digest
 → 部署全栈控制面
 → preflight Kueue/DRA/DeviceClass/ResourceSlice
 → E1 Full GPU identity
+→ 补齐完整 campaign 的 environment/template/hook/rendered Job/cluster fingerprint
 → E2 MIG identity + rebind
 → E3 throughput/VUG baseline
 → E4–E6 safety/interference/lifecycle calibration

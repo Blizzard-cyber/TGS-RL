@@ -18,13 +18,13 @@
 | 配置图 | **支持** | Scheduler 与 Runtime 从 compatibility manifest 加载 BOM、profile、capabilities、policy 和 scenario | 配置在启动时读取，不支持热更新；未知能力和冲突引用会被拒绝 |
 | 单机持久化 | **支持** | Scheduler checkpoint/journal、Job Controller 文件状态、Runtime/Experiment SQLite、Operator cursor 与 ledger；启动时调和遗留 delivery、终态 allocation 和已淘汰的重复 failure audit | 不提供跨服务事务、HA 或灾备；fake backend 对象只存在于进程内，Scheduler 通过 provider readback 保守修复其投影 |
 | Job、Runtime 与 Experiment 控制 | **支持** | JobControl、RuntimeControl、RuntimeBackendControl 和 Experiment gRPC 服务 | Runtime `start` 发布 Intent；workload 必须由 Operator/backend 启动并通过观察事件回报 |
-| HTTP Gateway | **支持** | Job、Run、Timeline、DAG、Topology、Sandbox、Decision、Replay、Experiment、OpenAPI、CLI 与 Python SDK | gRPC 模式要求四个逻辑后端可达；内存模式不持久化 |
+| HTTP Gateway | **支持** | Job、Run、Timeline、Trace、DAG、Topology、Sandbox、Decision、Replay、Experiment、OpenAPI、CLI 与 Python SDK | gRPC 模式要求四个逻辑后端可达；内存模式不持久化 |
 | Web Console | **支持** | 中文运行总览、任务详情、Trace 多轨时间轴、时间线、拓扑、Sandbox、Decision、实验比较，以及 Job/Run 准入和生命周期操作 | Trace 页面读取 Runtime 持久化事件；只有事件携带真实 duration 属性时才显示耗时条。静态 `mock` adapter 不访问 Gateway；静态部署需自行提供同源 API 代理 |
 | 性能回归门禁 | **支持（CI 回归）** | 独立非 race CI 检查 Scheduler 8 devices/100 units、1000 devices/1000 units 与 NVIDIA Provider observation apply 的 P95 预算 | 预算只约束固定 CPU fixture 的代码回退，不是生产 SLA、GPU 性能或训练收益证明 |
 | CPU Mock Provider | **支持** | 能力匹配、逻辑资源绑定、L1–L4 逻辑模拟动作、故障注入、generation fence 和逐动作 rollback | Adaptive Planner 会在满足观测、能力与安全条件时生成 L1–L4 动作；这些结果只验证控制逻辑，不代表真实硬件行为或性能 |
 | NVIDIA Provider（默认） | **有条件（Conditional）** | `LocalDriver` 可通过 `nvidia-smi` 形成设备快照 | 需要 NVIDIA 驱动和 `nvidia-smi`；默认不声明资源动作 |
-| NVIDIA Driver v2 | **有条件（Conditional）** | 已实现 Full GPU、MPS、MIG inventory，以及 binding/runtime/MIG helper、Scheduler worker registry 和 workload bootstrap 的 generation fence、scoped registration、幂等 durable receipt、原子落盘、进程监管、PID 信号控制和 managed-worker lifecycle | DRA/CDI 负责设备注入；Full GPU `full` 模式不启动 MPS；offload/reload 需要训练 worker 实现 Unix socket 协议；signal pause 不释放 GPU 显存；MPS PID 自动发布需要 host PID 可见性和共享目录；MIG 仅在已存在实例间切换；真实 NVIDIA/CUDA 证据仍待执行 |
-| 外部 Runtime Adapter | **已实现，待硬件验证** | veRL 已有第一方 lifecycle/observation bridge，以及面向 veRL 0.9 trainer/worker-group/checkpoint-manager 公共接口的 callback adapter；支持显式 safe-point hook、checkpoint、rollout abort/sleep/wake、actor/critic offload/reload、policy update、durable receipt 与 typed TraceEvent | 训练包由不可变 workload 镜像承载，Runtime 控制面不要求导入 `verl/ray/torch/vllm`；bootstrap 在启动用户进程前验证声明的包；真实依赖组合、distributed collective 和显存释放仍待目标环境验证；SGLang 与 OpenRLHF 仍只有通用 adapter 边界 |
+| NVIDIA Driver v2 | **有条件（Conditional）** | 已实现 Full GPU、MPS、MIG inventory，以及 binding/runtime/MIG helper、Scheduler worker registry 和 workload bootstrap 的 generation fence、scoped registration、幂等 durable receipt、原子落盘、进程监管、PID 信号控制和 managed-worker lifecycle | DRA/CDI 负责设备注入；Scheduler CLI 默认 `full` 且不启动 MPS，嵌入式构造器需显式传 mode；offload/reload 需要训练 worker 实现 Unix socket 协议；signal pause 不释放 GPU 显存；MPS PID 自动发布需要 host PID 可见性和共享目录；MIG 仅在已存在实例间切换；真实 NVIDIA/CUDA 证据仍待执行 |
+| 外部 Runtime Adapter | **已实现，待硬件验证** | veRL 已有第一方 lifecycle/observation bridge，以及面向 veRL 0.9 trainer/worker-group/checkpoint-manager 公共接口的 callback adapter；支持显式 safe-point hook、checkpoint、rollout abort/sleep/wake、actor/critic offload/reload、policy update、durable receipt 与 typed TraceEvent | 训练包由不可变 workload 镜像承载，Runtime 控制面不要求导入 `verl/ray/torch/vllm`；只有带 workload OCI artifact 的 Python 命令才由 bootstrap 在启动前验证声明的包；真实依赖组合、distributed collective 和显存释放仍待目标环境验证；SGLang 与 OpenRLHF 仍只有通用 adapter 边界 |
 | Kubernetes Operator | **有条件支持** | 编译和调和 `JobRunBundle`、Kueue `Workload`、Kubernetes `Job`、可选 `ResourceClaim`/`RuntimeClass`；typed NVIDIA DRA inventory 精确兑现 Full GPU/MIG UUID；可选 bootstrap 包装 RuntimeManifest command，自动注册真实 PID/control endpoint，并用 Pod readiness 阻止提前发布 RUNNING；全栈 Helm chart 部署六个控制面服务；namespaced RBAC 覆盖 Job、Workload、ResourceClaim 与 JobRunBundle 的创建、更新和终态清理 | 精确 UUID 仅适用于 NVIDIA DRA 的整数个完整 GPU/MIG；真实硬件证据待执行；MPS 仍需节点侧 PID namespace/shared mount；Kueue 和 GPU 管理组件由平台侧提供；首轮单机 smoke 可显式使用 host network，该选项默认关闭且仅用于单 worker 验证 |
 
 ## 单机方案
@@ -38,7 +38,8 @@
 - 保存并恢复各组件的单机状态。
 
 服务健康后执行 `make compose-smoke` 可在 Docker 内从 Console 同源入口验证
-`create → admit → start → pause → resume → stop`、Decision、Sandbox 终态和 allocation 回收。
+`create → admit → start → pause → resume → stop`、Decision、Sandbox 终态、allocation 回收，
+以及 Trainer/Request/Executor/Worker 四轨 synthetic Trace 的写入与查询。
 
 Mock Provider 支持 `bind`、`release`、`set_share`、`set_priority`、`resize`、
 `pause`、`resume`、`sleep`、`offload`、`rebind` 和 `recreate`。这些动作修改逻辑
@@ -58,7 +59,8 @@ Runtime 可以选择以下 Adapter：
 Adapter 将 manifest 转换为结构化 `LaunchSpec`，并支持 direct command、Python module
 hook 或 API hook。veRL 可使用 `adapters.frameworks.verl_runtime.install_verl_control` 连接 0.9
 trainer，并由训练循环显式调用 safe-point hook。Runtime 只验证声明和控制桥，不在控制面容器
-导入 Ray/PyTorch/vLLM；这些依赖由 workload 镜像提供，并由 bootstrap 在启动前 fail closed。要运行训练，还必须提供
+导入 Ray/PyTorch/vLLM；这些依赖由 workload 镜像提供。只有 manifest 同时包含 workload OCI
+artifact 时，Operator 才把对应模块清单注入 bootstrap 并在启动前 fail closed。要运行训练，还必须提供
 与所选组合匹配的镜像、命令、资源后端、网络和分布式配置。缺少执行条件时请求会明确失败，
 不会回退为成功。
 
@@ -88,7 +90,7 @@ discovery 提供只读 `list` 集群权限。只有在设置 `runtimeClassCreate
 
 ## NVIDIA Driver v2 启用条件
 
-Scheduler 可通过 `-nvidia-driver-v2` 选择 v2 编排，默认是不会启动 MPS 的 `full` 模式；
+Scheduler 可通过 `-nvidia-driver-v2` 选择 v2 编排，Scheduler CLI 默认是不会启动 MPS 的 `full` 模式；
 需要动态份额或 MIG 时显式选择 `mps` 或 `mig`。
 启动后只有 helper 的 capability handshake、generation fencing、幂等与 durable receipt 条件
 全部满足时，Provider 才会公开对应 action。helper 缺失或协议不匹配时返回 unavailable，
@@ -144,7 +146,8 @@ GPU evidence、执行模式、设备 profile、节点数、实际动作、故障
 目标环境可用 `campaign-run --driver <path> --require-pass` 按顺序执行八项实验；仓库 executor
 拥有 baseline/variant、迭代、动作、故障与失败 cleanup 顺序，runner 锁定每项
 gate-tools/campaign/gate/scenario/executor/driver digest，拒绝旧 commit、目录逃逸和不完整 named evidence。
-环境 driver 只负责目标 Kubernetes/GPU 原子操作并返回结构化观察。也可用
+环境 driver 只负责目标 Kubernetes/GPU 原子操作并返回结构化观察。E1 的 `make gpu-smoke`
+只执行单项并对 E1 自身失败/无效/规则失败返回非零；其成功不代表缺失的 E2–E8 已通过。也可用
 `campaign-ingest E<n> --report <report.json>` 单独导入已有
 证据，再以 `campaign-evaluate --require-pass` 作为发布门禁。Hardware Validation workflow
 的 `e1-e8-run` 模式执行 campaign；`e1-e8-evaluate` 模式只消费名为

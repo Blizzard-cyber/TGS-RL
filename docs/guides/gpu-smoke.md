@@ -64,10 +64,11 @@ make gpu-create-cluster
 make gpu-prepare-cluster
 ```
 
-第一条命令创建 GPU-enabled Minikube；第二条安装锁定版本：
+第一条命令创建锁定版本的 GPU-enabled Minikube/Kubernetes；第二条安装其余集群依赖：
 
 - Kubernetes `v1.35.1`；
 - Kueue `v0.19.2`；
+- Node Feature Discovery `0.18.3`；
 - NVIDIA DRA driver `0.5.0`；
 - `tgsrl-system` namespace；
 - DRA DeviceClass 到 `tgsrl.io/gpu` 的 Kueue quota mapping；
@@ -96,6 +97,8 @@ namespace 写权限和 DRA/Node discovery 只读权限。不要提交或复制�
 核对的 CUDA 基础镜像，但必须使用 digest。workload 内的 `verl==0.9.0`、`ray==2.58.0`、
 `torch==2.13.0+cu130` 和 `vllm==0.28.0` 由 hash lock 安装；如果目标 GPU/CUDA 不支持这组
 版本，应先更新 compatibility BOM、输入约束和 lock，而不是临时跳过版本检查。
+构建脚本要求 `git status --porcelain` 为空，让镜像 tag、源码 commit 和后续证据能够一一对应；
+若有本地修改，应先提交或移出本次验证 checkout。
 
 ```bash
 export TGSRL_IMAGE_REGISTRY=registry.example.com/your-user/tgsrl
@@ -170,6 +173,10 @@ make gpu-status
 make gpu-smoke
 ```
 
+该 Make 目标只选择 E1，因此不会因为 E2–E8 尚无报告而失败；但 E1 自身若执行失败、证据
+无效或 `action_success_rate` 未达到 1，命令会非零退出。成功仅表示 E1 Full GPU smoke
+通过，不表示整个 E1–E8 campaign 已通过。
+
 成功条件不是“Pod Running”这么简单，而是同时满足：
 
 1. Gateway 创建、准入并启动真实 Job/Run；
@@ -181,6 +188,11 @@ make gpu-smoke
 7. CUDA matmul 真正执行，worker trace 含 `sample_consumed` 与 `workload_completed`；
 8. stop 通过服务 API 完成，Operator 清理对应资源；
 9. `.cache/tgsrl/gpu-smoke/` 形成可归档 report、trace 和日志。
+
+本流程的控制面通过 `compose.gpu.yaml` 运行在 Linux host network：Scheduler registry 监听
+宿主机 `50091`，Operator 使用 24 小时 scoped kubeconfig 访问 Minikube，workload Pod 通过
+`gpu-render-config` 推导的宿主机 gateway 回连 registry。该网络模式只服务于单机、单 worker
+首轮联调，不是常规多节点部署拓扑。
 
 查看现场：
 

@@ -120,3 +120,12 @@ def test_bootstrap_mount_does_not_shadow_gpu_workload() -> None:
 
     assert 'WorkerBootstrapMountPath  = "/var/run/tgsrl-bootstrap"' in source
     assert 'WorkerBootstrapMountPath  = "/opt/tgsrl"' not in source
+
+
+def test_gpu_smoke_requires_e1_to_pass() -> None:
+    makefile = (ROOT / "Makefile").read_text(encoding="utf-8")
+    target = makefile.split("gpu-smoke:", 1)[1].split("\ngpu-down:", 1)[0]
+
+    assert "--experiment E1" in target
+    assert 'select(.experiment_id == "E1")' in target
+    assert '.status == "PASSED"' in target

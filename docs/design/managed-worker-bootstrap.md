@@ -86,13 +86,16 @@ bootstrap 的启动顺序为：
 
 1. 读取并校验 run、job、runtime unit、sandbox、binding、generation、device IDs。
 2. DRA 路径调用 `nvidia-smi -L`，要求可见 UUID 与 Binding 完全相同。
-3. 创建独立进程组并启动 workload，记录 PID 与防复用 process token。
-4. 启动带随机 control token 的 HTTP endpoint。
-5. 等待 cooperative socket readiness，或确认 signal-only 进程仍存活。
-6. 有界重试 registry；Runtime 尚未观察到 BOUND 时保持未 Ready。
-7. 注册成功后 `/readyz` 才返回成功，Operator 才能发布 RUNNING。
-8. worker observation 以有界 batch 经 bootstrap/registry 回传 Runtime；完成或关闭时强制 flush。
-9. 转发 SIGTERM/SIGINT，等待子进程退出，generation-fenced 清理 MPS PID 文件并上报终态。
+3. 若 Operator 注入了 `TGSRL_REQUIRED_PYTHON_MODULES`，用 workload command 的 Python
+   解释器验证依赖；该清单仅在存在 workload OCI artifact 时生成，控制面与本机无镜像 fixture
+   不承担训练依赖。
+4. 创建独立进程组并启动 workload，记录 PID 与防复用 process token。
+5. 启动带随机 control token 的 HTTP endpoint。
+6. 等待 cooperative socket readiness，或确认 signal-only 进程仍存活。
+7. 有界重试 registry；Runtime 尚未观察到 BOUND 时保持未 Ready。
+8. 注册成功后 `/readyz` 才返回成功，Operator 才能发布 RUNNING。
+9. worker observation 以有界 batch 经 bootstrap/registry 回传 Runtime；完成或关闭时强制 flush。
+10. 转发 SIGTERM/SIGINT，等待子进程退出，generation-fenced 清理 MPS PID 文件并上报终态。
 
 registration、单次 cooperative control 与 shutdown 都有独立的有界超时；shutdown 超时后会
 关闭 control server 并把未退出的 workload 进程组升级为 SIGKILL，避免 Pod termination 无限悬挂。
@@ -109,6 +112,8 @@ Kubernetes 不在同一 generation 自动重启 workload；失败后由上层 re
 
 control request 使用幂等键。bootstrap 会缓存确定结果；连接断开且无法确认副作用时返回
 unknown outcome，由 runtime helper 的 durable receipt 在重启后通过 status 调和，不能盲目重放。
+cooperative bridge 以独立 mutation lock 串行生命周期动作，等待 `prepare_pause` 的同时保持
+Trace/observation 路径可用，避免控制线程与训练线程在安全点处互相等待。
 
 ## MPS 边界
 

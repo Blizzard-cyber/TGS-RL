@@ -78,6 +78,16 @@ Scheduler 还支持以下启动覆盖：
 | `-fallback` | 空 | 覆盖 Policy，只接受 `noop`/`no_op` 或 `static` |
 | `-state-dir` | `.tmp/scheduler-state` | 持久化根目录 |
 | `-metrics-listen` | `127.0.0.1:9090` | Prometheus 地址；空字符串关闭 |
+| `-nvidia-driver-v2` | `false` | 启用可执行 NVIDIA Driver v2；未启用时 LocalDriver 只发现设备 |
+| `-nvidia-partition-mode` | `full` | CLI 的 v2 模式：`full`、`mps` 或 `mig` |
+| `-nvidia-dry-run` | `false` | 只生成/校验 NVIDIA 命令计划，不形成硬件通过证据 |
+| `-nvidia-command-timeout` | `15s` | 单次 NVIDIA helper 命令超时 |
+| `-nvidia-binding-helper` | `tgsrl-nvidia-binding` | binding helper 路径 |
+| `-nvidia-binding-state` | `<state-dir>/nvidia-binding.json` | binding/receipt 状态 |
+| `-nvidia-mps-pid-dir` | 空 | `<sandbox>.pid` MPS server 身份目录 |
+| `-nvidia-runtime-helper` | `tgsrl-nvidia-runtime` | managed-worker runtime helper 路径 |
+| `-nvidia-runtime-state` | `<state-dir>/nvidia-runtime.json` | worker/runtime receipt 状态 |
+| `-nvidia-mig-helper` | `tgsrl-nvidia-mig` | MIG lifecycle helper 路径；MIG 模式必需 |
 | `-worker-registry-listen` | 空 | managed-worker registry HTTP 监听地址；可供本地 process 或 NVIDIA/Kubernetes workload 使用 |
 | `-worker-registry-runtime-target` | 空 | registry 发布 SandboxEvent 使用的 Runtime gRPC target |
 | `-worker-registry-signing-key-file` | 空 | 至少 32 bytes 的 HMAC 主签名 key；也可用 `TGSRL_WORKER_REGISTRY_SIGNING_KEY` |
@@ -116,6 +126,7 @@ Scheduler 的 Prometheus 输出为指标名添加 `tgsrl_` 前缀。三档 loop 
 | `--job-control-target` | `127.0.0.1:50061` | Runtime 观察态回报目标 |
 | `--config-root` | `.` | 配置图根目录 |
 | `--manifest` | 空 | Manifest 覆盖；空值使用默认 CPU Mock Manifest |
+| `--worker-registry-signing-key-file` | 空 | 验证 Scheduler 转发 worker Trace 的 HMAC key 文件；也可用同名环境变量 |
 
 本地运行时应显式使用 `--bind 127.0.0.1:50071`，避免模块默认的 `[::]` 暴露到
 所有网络接口。
@@ -152,6 +163,7 @@ export TGSRL_GATEWAY_EXPERIMENT_TARGET=127.0.0.1:50071
 | 参数 | 默认值 | 说明 |
 |---|---|---|
 | `-mode` | `kubernetes` | `fake` 使用进程内 backend；`process` 启动本机真实子进程；`kubernetes` 连接 API Server |
+| `-controller` | `true` | 是否消费 Scheduler Decision；关闭时仍提供 backend lifecycle control RPC |
 | `-scheduler` | `127.0.0.1:50051` | Scheduler gRPC target |
 | `-control` | `127.0.0.1:50061` | Job Controller gRPC target |
 | `-runtime` | `127.0.0.1:50071` | Runtime gRPC target |
@@ -159,11 +171,17 @@ export TGSRL_GATEWAY_EXPERIMENT_TARGET=127.0.0.1:50071
 | `-namespace` | `default` | `JobRunBundle` namespace |
 | `-cursor-dir` | 系统临时目录 | Decision cursor 目录 |
 | `-kubeconfig` | 空 | 显式 kubeconfig；仅 `kubernetes` 模式使用 |
-| `-worker-bootstrap` | `false` | 包装 Kubernetes workload 并自动注册真实子进程；DRA 必须启用 |
+| `-gpu-profile` | `none` | `none`、`nvidia-device-plugin`、`kubernetes-dra` 或 `volcano-hami` |
+| `-runtime-class-name` | 空 | 引用已有 RuntimeClass |
+| `-runtime-class-handler` | 空 | 创建 RuntimeClass 时使用的 handler |
+| `-runtime-class-create` | `false` | 是否创建 RuntimeClass；启用时需要额外 cluster-scoped 权限 |
+| `-node-selector` | 空 | 可重复的 `key=value` Pod node selector |
+| `-worker-bootstrap` | `false` | 包装 workload 并自动注册真实子进程；process 模式自动启用，`kubernetes-dra` 要求显式启用 |
 | `-worker-bootstrap-image` | 空 | bootstrap installer 的不可变 digest 镜像 |
 | `-worker-registry-url` | 空 | workload 可访问的 Scheduler registry URL |
 | `-worker-registry-signing-key-file` | 空 | 与 Scheduler 相同的主签名 key，仅供 Operator 派生 scoped token |
-| `-worker-verify-device-identities` | `false` | 注册前核对容器可见设备 UUID；DRA 会强制启用 |
+| `-worker-verify-device-identities` | `false` | 注册前核对容器可见设备 UUID；DRA claim 物化时强制执行 |
+| `-worker-host-network` | `false` | 仅用于单机单 worker GPU smoke 的 Pod host network；必须同时启用 bootstrap |
 | `-worker-bootstrap-binary` | `tgsrl-worker-bootstrap` | process backend 使用的本机 bootstrap 可执行文件 |
 | `-process-state-dir` | `<cursor-dir>/processes` | process backend 的状态与 worker log 目录 |
 
@@ -196,6 +214,9 @@ Secret，默认 key 为 `signing-key`。同一主 key 还必须以文件或 Secr
 引用这个 Secret；Operator 只把按 binding 派生的 scoped token 写入 Pod 环境。Operator 和
 Scheduler 的状态目录均包含敏感 worker control material。helper 会把目录和文件限制为
 `0700`/`0600`；部署层仍须保证私有挂载和受限备份。
+bootstrap installer 固定安装到 `/var/run/tgsrl-bootstrap`，不会覆盖 workload 镜像常用的
+`/opt/tgsrl`。只有存在 workload OCI artifact 时才会注入 Python 模块依赖检查；依赖由
+workload 镜像提供，不由 Runtime 控制面提供。
 
 ## 本地数据目录
 

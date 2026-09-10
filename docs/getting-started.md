@@ -103,7 +103,7 @@ Helm revision 使用 `scripts/deploy-full-stack.sh rollback REVISION`。脚本�
 | Buf | 1.72.0 | Protobuf lint 与代码生成 |
 | Docker | Compose v2；已验证 Engine 29.6.1 / Compose 5.2.0 | 完整六服务本地栈和镜像构建 |
 | Helm | 4.2.4 | 全栈与 Operator chart 校验和安装 |
-| kubectl / minikube | kubectl 与集群相差不超过一个 minor；minikube 1.38.1 | 本地 Kubernetes 集成验证 |
+| kubectl / minikube | kubectl 与集群相差不超过一个 minor；minikube 1.38.1 | 单机 GPU/Kubernetes smoke 目标环境 |
 
 从项目根目录准备依赖与私有状态目录：
 
@@ -229,15 +229,17 @@ curl -fsS http://127.0.0.1:9090/metrics >/dev/null
 - 还需确认 Operator `127.0.0.1:50081` 正在监听；
 - 提交任务后，应通过 Run、Operation、Sandbox 和 Decision 查询确认控制链结果。
 
-Console 提供 Overview、Jobs、Timeline、Topology、Sandboxes、Decisions 和
-Experiment Compare 页面。Job Detail 可创建 Job/Run、执行 Admit、创建 Replay，
+Console 提供八个中文工作区：运行总览、任务中心、链路追踪、事件时间线、资源拓扑、
+运行沙箱、调度决策和实验对比。任务中心可创建 Job/Run、执行准入、创建 Replay，
 以及发送 Run/Replay 生命周期命令。
 
 ## 4. 提交并启动 Job
 
 `job.json` 必须是 `tgsrl.v1.RLTrainingJob` 的 Proto JSON 表示，包含有效的协议版本、
-算法、Rollout 模式、data kind、资源、`desiredUnits`、不可变镜像 digest、Runtime
-组件和执行图。建议通过 Adapter 构造 `ExecutionContract`。
+算法、Rollout 模式、data kind、资源、`desiredUnits`、Runtime 组件和执行图。
+`runtime.imageDigest` 始终必填；Kubernetes DRA workload 还必须提供与该 digest 对应的
+`runtime.artifactUri=repository@sha256:...`。CPU Mock/fake backend 可使用合成 digest，
+但不能把它当作可拉取镜像。建议通过 Adapter 构造 `ExecutionContract`。
 
 先校验并创建 Job：
 
@@ -298,8 +300,10 @@ Console/Gateway → Operator → Job Controller → Runtime → Scheduler。
 4. Operator 从相同 `-cursor-dir` 恢复 cursor、delivery、观察注册和 lifecycle ledger；
 5. Gateway 与 Console 从后端重新读取状态。
 
-恢复不是跨服务事务。Job Controller 不自动重新执行中间态 Operation，fake Operator
-backend 的内存对象在退出后丢失，Runtime Checkpoint 也不是训练进程镜像。恢复后应核对
+恢复不是跨服务事务。Job Controller 会在启动时调和运行中的 Operation：已收敛观察可直接
+补写终态；尚未派发且具备稳定幂等键的命令可以安全重放；已派发但结果未知或缺少幂等键的
+记录进入 `RECONCILIATION_REQUIRED`。fake Operator backend 的内存对象在退出后丢失，
+Runtime Checkpoint 也不是训练进程镜像。恢复后应核对
 Operation、Decision、reservation、Sandbox 和实际 backend 对象。详见
 [配置、持久化与恢复](guides/configuration-and-recovery.md)。
 

@@ -310,6 +310,7 @@ make test
 | 命令 | 验证内容 |
 |---|---|
 | `make check-repository` | 必需文件、误提交产物、被 ignore 隐藏的源码 |
+| `make check-docs` | Markdown 本地链接、Make 目标和 CLI 命令是否仍对应当前代码 |
 | `make check-generated` | Proto 生成代码是否与契约一致 |
 | `make check-governance` | SBOM、兼容矩阵、上游补丁和 OpenAPI |
 | `make check-deploy` | Kubernetes 清单与两层 Helm chart 契约 |
@@ -344,6 +345,10 @@ make gpu-preflight
 make gpu-up
 make gpu-smoke
 ```
+
+`make gpu-smoke` 只执行并验收 E1。命令非零表示 E1 执行失败、证据无效或规则未通过；
+命令成功表示 E1 报告为 `PASSED`，不表示尚未执行的 E2–E8 已通过，也不代表完整 campaign
+达到发布准入。
 
 完整前置条件、每一步通过标准和排障表见
 [单机 GPU 全链路 Smoke](docs/guides/gpu-smoke.md)。首轮仅验证 E1（单节点 Full GPU），

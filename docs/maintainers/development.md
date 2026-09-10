@@ -18,6 +18,7 @@ make product-e2e      # 完整后端产品流与恢复检查
 make gate-campaign    # 校验 E1-E8 campaign 并汇总已有硬件证据
 make gate-campaign-run # 通过仓库 executor + 目标环境 driver 执行并严格验收 E1-E8
 make check-generated  # 验证 Proto 生成物
+make check-docs       # 验证 Markdown 本地链接、Make 目标和 CLI 命令引用
 make check-governance # 校验 SBOM、兼容性证据与 patch ledger
 make check-public-content # 扫描工作树与可达历史中的私有链接、路径和凭据样式
 make check-repository # 检查必须提交与禁止提交的仓库内容
@@ -47,6 +48,7 @@ make test-performance
 make demo > /tmp/tgsrl-demo.json
 make product-e2e
 make check-generated
+make check-docs
 docker compose config -q
 make check-repository
 make check-governance
@@ -138,6 +140,9 @@ artifact 时，使用 `campaign-evaluate --require-pass` 做发布准入。
 - README 和 `docs/guides/` 只描述用户当前可执行的行为；
 - 架构、状态权威和恢复边界写入 `docs/design/`；
 - 可用性与验证级别以 `docs/reference/current-capabilities.md` 为准；
+- 文档中的本地链接、Make 目标和 `tgsrl` CLI 子命令由 `make check-docs` 校验；
+- 避免把一次 CI run ID、短 commit 或测试数量写成永久能力事实；验证快照如需保留，应同时
+  标注日期、commit、环境和“不能证明什么”；
 - 公开文档不得包含内部链接、内部文档 ID、访问凭据、个人信息或私有环境数据。
 
 ## 提交边界

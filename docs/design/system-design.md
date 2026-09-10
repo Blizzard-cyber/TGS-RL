@@ -149,10 +149,16 @@ ResourceProvider 是硬件或基础设施能力边界。通用 Intent、Plan 和
   后的 rebind/recreate，并用 `nvidia-smi -L` 回读目标实例。MPS share 需可用 server PID 与
   硬件读回后才形成 observation。当前 helper 不隐式创建或销毁 MIG 拓扑，且真实 GPU 验证
   证据尚未提供，因此该路径是 Conditional，不是 Supported。
+  Scheduler CLI 的 v2 默认 partition mode 是 `full`：每个物理 UUID 形成 share=1 的整卡分区且
+  不启动 MPS。底层 Go 构造器保留 MPS 兼容默认，因此嵌入式调用方必须显式传入期望模式。
+  NVIDIA device 只对 accelerator 维度做容量约束；CPU、memory、storage 和 network 由后续
+  Kubernetes/节点层调度，不能错误地拿单张 GPU 的属性拒绝整个 workload。
 
 Operator backend 决定 workload 对象的落点：
 
 - **fake**：bundle 保存在进程内，适合单机控制链；进程退出后对象丢失。
+- **process**：在宿主机启动真实 bootstrap 与子进程，通过 worker registry 回读状态；用于
+  CPU full-stack Gate，不创建容器或 Kubernetes 对象。
 - **kubernetes**：使用 kubeconfig 或集群内 ServiceAccount 连接 API Server，管理
   `JobRunBundle`、Kueue `Workload`、Kubernetes `Job` 和可选 `ResourceClaim`；仅在显式
   启用 `runtimeClassCreate` 时创建 `RuntimeClass`。
@@ -173,12 +179,16 @@ Device Plugin/HAMi profile 会在 Operator capability preflight/compile 阶段 f
 显式启用 managed-worker bootstrap 后，Operator 以不可变 `RuntimeManifest` 作为容器命令、
 参数、环境和工作目录的权威来源，并为每个 binding 派生只覆盖 run/job/unit/sandbox/
 binding/generation/device 集合的 HMAC 注册令牌。init container 从不可变 digest 镜像安装
-`tgsrl-worker-bootstrap`；main container 由 bootstrap 启动真实子进程、维护进程组、PID token、
+`tgsrl-worker-bootstrap` 到 `/var/run/tgsrl-bootstrap`，避免覆盖 workload 镜像中的 `/opt/tgsrl`；
+main container 由 bootstrap 启动真实子进程、维护进程组、PID token、
 Pod UID、私有 control token 与 HTTP control endpoint。Scheduler registry 先验证 scoped token、
 请求来源 IP、当前 Provider binding 和 Runtime 已观察到的 `BOUND` generation，再持久化注册并
 发布 `RUNNING` observation。Pod readiness 在注册成功且 worker 仍 Ready 前不会通过。worker
 退出后按 registration credential、instance、process token 和 generation 上报终态，旧进程不能
 覆盖替代进程。
+对具有 workload OCI artifact 的 Python 训练命令，Operator 还会注入所选 adapter 对应的
+必需模块清单，bootstrap 用 workload 自己的 Python 解释器在 fork 前验证；Runtime 控制面
+不需要安装 veRL、Ray、PyTorch 或 vLLM。
 
 没有 cooperative Unix socket 时，进程存活足以完成启动注册，但 pause/sleep 仍必须有
 safe-point marker；offload、checkpoint、reload 与安全 rebind 继续 fail closed。MPS PID 自动发布
@@ -231,6 +241,8 @@ Job Controller 的内存与文件 Repository 使用相同的 copy-on-write 更�
 | Operator | `127.0.0.1:50081` | gRPC lifecycle control |
 | Gateway | `127.0.0.1:8080` | HTTP / JSON |
 | Console | `127.0.0.1:4173` | HTTP |
+| Scheduler worker registry（可选） | `50091` | HTTP(S)；GPU smoke 监听 `0.0.0.0` 供 Pod 回连 |
+| Worker bootstrap control（Pod 内） | `50092` | HTTP；由 Operator 通过 Pod IP 访问 |
 
 Compose 使用 CPU Mock Provider、fake Operator backend 和 named volumes。手动运行时，
 Gateway 的 Runtime target 与 Experiment target 都应指向 Runtime 的同一地址。

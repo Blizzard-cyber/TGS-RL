@@ -33,6 +33,13 @@ make gate-campaign-run \
   TGSRL_HARDWARE_DRIVER_CONFIG=/etc/tgsrl/hardware/environment.json
 ```
 
+首次单机 Full GPU 联调使用 `make gpu-smoke`，它等价于只选择 E1 的 campaign run。E1
+执行失败、证据无效或规则失败时命令返回非零；E1 通过时命令成功，但 campaign 总状态仍会
+因为 E2–E8 缺失而是 `NOT_RUN`。只有不带 `--experiment` 且带 `--require-pass` 的完整
+`make gate-campaign-run` 才是 E1–E8 发布准入。单项运行结束后应直接读取
+`.cache/tgsrl/gpu-smoke/e1-full-gpu/report.json` 查看 E1 证据；根目录的
+`campaign-report.json` 同时列出未运行实验，因此总体状态不会是 `PASSED`。
+
 仓库提供 `scripts/tgsrl-hardware-environment-driver`。目标环境从
 `configs/hardware/environment.example.json` 派生本地配置，至少指定 Gateway URL、固定
 Kubernetes context/namespace、workload Job 模板和容器内 trace 导出命令。driver 的私有状态按
@@ -148,6 +155,6 @@ make gate-campaign-calibrate
 ## 当前验证边界
 
 仓库 CI 会验证 campaign schema、证据降级、设备身份分叉、故障证据缺失、场景 digest、
-日志复制和未校准阈值的 fail-closed 行为。`make gate-cpu-integration` 验证完整本地服务链，
+日志复制和未校准阈值的 fail-closed 行为。`make gate-cpu-integration` 已验证完整本地服务链，
 但仍输出 `CPU_INTEGRATION/NOT_RUN`。E1–E8 的真实 GPU、MIG、MPS、Kubernetes、veRL
 训练与收敛结果必须在目标环境执行后再导入。

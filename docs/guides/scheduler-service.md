@@ -23,6 +23,17 @@ go run ./scheduler-go/cmd/scheduler \
 | `-fallback` | 由 policy 推导 | 兼容参数：`noop` 或 `static` |
 | `-state-dir` | `.tmp/scheduler-state` | checkpoint 与 journal 目录 |
 | `-metrics-listen` | `127.0.0.1:9090` | Prometheus 地址；空字符串可禁用 |
+| `-nvidia-driver-v2` | `false` | 启用 NVIDIA Driver v2 |
+| `-nvidia-partition-mode` | `full` | CLI 的 v2 分区模式：`full`、`mps` 或 `mig` |
+| `-nvidia-dry-run` | `false` | 只规划 NVIDIA mutation，不生成硬件证据 |
+| `-nvidia-command-timeout` | `15s` | 单次 helper 命令超时 |
+| `-nvidia-binding-helper` | `tgsrl-nvidia-binding` | binding helper 路径 |
+| `-nvidia-runtime-helper` | `tgsrl-nvidia-runtime` | runtime helper 路径 |
+| `-nvidia-mig-helper` | `tgsrl-nvidia-mig` | MIG helper 路径 |
+| `-worker-registry-listen` | 空 | 可选 worker registry HTTP 监听地址 |
+| `-worker-registry-runtime-target` | 空 | registry 发布生命周期/Trace 的 Runtime gRPC target |
+| `-worker-registry-signing-key-file` | 空 | 至少 32 bytes 的共享 HMAC key 文件 |
+| `-worker-registry-state` | v2 时复用 runtime state，否则位于 state dir | 独立 managed-worker registry 状态文件；启用 registry 时必须是绝对路径 |
 
 `GET http://127.0.0.1:9090/metrics` 可读取指标。gRPC 与指标端点都没有 TLS 或
 认证，只应绑定可信接口。
@@ -211,16 +222,20 @@ resource/sandbox watch；执行 action 时先调用 Driver，再提交 Provider 
 因此默认 NVIDIA 方案只支持设备发现，不能分配 GPU 或运行训练。要执行资源动作，
 可显式启用 `-nvidia-driver-v2`。v2 已实现 Go 侧 inventory、MPS/MIG、binding、runtime
 command、事务、幂等、超时、回滚、重启发现、dry-run 和审计编排。仓库内
-默认分区模式是 `full`，只发布整卡 UUID 且不会启动 MPS；动态份额和 MIG 必须分别显式设置
+Scheduler CLI 的默认分区模式是 `full`，只发布整卡 UUID 且不会启动 MPS；动态份额和 MIG 必须分别显式设置
 `-nvidia-partition-mode=mps` 或 `-nvidia-partition-mode=mig`。仓库内
 `tgsrl-nvidia-binding` 提供 binding 状态、generation fence、幂等 durable receipt 和重启
-发现；它不直接修改已启动进程的 GPU 可见性，实际设备注入仍由 Runtime/容器集成完成。
+发现；它不直接修改已启动进程的 GPU 可见性，实际设备注入由 Kubernetes DRA/CDI 完成。
 仓库内 `tgsrl-nvidia-runtime` 提供 PID identity、generation fence、幂等 receipt、
 SIGSTOP/SIGCONT pause/resume，以及 Unix socket managed-worker 的 safe-point、checkpoint、
 offload、reload 和 readiness 协议。仓库内 `tgsrl-nvidia-mig` 复用同一 worker 状态，在
 已经发现的 MIG 实例之间执行 checkpoint/stop/reload/readiness；它不会在 Scheduler 不知情时
 创建或销毁 MIG 实例。
-Provider 只会公开 helper 握手确认的 action；helper 缺失、协议不匹配或能力不完整时
+Full GPU backend 将每个物理 UUID 投影为 share=1 的整卡分区，不执行分区 mutation；为了让同一
+Intent 的 CPU/memory/storage/network 需求仍由 Kubernetes/节点层处理，NVIDIA 设备快照只约束
+加速卡维度，其他资源维度不作为单卡容量拒绝条件。库级 `NewLocalDriverV2` 在调用方未传
+partition mode 时仍保留 MPS 兼容默认；生产入口应始终显式选择模式。Provider 只会公开 helper
+握手确认的 action；helper 缺失、协议不匹配或能力不完整时
 明确返回 unavailable。MPS 当前只公开带 active-thread percentage 读回校验的
 `set_share`；通用 `resize` 不作为 MPS 能力公开。MIG `rebind/recreate` helper 还必须显式
 声明 safe-point、checkpoint、stop、restore、readiness、durable receipt、generation fence 和

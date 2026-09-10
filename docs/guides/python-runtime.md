@@ -101,8 +101,11 @@ trainer 和 rollout engine。`fake`（以及其 `mock` 别名）用于本地可�
 
 这些 adapter 会校验 manifest 并把 typed lifecycle 转换为结构化 `LaunchSpec`。Adapter 层定义
 direct command、Python module hook 和 API hook 等 bridge 契约。具有明确 workload command
-的外部训练组合在 Runtime 准入时记录 `dependency_scope=workload_image`，不在控制面 import
-`verl/ray/torch/vllm`；bootstrap 在启动用户进程前用同一 Python 解释器验证这些模块。产品服务中的 `start` 只把
+且带非空 workload command 的外部训练组合在 Runtime 准入时记录
+`dependency_scope=workload_image:<module>`，不在控制面 import `verl/ray/torch/vllm`；
+bootstrap 只在 manifest 同时提供 workload OCI artifact 时注入模块清单，并在启动用户进程前
+使用用户命令的 Python 解释器验证模块。没有 workload image 的本机 process fixture 不会被
+错误要求安装整套 GPU 训练依赖。产品服务中的 `start` 只把
 unit 推进到 requested/starting、持久化 generation/幂等信息并发布调度 Intent；它不会在
 资源分配前从 Runtime 进程直接启动 manifest command。pause/resume/stop/terminate 由 Runtime
 转发到 Operator 的 generation-fenced backend control，最终 unit/sandbox 状态只由观察到的
@@ -160,6 +163,9 @@ finally:
 ```
 
 `safe_point()` 只能放在没有进行 collective、optimizer mutation 或在途 rollout 请求的边界。
+hook 上报该边界时会把事件和 typed observation 的 `safe_point` 同时标为真。bridge 使用独立的
+mutation lock 串行控制请求，但等待安全点期间不会持有 observation/state lock，因此训练线程
+仍能完成 Trace flush、发布 safe-point 并解除 `prepare_pause` 等待。
 `prepare_pause` 会等待该 hook；`pause` 调用 `abort_replicas`，`offload` 再调用
 `sleep_replicas` 和 actor/critic worker-group 的 `to("cpu")`，`reload` 调用对应
 `load_checkpoint` 与 `wake_up_replicas`（veRL engine 自行处理 checkpoint device staging），

@@ -43,7 +43,7 @@ flowchart LR
   Scheduler[Scheduler]
   Provider[ResourceProvider]
   Operator[Operator]
-  Backend[fake / Kubernetes]
+  Backend[fake / process / Kubernetes]
 
   Client --> Gateway --> Job
   Job --> Runtime
@@ -237,6 +237,11 @@ bridge 在调用 callback 前持久化 pending request，完成后持久化 resp
 意味着副作用结果未知，因此不会盲目重放。`scripts/verl-reference-workload.py` 只验证协议、
 队列、checkpoint 和进程生命周期；它不是完整 veRL 训练或模型质量验证。
 
+bridge 的 state lock 只保护身份、状态、receipt 和 Trace 快照；生命周期 mutation 由另一把锁
+串行化。`prepare_pause` 等待训练线程进入 safe point 时不得占用 state lock，否则训练线程可能
+在发布 observation 时与控制线程互锁。`VerlControlHook.safe_point()` 会把文件 Trace 和 typed
+observation 的 `safe_point` 同时标为真，再等待 resume/stop。
+
 ## 9. Operator、Gateway 与 Console
 
 Operator 的 `worker` 消费 Decision 后执行：
@@ -269,6 +274,11 @@ registry 再验证当前 Provider binding、Runtime BOUND generation 与来源 I
 才允许 Operator 投影 RUNNING。退出上报由注册 token hash、Pod UID、process token 与 generation
 共同 fence。signal-only 路径只能在 safe point 上 pause/resume；checkpoint/offload/reload 必须由
 cooperative worker socket 确认。
+
+bootstrap 二进制安装在 `/var/run/tgsrl-bootstrap`，不覆盖 workload 常用的 `/opt/tgsrl`。
+只有 manifest 存在 workload OCI artifact 时，Operator 才注入由 framework/execution/trainer/
+rollout engine 推导出的 `TGSRL_REQUIRED_PYTHON_MODULES`；bootstrap 使用 workload command
+自身的 Python 解释器逐一 import，控制面不需要安装 veRL/Ray/PyTorch/vLLM。
 
 Gateway 不保存业务状态，只做 Proto/JSON 转换、分页 token 封装、RPC 转发和错误映射。
 Console 的 `HttpApiClient` 再把 Gateway JSON 映射为页面模型。前端判断 Sandbox 是否使用
@@ -326,6 +336,7 @@ CPU 证据、身份不一致或故障未恢复都不能通过；`calibration_req
 | Full GPU v2 复用 MPS 默认与 capability 名称 | 普通整卡 smoke 会启动无关 MPS，或因重复 capability 被 Scheduler 拒绝 | 增加无分区 mutation 的 `full` backend，默认选择 full，并去重 capability | NVIDIA Driver v2 与 Scheduler CLI 测试 |
 | Kueue DRA patch 只做字符串断言 | 错误缩进的 YAML 可绕过测试并在目标集群失败 | 修正嵌套列表缩进，并对生成结构做回归校验 | `tests/governance/test_gpu_setup.py` |
 | GPU workload 与控制面共用 Python dependency 约束 | vLLM CUDA 13 需要 protobuf 6，而控制面锁定 protobuf 5，镜像会产生不可满足依赖 | GPU workload 使用独立 hash lock 与 site-packages，通过 protobuf wire/HTTP registry 连接控制面 | GPU lock、SBOM 与 governance 测试 |
+| veRL bridge 在持锁状态等待 safe point | 训练线程若同时上报完成事件，会等待同一 state lock，控制线程最终超时 | lifecycle mutation 与状态/Trace 锁分离；safe-point observation 显式写入 true | `tests/python/test_adapters_runtime.py`、`make gate-cpu-integration` |
 
 ## 12. 测试和提交边界
 
@@ -365,6 +376,7 @@ make test
 make race
 make product-e2e
 make check-generated
+make check-docs
 make check-governance
 make check-public-content
 ```
