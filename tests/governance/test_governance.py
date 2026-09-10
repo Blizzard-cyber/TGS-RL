@@ -34,6 +34,19 @@ def test_sbom_is_current_and_covers_all_lockfile_ecosystems(tmp_path: Path) -> N
     assert document["spdxVersion"] == "SPDX-2.3"
     ecosystems = {item["properties"]["ecosystem"] for item in document["packages"]}
     assert ecosystems == {"golang", "npm", "pypi"}
+    assert any(
+        item["name"] == "vllm"
+        and item["versionInfo"] == "0.28.0"
+        and item["properties"]["scope"] == "gpu-workload"
+        for item in document["packages"]
+    )
+    protobuf_scopes = {
+        item["properties"]["scope"] for item in document["packages"] if item["name"] == "protobuf"
+    }
+    assert protobuf_scopes == {"locked", "gpu-workload"}
+    assert {item["path"] for item in document["lockfiles"]} >= {
+        "configs/hardware/gpu-requirements.lock"
+    }
     package_ids = [item["SPDXID"] for item in document["packages"]]
     assert package_ids == sorted(package_ids)
     assert len(package_ids) == len(set(package_ids))
@@ -48,6 +61,10 @@ def test_compatibility_claims_are_evidence_backed() -> None:
     assert statuses["local-product-contract"] == "supported"
     assert statuses["verl-ray-pytorch-vllm-nvidia"] == "conditional"
     assert statuses["openrlhf-ray-pytorch-sglang-nvidia"] == "conditional"
+    verl = next(
+        item for item in matrix["combinations"] if item["id"] == "verl-ray-pytorch-vllm-nvidia"
+    )
+    assert verl["missing_dependencies"] == ["nvidia"]
 
 
 def test_dockerfile_platform_flag_does_not_hide_unpinned_images() -> None:
@@ -66,6 +83,19 @@ def test_dockerfile_platform_flag_does_not_hide_unpinned_images() -> None:
     assert parse_images("FROM --platform=linux/amd64 image.example/unpinned:latest") == [
         "image.example/unpinned:latest"
     ]
+    assert parse_images("ARG BASE=image.example/base@sha256:" + "b" * 64 + "\nFROM ${BASE}") == [
+        "image.example/base@sha256:" + "b" * 64
+    ]
+    assert "gpu-preflight.sh" in source
+
+
+def test_public_content_private_ip_pattern_does_not_match_dependency_versions() -> None:
+    checker = (ROOT / "scripts" / "check-public-content.sh").read_text(encoding="utf-8")
+
+    assert "private_ip_prefix" in checker
+    assert "dependency versions are filtered separately" in checker
+    assert '"versionInfo"' in checker
+    assert "self_check" in checker
 
 
 def test_hardware_workflow_runs_locked_workloads_without_cross_claiming_evidence() -> None:

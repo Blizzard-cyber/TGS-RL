@@ -994,9 +994,76 @@ def test_verl_runtime_adapter_drives_real_trainer_surface() -> None:
         assert event["buffer_level"] == 2
         assert event["contract_observation"]["policy_lag"] == 2
         assert event["contract_observation"]["effective_sample_size"] == 3.5
+        assert event["safe_point"] is True
+        assert event["contract_observation"]["safe_point"] is True
     finally:
         hook.close()
         temporary.cleanup()
+
+
+def test_verl_runtime_observation_does_not_deadlock_prepare_pause(tmp_path: Path) -> None:
+    trainer = _VerlTrainerDouble(
+        1,
+        _VerlWorkerGroupDouble(),
+        _VerlWorkerGroupDouble(),
+        _VerlCheckpointManagerDouble(),
+        use_critic=False,
+    )
+    hook = install_verl_control(
+        trainer,
+        identity=WorkerIdentity(
+            run_id="run-1",
+            job_id="job-1",
+            trace_id="trace-1",
+            sandbox_id="sandbox-1",
+            role="actor",
+            generation=1,
+            policy_version="policy-1",
+        ),
+        socket_path=tmp_path / "worker.sock",
+        trace_path=tmp_path / "trace.ndjson",
+        checkpoint_root=tmp_path / "checkpoints",
+        safe_point_timeout_seconds=2,
+        verify_version=False,
+    )
+    response: dict[str, object] = {}
+
+    def prepare_pause() -> None:
+        response.update(
+            hook.bridge.handle(
+                {
+                    "action": "prepare_pause",
+                    "sandbox_id": "sandbox-1",
+                    "generation": 1,
+                    "idempotency_key": "prepare",
+                }
+            )
+        )
+        hook.callbacks.cancel_wait()
+
+    controller = threading.Thread(target=prepare_pause)
+    controller.start()
+    try:
+        assert hook.callbacks._pause_requested.wait(1)
+        observation_done = threading.Event()
+
+        def record_observation() -> None:
+            hook.bridge.record_workload_completed(item_count=1, elapsed_ms=1.0, queue_depth=0)
+            observation_done.set()
+
+        observer = threading.Thread(target=record_observation)
+        observer.start()
+        assert observation_done.wait(1), "observation was blocked by prepare_pause"
+        observer.join(timeout=1)
+
+        hook.safe_point(event_type="safe_point_reached", items=0)
+        controller.join(timeout=1)
+        assert not controller.is_alive()
+        assert response["accepted"] is True
+    finally:
+        hook.callbacks.cancel_wait()
+        controller.join(timeout=1)
+        hook.close()
 
 
 def test_verl_runtime_adapter_fails_closed_on_missing_capability(tmp_path: Path) -> None:

@@ -7,6 +7,8 @@ Docker Compose 启动单机栈，再根据需要选择 Console、CLI、Python SD
 ## 开始使用
 
 - [快速上手](getting-started.md)：安装、启动、健康检查、提交首个 Job，以及停止和恢复。
+- [单机 GPU 全链路 Smoke](guides/gpu-smoke.md)：空白 Ubuntu GPU 主机的依赖安装、
+  Minikube/Kueue/DRA、镜像、前后端启动、E1 证据与故障定位。
 - [API、CLI 与 Console](guides/api-and-console.md)：调用 HTTP API，使用 CLI/SDK，配置 Console。
 - [支持范围与限制](reference/current-capabilities.md)：选择本地、外部框架、NVIDIA 或 Kubernetes
   方案前需要满足的条件。

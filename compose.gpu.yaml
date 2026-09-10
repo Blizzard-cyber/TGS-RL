@@ -1,0 +1,132 @@
+name: "${COMPOSE_PROJECT_NAME:-tgsrl-gpu}"
+
+services:
+  scheduler:
+    network_mode: host
+    environment:
+      TGSRL_MANIFEST_PATH: compatibility/manifests/gpu-smoke-verl.yaml
+      TGSRL_WORKER_REGISTRY_SIGNING_KEY: "${TGSRL_WORKER_REGISTRY_SIGNING_KEY:?set TGSRL_WORKER_REGISTRY_SIGNING_KEY}"
+      NVIDIA_DRIVER_CAPABILITIES: compute,utility
+    command:
+      - /bin/bash
+      - -ceu
+      - |
+        mkdir -p /tmp/tgsrl-bin
+        go build -trimpath -o /tmp/tgsrl-bin/tgsrl-nvidia-binding ./cmd/tgsrl-nvidia-binding
+        go build -trimpath -o /tmp/tgsrl-bin/tgsrl-nvidia-runtime ./cmd/tgsrl-nvidia-runtime
+        exec go run ./scheduler-go/cmd/scheduler \
+          -listen 127.0.0.1:50051 \
+          -config-root /workspace \
+          -manifest compatibility/manifests/gpu-smoke-verl.yaml \
+          -state-dir /state \
+          -metrics-listen 127.0.0.1:9090 \
+          -nvidia-driver-v2 \
+          -nvidia-partition-mode full \
+          -nvidia-binding-helper /tmp/tgsrl-bin/tgsrl-nvidia-binding \
+          -nvidia-runtime-helper /tmp/tgsrl-bin/tgsrl-nvidia-runtime \
+          -worker-registry-listen 0.0.0.0:50091 \
+          -worker-registry-runtime-target 127.0.0.1:50071
+    gpus: all
+    volumes: !override
+      - ${TGSRL_REPO_ROOT:?set TGSRL_REPO_ROOT}:/workspace:ro
+      - scheduler-state:/state
+    ports: !override []
+
+  runtime:
+    network_mode: host
+    environment:
+      PYTHONPATH: /workspace:/workspace/runtime-python:/workspace/gateway-python:/workspace/gen/python
+      TGSRL_WORKER_REGISTRY_SIGNING_KEY: "${TGSRL_WORKER_REGISTRY_SIGNING_KEY:?set TGSRL_WORKER_REGISTRY_SIGNING_KEY}"
+    command:
+      - /bin/sh
+      - -ceu
+      - |
+        python -m tgsrl_runtime.runtime_app \
+          --bind 127.0.0.1:50071 \
+          --scheduler-target 127.0.0.1:50051 \
+          --operator-target 127.0.0.1:50081 \
+          --job-control-target 127.0.0.1:50061 \
+          --state-db /state/runtime.db \
+          --config-root /workspace \
+          --manifest compatibility/manifests/gpu-smoke-verl.yaml
+    ports: !override []
+    volumes: !override
+      - ${TGSRL_REPO_ROOT:?set TGSRL_REPO_ROOT}:/workspace:ro
+      - runtime-state:/state
+
+  job-controller:
+    network_mode: host
+    command: ["go", "run", "./job-controller-go/cmd/job-controller", "-listen", "127.0.0.1:50061", "-runtime-target", "127.0.0.1:50071", "-state-dir", "/state"]
+    ports: !override []
+    volumes: !override
+      - ${TGSRL_REPO_ROOT:?set TGSRL_REPO_ROOT}:/workspace:ro
+      - controller-state:/state
+
+  operator:
+    network_mode: host
+    environment:
+      KUBECONFIG: /kube/config
+    command:
+      - go
+      - run
+      - ./cmd/operator
+      - -mode
+      - kubernetes
+      - -listen
+      - 127.0.0.1:50081
+      - -scheduler
+      - 127.0.0.1:50051
+      - -control
+      - 127.0.0.1:50061
+      - -runtime
+      - 127.0.0.1:50071
+      - -namespace
+      - ${TGSRL_WORKLOAD_NAMESPACE:-tgsrl-system}
+      - -gpu-profile
+      - kubernetes-dra
+      - -worker-bootstrap
+      - -worker-bootstrap-image
+      - ${TGSRL_BOOTSTRAP_IMAGE:?set TGSRL_BOOTSTRAP_IMAGE}
+      - -worker-registry-url
+      - ${TGSRL_WORKER_REGISTRY_URL:?set TGSRL_WORKER_REGISTRY_URL}
+      - -worker-registry-signing-key-file
+      - /run/tgsrl/worker-registry.key
+      - -worker-verify-device-identities
+      - -worker-host-network
+      - -cursor-dir
+      - /state
+    volumes: !override
+      - ${TGSRL_REPO_ROOT:?set TGSRL_REPO_ROOT}:/workspace:ro
+      - ${KUBECONFIG:?set KUBECONFIG}:/kube/config:ro
+      - ${TGSRL_GPU_REGISTRY_KEY_FILE:?set TGSRL_GPU_REGISTRY_KEY_FILE}:/run/tgsrl/worker-registry.key:ro
+      - operator-state:/state
+    ports: !override []
+
+  gateway:
+    network_mode: host
+    environment:
+      PYTHONPATH: /workspace:/workspace/runtime-python:/workspace/gateway-python:/workspace/gen/python
+    command:
+      - /bin/sh
+      - -ceu
+      - |
+        python -m tgsrl_gateway serve \
+          --host 127.0.0.1 --port 8080 --backend-mode grpc \
+          --job-control-target 127.0.0.1:50061 \
+          --scheduler-target 127.0.0.1:50051 \
+          --runtime-target 127.0.0.1:50071 \
+          --experiment-target 127.0.0.1:50071
+    ports: !override []
+    volumes: !override
+      - ${TGSRL_REPO_ROOT:?set TGSRL_REPO_ROOT}:/workspace:ro
+
+  console:
+    network_mode: host
+    environment:
+      VITE_TGSRL_API_ADAPTER: http
+      VITE_TGSRL_GATEWAY_TARGET: http://127.0.0.1:8080
+      HOST: 127.0.0.1
+    command: ["/bin/sh", "-ceu", "exec npm run dev -- --host 127.0.0.1"]
+    ports: !override []
+    volumes: !override
+      - ${TGSRL_REPO_ROOT:?set TGSRL_REPO_ROOT}/console:/workspace/console:ro

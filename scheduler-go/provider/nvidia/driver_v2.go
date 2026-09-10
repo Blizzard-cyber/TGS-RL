@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -95,6 +96,29 @@ var _ V2Driver = (*LocalDriverV2)(nil)
 
 type noOpBindingBackend struct{}
 
+type fullGPUPartitionBackend struct{ now func() time.Time }
+
+func (*fullGPUPartitionBackend) Mode() PartitionMode { return PartitionModeFull }
+
+func (b *fullGPUPartitionBackend) Discover(_ context.Context, inventory *InventorySnapshot) (*PartitionSnapshot, error) {
+	if inventory == nil || len(inventory.Devices) == 0 {
+		return &PartitionSnapshot{Mode: PartitionModeFull, Reason: "physical GPU inventory is empty"}, nil
+	}
+	partitions := make([]Partition, 0, len(inventory.Devices))
+	for _, device := range inventory.Devices {
+		partitions = append(partitions, Partition{ID: device.UUID, ParentUUID: device.UUID, Profile: "full-gpu", MemoryBytes: device.MemoryBytes, Share: 1, Labels: map[string]string{"mode": string(PartitionModeFull)}})
+	}
+	observedAt := inventory.ObservedAt
+	if observedAt.IsZero() && b.now != nil {
+		observedAt = b.now().UTC()
+	}
+	return &PartitionSnapshot{Mode: PartitionModeFull, Available: true, Partitions: partitions, ObservedAt: observedAt}, nil
+}
+
+func (*fullGPUPartitionBackend) Apply(_ context.Context, request BackendActionRequest) (*BackendActionResult, error) {
+	return nil, v2ActionError(request.Action, base.ErrorCodeUnsupported, "full GPU mode has no partition mutation", base.ErrUnsupported)
+}
+
 func (noOpBindingBackend) Discover(context.Context, *InventorySnapshot, *PartitionSnapshot) (*BindingSnapshot, error) {
 	return &BindingSnapshot{Available: true}, nil
 }
@@ -126,6 +150,8 @@ func NewLocalDriverV2(options LocalDriverV2Options) (*LocalDriverV2, error) {
 	}
 	if options.Partition == nil {
 		switch options.PartitionMode {
+		case PartitionModeFull:
+			options.Partition = &fullGPUPartitionBackend{now: options.Now}
 		case PartitionModeMPS:
 			options.Partition = NewMPSBackend(options.Executor, options.CommandTimeout, options.MPSPipeDirectory, options.MPSLogDirectory)
 		case PartitionModeMIG:
@@ -870,7 +896,10 @@ func v2Capabilities(inventory *InventorySnapshot, partitions *PartitionSnapshot,
 	capabilities.Attributes["execution_mode"] = "driver-v2"
 	capabilities.Attributes["partition_mode"] = string(partitions.Mode)
 	capabilities.Attributes["dry_run"] = strconv.FormatBool(dryRun)
-	capabilities.Names = append(capabilities.Names, partitionCapability(partitions.Mode))
+	partitionName := partitionCapability(partitions.Mode)
+	if !slices.Contains(capabilities.Names, partitionName) {
+		capabilities.Names = append(capabilities.Names, partitionName)
+	}
 	actions := append([]tgsrlv1.ActionType(nil), bindingActions...)
 	actions = append(actions, partitions.SupportedActions...)
 	actions = append(actions, runtimeActions...)
@@ -898,6 +927,9 @@ func partitionCapability(mode PartitionMode) string {
 	if mode == PartitionModeMIG {
 		return CapabilityMIG
 	}
+	if mode == PartitionModeFull {
+		return CapabilityName
+	}
 	return CapabilityMPS
 }
 
@@ -919,7 +951,7 @@ func inventoryDevices(inventory *InventorySnapshot, partitions *PartitionSnapsho
 		for key, value := range observed.Topology {
 			labels["topology."+key] = value
 		}
-		devices = append(devices, &tgsrlv1.Device{DeviceId: stableGPUDeviceID(observed.UUID), Kind: tgsrlv1.DeviceKind_DEVICE_KIND_GPU, Health: tgsrlv1.DeviceHealth_DEVICE_HEALTH_READY, Capacity: &tgsrlv1.ResourceVector{AcceleratorUnits: acceleratorUnits, MemoryBytes: observed.MemoryBytes}, Allocatable: &tgsrlv1.ResourceVector{AcceleratorUnits: acceleratorUnits, MemoryBytes: observed.MemoryBytes}, Capabilities: cloneCapabilities(capabilities), Labels: labels})
+		devices = append(devices, &tgsrlv1.Device{DeviceId: stableGPUDeviceID(observed.UUID), Kind: tgsrlv1.DeviceKind_DEVICE_KIND_GPU, Health: tgsrlv1.DeviceHealth_DEVICE_HEALTH_READY, Capacity: &tgsrlv1.ResourceVector{CpuMillis: ^uint64(0), AcceleratorUnits: acceleratorUnits, MemoryBytes: observed.MemoryBytes, EphemeralStorageBytes: ^uint64(0), NetworkBandwidthBps: ^uint64(0)}, Allocatable: &tgsrlv1.ResourceVector{CpuMillis: ^uint64(0), AcceleratorUnits: acceleratorUnits, MemoryBytes: observed.MemoryBytes, EphemeralStorageBytes: ^uint64(0), NetworkBandwidthBps: ^uint64(0)}, Capabilities: cloneCapabilities(capabilities), Labels: labels})
 	}
 	sort.Slice(devices, func(i, j int) bool { return devices[i].GetDeviceId() < devices[j].GetDeviceId() })
 	return devices
@@ -941,7 +973,7 @@ func migDevices(inventory *InventorySnapshot, partitions *PartitionSnapshot, cap
 		for key, value := range partition.Labels {
 			labels[key] = value
 		}
-		devices = append(devices, &tgsrlv1.Device{DeviceId: partition.ID, Kind: tgsrlv1.DeviceKind_DEVICE_KIND_GPU, Health: tgsrlv1.DeviceHealth_DEVICE_HEALTH_READY, Capacity: &tgsrlv1.ResourceVector{AcceleratorUnits: 1, MemoryBytes: memoryBytes}, Allocatable: &tgsrlv1.ResourceVector{AcceleratorUnits: 1, MemoryBytes: memoryBytes}, Capabilities: cloneCapabilities(capabilities), Labels: labels})
+		devices = append(devices, &tgsrlv1.Device{DeviceId: partition.ID, Kind: tgsrlv1.DeviceKind_DEVICE_KIND_GPU, Health: tgsrlv1.DeviceHealth_DEVICE_HEALTH_READY, Capacity: &tgsrlv1.ResourceVector{CpuMillis: ^uint64(0), AcceleratorUnits: 1, MemoryBytes: memoryBytes, EphemeralStorageBytes: ^uint64(0), NetworkBandwidthBps: ^uint64(0)}, Allocatable: &tgsrlv1.ResourceVector{CpuMillis: ^uint64(0), AcceleratorUnits: 1, MemoryBytes: memoryBytes, EphemeralStorageBytes: ^uint64(0), NetworkBandwidthBps: ^uint64(0)}, Capabilities: cloneCapabilities(capabilities), Labels: labels})
 	}
 	sort.Slice(devices, func(i, j int) bool { return devices[i].GetDeviceId() < devices[j].GetDeviceId() })
 	return devices

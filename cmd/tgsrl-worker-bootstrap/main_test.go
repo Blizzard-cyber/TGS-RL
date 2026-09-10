@@ -302,6 +302,22 @@ func TestVerifyDeviceIdentitiesUsesVisibleUUIDs(t *testing.T) {
 	}
 }
 
+func TestVerifyWorkloadDependenciesUsesWorkloadInterpreter(t *testing.T) {
+	if err := verifyWorkloadDependencies([]string{os.Args[0]}, []string{"json"}); err == nil || !strings.Contains(err.Error(), "Python workload command") {
+		t.Fatalf("non-Python dependency check error = %v", err)
+	}
+	python, err := exec.LookPath("python3")
+	if err != nil {
+		t.Skip("python3 is unavailable")
+	}
+	if err := verifyWorkloadDependencies([]string{python, "worker.py"}, []string{"json", "pathlib"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := verifyWorkloadDependencies([]string{python}, []string{"module_that_must_not_exist_tgsrl"}); err == nil || !strings.Contains(err.Error(), "missing Python module") {
+		t.Fatalf("missing module error = %v", err)
+	}
+}
+
 func TestMPSPIDCleanupCannotRemoveReplacementGeneration(t *testing.T) {
 	directory := t.TempDir()
 	if err := writeMPSPID(directory, "sandbox-a", 4, 42, "token-a"); err != nil {

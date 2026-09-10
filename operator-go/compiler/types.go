@@ -46,6 +46,7 @@ type WorkerBootstrapConfig struct {
 	RegistryURL        string
 	RegistrySigningKey []byte
 	VerifyDeviceIDs    bool
+	HostNetwork        bool
 }
 
 type CapabilityProfile struct {

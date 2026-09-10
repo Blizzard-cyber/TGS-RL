@@ -104,6 +104,9 @@ make proto-roundtrip
 
 - Go 依赖由 `go.mod` / `go.sum` 锁定；
 - Python 依赖由 `pyproject.toml` / `uv.lock` 锁定；
+- GPU workload 依赖由 `configs/hardware/gpu-requirements.in` 和 hash lock 锁定；更新时使用
+  `uv pip compile ... --python-platform x86_64-manylinux_2_31 --torch-backend cu130 --generate-hashes`，
+  并同步生成 SBOM。GPU workload 与控制面使用不同 protobuf major，通过 wire contract 通信；
 - Console 依赖由 `console/package.json` / `console/package-lock.json` 锁定；
 - 工具链与运行时依赖记录在 `compatibility/bom/runtime.yaml`；
 - 下游 patch 登记在 `upstream/PATCHES.md`；

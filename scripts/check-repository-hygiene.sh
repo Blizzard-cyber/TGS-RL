@@ -17,6 +17,12 @@ required_files=(
   api/openapi.json
   compatibility/sbom/lockfiles.spdx.json
   configs/hardware/environment.example.json
+  configs/hardware/verl-job.example.json
+  configs/hardware/gpu-requirements.in
+  configs/hardware/gpu-requirements.lock
+  compose.gpu.yaml
+  Dockerfile.gpu-smoke
+  scripts/gpu-configure-registry.sh
   README.md
   LICENSE
   docs/README.md
@@ -58,6 +64,7 @@ distributable_stages=(
   "Dockerfile.operator:1"
   "Dockerfile.services:5"
   "Dockerfile.worker-bootstrap:1"
+  "Dockerfile.gpu-smoke:1"
 )
 for stage_spec in "${distributable_stages[@]}"; do
   dockerfile=${stage_spec%:*}

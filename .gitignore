@@ -21,6 +21,7 @@ credentials.json
 kubeconfig
 kubeconfig.*
 configs/hardware/environment.json
+configs/hardware/verl-job.json
 values.production.yaml
 
 # Go build and test output

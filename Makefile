@@ -6,7 +6,7 @@ UV_VERSION := 0.12.7
 STATICCHECK_VERSION := 2026.1
 GATE_CAMPAIGN_DRIVER ?= scripts/tgsrl-hardware-environment-driver
 GO_PACKAGES := ./gen/go/... ./internal/... ./scheduler-go/... ./job-controller-go/... ./operator-go/... ./storage/... ./scripts ./cmd/...
-PYTHON_PATHS := adapters runtime-python gateway-python tests/python tests/api tests/storage tests/e2e tests/governance scripts/check-proto-roundtrip.py scripts/check-oci-platforms.py scripts/generate-sbom.py scripts/check-compatibility.py scripts/check-upstream-patches.py scripts/gate-tools.py scripts/hardware-campaign-executor.py scripts/hardware_environment_driver.py scripts/tgsrl-hardware-environment-driver scripts/verl-reference-workload.py scripts/gate-full-stack-workload.py scripts/gate-managed-workload.py scripts/compose-smoke.py
+PYTHON_PATHS := adapters runtime-python gateway-python tests/python tests/api tests/storage tests/e2e tests/governance scripts/check-proto-roundtrip.py scripts/check-oci-platforms.py scripts/generate-sbom.py scripts/check-compatibility.py scripts/check-upstream-patches.py scripts/gate-tools.py scripts/hardware-campaign-executor.py scripts/hardware_environment_driver.py scripts/tgsrl-hardware-environment-driver scripts/verl-reference-workload.py scripts/gate-full-stack-workload.py scripts/gate-managed-workload.py scripts/gpu-smoke-workload.py scripts/compose-smoke.py
 GO_FORMAT_PATHS := scheduler-go job-controller-go operator-go storage cmd internal
 SCHEDULER_PACKAGE := ./scheduler-go/cmd/scheduler
 NVIDIA_BINDING_PACKAGE := ./cmd/tgsrl-nvidia-binding
@@ -21,7 +21,7 @@ GATEWAY_LISTEN ?= 127.0.0.1:8080
 OPERATOR_LISTEN ?= 127.0.0.1:50081
 SCHEDULER_FALLBACK ?= noop
 
-.PHONY: help doctor doctor-dev doctor-kubernetes local-up local-status local-stop local-down local-reset proto check-generated check-openapi proto-roundtrip check-migrations check-compose compose-smoke compose-smoke-host check-repository check-deploy render-kubernetes check-public-content sbom check-governance gate-campaign gate-campaign-run gate-campaign-calibrate test-go test-performance test-python test-api test-console test-console-browser lint staticcheck test race build-nvidia-binding build-nvidia-runtime build-nvidia-mig build-worker-bootstrap demo product-e2e gate-cpu-integration run-scheduler run-controller run-runtime run-gateway run-operator run-console
+.PHONY: help doctor doctor-dev doctor-kubernetes gpu-install-host gpu-create-cluster gpu-prepare-cluster gpu-configure-access gpu-configure-registry gpu-preflight gpu-build-images gpu-render-config gpu-up gpu-status gpu-smoke gpu-down local-up local-status local-stop local-down local-reset proto check-generated check-openapi proto-roundtrip check-migrations check-compose compose-smoke compose-smoke-host check-repository check-deploy render-kubernetes check-public-content sbom check-governance gate-campaign gate-campaign-run gate-campaign-calibrate test-go test-performance test-python test-api test-console test-console-browser lint staticcheck test race build-nvidia-binding build-nvidia-runtime build-nvidia-mig build-worker-bootstrap demo product-e2e gate-cpu-integration run-scheduler run-controller run-runtime run-gateway run-operator run-console
 
 help:
 	@printf '%s\n' \
@@ -29,6 +29,18 @@ help:
 	  '  make doctor           verify the Docker-only local runtime' \
 	  '  make doctor-dev       verify the source-development toolchain' \
 	  '  make doctor-kubernetes verify the Kubernetes integration toolchain' \
+	  '  make gpu-install-host verify/prepare Ubuntu host tools (requires sudo)' \
+	  '  make gpu-create-cluster create/reuse a GPU-enabled minikube cluster' \
+	  '  make gpu-preflight    verify host GPU, Docker, Kubernetes, DRA, and Kueue' \
+	  '  make gpu-prepare-cluster install pinned Kueue/DRA prerequisites and smoke queue' \
+	  '  make gpu-configure-access create scoped external-Operator kubeconfig' \
+	  '  make gpu-configure-registry copy a dedicated Docker login into the smoke namespace' \
+	  '  make gpu-build-images build and push immutable bootstrap/workload images' \
+	  '  make gpu-render-config render the local hardware-driver config from image digests' \
+	  '  make gpu-up           start the host-network GPU control plane' \
+	  '  make gpu-status       show the GPU control plane and Kubernetes objects' \
+	  '  make gpu-smoke        execute E1 Full GPU end-to-end smoke' \
+	  '  make gpu-down         stop the GPU control plane without deleting evidence' \
 	  '  make local-up         build and start the six local services' \
 	  '  make local-status     show local service health' \
 	  '  make local-stop       stop services while preserving containers and data' \
@@ -83,6 +95,46 @@ doctor-dev:
 
 doctor-kubernetes:
 	./scripts/check-environment.sh kubernetes
+
+gpu-install-host:
+	./scripts/gpu-install-host.sh
+
+gpu-create-cluster:
+	./scripts/gpu-create-cluster.sh
+
+gpu-preflight:
+	./scripts/gpu-preflight.sh
+
+gpu-prepare-cluster:
+	./scripts/gpu-prepare-cluster.sh
+
+gpu-configure-access:
+	./scripts/gpu-configure-access.sh
+
+gpu-configure-registry:
+	./scripts/gpu-configure-registry.sh
+
+gpu-build-images:
+	./scripts/gpu-build-images.sh
+
+gpu-render-config:
+	./scripts/gpu-render-config.sh
+
+gpu-up:
+	./scripts/gpu-stack.sh up
+
+gpu-status:
+	./scripts/gpu-stack.sh status
+
+gpu-smoke:
+	TGSRL_HARDWARE_DRIVER_CONFIG=$${TGSRL_HARDWARE_DRIVER_CONFIG:-configs/hardware/environment.json} \
+		uv run --frozen python scripts/gate-tools.py campaign-run \
+		--campaign configs/gates/e1-e8.json \
+		--reports-dir .cache/tgsrl/gpu-smoke \
+		--driver "$(GATE_CAMPAIGN_DRIVER)" --experiment E1
+
+gpu-down:
+	./scripts/gpu-stack.sh down
 
 local-up:
 	docker compose up -d --build --wait

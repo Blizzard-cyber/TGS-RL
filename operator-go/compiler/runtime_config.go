@@ -39,6 +39,7 @@ func normalizeRuntimeConfig(config RuntimeConfig) RuntimeConfig {
 			RegistryURL:        strings.TrimRight(strings.TrimSpace(config.Bootstrap.RegistryURL), "/"),
 			RegistrySigningKey: append([]byte(nil), config.Bootstrap.RegistrySigningKey...),
 			VerifyDeviceIDs:    config.Bootstrap.VerifyDeviceIDs,
+			HostNetwork:        config.Bootstrap.HostNetwork,
 		},
 	}
 	if normalized.RuntimeClass.Name == "" {

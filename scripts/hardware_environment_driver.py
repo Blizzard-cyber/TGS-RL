@@ -104,6 +104,7 @@ TARGET_FIELDS = frozenset(
         "fault_hooks",
         "operation_timeout_seconds",
         "poll_interval_seconds",
+        "variables",
     }
 )
 
@@ -252,6 +253,7 @@ class TargetConfig:
     fault_hooks: Mapping[str, Mapping[str, tuple[str, ...]]]
     timeout: float
     poll_interval: float
+    variables: Mapping[str, str]
 
 
 @dataclass(frozen=True, slots=True)
@@ -326,6 +328,15 @@ def load_config(path: Path) -> DriverConfig:
         if set(override) - TARGET_FIELDS:
             raise DriverError(f"targets.{experiment_id} contains unsupported fields")
         values = {**defaults, **override}
+        raw_variables = _mapping(
+            values.get("variables", {}), label=f"targets.{experiment_id}.variables"
+        )
+        variables = {
+            _string(key, label=f"targets.{experiment_id}.variables key"): _string(
+                value, label=f"targets.{experiment_id}.variables.{key}"
+            )
+            for key, value in raw_variables.items()
+        }
         namespace = _string(values.get("namespace"), label=f"targets.{experiment_id}.namespace")
         if len(namespace) > 63 or DNS_LABEL_PATTERN.fullmatch(namespace) is None:
             raise DriverError(f"targets.{experiment_id}.namespace is not a DNS label")
@@ -379,6 +390,7 @@ def load_config(path: Path) -> DriverConfig:
                 values.get("poll_interval_seconds", 2),
                 label="poll_interval_seconds",
             ),
+            variables=variables,
         )
     if not targets:
         raise DriverError("hardware environment config needs at least one target")
@@ -961,6 +973,7 @@ class HardwareEnvironmentDriver:
             "PHASE": str(request_value["phase"]),
             "ITERATION": str(request_value["iteration"]),
             "SEED": str(lock.get("seed", "")),
+            **target.variables,
         }
         job = _mapping(_expand_placeholders(template, variables), label="expanded job template")
         self._validate_job(job, request_value, target)
@@ -1830,6 +1843,14 @@ class HardwareEnvironmentDriver:
         scenario = _mapping(request_value.get("scenario"), label="request.scenario")
         expected = _mapping(scenario.get("workload"), label="scenario.workload")
         runtime = _mapping(job.get("runtime"), label="job.runtime")
+        image_digest = _string(runtime.get("imageDigest"), label="job.runtime.imageDigest")
+        image_reference = _string(runtime.get("artifactUri"), label="job.runtime.artifactUri")
+        if re.fullmatch(
+            r"sha256:[a-f0-9]{64}", image_digest
+        ) is None or not image_reference.endswith("@" + image_digest):
+            raise DriverError(
+                "job template must use a pullable immutable workload image ending in @imageDigest"
+            )
         field_map = {
             "framework": "framework",
             "execution_backend": "executionBackend",

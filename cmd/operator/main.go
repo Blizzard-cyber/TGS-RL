@@ -85,6 +85,7 @@ func run() error {
 	workerRegistryURL := flag.String("worker-registry-url", "", "managed-worker registry base URL reachable from workloads")
 	workerRegistrySigningKeyFile := flag.String("worker-registry-signing-key-file", "", "file containing the worker registry HMAC signing key")
 	workerVerifyDeviceIDs := flag.Bool("worker-verify-device-identities", false, "require bootstrap nvidia-smi UUID verification before registration")
+	workerHostNetwork := flag.Bool("worker-host-network", false, "run managed workers in the node network namespace; single-worker smoke use only")
 	workerBootstrapBinary := flag.String("worker-bootstrap-binary", "tgsrl-worker-bootstrap", "local bootstrap executable used by process mode")
 	processStateDir := flag.String("process-state-dir", "", "local process backend state and evidence directory")
 	var nodeSelector stringMapFlag
@@ -116,6 +117,7 @@ func run() error {
 			RegistryURL:        *workerRegistryURL,
 			RegistrySigningKey: registrySigningKey,
 			VerifyDeviceIDs:    *workerVerifyDeviceIDs,
+			HostNetwork:        *workerHostNetwork,
 		},
 	})
 	if err != nil {

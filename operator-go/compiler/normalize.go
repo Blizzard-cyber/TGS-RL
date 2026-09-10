@@ -52,10 +52,10 @@ func normalize(input CompileInput, runtimeConfig RuntimeConfig) (*normalizedInpu
 	if input.ManifestHasNoImageDigests() {
 		return nil, fmt.Errorf("runtime manifest must include at least one image digest")
 	}
-	if runtimeConfig.Bootstrap.Enabled || profile != GPUProfileNone {
+	if profile == GPUProfileKubernetesDRA {
 		image := primaryImage(input.RuntimeManifest)
 		if image == "" {
-			return nil, fmt.Errorf("accelerated or managed workload requires one workload oci_image artifact")
+			return nil, fmt.Errorf("DRA workload requires one workload oci_image artifact")
 		}
 		if len(input.RuntimeManifest.GetImageDigests()) != 1 || !strings.HasSuffix(image, "@"+input.RuntimeManifest.GetImageDigests()[0]) {
 			return nil, fmt.Errorf("workload image must end in the manifest sha256 digest")
@@ -188,6 +188,9 @@ func ValidateRuntimeConfig(config RuntimeConfig) (RuntimeConfig, error) {
 		return RuntimeConfig{}, fmt.Errorf("runtime class creation requires runtime class handler")
 	}
 	normalized := normalizeRuntimeConfig(config)
+	if normalized.Bootstrap.HostNetwork && !normalized.Bootstrap.Enabled {
+		return RuntimeConfig{}, fmt.Errorf("worker host networking requires worker bootstrap")
+	}
 	if normalized.Bootstrap.Enabled {
 		if normalized.Bootstrap.InstallerImage == "" || normalized.Bootstrap.RegistryURL == "" {
 			return RuntimeConfig{}, fmt.Errorf("worker bootstrap requires installer image and registry URL")

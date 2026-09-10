@@ -137,6 +137,7 @@ class VerlWorkerBridge:
     _sequence: int = 0
     _responses: dict[str, tuple[str, dict[str, Any]]] = field(default_factory=dict)
     _lock: Any = field(default_factory=threading.RLock, repr=False)
+    _mutation_lock: Any = field(default_factory=threading.Lock, repr=False)
     _shutdown: threading.Event = field(default_factory=threading.Event)
 
     def __post_init__(self) -> None:
@@ -188,24 +189,39 @@ class VerlWorkerBridge:
 
     def handle(self, request: dict[str, Any]) -> dict[str, Any]:
         """Apply one generation-fenced, idempotent worker request."""
-        with self._lock:
-            action = str(request.get("action", ""))
-            key = str(request.get("idempotency_key", ""))
-            sandbox_id = str(request.get("sandbox_id", ""))
-            generation = int(request.get("generation", 0))
-            if not action or not key:
-                return self._response(
-                    accepted=False, error="action and idempotency_key are required"
-                )
-            if action == "status":
+        action = str(request.get("action", ""))
+        key = str(request.get("idempotency_key", ""))
+        sandbox_id = str(request.get("sandbox_id", ""))
+        generation = int(request.get("generation", 0))
+        if not action or not key:
+            return self._response(accepted=False, error="action and idempotency_key are required")
+        if action == "status":
+            with self._lock:
                 if sandbox_id != self.identity.sandbox_id or generation != self.identity.generation:
                     return self._response(
                         accepted=False, error="worker identity or generation mismatch"
                     )
                 return self._response()
-            digest = hashlib.sha256(
-                json.dumps(request, sort_keys=True, separators=(",", ":")).encode()
-            ).hexdigest()
+        digest = hashlib.sha256(
+            json.dumps(request, sort_keys=True, separators=(",", ":")).encode()
+        ).hexdigest()
+
+        # Serialize mutations without holding the state lock while callbacks run.
+        # prepare_pause may wait for the training thread to publish an observation
+        # and enter its next safe point; both paths need _lock to emit trace/state.
+        with self._mutation_lock:
+            return self._handle_mutation(request, action, key, sandbox_id, generation, digest)
+
+    def _handle_mutation(
+        self,
+        request: dict[str, Any],
+        action: str,
+        key: str,
+        sandbox_id: str,
+        generation: int,
+        digest: str,
+    ) -> dict[str, Any]:
+        with self._lock:
             if key in self._responses:
                 previous_digest, previous_response = self._responses[key]
                 if previous_digest != digest:
@@ -233,13 +249,14 @@ class VerlWorkerBridge:
             except OSError as error:
                 self._responses.pop(key, None)
                 return self._response(accepted=False, error=f"persist mutation intent: {error}")
-            try:
-                response = self._apply(action, request)
-            except Exception as error:
-                response = self._response(
-                    accepted=False,
-                    error=f"worker mutation outcome is not confirmed: {error}",
-                )
+        try:
+            response = self._apply(action, request)
+        except Exception as error:
+            response = self._response(
+                accepted=False,
+                error=f"worker mutation outcome is not confirmed: {error}",
+            )
+        with self._lock:
             self._responses[key] = (digest, dict(response))
             try:
                 self._persist_state()
@@ -251,55 +268,79 @@ class VerlWorkerBridge:
 
     def _apply(self, action: str, request: dict[str, Any]) -> dict[str, Any]:
         if action == "prepare_pause":
-            self.safe_point = self.callbacks.prepare_pause()
-            if not self.safe_point:
+            safe_point = self.callbacks.prepare_pause()
+            with self._lock:
+                self.safe_point = safe_point
+            if not safe_point:
                 raise RuntimeError("worker did not reach a safe point")
-            self.ready = False
+            with self._lock:
+                self.ready = False
         elif action == "checkpoint":
-            if not self.safe_point:
+            with self._lock:
+                safe_point = self.safe_point
+            if not safe_point:
                 raise RuntimeError("checkpoint requires a safe point")
             requested = str(request.get("checkpoint_ref", ""))
-            self.checkpoint_ref = self.callbacks.checkpoint(requested)
+            checkpoint_ref = self.callbacks.checkpoint(requested)
+            with self._lock:
+                self.checkpoint_ref = checkpoint_ref
         elif action in {"pause", "sleep"}:
-            if not self.safe_point:
+            with self._lock:
+                safe_point = self.safe_point
+            if not safe_point:
                 raise RuntimeError(f"{action} requires a safe point")
             if action == "pause":
                 self.callbacks.pause()
             else:
                 self.callbacks.sleep()
-            self.state, self.ready = ("paused" if action == "pause" else "sleeping"), False
+            with self._lock:
+                self.state, self.ready = ("paused" if action == "pause" else "sleeping"), False
         elif action == "offload":
-            if not self.safe_point or not self.checkpoint_ref:
+            with self._lock:
+                safe_point, checkpoint_ref = self.safe_point, self.checkpoint_ref
+            if not safe_point or not checkpoint_ref:
                 raise RuntimeError("offload requires a safe point and checkpoint")
             self.callbacks.offload()
-            self.state, self.offloaded, self.ready = "sleeping", True, False
+            with self._lock:
+                self.state, self.offloaded, self.ready = "sleeping", True, False
         elif action == "reload":
-            checkpoint_ref = str(request.get("checkpoint_ref", "")) or self.checkpoint_ref
+            with self._lock:
+                current_checkpoint_ref = self.checkpoint_ref
+            checkpoint_ref = str(request.get("checkpoint_ref", "")) or current_checkpoint_ref
             if not checkpoint_ref:
                 raise RuntimeError("reload requires a checkpoint reference")
             self.callbacks.reload(
                 checkpoint_ref, str(request.get("device_id", "")), str(request.get("profile", ""))
             )
-            self.identity.generation = int(request["generation"])
-            if request.get("device_id"):
-                self.identity.device_id = str(request["device_id"])
-            if request.get("binding_id"):
-                self.identity.binding_id = str(request["binding_id"])
-            if request.get("share") is not None:
-                self.identity.share = float(request["share"])
-            self.checkpoint_ref, self.offloaded, self.ready = checkpoint_ref, False, False
+            with self._lock:
+                self.identity.generation = int(request["generation"])
+                if request.get("device_id"):
+                    self.identity.device_id = str(request["device_id"])
+                if request.get("binding_id"):
+                    self.identity.binding_id = str(request["binding_id"])
+                if request.get("share") is not None:
+                    self.identity.share = float(request["share"])
+                self.checkpoint_ref, self.offloaded, self.ready = checkpoint_ref, False, False
         elif action == "resume":
             self.callbacks.resume()
-            self.state, self.safe_point, self.offloaded, self.ready = "running", False, False, True
+            with self._lock:
+                self.state, self.safe_point, self.offloaded, self.ready = (
+                    "running",
+                    False,
+                    False,
+                    True,
+                )
         elif action == "stop":
             self.callbacks.stop(bool(request.get("preserve_process", False)))
-            self.state, self.ready = "terminated", False
+            with self._lock:
+                self.state, self.ready = "terminated", False
         elif action == "weight_update":
             policy_version = str(request.get("policy_version", "")).strip()
             if not policy_version:
                 raise RuntimeError("weight_update requires a policy version")
             self.callbacks.update_policy(policy_version)
-            self.identity.policy_version = policy_version
+            with self._lock:
+                self.identity.policy_version = policy_version
         else:
             raise RuntimeError(f"unsupported veRL worker action {action!r}")
         self._emit(action)
@@ -325,9 +366,11 @@ class VerlWorkerBridge:
         batch_size: int = 0,
         component: str = "worker",
         display_name: str = "",
+        safe_point: bool | None = None,
     ) -> None:
         """Append one raw, scheduler-consumable quality observation."""
         with self._lock:
+            observed_safe_point = self.safe_point if safe_point is None else safe_point
             contract_observation = {
                 "policy_lag": policy_lag,
                 "sample_stale": sample_stale,
@@ -335,7 +378,7 @@ class VerlWorkerBridge:
                 "effective_sample_size": effective_sample_size,
                 "accepted_samples": accepted_samples,
                 "expected_samples": expected_samples,
-                "safe_point": self.safe_point,
+                "safe_point": observed_safe_point,
                 "policy_version": self.identity.policy_version,
             }
             emitted = self._emit(
@@ -351,6 +394,7 @@ class VerlWorkerBridge:
                 batch_size=batch_size,
                 component=component,
                 display_name=display_name,
+                safe_point=observed_safe_point,
                 contract_observation=contract_observation,
             )
             phase_id = self.identity.phase_id

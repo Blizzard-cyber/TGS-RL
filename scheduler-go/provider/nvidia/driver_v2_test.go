@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os/exec"
 	"reflect"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -474,6 +475,37 @@ func TestMIGDiscoveryRequiresCompleteLifecycleTransaction(t *testing.T) {
 	}
 	if discovery.Available || len(discovery.SupportedActions) != 0 || !strings.Contains(discovery.Reason, "transactional lifecycle") {
 		t.Fatalf("MIG discovery = %+v, want unavailable without lifecycle transaction", discovery)
+	}
+}
+
+func TestFullGPUModeDiscoversWholeDevicesWithoutStartingMPS(t *testing.T) {
+	observedAt := time.Date(2026, time.September, 9, 8, 0, 0, 0, time.UTC)
+	driver, err := NewLocalDriverV2(LocalDriverV2Options{
+		Inventory: &FakeInventoryBackend{Snapshots: []*InventorySnapshot{{
+			ObservedAt: observedAt, DriverVersion: "580.1.0",
+			Devices: []InventoryDevice{{UUID: "GPU-aaaa", Index: "0", MemoryBytes: 80 << 30, DriverVersion: "580.1.0"}},
+		}}},
+		PartitionMode: PartitionModeFull,
+		Runtime:       NewUnavailableRuntimeBackend("runtime control is not required for bind smoke"),
+		Binding:       noOpBindingBackend{},
+		Now:           func() time.Time { return observedAt },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	probe, err := driver.Probe(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !probe.Available || len(probe.Devices) != 1 || probe.Devices[0].GetDeviceId() != "GPU-aaaa" {
+		t.Fatalf("full GPU probe = %+v", probe)
+	}
+	if got := probe.Capabilities.GetAttributes()["partition_mode"]; got != "full" {
+		t.Fatalf("partition mode = %q, want full", got)
+	}
+	if got := probe.Capabilities.GetNames(); !slices.Equal(got, []string{CapabilityName}) {
+		t.Fatalf("full GPU capability names = %v, want one %q entry", got, CapabilityName)
 	}
 }
 

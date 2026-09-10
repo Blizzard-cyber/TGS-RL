@@ -89,7 +89,8 @@ gRPC server 使用 insecure transport，未提供 TLS、认证或授权；应只
 Runtime 根据 `RuntimeManifest` 选择四类 adapter：framework、execution backend、
 trainer 和 rollout engine。`fake`（以及其 `mock` 别名）用于本地可运行路径。
 
-下列名称已注册为依赖门控的边界 adapter：
+下列名称已注册为运行时边界 adapter。训练依赖属于 workload 镜像，不属于 Runtime
+控制面镜像：
 
 | 类型 | Adapter | Python 依赖 |
 |---|---|---|
@@ -98,9 +99,10 @@ trainer 和 rollout engine。`fake`（以及其 `mock` 别名）用于本地可�
 | Trainer | PyTorch | `torch` |
 | Rollout engine | vLLM、SGLang | `vllm`、`sglang` |
 
-这些 adapter 会校验 manifest、报告依赖可用性，并把 typed lifecycle 转换为结构化
-`LaunchSpec`。Adapter 层定义 direct command、Python module hook 和 API hook 等 bridge
-契约；依赖或目标缺失时显式返回 unavailable，而不是假成功。产品服务中的 `start` 只把
+这些 adapter 会校验 manifest 并把 typed lifecycle 转换为结构化 `LaunchSpec`。Adapter 层定义
+direct command、Python module hook 和 API hook 等 bridge 契约。具有明确 workload command
+的外部训练组合在 Runtime 准入时记录 `dependency_scope=workload_image`，不在控制面 import
+`verl/ray/torch/vllm`；bootstrap 在启动用户进程前用同一 Python 解释器验证这些模块。产品服务中的 `start` 只把
 unit 推进到 requested/starting、持久化 generation/幂等信息并发布调度 Intent；它不会在
 资源分配前从 Runtime 进程直接启动 manifest command。pause/resume/stop/terminate 由 Runtime
 转发到 Operator 的 generation-fenced backend control，最终 unit/sandbox 状态只由观察到的
@@ -108,7 +110,7 @@ unit 推进到 requested/starting、持久化 generation/幂等信息并发布�
 `ValidateRuntime` 会把任一所选 adapter 的 `UNAVAILABLE` 或 `UNSUPPORTED` 结果判为无效，
 且不会持久化该 manifest；`CompileRuntime` 会重复执行同一结构化能力检查，不能绕过准入。
 
-仅安装对应 Python 模块不足以启动训练。使用这些 Adapter 时必须同时提供可用的执行
+仅在 Runtime 镜像安装对应 Python 模块既不需要也不足以启动训练。使用这些 Adapter 时必须同时提供可用的执行
 bridge、分布式环境、镜像/命令和 GPU 资源控制；veRL 使用仓库内 bridge，但 worker 必须提供
 control socket 和实际训练 callback。缺少依赖或执行条件时请求明确失败。详细要求见
 [支持范围与限制](../reference/current-capabilities.md)。

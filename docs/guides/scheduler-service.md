@@ -211,6 +211,8 @@ resource/sandbox watch；执行 action 时先调用 Driver，再提交 Provider 
 因此默认 NVIDIA 方案只支持设备发现，不能分配 GPU 或运行训练。要执行资源动作，
 可显式启用 `-nvidia-driver-v2`。v2 已实现 Go 侧 inventory、MPS/MIG、binding、runtime
 command、事务、幂等、超时、回滚、重启发现、dry-run 和审计编排。仓库内
+默认分区模式是 `full`，只发布整卡 UUID 且不会启动 MPS；动态份额和 MIG 必须分别显式设置
+`-nvidia-partition-mode=mps` 或 `-nvidia-partition-mode=mig`。仓库内
 `tgsrl-nvidia-binding` 提供 binding 状态、generation fence、幂等 durable receipt 和重启
 发现；它不直接修改已启动进程的 GPU 可见性，实际设备注入仍由 Runtime/容器集成完成。
 仓库内 `tgsrl-nvidia-runtime` 提供 PID identity、generation fence、幂等 receipt、

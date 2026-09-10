@@ -502,8 +502,8 @@ func parseProbeDevices(output []byte) ([]*tgsrlv1.Device, string, error) {
 			DeviceId:     "nvidia-gpu-" + deviceIndex,
 			Kind:         tgsrlv1.DeviceKind_DEVICE_KIND_GPU,
 			Health:       tgsrlv1.DeviceHealth_DEVICE_HEALTH_READY,
-			Capacity:     &tgsrlv1.ResourceVector{AcceleratorUnits: 1, MemoryBytes: memoryBytes},
-			Allocatable:  &tgsrlv1.ResourceVector{AcceleratorUnits: 1, MemoryBytes: memoryBytes},
+			Capacity:     &tgsrlv1.ResourceVector{CpuMillis: ^uint64(0), AcceleratorUnits: 1, MemoryBytes: memoryBytes, EphemeralStorageBytes: ^uint64(0), NetworkBandwidthBps: ^uint64(0)},
+			Allocatable:  &tgsrlv1.ResourceVector{CpuMillis: ^uint64(0), AcceleratorUnits: 1, MemoryBytes: memoryBytes, EphemeralStorageBytes: ^uint64(0), NetworkBandwidthBps: ^uint64(0)},
 			Capabilities: cloneCapabilities(defaultCapabilities(true)),
 			Labels: map[string]string{
 				"provider": ProviderID,

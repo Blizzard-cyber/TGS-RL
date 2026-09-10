@@ -31,32 +31,37 @@ managed-worker bootstrap、Gateway/SDK/CLI、Console、全栈部署工件和硬�
 | Runtime/Trace/Replay | 已闭环于单机代码路径 | desired/observed 分离、typed observation、Replay 和 SQLite 恢复完整 |
 | Scheduler 与事务 | 已闭环 | admission/adaptive planner、约束、预算、reservation、receipt、补偿和恢复完整 |
 | CPU Mock / process E2E | 已验证 | 包括真实子进程、worker bootstrap、Unix socket 和服务重启 |
-| NVIDIA Provider/helper | 代码完成，待硬件验证 | inventory、MPS/MIG/runtime/binding helper 与 worker registry 已实现 |
+| NVIDIA Provider/helper | 代码完成，待硬件验证 | Full GPU/MPS/MIG inventory、runtime/binding helper 与 worker registry 已实现 |
 | Kubernetes/DRA | 代码主链完成，待环境验证 | Full GPU/MIG typed inventory、UUID selector、allocation readback 与 cleanup RBAC 已实现 |
 | 硬件 Campaign | runner 和 driver 主体已实现 | 仍需环境输入 digest/集群 identity 加固、目标 workload、hook 和真实 E1–E8 证据 |
 | 生产发布 | 尚未准入 | 无真实 GPU/MIG/veRL 证据；E3–E8 有 9 条阈值待标定 |
 
+这里的“代码主链完成”表示仓库已经提供可执行入口，BOM 中的 `gpu_stack_integrated` 在真实
+E1 证据产出前仍保持 `false`，避免把静态集成误写成硬件集成已经通过。
+
 CPU/Mock 主链没有发现新的 P0 结构断点。Kubernetes backend cleanup 所需的 Workload、
 ResourceClaim 和 JobRunBundle 最小 `delete` 权限已经同时进入 Helm、原生 manifest 和部署契约测试。
-硬件证据链仍有一个 P0：environment config、Job template、action/fault hook 和最终渲染
-workload 尚未进入锁定 digest；当前 `host_hash` 也是 runner 主机而不是目标集群 identity。缺少这些
-字段时，报告不能证明复跑使用了同一集群和同一 workload。除此之外，发布层面的阻塞项是：
+仓库现已提供单机 E1 的环境模板、GPU smoke workload、安装/预检/部署脚本，并要求
+workload 使用可拉取的 `repository@sha256:...`。这使首次 Full GPU 全链路验证具备可执行入口，
+但真实 GPU 证据仍必须在目标机生成。完整 E1–E8 的环境 config、动作/故障 hook 和最终渲染
+workload digest 仍需要随实验锁定；当前 `host_hash` 也仍是 runner 主机而不是完整集群 identity。
+除此之外，发布层面的阻塞项是：
 
-- 在目标集群提供真实 workload Job 模板和容器内 trace 导出器；
+- 按 [单机 GPU 全链路 Smoke](guides/gpu-smoke.md) 执行 E1 并归档证据；
 - 配置 E2 rebind 的 Scheduler-observation hook；
 - 为 E4–E8 配置动作或故障 hook，并证明它们作用于真实 worker/环境；
 - 依次执行 E1 Full GPU、E2 MIG，再运行 E3–E8；
 - 使用真实数据评审并提交 E3–E8 的 9 条阈值；
-- 为真实 veRL/Ray/PyTorch/vLLM、MPS 和多节点故障恢复形成证据。
+- 为完整模型的真实 veRL/Ray/PyTorch/vLLM、MPS 和多节点故障恢复形成证据；E1 只覆盖最小 adapter workload。
 
 ### 1.2 Review 发现与优先级
 
 | 级别 | 发现 | 影响与处置 |
 |---|---|---|
 | P0 验证阻塞 | 没有真实 E1–E8 运行；Hardware Validation workflow 当前运行记录为 0 | 代码不能被表述为硬件验证通过；先执行 E1/E2 |
-| P0 验证阻塞 | 仓库不能提供目标 workload、E2 observation hook 和 E4–E8 action/fault hook | 这些是环境特定集成，不应写死在核心代码；受保护环境必须配置并审计 |
+| P0 验证阻塞 | 仓库只提供 E1 最小 CUDA/veRL adapter workload，尚无完整训练 workload、E2 observation hook 和 E4–E8 action/fault hook | E1 smoke 可复现；其余是环境与实验特定集成，受保护环境必须配置并审计 |
 | P0 验证阻塞 | E3–E8 有 9 条阈值未标定 | 保持 `BLOCKED`；只读 calibration report 不自动修改策略 |
-| P0 证据完整性 | hardware report 未锁定 environment config、Job template、hook 和 rendered workload digest，且 `host_hash` 不是集群身份 | 在正式 E1 前扩展 fingerprint/artifact；否则只能作为探索性 smoke |
+| P0 证据完整性 | E1 已锁定 workload image digest，但完整 campaign 尚未锁定 environment config、Job template、hook 和 cluster identity | 首轮仅作为流程 smoke；正式实验前扩展 fingerprint/artifact |
 | 已关闭 | `KubernetesBackend.Cleanup` 所需的 Workload、ResourceClaim、JobRunBundle `delete` 权限 | Helm 与原生 manifest 已补齐，部署 contract test 逐类约束 |
 | P1 生产阻塞 | 服务端点没有内建 TLS、用户认证、授权、租户隔离或限流 | 仅允许本机/隔离网络；生产前增加统一入口和服务间身份 |
 | P1 生产阻塞 | Job 只提供字符串环境变量，没有通用 Secret/ConfigMap 引用模型 | 依赖凭据的真实训练必须由 namespace/service account 或平台注入；后续应设计显式 secret refs |
@@ -787,7 +792,7 @@ identity、Scheduler plan、worker identity、动作、故障和节点集合。
 - Product E2E 和 Full-stack CPU Gate；
 - hardware driver 的 fake Gateway/kubectl 原子合约。
 
-尚未验证：真实 CUDA、Full GPU DRA、MIG DRA、MPS、真实 veRL 训练、跨节点 E8。
+尚未验证：真实 CUDA、Full GPU DRA、MIG DRA、MPS、完整模型的真实 veRL 训练、跨节点 E8。
 
 ## 15. 源码地图
 
@@ -907,7 +912,8 @@ resume、stop、observation。只有实际 callback 成功才能推进 observed 
 - `make gate-cpu-integration` 和 Product E2E 通过；
 - Helm 使用不可变镜像 digest，签名 key、PVC、NetworkPolicy 配置完成；
 - 目标集群 Kueue、DRA API、DeviceClass、ResourceSlice 和 RBAC preflight 通过；
-- workload template 是真实 veRL/Ray/PyTorch/vLLM 入口，并输出合规 worker trace；
+- E1 workload 使用锁定的 veRL/Ray/PyTorch/vLLM 依赖、真实 CUDA 与最小 adapter trainer，并输出合规 worker trace；
+- E3–E8 再切换到完整模型训练入口，不能用 E1 smoke 结果代替训练收益或收敛证据；
 - evidence 固化 environment config、Job template、hook、rendered Job 和 image digest，并记录目标
   cluster identity；
 - hardware config 强制使用显式 kube context；cleanup 使用 UID/resourceVersion precondition；

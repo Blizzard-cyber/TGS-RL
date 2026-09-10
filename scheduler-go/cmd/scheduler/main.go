@@ -249,7 +249,7 @@ func parseArgs(argv []string) (*cliArgs, error) {
 	stateDirectory := fs.String("state-dir", ".tmp/scheduler-state", "durable scheduler state directory")
 	metricsAddress := fs.String("metrics-listen", "127.0.0.1:9090", "Prometheus metrics listen address; empty disables")
 	nvidiaDriverV2 := fs.Bool("nvidia-driver-v2", false, "use the NVIDIA Driver v2 backend")
-	nvidiaPartitionMode := fs.String("nvidia-partition-mode", string(nvidiaprovider.PartitionModeMPS), "NVIDIA Driver v2 partition mode: mps or mig")
+	nvidiaPartitionMode := fs.String("nvidia-partition-mode", string(nvidiaprovider.PartitionModeFull), "NVIDIA Driver v2 partition mode: full, mps, or mig")
 	nvidiaDryRun := fs.Bool("nvidia-dry-run", false, "plan NVIDIA Driver v2 mutations without applying them")
 	nvidiaCommandTimeout := fs.Duration("nvidia-command-timeout", 15*time.Second, "NVIDIA Driver v2 command timeout")
 	nvidiaBindingHelper := fs.String("nvidia-binding-helper", "tgsrl-nvidia-binding", "NVIDIA binding helper executable")
@@ -267,7 +267,7 @@ func parseArgs(argv []string) (*cliArgs, error) {
 	}
 	if *nvidiaDriverV2 {
 		mode := nvidiaprovider.PartitionMode(*nvidiaPartitionMode)
-		if mode != nvidiaprovider.PartitionModeMPS && mode != nvidiaprovider.PartitionModeMIG {
+		if mode != nvidiaprovider.PartitionModeFull && mode != nvidiaprovider.PartitionModeMPS && mode != nvidiaprovider.PartitionModeMIG {
 			return nil, fmt.Errorf("unsupported NVIDIA partition mode %q", *nvidiaPartitionMode)
 		}
 		if *nvidiaCommandTimeout <= 0 {

@@ -17,14 +17,15 @@
       "properties": {
         "workerBootstrap": {
           "type": "object",
-          "required": ["enabled", "installerImage", "registryURL", "registrySigningKeySecret", "registrySigningKeyKey", "verifyDeviceIdentities"],
+          "required": ["enabled", "installerImage", "registryURL", "registrySigningKeySecret", "registrySigningKeyKey", "verifyDeviceIdentities", "hostNetwork"],
           "properties": {
             "enabled": {"type": "boolean"},
             "installerImage": {"type": "string", "pattern": "^(|[^@[:space:]]+@sha256:[a-f0-9]{64})$"},
             "registryURL": {"type": "string", "pattern": "^(|https?://[^[:space:]]+)$"},
             "registrySigningKeySecret": {"type": "string", "pattern": "^(|[a-z0-9](?:[-a-z0-9.]*[a-z0-9])?)$"},
             "registrySigningKeyKey": {"type": "string", "minLength": 1},
-            "verifyDeviceIdentities": {"type": "boolean"}
+            "verifyDeviceIdentities": {"type": "boolean"},
+            "hostNetwork": {"type": "boolean"}
           },
           "additionalProperties": false
         }

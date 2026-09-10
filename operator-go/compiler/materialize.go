@@ -11,6 +11,11 @@ import (
 	"github.com/Blizzard-cyber/TGS-RL/operator-go/api"
 )
 
+const (
+	WorkerBootstrapMountPath  = "/var/run/tgsrl-bootstrap"
+	WorkerBootstrapBinaryPath = WorkerBootstrapMountPath + "/tgsrl-worker-bootstrap"
+)
+
 func buildBundle(input *normalizedInput) (*api.Bundle, error) {
 	zeroBackoff := int32(0)
 	labels := buildLabels(input)
@@ -206,18 +211,16 @@ func configureWorkerBootstrap(template *api.PodTemplateSpec, input *normalizedIn
 	}
 	const (
 		volumeName = "tgsrl-bootstrap"
-		mountPath  = "/opt/tgsrl"
-		binaryPath = mountPath + "/tgsrl-worker-bootstrap"
 	)
 	main := &template.Spec.Containers[0]
 	workingDirectory := main.WorkingDir
 	workload := append([]string(nil), main.Command...)
 	workload = append(workload, main.Args...)
-	main.Command = []string{binaryPath}
+	main.Command = []string{WorkerBootstrapBinaryPath}
 	main.Args = []string{"--listen", "0.0.0.0:50092", "--"}
 	main.Args = append(main.Args, workload...)
 	main.WorkingDir = ""
-	main.VolumeMounts = append(main.VolumeMounts, api.VolumeMount{Name: volumeName, MountPath: mountPath, ReadOnly: true})
+	main.VolumeMounts = append(main.VolumeMounts, api.VolumeMount{Name: volumeName, MountPath: WorkerBootstrapMountPath, ReadOnly: true})
 	main.Ports = append(main.Ports, api.ContainerPort{Name: "tgsrl-control", ContainerPort: 50092, Protocol: "TCP"})
 	main.ReadinessProbe = &api.Probe{HTTPGet: &api.HTTPGetAction{Path: "/readyz", Port: 50092}, PeriodSeconds: 2, TimeoutSeconds: 1, FailureThreshold: 3, SuccessThreshold: 1}
 	main.Env = append(main.Env,
@@ -237,10 +240,14 @@ func configureWorkerBootstrap(template *api.PodTemplateSpec, input *normalizedIn
 		Name:         "install-tgsrl-bootstrap",
 		Image:        bootstrap.InstallerImage,
 		Command:      []string{"/usr/local/bin/tgsrl-worker-bootstrap"},
-		Args:         []string{"install", "--target", binaryPath},
-		VolumeMounts: []api.VolumeMount{{Name: volumeName, MountPath: mountPath}},
+		Args:         []string{"install", "--target", WorkerBootstrapBinaryPath},
+		VolumeMounts: []api.VolumeMount{{Name: volumeName, MountPath: WorkerBootstrapMountPath}},
 	}}
 	template.Spec.SecurityContext = &api.PodSecurityContext{FSGroup: 65532, FSGroupChangePolicy: "OnRootMismatch"}
+	if bootstrap.HostNetwork {
+		template.Spec.HostNetwork = true
+		template.Spec.DNSPolicy = "ClusterFirstWithHostNet"
+	}
 	template.Spec.Volumes = []api.Volume{{Name: volumeName, EmptyDir: &api.EmptyDirVolumeSource{}}}
 	return nil
 }

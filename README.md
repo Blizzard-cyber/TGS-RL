@@ -319,6 +319,36 @@ make test
 | `make gate-cpu-integration` | 六服务、真实子进程、worker 回执与多源 Trace |
 | `make test-console-browser` | 八条 Console 路由与多宽度浏览器 smoke |
 
+## GPU 机器上的第一次全链路验证
+
+项目提供一条独立于 CPU Mock 的单机 Full GPU smoke 路径。它会验证 Scheduler 选择的
+GPU UUID 被 NVIDIA DRA 精确兑现，真实 CUDA worker 经 bootstrap 注册并上报 Trace。
+
+```bash
+# 先确认机器提供 NVIDIA 580.95.05+ 驱动。仅在缺少下列组件时打开相应安装开关。
+TGSRL_INSTALL_DOCKER=1 TGSRL_INSTALL_NVIDIA_TOOLKIT=1 make gpu-install-host
+make gpu-create-cluster
+make gpu-prepare-cluster
+make gpu-configure-access
+
+export TGSRL_IMAGE_REGISTRY=registry.example.com/your-user/tgsrl
+export DOCKER_CONFIG=$PWD/.cache/tgsrl/docker
+mkdir -p "$DOCKER_CONFIG"
+docker login registry.example.com
+make gpu-build-images
+make gpu-configure-registry
+
+make gpu-render-config
+set -a; source .cache/tgsrl/gpu-runtime.env; set +a
+make gpu-preflight
+make gpu-up
+make gpu-smoke
+```
+
+完整前置条件、每一步通过标准和排障表见
+[单机 GPU 全链路 Smoke](docs/guides/gpu-smoke.md)。首轮仅验证 E1（单节点 Full GPU），
+不把该结果解释为 MIG/MPS、多节点、性能收益或毕业实验结论。
+
 Kubernetes 集成还需要 Docker、kubectl 和 minikube，使用 `make doctor-kubernetes` 检查。
 完整开发说明见[维护者指南](docs/maintainers/development.md)。
 

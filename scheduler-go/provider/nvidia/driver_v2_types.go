@@ -30,8 +30,9 @@ type backendHandshake struct {
 type PartitionMode string
 
 const (
-	PartitionModeMPS PartitionMode = "mps"
-	PartitionModeMIG PartitionMode = "mig"
+	PartitionModeFull PartitionMode = "full"
+	PartitionModeMPS  PartitionMode = "mps"
+	PartitionModeMIG  PartitionMode = "mig"
 )
 
 // InventoryDevice is one physical GPU observation keyed by its stable UUID.
@@ -458,7 +459,7 @@ func v2ActionError(action *tgsrlv1.Action, code, message string, cause error) er
 
 func validatePartitionMode(mode PartitionMode) error {
 	switch mode {
-	case PartitionModeMPS, PartitionModeMIG:
+	case PartitionModeFull, PartitionModeMPS, PartitionModeMIG:
 		return nil
 	default:
 		return fmt.Errorf("%w: unsupported nvidia partition mode %q", base.ErrInvalidArgument, mode)

@@ -1,0 +1,40 @@
+{
+  "displayName": "tgsrl-gpu-smoke",
+  "protocolVersion": "v0.3",
+  "algorithm": "grpo",
+  "runtime": {
+    "framework": "verl",
+    "frameworkVersion": "0.9.0",
+    "executionBackend": "ray",
+    "executionBackendVersion": "2.58.0",
+    "trainer": "pytorch",
+    "trainerVersion": "2.13.0",
+    "rolloutEngine": "vllm",
+    "rolloutEngineVersion": "0.28.0",
+    "imageDigest": "${WORKLOAD_IMAGE_DIGEST}",
+    "artifactUri": "${WORKLOAD_IMAGE}",
+    "compatibilityProfile": "verl-ray-pytorch-vllm-nvidia",
+    "command": ["python3.12"],
+    "args": ["/opt/tgsrl/scripts/gpu-smoke-workload.py", "--iterations", "20"]
+  },
+  "executionContract": {
+    "contractId": "contract-sha256-d8b4ad4bb087c1441691a6b0a0c805ec2a98a78fe0f86050149431d3638d2aa0",
+    "version": "1.0.0",
+    "phaseGraph": {
+      "phases": [{"phaseId": "decode", "displayName": "GPU Smoke", "kind": "PHASE_KIND_DECODE", "parallelism": 1, "maxAttempts": 1}],
+      "entryPhaseIds": ["decode"]
+    },
+    "commitPolicy": {"mode": "COMMIT_MODE_ALL_OR_NOTHING", "minimumSuccessfulUnits": 1, "maxRetries": 1, "commitTimeout": "60s"},
+    "backpressurePolicy": {"mode": "BACKPRESSURE_MODE_BLOCK_PRODUCER", "lowWatermark": "1", "highWatermark": "2", "maximumBufferLevel": "4", "stallTimeout": "60s"},
+    "safePointPolicy": {"enabled": true, "trigger": "SAFE_POINT_TRIGGER_EXPLICIT", "maximumWait": "30s", "requiredPhaseIds": ["decode"]},
+    "capabilities": {"checkpointRestore": true, "policyHotSwap": true}
+  },
+  "resourcesPerUnit": {"cpuMillis": "2000", "memoryBytes": "8589934592", "acceleratorUnits": 1},
+  "requiredCapabilities": {"names": ["nvidia-gpu"], "algorithms": ["grpo"], "rolloutModes": ["partially_async"], "supportedActions": ["bind"]},
+  "desiredUnits": 1,
+  "priority": 1,
+  "queue": "default",
+  "rolloutMode": "ROLLOUT_MODE_PARTIALLY_ASYNC",
+  "policyRef": "1",
+  "dataKind": "DATA_KIND_LIVE"
+}

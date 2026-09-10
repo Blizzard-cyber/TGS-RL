@@ -6,8 +6,12 @@
     "namespace": "tgsrl-workloads",
     "kube_context": "tgsrl-validation",
     "kubectl": "kubectl",
-    "job_template": "/etc/tgsrl/hardware/verl-job.json",
-    "trace_command": ["/opt/tgsrl/bin/export-gate-trace", "--format", "ndjson"],
+    "job_template": "./verl-job.example.json",
+    "variables": {
+      "WORKLOAD_IMAGE": "registry.example.com/tgsrl/gpu-smoke@sha256:replace-with-64-hex-characters",
+      "WORKLOAD_IMAGE_DIGEST": "sha256:replace-with-64-hex-characters"
+    },
+    "trace_command": ["sh", "-c", "test -f /tmp/tgsrl/verl.ndjson && cat /tmp/tgsrl/verl.ndjson"],
     "operation_timeout_seconds": 1800,
     "poll_interval_seconds": 2
   },

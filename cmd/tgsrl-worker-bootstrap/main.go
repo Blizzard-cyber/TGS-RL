@@ -44,6 +44,7 @@ type config struct {
 	mpsPIDDirectory  string
 	verifyDevices    bool
 	deviceCommand    string
+	requiredModules  []string
 	registrationWait time.Duration
 	controlTimeout   time.Duration
 	shutdownWait     time.Duration
@@ -180,6 +181,8 @@ func parseConfig(argv []string) (config, error) {
 	fs.StringVar(&cfg.mpsPIDDirectory, "mps-pid-dir", env("TGSRL_NVIDIA_MPS_PID_DIR"), "optional directory for generation-fenced MPS server PID publication")
 	fs.BoolVar(&cfg.verifyDevices, "verify-device-identities", envBool("TGSRL_VERIFY_DEVICE_IDENTITIES"), "verify allocated UUIDs with nvidia-smi")
 	fs.StringVar(&cfg.deviceCommand, "device-command", firstNonEmpty(env("TGSRL_DEVICE_IDENTITY_COMMAND"), "nvidia-smi"), "device identity executable")
+	var requiredModules string
+	fs.StringVar(&requiredModules, "required-python-modules", env("TGSRL_REQUIRED_PYTHON_MODULES"), "comma-separated Python modules required by the workload image")
 	fs.DurationVar(&cfg.registrationWait, "registration-timeout", 30*time.Second, "registration and control readiness timeout")
 	fs.DurationVar(&cfg.controlTimeout, "control-timeout", 30*time.Second, "maximum duration of one cooperative worker request")
 	fs.DurationVar(&cfg.shutdownWait, "shutdown-timeout", 30*time.Second, "time to wait before escalating a forwarded termination signal")
@@ -190,6 +193,7 @@ func parseConfig(argv []string) (config, error) {
 		return config{}, errors.New("bootstrap requires registry URL/token, advertise host, and positive timeouts")
 	}
 	cfg.command = append([]string(nil), argv[separator+1:]...)
+	cfg.requiredModules = splitCSV(requiredModules)
 	return cfg, nil
 }
 
@@ -202,6 +206,9 @@ func runWorker(cfg config) error {
 	}
 	worker, err := workerFromEnvironment()
 	if err != nil {
+		return err
+	}
+	if err := verifyWorkloadDependencies(cfg.command, cfg.requiredModules); err != nil {
 		return err
 	}
 	if cfg.verifyDevices {
@@ -378,6 +385,39 @@ func runWorker(cfg config) error {
 	}
 	if exitCode != 0 {
 		return fmt.Errorf("workload exited with code %d", exitCode)
+	}
+	return nil
+}
+
+func verifyWorkloadDependencies(command, modules []string) error {
+	if len(modules) == 0 {
+		return nil
+	}
+	if len(command) == 0 {
+		return errors.New("workload command is required for dependency verification")
+	}
+	python := command[0]
+	base := strings.ToLower(filepath.Base(python))
+	if !strings.HasPrefix(base, "python") {
+		return errors.New("TGSRL_REQUIRED_PYTHON_MODULES requires a Python workload command")
+	}
+	seen := make(map[string]struct{}, len(modules))
+	for _, module := range modules {
+		if !regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_.]*$`).MatchString(module) {
+			return fmt.Errorf("invalid required Python module %q", module)
+		}
+		if _, duplicate := seen[module]; duplicate {
+			continue
+		}
+		seen[module] = struct{}{}
+		probe := exec.Command(python, "-c", "import importlib.util,sys; sys.exit(0 if importlib.util.find_spec(sys.argv[1]) else 1)", module)
+		if output, err := probe.CombinedOutput(); err != nil {
+			detail := strings.TrimSpace(string(output))
+			if detail != "" {
+				return fmt.Errorf("workload image is missing Python module %q: %s", module, detail)
+			}
+			return fmt.Errorf("workload image is missing Python module %q", module)
+		}
 	}
 	return nil
 }

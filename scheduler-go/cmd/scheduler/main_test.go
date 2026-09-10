@@ -23,6 +23,7 @@ import (
 	"github.com/Blizzard-cyber/TGS-RL/scheduler-go/persistence"
 	"github.com/Blizzard-cyber/TGS-RL/scheduler-go/protection"
 	"github.com/Blizzard-cyber/TGS-RL/scheduler-go/provider"
+	nvidiaprovider "github.com/Blizzard-cyber/TGS-RL/scheduler-go/provider/nvidia"
 	"github.com/Blizzard-cyber/TGS-RL/scheduler-go/scheduler"
 	"github.com/Blizzard-cyber/TGS-RL/scheduler-go/state"
 	"google.golang.org/grpc"
@@ -254,6 +255,16 @@ func TestParseArgsReadsConfigFlags(t *testing.T) {
 	}
 	if args.ListenAddress != "127.0.0.1:6000" || args.ConfigRoot != "/tmp/repo" || args.ManifestPath != "configs/manifest.yaml" || args.FallbackFlag != "noop" || args.StateDirectory != "/tmp/state" || args.MetricsAddress != "127.0.0.1:0" || !args.NVIDIADriverV2 || args.NVIDIABindingHelper != "/opt/tgsrl/bin/tgsrl-nvidia-binding" || args.NVIDIABindingState != "/var/lib/tgsrl/bindings.json" || args.NVIDIAMPSPIDDirectory != "/run/tgsrl/mps" || args.NVIDIARuntimeHelper != "/opt/tgsrl/bin/tgsrl-nvidia-runtime" || args.NVIDIARuntimeState != "/var/lib/tgsrl/runtime.json" || args.NVIDIAMIGHelper != "/opt/tgsrl/bin/tgsrl-nvidia-mig" {
 		t.Fatalf("parseArgs() = %#v", args)
+	}
+}
+
+func TestParseArgsDefaultsToFullGPUWithoutStartingMPS(t *testing.T) {
+	args, err := parseArgs([]string{"-nvidia-driver-v2"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if args.NVIDIAPartitionMode != string(nvidiaprovider.PartitionModeFull) {
+		t.Fatalf("NVIDIAPartitionMode = %q, want full", args.NVIDIAPartitionMode)
 	}
 }
 

@@ -282,26 +282,267 @@
     "SPDXRef-Package-npm-yocto-queue-0.1.0",
     "SPDXRef-Package-npm-zod-4.5.4",
     "SPDXRef-Package-npm-zod-validation-error-4.0.2",
+    "SPDXRef-Package-pypi-absl-py-2.5.0-gpu-workload",
+    "SPDXRef-Package-pypi-accelerate-1.15.0-gpu-workload",
+    "SPDXRef-Package-pypi-agent-detector-2.0.0-gpu-workload",
+    "SPDXRef-Package-pypi-aiohappyeyeballs-2.7.1-gpu-workload",
+    "SPDXRef-Package-pypi-aiohttp-3.14.3-gpu-workload",
+    "SPDXRef-Package-pypi-aiohttp-cors-0.8.1-gpu-workload",
+    "SPDXRef-Package-pypi-aiosignal-1.4.0-gpu-workload",
+    "SPDXRef-Package-pypi-annotated-doc-0.0.5-gpu-workload",
+    "SPDXRef-Package-pypi-annotated-types-0.8.0-gpu-workload",
+    "SPDXRef-Package-pypi-anthropic-1.4.0-gpu-workload",
+    "SPDXRef-Package-pypi-antlr4-python3-runtime-4.9.3-gpu-workload",
+    "SPDXRef-Package-pypi-anyio-4.15.1-gpu-workload",
+    "SPDXRef-Package-pypi-apache-tvm-ffi-0.1.11-gpu-workload",
+    "SPDXRef-Package-pypi-astor-0.8.1-gpu-workload",
+    "SPDXRef-Package-pypi-attrs-26.1.0-gpu-workload",
+    "SPDXRef-Package-pypi-blake3-1.0.9-gpu-workload",
+    "SPDXRef-Package-pypi-cachetools-7.1.8-gpu-workload",
+    "SPDXRef-Package-pypi-cbor2-6.1.4-gpu-workload",
+    "SPDXRef-Package-pypi-certifi-2026.7.22-gpu-workload",
+    "SPDXRef-Package-pypi-cffi-2.1.1-gpu-workload",
+    "SPDXRef-Package-pypi-charset-normalizer-3.5.1-gpu-workload",
+    "SPDXRef-Package-pypi-click-8.5.0-gpu-workload",
+    "SPDXRef-Package-pypi-cloudpickle-3.1.2-gpu-workload",
+    "SPDXRef-Package-pypi-codetiming-1.4.0-gpu-workload",
     "SPDXRef-Package-pypi-colorama-0.4.6",
+    "SPDXRef-Package-pypi-colorful-0.5.8-gpu-workload",
+    "SPDXRef-Package-pypi-compressed-tensors-0.17.0-gpu-workload",
+    "SPDXRef-Package-pypi-cryptography-50.0.1-gpu-workload",
+    "SPDXRef-Package-pypi-cuda-bindings-13.4.1-gpu-workload",
+    "SPDXRef-Package-pypi-cuda-core-1.2.0-gpu-workload",
+    "SPDXRef-Package-pypi-cuda-pathfinder-1.8.1-gpu-workload",
+    "SPDXRef-Package-pypi-cuda-python-13.4.1-gpu-workload",
+    "SPDXRef-Package-pypi-cuda-tile-1.6.0-gpu-workload",
+    "SPDXRef-Package-pypi-cuda-toolkit-13.0.3.0-gpu-workload",
+    "SPDXRef-Package-pypi-datasets-1.1.1-gpu-workload",
+    "SPDXRef-Package-pypi-depyf-0.20.0-gpu-workload",
+    "SPDXRef-Package-pypi-detect-installer-0.2.1-gpu-workload",
+    "SPDXRef-Package-pypi-dill-0.4.1-gpu-workload",
+    "SPDXRef-Package-pypi-distlib-0.4.3-gpu-workload",
+    "SPDXRef-Package-pypi-dnspython-2.8.0-gpu-workload",
+    "SPDXRef-Package-pypi-docstring-parser-0.18.0-gpu-workload",
+    "SPDXRef-Package-pypi-einops-0.8.2-gpu-workload",
+    "SPDXRef-Package-pypi-email-validator-2.3.0-gpu-workload",
+    "SPDXRef-Package-pypi-fastapi-0.136.3-gpu-workload",
+    "SPDXRef-Package-pypi-fastapi-cli-0.0.32-gpu-workload",
+    "SPDXRef-Package-pypi-fastapi-cloud-cli-0.25.0-gpu-workload",
+    "SPDXRef-Package-pypi-fastar-0.12.0-gpu-workload",
+    "SPDXRef-Package-pypi-fastsafetensors-0.4.0-gpu-workload",
+    "SPDXRef-Package-pypi-filelock-3.32.6-gpu-workload",
+    "SPDXRef-Package-pypi-flashinfer-python-0.6.16.post3-gpu-workload",
+    "SPDXRef-Package-pypi-frozenlist-1.8.0-gpu-workload",
+    "SPDXRef-Package-pypi-fsspec-2026.7.0-gpu-workload",
+    "SPDXRef-Package-pypi-google-api-core-2.36.0-gpu-workload",
+    "SPDXRef-Package-pypi-google-auth-2.58.0-gpu-workload",
+    "SPDXRef-Package-pypi-googleapis-common-protos-1.75.3-gpu-workload",
     "SPDXRef-Package-pypi-grpcio-1.83.1",
+    "SPDXRef-Package-pypi-grpcio-1.83.1-gpu-workload",
+    "SPDXRef-Package-pypi-h11-0.16.0-gpu-workload",
+    "SPDXRef-Package-pypi-hf-xet-1.6.0-gpu-workload",
+    "SPDXRef-Package-pypi-httpcore-1.0.9-gpu-workload",
+    "SPDXRef-Package-pypi-httpcore2-2.12.0-gpu-workload",
+    "SPDXRef-Package-pypi-httptools-0.8.0-gpu-workload",
+    "SPDXRef-Package-pypi-httpx-0.28.1-gpu-workload",
+    "SPDXRef-Package-pypi-httpx2-2.12.0-gpu-workload",
+    "SPDXRef-Package-pypi-huggingface-hub-1.30.0-gpu-workload",
+    "SPDXRef-Package-pypi-humming-kernels-0.1.12-gpu-workload",
+    "SPDXRef-Package-pypi-hydra-core-1.3.6-gpu-workload",
     "SPDXRef-Package-pypi-hypothesis-6.167.0",
+    "SPDXRef-Package-pypi-idna-3.19-gpu-workload",
+    "SPDXRef-Package-pypi-ijson-3.5.1-gpu-workload",
+    "SPDXRef-Package-pypi-importlib-metadata-9.0.1-gpu-workload",
     "SPDXRef-Package-pypi-iniconfig-2.3.0",
+    "SPDXRef-Package-pypi-interegular-0.3.3-gpu-workload",
+    "SPDXRef-Package-pypi-jinja2-3.1.6-gpu-workload",
+    "SPDXRef-Package-pypi-jiter-0.16.0-gpu-workload",
+    "SPDXRef-Package-pypi-jmespath-1.1.0-gpu-workload",
+    "SPDXRef-Package-pypi-jsonschema-4.26.0-gpu-workload",
+    "SPDXRef-Package-pypi-jsonschema-specifications-2025.9.1-gpu-workload",
+    "SPDXRef-Package-pypi-lark-1.2.2-gpu-workload",
     "SPDXRef-Package-pypi-librt-0.15.0",
+    "SPDXRef-Package-pypi-llguidance-1.7.6-gpu-workload",
+    "SPDXRef-Package-pypi-llvmlite-0.47.0-gpu-workload",
+    "SPDXRef-Package-pypi-lm-format-enforcer-0.11.3-gpu-workload",
+    "SPDXRef-Package-pypi-loguru-0.7.3-gpu-workload",
+    "SPDXRef-Package-pypi-markdown-3.10.3-gpu-workload",
+    "SPDXRef-Package-pypi-markdown-it-py-4.2.0-gpu-workload",
+    "SPDXRef-Package-pypi-markupsafe-3.0.3-gpu-workload",
+    "SPDXRef-Package-pypi-mcp-2.2.0-gpu-workload",
+    "SPDXRef-Package-pypi-mcp-types-2.2.0-gpu-workload",
+    "SPDXRef-Package-pypi-mdurl-0.1.2-gpu-workload",
+    "SPDXRef-Package-pypi-mistral-common-1.11.7-gpu-workload",
+    "SPDXRef-Package-pypi-ml-dtypes-0.6.0-gpu-workload",
+    "SPDXRef-Package-pypi-model-hosting-container-standards-0.1.16-gpu-workload",
+    "SPDXRef-Package-pypi-mpmath-1.3.0-gpu-workload",
+    "SPDXRef-Package-pypi-msgpack-1.2.2-gpu-workload",
+    "SPDXRef-Package-pypi-msgspec-0.21.1-gpu-workload",
+    "SPDXRef-Package-pypi-multidict-6.8.0-gpu-workload",
+    "SPDXRef-Package-pypi-multiprocess-0.70.19-gpu-workload",
     "SPDXRef-Package-pypi-mypy-1.20.2",
     "SPDXRef-Package-pypi-mypy-extensions-1.1.0",
+    "SPDXRef-Package-pypi-nccl4py-0.5.0-gpu-workload",
+    "SPDXRef-Package-pypi-networkx-3.6.1-gpu-workload",
+    "SPDXRef-Package-pypi-ninja-1.13.2-gpu-workload",
+    "SPDXRef-Package-pypi-numba-0.65.0-gpu-workload",
+    "SPDXRef-Package-pypi-numpy-2.3.5-gpu-workload",
+    "SPDXRef-Package-pypi-nvidia-cublas-13.1.1.3-gpu-workload",
+    "SPDXRef-Package-pypi-nvidia-cuda-cccl-13.3.4.2.1-gpu-workload",
+    "SPDXRef-Package-pypi-nvidia-cuda-crt-13.4.59-gpu-workload",
+    "SPDXRef-Package-pypi-nvidia-cuda-cupti-13.0.85-gpu-workload",
+    "SPDXRef-Package-pypi-nvidia-cuda-nvcc-13.4.59-gpu-workload",
+    "SPDXRef-Package-pypi-nvidia-cuda-nvdisasm-13.4.49-gpu-workload",
+    "SPDXRef-Package-pypi-nvidia-cuda-nvrtc-13.0.88-gpu-workload",
+    "SPDXRef-Package-pypi-nvidia-cuda-runtime-13.0.96-gpu-workload",
+    "SPDXRef-Package-pypi-nvidia-cudnn-cu13-9.20.0.48-gpu-workload",
+    "SPDXRef-Package-pypi-nvidia-cudnn-frontend-1.28.0-gpu-workload",
+    "SPDXRef-Package-pypi-nvidia-cufft-12.0.0.61-gpu-workload",
+    "SPDXRef-Package-pypi-nvidia-cufile-1.15.1.6-gpu-workload",
+    "SPDXRef-Package-pypi-nvidia-curand-10.4.0.35-gpu-workload",
+    "SPDXRef-Package-pypi-nvidia-cusolver-12.0.4.66-gpu-workload",
+    "SPDXRef-Package-pypi-nvidia-cusparse-12.6.3.3-gpu-workload",
+    "SPDXRef-Package-pypi-nvidia-cusparselt-cu13-0.8.1-gpu-workload",
+    "SPDXRef-Package-pypi-nvidia-cutlass-dsl-4.6.2-gpu-workload",
+    "SPDXRef-Package-pypi-nvidia-cutlass-dsl-libs-base-4.6.2-gpu-workload",
+    "SPDXRef-Package-pypi-nvidia-cutlass-dsl-libs-core-4.6.2-gpu-workload",
+    "SPDXRef-Package-pypi-nvidia-cutlass-dsl-libs-cu12-4.6.2-gpu-workload",
+    "SPDXRef-Package-pypi-nvidia-cutlass-dsl-libs-cu13-4.6.2-gpu-workload",
+    "SPDXRef-Package-pypi-nvidia-ml-py-13.610.43-gpu-workload",
+    "SPDXRef-Package-pypi-nvidia-nccl-cu13-2.29.7-gpu-workload",
+    "SPDXRef-Package-pypi-nvidia-nvjitlink-13.4.52-gpu-workload",
+    "SPDXRef-Package-pypi-nvidia-nvshmem-cu13-3.4.5-gpu-workload",
+    "SPDXRef-Package-pypi-nvidia-nvtx-13.0.85-gpu-workload",
+    "SPDXRef-Package-pypi-nvidia-nvvm-13.4.59-gpu-workload",
+    "SPDXRef-Package-pypi-nvtx-0.2.15-gpu-workload",
+    "SPDXRef-Package-pypi-omegaconf-2.3.1-gpu-workload",
+    "SPDXRef-Package-pypi-openai-3.11.0-gpu-workload",
+    "SPDXRef-Package-pypi-openai-harmony-0.0.8-gpu-workload",
+    "SPDXRef-Package-pypi-opencensus-0.11.4-gpu-workload",
+    "SPDXRef-Package-pypi-opencensus-context-0.1.3-gpu-workload",
+    "SPDXRef-Package-pypi-opencv-python-headless-5.0.0.93-gpu-workload",
+    "SPDXRef-Package-pypi-opentelemetry-api-1.44.0-gpu-workload",
+    "SPDXRef-Package-pypi-opentelemetry-exporter-otlp-1.44.0-gpu-workload",
+    "SPDXRef-Package-pypi-opentelemetry-exporter-otlp-proto-common-1.44.0-gpu-workload",
+    "SPDXRef-Package-pypi-opentelemetry-exporter-otlp-proto-grpc-1.44.0-gpu-workload",
+    "SPDXRef-Package-pypi-opentelemetry-exporter-otlp-proto-http-1.44.0-gpu-workload",
+    "SPDXRef-Package-pypi-opentelemetry-exporter-prometheus-0.65b0-gpu-workload",
+    "SPDXRef-Package-pypi-opentelemetry-proto-1.44.0-gpu-workload",
+    "SPDXRef-Package-pypi-opentelemetry-sdk-1.44.0-gpu-workload",
+    "SPDXRef-Package-pypi-opentelemetry-semantic-conventions-0.65b0-gpu-workload",
+    "SPDXRef-Package-pypi-opentelemetry-semantic-conventions-ai-0.5.1-gpu-workload",
+    "SPDXRef-Package-pypi-orjson-3.12.0-gpu-workload",
+    "SPDXRef-Package-pypi-outlines-core-0.2.14-gpu-workload",
+    "SPDXRef-Package-pypi-packaging-25.0-gpu-workload",
     "SPDXRef-Package-pypi-packaging-26.3",
+    "SPDXRef-Package-pypi-pandas-3.0.5-gpu-workload",
+    "SPDXRef-Package-pypi-partial-json-parser-0.2.1.1.post7-gpu-workload",
     "SPDXRef-Package-pypi-pathspec-1.1.1",
+    "SPDXRef-Package-pypi-peft-0.20.0-gpu-workload",
+    "SPDXRef-Package-pypi-pillow-12.3.0-gpu-workload",
+    "SPDXRef-Package-pypi-platformdirs-4.11.8-gpu-workload",
     "SPDXRef-Package-pypi-pluggy-1.6.0",
+    "SPDXRef-Package-pypi-prometheus-client-0.26.0-gpu-workload",
+    "SPDXRef-Package-pypi-prometheus-fastapi-instrumentator-8.1.0-gpu-workload",
+    "SPDXRef-Package-pypi-propcache-0.5.2-gpu-workload",
+    "SPDXRef-Package-pypi-proto-plus-1.28.4-gpu-workload",
     "SPDXRef-Package-pypi-protobuf-5.29.6",
+    "SPDXRef-Package-pypi-protobuf-6.33.6-gpu-workload",
+    "SPDXRef-Package-pypi-psutil-7.2.2-gpu-workload",
+    "SPDXRef-Package-pypi-py-cpuinfo-9.0.0-gpu-workload",
+    "SPDXRef-Package-pypi-py-spy-0.4.2-gpu-workload",
+    "SPDXRef-Package-pypi-pyarrow-25.0.1-gpu-workload",
+    "SPDXRef-Package-pypi-pyasn1-0.6.4-gpu-workload",
+    "SPDXRef-Package-pypi-pyasn1-modules-0.4.2-gpu-workload",
+    "SPDXRef-Package-pypi-pybase64-1.5.0-gpu-workload",
+    "SPDXRef-Package-pypi-pybind11-3.1.0-gpu-workload",
+    "SPDXRef-Package-pypi-pycountry-26.2.16-gpu-workload",
+    "SPDXRef-Package-pypi-pycparser-3.0-gpu-workload",
+    "SPDXRef-Package-pypi-pydantic-2.13.5-gpu-workload",
+    "SPDXRef-Package-pypi-pydantic-core-2.46.5-gpu-workload",
+    "SPDXRef-Package-pypi-pydantic-extra-types-2.11.1-gpu-workload",
+    "SPDXRef-Package-pypi-pydantic-settings-2.15.0-gpu-workload",
     "SPDXRef-Package-pypi-pygments-2.21.0",
+    "SPDXRef-Package-pypi-pygments-2.21.0-gpu-workload",
+    "SPDXRef-Package-pypi-pyjwt-2.13.0-gpu-workload",
+    "SPDXRef-Package-pypi-pylatexenc-2.11-gpu-workload",
+    "SPDXRef-Package-pypi-pynvvideocodec-2.0.4-gpu-workload",
     "SPDXRef-Package-pypi-pytest-8.4.2",
     "SPDXRef-Package-pypi-pytest-asyncio-0.26.0",
+    "SPDXRef-Package-pypi-python-dateutil-2.9.0.post0-gpu-workload",
+    "SPDXRef-Package-pypi-python-discovery-1.6.0-gpu-workload",
+    "SPDXRef-Package-pypi-python-dotenv-1.2.3-gpu-workload",
+    "SPDXRef-Package-pypi-python-json-logger-4.2.0-gpu-workload",
+    "SPDXRef-Package-pypi-python-multipart-0.0.32-gpu-workload",
+    "SPDXRef-Package-pypi-pyvers-0.1.0-gpu-workload",
+    "SPDXRef-Package-pypi-pyyaml-6.0.3-gpu-workload",
+    "SPDXRef-Package-pypi-pyzmq-27.2.0-gpu-workload",
+    "SPDXRef-Package-pypi-quack-kernels-0.6.4-gpu-workload",
+    "SPDXRef-Package-pypi-ray-2.58.0-gpu-workload",
+    "SPDXRef-Package-pypi-referencing-0.37.0-gpu-workload",
+    "SPDXRef-Package-pypi-regex-2026.9.10-gpu-workload",
+    "SPDXRef-Package-pypi-requests-2.34.2-gpu-workload",
+    "SPDXRef-Package-pypi-rich-15.0.0-gpu-workload",
+    "SPDXRef-Package-pypi-rich-toolkit-0.20.5-gpu-workload",
+    "SPDXRef-Package-pypi-rignore-0.8.1-gpu-workload",
+    "SPDXRef-Package-pypi-rpds-py-2026.6.3-gpu-workload",
     "SPDXRef-Package-pypi-ruff-0.16.5",
+    "SPDXRef-Package-pypi-safetensors-0.8.0-gpu-workload",
+    "SPDXRef-Package-pypi-sentencepiece-0.2.2-gpu-workload",
+    "SPDXRef-Package-pypi-sentry-sdk-2.69.1-gpu-workload",
+    "SPDXRef-Package-pypi-setproctitle-1.3.7-gpu-workload",
+    "SPDXRef-Package-pypi-setuptools-80.10.2-gpu-workload",
+    "SPDXRef-Package-pypi-shellingham-1.5.4-gpu-workload",
+    "SPDXRef-Package-pypi-six-1.17.0-gpu-workload",
+    "SPDXRef-Package-pypi-smart-open-8.0.1-gpu-workload",
+    "SPDXRef-Package-pypi-sniffio-1.3.1-gpu-workload",
     "SPDXRef-Package-pypi-sortedcontainers-2.4.0",
+    "SPDXRef-Package-pypi-sse-starlette-3.4.11-gpu-workload",
+    "SPDXRef-Package-pypi-starlette-1.6.0-gpu-workload",
+    "SPDXRef-Package-pypi-supervisor-4.3.0-gpu-workload",
+    "SPDXRef-Package-pypi-sympy-1.14.0-gpu-workload",
+    "SPDXRef-Package-pypi-tabulate-0.10.0-gpu-workload",
+    "SPDXRef-Package-pypi-tensorboard-2.21.0-gpu-workload",
+    "SPDXRef-Package-pypi-tensorboard-data-server-0.7.2-gpu-workload",
+    "SPDXRef-Package-pypi-tensordict-0.10.0-gpu-workload",
     "SPDXRef-Package-pypi-tgsrl-runtime-0.1.0",
+    "SPDXRef-Package-pypi-tiktoken-0.14.0-gpu-workload",
+    "SPDXRef-Package-pypi-tilelang-0.1.12-gpu-workload",
+    "SPDXRef-Package-pypi-tokenizers-0.22.2-gpu-workload",
+    "SPDXRef-Package-pypi-tokenspeed-mla-0.1.8-gpu-workload",
+    "SPDXRef-Package-pypi-tokenspeed-triton-3.8.10.post20260906-gpu-workload",
+    "SPDXRef-Package-pypi-torch-2.13.0-cu130-gpu-workload",
+    "SPDXRef-Package-pypi-torch-c-dlpack-ext-0.1.5-gpu-workload",
+    "SPDXRef-Package-pypi-torchaudio-2.11.0-cu130-gpu-workload",
+    "SPDXRef-Package-pypi-torchcodec-0.16.0-cu130-gpu-workload",
+    "SPDXRef-Package-pypi-torchdata-0.11.0-gpu-workload",
+    "SPDXRef-Package-pypi-torchvision-0.28.0-cu130-gpu-workload",
+    "SPDXRef-Package-pypi-tqdm-4.70.0-gpu-workload",
+    "SPDXRef-Package-pypi-transformers-5.10.4-gpu-workload",
+    "SPDXRef-Package-pypi-triton-3.7.1-gpu-workload",
+    "SPDXRef-Package-pypi-truststore-0.10.4-gpu-workload",
+    "SPDXRef-Package-pypi-typer-0.27.2-gpu-workload",
     "SPDXRef-Package-pypi-types-grpcio-1.83.0.20260730",
     "SPDXRef-Package-pypi-types-protobuf-6.32.1.20260221",
-    "SPDXRef-Package-pypi-typing-extensions-4.16.0"
+    "SPDXRef-Package-pypi-typing-extensions-4.16.0",
+    "SPDXRef-Package-pypi-typing-extensions-4.16.0-gpu-workload",
+    "SPDXRef-Package-pypi-typing-inspection-0.4.4-gpu-workload",
+    "SPDXRef-Package-pypi-urllib3-2.7.0-gpu-workload",
+    "SPDXRef-Package-pypi-uvicorn-0.52.4-gpu-workload",
+    "SPDXRef-Package-pypi-uvloop-0.22.1-gpu-workload",
+    "SPDXRef-Package-pypi-verl-0.9.0-gpu-workload",
+    "SPDXRef-Package-pypi-virtualenv-21.7.9-gpu-workload",
+    "SPDXRef-Package-pypi-vllm-0.28.0-gpu-workload",
+    "SPDXRef-Package-pypi-wandb-0.30.0-gpu-workload",
+    "SPDXRef-Package-pypi-watchfiles-1.2.0-gpu-workload",
+    "SPDXRef-Package-pypi-websockets-17.1-gpu-workload",
+    "SPDXRef-Package-pypi-werkzeug-3.1.8-gpu-workload",
+    "SPDXRef-Package-pypi-wrapt-2.4.0-gpu-workload",
+    "SPDXRef-Package-pypi-xgrammar-0.2.6-gpu-workload",
+    "SPDXRef-Package-pypi-xxhash-4.0.1-gpu-workload",
+    "SPDXRef-Package-pypi-yarl-1.24.5-gpu-workload",
+    "SPDXRef-Package-pypi-z3-solver-4.15.4.0-gpu-workload",
+    "SPDXRef-Package-pypi-zipp-4.1.0-gpu-workload"
   ],
   "documentNamespace": "https://github.com/Blizzard-cyber/TGS-RL/sbom/lockfiles",
   "lockfiles": [
@@ -320,6 +561,10 @@
     {
       "path": "console/package-lock.json",
       "sha256": "bc0671a3bb3a95b529a36a404c812bc5b2102e3b2472ba24340546895feec97f"
+    },
+    {
+      "path": "configs/hardware/gpu-requirements.lock",
+      "sha256": "9fc6bf9c48a3d12732b9b35ed69b99ca0833be9b7f79de6b9a6619c877d1a946"
     }
   ],
   "name": "TGS-RL-lockfile-sbom",
@@ -7449,6 +7694,486 @@
       "versionInfo": "4.0.2"
     },
     {
+      "SPDXID": "SPDXRef-Package-pypi-absl-py-2.5.0-gpu-workload",
+      "downloadLocation": "https://pypi.org/simple",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceLocator": "pkg:pypi/absl-py@2.5.0",
+          "referenceType": "purl"
+        }
+      ],
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "name": "absl-py",
+      "properties": {
+        "ecosystem": "pypi",
+        "scope": "gpu-workload"
+      },
+      "supplier": "NOASSERTION",
+      "versionInfo": "2.5.0"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-pypi-accelerate-1.15.0-gpu-workload",
+      "downloadLocation": "https://pypi.org/simple",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceLocator": "pkg:pypi/accelerate@1.15.0",
+          "referenceType": "purl"
+        }
+      ],
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "name": "accelerate",
+      "properties": {
+        "ecosystem": "pypi",
+        "scope": "gpu-workload"
+      },
+      "supplier": "NOASSERTION",
+      "versionInfo": "1.15.0"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-pypi-agent-detector-2.0.0-gpu-workload",
+      "downloadLocation": "https://pypi.org/simple",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceLocator": "pkg:pypi/agent-detector@2.0.0",
+          "referenceType": "purl"
+        }
+      ],
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "name": "agent-detector",
+      "properties": {
+        "ecosystem": "pypi",
+        "scope": "gpu-workload"
+      },
+      "supplier": "NOASSERTION",
+      "versionInfo": "2.0.0"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-pypi-aiohappyeyeballs-2.7.1-gpu-workload",
+      "downloadLocation": "https://pypi.org/simple",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceLocator": "pkg:pypi/aiohappyeyeballs@2.7.1",
+          "referenceType": "purl"
+        }
+      ],
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "name": "aiohappyeyeballs",
+      "properties": {
+        "ecosystem": "pypi",
+        "scope": "gpu-workload"
+      },
+      "supplier": "NOASSERTION",
+      "versionInfo": "2.7.1"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-pypi-aiohttp-3.14.3-gpu-workload",
+      "downloadLocation": "https://pypi.org/simple",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceLocator": "pkg:pypi/aiohttp@3.14.3",
+          "referenceType": "purl"
+        }
+      ],
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "name": "aiohttp",
+      "properties": {
+        "ecosystem": "pypi",
+        "scope": "gpu-workload"
+      },
+      "supplier": "NOASSERTION",
+      "versionInfo": "3.14.3"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-pypi-aiohttp-cors-0.8.1-gpu-workload",
+      "downloadLocation": "https://pypi.org/simple",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceLocator": "pkg:pypi/aiohttp-cors@0.8.1",
+          "referenceType": "purl"
+        }
+      ],
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "name": "aiohttp-cors",
+      "properties": {
+        "ecosystem": "pypi",
+        "scope": "gpu-workload"
+      },
+      "supplier": "NOASSERTION",
+      "versionInfo": "0.8.1"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-pypi-aiosignal-1.4.0-gpu-workload",
+      "downloadLocation": "https://pypi.org/simple",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceLocator": "pkg:pypi/aiosignal@1.4.0",
+          "referenceType": "purl"
+        }
+      ],
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "name": "aiosignal",
+      "properties": {
+        "ecosystem": "pypi",
+        "scope": "gpu-workload"
+      },
+      "supplier": "NOASSERTION",
+      "versionInfo": "1.4.0"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-pypi-annotated-doc-0.0.5-gpu-workload",
+      "downloadLocation": "https://pypi.org/simple",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceLocator": "pkg:pypi/annotated-doc@0.0.5",
+          "referenceType": "purl"
+        }
+      ],
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "name": "annotated-doc",
+      "properties": {
+        "ecosystem": "pypi",
+        "scope": "gpu-workload"
+      },
+      "supplier": "NOASSERTION",
+      "versionInfo": "0.0.5"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-pypi-annotated-types-0.8.0-gpu-workload",
+      "downloadLocation": "https://pypi.org/simple",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceLocator": "pkg:pypi/annotated-types@0.8.0",
+          "referenceType": "purl"
+        }
+      ],
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "name": "annotated-types",
+      "properties": {
+        "ecosystem": "pypi",
+        "scope": "gpu-workload"
+      },
+      "supplier": "NOASSERTION",
+      "versionInfo": "0.8.0"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-pypi-anthropic-1.4.0-gpu-workload",
+      "downloadLocation": "https://pypi.org/simple",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceLocator": "pkg:pypi/anthropic@1.4.0",
+          "referenceType": "purl"
+        }
+      ],
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "name": "anthropic",
+      "properties": {
+        "ecosystem": "pypi",
+        "scope": "gpu-workload"
+      },
+      "supplier": "NOASSERTION",
+      "versionInfo": "1.4.0"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-pypi-antlr4-python3-runtime-4.9.3-gpu-workload",
+      "downloadLocation": "https://pypi.org/simple",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceLocator": "pkg:pypi/antlr4-python3-runtime@4.9.3",
+          "referenceType": "purl"
+        }
+      ],
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "name": "antlr4-python3-runtime",
+      "properties": {
+        "ecosystem": "pypi",
+        "scope": "gpu-workload"
+      },
+      "supplier": "NOASSERTION",
+      "versionInfo": "4.9.3"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-pypi-anyio-4.15.1-gpu-workload",
+      "downloadLocation": "https://pypi.org/simple",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceLocator": "pkg:pypi/anyio@4.15.1",
+          "referenceType": "purl"
+        }
+      ],
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "name": "anyio",
+      "properties": {
+        "ecosystem": "pypi",
+        "scope": "gpu-workload"
+      },
+      "supplier": "NOASSERTION",
+      "versionInfo": "4.15.1"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-pypi-apache-tvm-ffi-0.1.11-gpu-workload",
+      "downloadLocation": "https://pypi.org/simple",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceLocator": "pkg:pypi/apache-tvm-ffi@0.1.11",
+          "referenceType": "purl"
+        }
+      ],
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "name": "apache-tvm-ffi",
+      "properties": {
+        "ecosystem": "pypi",
+        "scope": "gpu-workload"
+      },
+      "supplier": "NOASSERTION",
+      "versionInfo": "0.1.11"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-pypi-astor-0.8.1-gpu-workload",
+      "downloadLocation": "https://pypi.org/simple",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceLocator": "pkg:pypi/astor@0.8.1",
+          "referenceType": "purl"
+        }
+      ],
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "name": "astor",
+      "properties": {
+        "ecosystem": "pypi",
+        "scope": "gpu-workload"
+      },
+      "supplier": "NOASSERTION",
+      "versionInfo": "0.8.1"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-pypi-attrs-26.1.0-gpu-workload",
+      "downloadLocation": "https://pypi.org/simple",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceLocator": "pkg:pypi/attrs@26.1.0",
+          "referenceType": "purl"
+        }
+      ],
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "name": "attrs",
+      "properties": {
+        "ecosystem": "pypi",
+        "scope": "gpu-workload"
+      },
+      "supplier": "NOASSERTION",
+      "versionInfo": "26.1.0"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-pypi-blake3-1.0.9-gpu-workload",
+      "downloadLocation": "https://pypi.org/simple",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceLocator": "pkg:pypi/blake3@1.0.9",
+          "referenceType": "purl"
+        }
+      ],
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "name": "blake3",
+      "properties": {
+        "ecosystem": "pypi",
+        "scope": "gpu-workload"
+      },
+      "supplier": "NOASSERTION",
+      "versionInfo": "1.0.9"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-pypi-cachetools-7.1.8-gpu-workload",
+      "downloadLocation": "https://pypi.org/simple",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceLocator": "pkg:pypi/cachetools@7.1.8",
+          "referenceType": "purl"
+        }
+      ],
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "name": "cachetools",
+      "properties": {
+        "ecosystem": "pypi",
+        "scope": "gpu-workload"
+      },
+      "supplier": "NOASSERTION",
+      "versionInfo": "7.1.8"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-pypi-cbor2-6.1.4-gpu-workload",
+      "downloadLocation": "https://pypi.org/simple",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceLocator": "pkg:pypi/cbor2@6.1.4",
+          "referenceType": "purl"
+        }
+      ],
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "name": "cbor2",
+      "properties": {
+        "ecosystem": "pypi",
+        "scope": "gpu-workload"
+      },
+      "supplier": "NOASSERTION",
+      "versionInfo": "6.1.4"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-pypi-certifi-2026.7.22-gpu-workload",
+      "downloadLocation": "https://pypi.org/simple",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceLocator": "pkg:pypi/certifi@2026.7.22",
+          "referenceType": "purl"
+        }
+      ],
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "name": "certifi",
+      "properties": {
+        "ecosystem": "pypi",
+        "scope": "gpu-workload"
+      },
+      "supplier": "NOASSERTION",
+      "versionInfo": "2026.7.22"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-pypi-cffi-2.1.1-gpu-workload",
+      "downloadLocation": "https://pypi.org/simple",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceLocator": "pkg:pypi/cffi@2.1.1",
+          "referenceType": "purl"
+        }
+      ],
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "name": "cffi",
+      "properties": {
+        "ecosystem": "pypi",
+        "scope": "gpu-workload"
+      },
+      "supplier": "NOASSERTION",
+      "versionInfo": "2.1.1"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-pypi-charset-normalizer-3.5.1-gpu-workload",
+      "downloadLocation": "https://pypi.org/simple",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceLocator": "pkg:pypi/charset-normalizer@3.5.1",
+          "referenceType": "purl"
+        }
+      ],
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "name": "charset-normalizer",
+      "properties": {
+        "ecosystem": "pypi",
+        "scope": "gpu-workload"
+      },
+      "supplier": "NOASSERTION",
+      "versionInfo": "3.5.1"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-pypi-click-8.5.0-gpu-workload",
+      "downloadLocation": "https://pypi.org/simple",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceLocator": "pkg:pypi/click@8.5.0",
+          "referenceType": "purl"
+        }
+      ],
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "name": "click",
+      "properties": {
+        "ecosystem": "pypi",
+        "scope": "gpu-workload"
+      },
+      "supplier": "NOASSERTION",
+      "versionInfo": "8.5.0"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-pypi-cloudpickle-3.1.2-gpu-workload",
+      "downloadLocation": "https://pypi.org/simple",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceLocator": "pkg:pypi/cloudpickle@3.1.2",
+          "referenceType": "purl"
+        }
+      ],
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "name": "cloudpickle",
+      "properties": {
+        "ecosystem": "pypi",
+        "scope": "gpu-workload"
+      },
+      "supplier": "NOASSERTION",
+      "versionInfo": "3.1.2"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-pypi-codetiming-1.4.0-gpu-workload",
+      "downloadLocation": "https://pypi.org/simple",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceLocator": "pkg:pypi/codetiming@1.4.0",
+          "referenceType": "purl"
+        }
+      ],
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "name": "codetiming",
+      "properties": {
+        "ecosystem": "pypi",
+        "scope": "gpu-workload"
+      },
+      "supplier": "NOASSERTION",
+      "versionInfo": "1.4.0"
+    },
+    {
       "SPDXID": "SPDXRef-Package-pypi-colorama-0.4.6",
       "downloadLocation": "https://pypi.org/simple",
       "externalRefs": [
@@ -7467,6 +8192,606 @@
       },
       "supplier": "NOASSERTION",
       "versionInfo": "0.4.6"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-pypi-colorful-0.5.8-gpu-workload",
+      "downloadLocation": "https://pypi.org/simple",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceLocator": "pkg:pypi/colorful@0.5.8",
+          "referenceType": "purl"
+        }
+      ],
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "name": "colorful",
+      "properties": {
+        "ecosystem": "pypi",
+        "scope": "gpu-workload"
+      },
+      "supplier": "NOASSERTION",
+      "versionInfo": "0.5.8"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-pypi-compressed-tensors-0.17.0-gpu-workload",
+      "downloadLocation": "https://pypi.org/simple",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceLocator": "pkg:pypi/compressed-tensors@0.17.0",
+          "referenceType": "purl"
+        }
+      ],
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "name": "compressed-tensors",
+      "properties": {
+        "ecosystem": "pypi",
+        "scope": "gpu-workload"
+      },
+      "supplier": "NOASSERTION",
+      "versionInfo": "0.17.0"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-pypi-cryptography-50.0.1-gpu-workload",
+      "downloadLocation": "https://pypi.org/simple",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceLocator": "pkg:pypi/cryptography@50.0.1",
+          "referenceType": "purl"
+        }
+      ],
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "name": "cryptography",
+      "properties": {
+        "ecosystem": "pypi",
+        "scope": "gpu-workload"
+      },
+      "supplier": "NOASSERTION",
+      "versionInfo": "50.0.1"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-pypi-cuda-bindings-13.4.1-gpu-workload",
+      "downloadLocation": "https://pypi.org/simple",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceLocator": "pkg:pypi/cuda-bindings@13.4.1",
+          "referenceType": "purl"
+        }
+      ],
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "name": "cuda-bindings",
+      "properties": {
+        "ecosystem": "pypi",
+        "scope": "gpu-workload"
+      },
+      "supplier": "NOASSERTION",
+      "versionInfo": "13.4.1"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-pypi-cuda-core-1.2.0-gpu-workload",
+      "downloadLocation": "https://pypi.org/simple",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceLocator": "pkg:pypi/cuda-core@1.2.0",
+          "referenceType": "purl"
+        }
+      ],
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "name": "cuda-core",
+      "properties": {
+        "ecosystem": "pypi",
+        "scope": "gpu-workload"
+      },
+      "supplier": "NOASSERTION",
+      "versionInfo": "1.2.0"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-pypi-cuda-pathfinder-1.8.1-gpu-workload",
+      "downloadLocation": "https://pypi.org/simple",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceLocator": "pkg:pypi/cuda-pathfinder@1.8.1",
+          "referenceType": "purl"
+        }
+      ],
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "name": "cuda-pathfinder",
+      "properties": {
+        "ecosystem": "pypi",
+        "scope": "gpu-workload"
+      },
+      "supplier": "NOASSERTION",
+      "versionInfo": "1.8.1"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-pypi-cuda-python-13.4.1-gpu-workload",
+      "downloadLocation": "https://pypi.org/simple",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceLocator": "pkg:pypi/cuda-python@13.4.1",
+          "referenceType": "purl"
+        }
+      ],
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "name": "cuda-python",
+      "properties": {
+        "ecosystem": "pypi",
+        "scope": "gpu-workload"
+      },
+      "supplier": "NOASSERTION",
+      "versionInfo": "13.4.1"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-pypi-cuda-tile-1.6.0-gpu-workload",
+      "downloadLocation": "https://pypi.org/simple",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceLocator": "pkg:pypi/cuda-tile@1.6.0",
+          "referenceType": "purl"
+        }
+      ],
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "name": "cuda-tile",
+      "properties": {
+        "ecosystem": "pypi",
+        "scope": "gpu-workload"
+      },
+      "supplier": "NOASSERTION",
+      "versionInfo": "1.6.0"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-pypi-cuda-toolkit-13.0.3.0-gpu-workload",
+      "downloadLocation": "https://pypi.org/simple",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceLocator": "pkg:pypi/cuda-toolkit@13.0.3.0",
+          "referenceType": "purl"
+        }
+      ],
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "name": "cuda-toolkit",
+      "properties": {
+        "ecosystem": "pypi",
+        "scope": "gpu-workload"
+      },
+      "supplier": "NOASSERTION",
+      "versionInfo": "13.0.3.0"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-pypi-datasets-1.1.1-gpu-workload",
+      "downloadLocation": "https://pypi.org/simple",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceLocator": "pkg:pypi/datasets@1.1.1",
+          "referenceType": "purl"
+        }
+      ],
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "name": "datasets",
+      "properties": {
+        "ecosystem": "pypi",
+        "scope": "gpu-workload"
+      },
+      "supplier": "NOASSERTION",
+      "versionInfo": "1.1.1"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-pypi-depyf-0.20.0-gpu-workload",
+      "downloadLocation": "https://pypi.org/simple",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceLocator": "pkg:pypi/depyf@0.20.0",
+          "referenceType": "purl"
+        }
+      ],
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "name": "depyf",
+      "properties": {
+        "ecosystem": "pypi",
+        "scope": "gpu-workload"
+      },
+      "supplier": "NOASSERTION",
+      "versionInfo": "0.20.0"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-pypi-detect-installer-0.2.1-gpu-workload",
+      "downloadLocation": "https://pypi.org/simple",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceLocator": "pkg:pypi/detect-installer@0.2.1",
+          "referenceType": "purl"
+        }
+      ],
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "name": "detect-installer",
+      "properties": {
+        "ecosystem": "pypi",
+        "scope": "gpu-workload"
+      },
+      "supplier": "NOASSERTION",
+      "versionInfo": "0.2.1"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-pypi-dill-0.4.1-gpu-workload",
+      "downloadLocation": "https://pypi.org/simple",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceLocator": "pkg:pypi/dill@0.4.1",
+          "referenceType": "purl"
+        }
+      ],
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "name": "dill",
+      "properties": {
+        "ecosystem": "pypi",
+        "scope": "gpu-workload"
+      },
+      "supplier": "NOASSERTION",
+      "versionInfo": "0.4.1"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-pypi-distlib-0.4.3-gpu-workload",
+      "downloadLocation": "https://pypi.org/simple",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceLocator": "pkg:pypi/distlib@0.4.3",
+          "referenceType": "purl"
+        }
+      ],
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "name": "distlib",
+      "properties": {
+        "ecosystem": "pypi",
+        "scope": "gpu-workload"
+      },
+      "supplier": "NOASSERTION",
+      "versionInfo": "0.4.3"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-pypi-dnspython-2.8.0-gpu-workload",
+      "downloadLocation": "https://pypi.org/simple",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceLocator": "pkg:pypi/dnspython@2.8.0",
+          "referenceType": "purl"
+        }
+      ],
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "name": "dnspython",
+      "properties": {
+        "ecosystem": "pypi",
+        "scope": "gpu-workload"
+      },
+      "supplier": "NOASSERTION",
+      "versionInfo": "2.8.0"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-pypi-docstring-parser-0.18.0-gpu-workload",
+      "downloadLocation": "https://pypi.org/simple",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceLocator": "pkg:pypi/docstring-parser@0.18.0",
+          "referenceType": "purl"
+        }
+      ],
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "name": "docstring-parser",
+      "properties": {
+        "ecosystem": "pypi",
+        "scope": "gpu-workload"
+      },
+      "supplier": "NOASSERTION",
+      "versionInfo": "0.18.0"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-pypi-einops-0.8.2-gpu-workload",
+      "downloadLocation": "https://pypi.org/simple",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceLocator": "pkg:pypi/einops@0.8.2",
+          "referenceType": "purl"
+        }
+      ],
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "name": "einops",
+      "properties": {
+        "ecosystem": "pypi",
+        "scope": "gpu-workload"
+      },
+      "supplier": "NOASSERTION",
+      "versionInfo": "0.8.2"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-pypi-email-validator-2.3.0-gpu-workload",
+      "downloadLocation": "https://pypi.org/simple",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceLocator": "pkg:pypi/email-validator@2.3.0",
+          "referenceType": "purl"
+        }
+      ],
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "name": "email-validator",
+      "properties": {
+        "ecosystem": "pypi",
+        "scope": "gpu-workload"
+      },
+      "supplier": "NOASSERTION",
+      "versionInfo": "2.3.0"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-pypi-fastapi-0.136.3-gpu-workload",
+      "downloadLocation": "https://pypi.org/simple",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceLocator": "pkg:pypi/fastapi@0.136.3",
+          "referenceType": "purl"
+        }
+      ],
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "name": "fastapi",
+      "properties": {
+        "ecosystem": "pypi",
+        "scope": "gpu-workload"
+      },
+      "supplier": "NOASSERTION",
+      "versionInfo": "0.136.3"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-pypi-fastapi-cli-0.0.32-gpu-workload",
+      "downloadLocation": "https://pypi.org/simple",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceLocator": "pkg:pypi/fastapi-cli@0.0.32",
+          "referenceType": "purl"
+        }
+      ],
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "name": "fastapi-cli",
+      "properties": {
+        "ecosystem": "pypi",
+        "scope": "gpu-workload"
+      },
+      "supplier": "NOASSERTION",
+      "versionInfo": "0.0.32"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-pypi-fastapi-cloud-cli-0.25.0-gpu-workload",
+      "downloadLocation": "https://pypi.org/simple",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceLocator": "pkg:pypi/fastapi-cloud-cli@0.25.0",
+          "referenceType": "purl"
+        }
+      ],
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "name": "fastapi-cloud-cli",
+      "properties": {
+        "ecosystem": "pypi",
+        "scope": "gpu-workload"
+      },
+      "supplier": "NOASSERTION",
+      "versionInfo": "0.25.0"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-pypi-fastar-0.12.0-gpu-workload",
+      "downloadLocation": "https://pypi.org/simple",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceLocator": "pkg:pypi/fastar@0.12.0",
+          "referenceType": "purl"
+        }
+      ],
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "name": "fastar",
+      "properties": {
+        "ecosystem": "pypi",
+        "scope": "gpu-workload"
+      },
+      "supplier": "NOASSERTION",
+      "versionInfo": "0.12.0"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-pypi-fastsafetensors-0.4.0-gpu-workload",
+      "downloadLocation": "https://pypi.org/simple",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceLocator": "pkg:pypi/fastsafetensors@0.4.0",
+          "referenceType": "purl"
+        }
+      ],
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "name": "fastsafetensors",
+      "properties": {
+        "ecosystem": "pypi",
+        "scope": "gpu-workload"
+      },
+      "supplier": "NOASSERTION",
+      "versionInfo": "0.4.0"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-pypi-filelock-3.32.6-gpu-workload",
+      "downloadLocation": "https://pypi.org/simple",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceLocator": "pkg:pypi/filelock@3.32.6",
+          "referenceType": "purl"
+        }
+      ],
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "name": "filelock",
+      "properties": {
+        "ecosystem": "pypi",
+        "scope": "gpu-workload"
+      },
+      "supplier": "NOASSERTION",
+      "versionInfo": "3.32.6"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-pypi-flashinfer-python-0.6.16.post3-gpu-workload",
+      "downloadLocation": "https://pypi.org/simple",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceLocator": "pkg:pypi/flashinfer-python@0.6.16.post3",
+          "referenceType": "purl"
+        }
+      ],
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "name": "flashinfer-python",
+      "properties": {
+        "ecosystem": "pypi",
+        "scope": "gpu-workload"
+      },
+      "supplier": "NOASSERTION",
+      "versionInfo": "0.6.16.post3"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-pypi-frozenlist-1.8.0-gpu-workload",
+      "downloadLocation": "https://pypi.org/simple",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceLocator": "pkg:pypi/frozenlist@1.8.0",
+          "referenceType": "purl"
+        }
+      ],
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "name": "frozenlist",
+      "properties": {
+        "ecosystem": "pypi",
+        "scope": "gpu-workload"
+      },
+      "supplier": "NOASSERTION",
+      "versionInfo": "1.8.0"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-pypi-fsspec-2026.7.0-gpu-workload",
+      "downloadLocation": "https://pypi.org/simple",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceLocator": "pkg:pypi/fsspec@2026.7.0",
+          "referenceType": "purl"
+        }
+      ],
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "name": "fsspec",
+      "properties": {
+        "ecosystem": "pypi",
+        "scope": "gpu-workload"
+      },
+      "supplier": "NOASSERTION",
+      "versionInfo": "2026.7.0"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-pypi-google-api-core-2.36.0-gpu-workload",
+      "downloadLocation": "https://pypi.org/simple",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceLocator": "pkg:pypi/google-api-core@2.36.0",
+          "referenceType": "purl"
+        }
+      ],
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "name": "google-api-core",
+      "properties": {
+        "ecosystem": "pypi",
+        "scope": "gpu-workload"
+      },
+      "supplier": "NOASSERTION",
+      "versionInfo": "2.36.0"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-pypi-google-auth-2.58.0-gpu-workload",
+      "downloadLocation": "https://pypi.org/simple",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceLocator": "pkg:pypi/google-auth@2.58.0",
+          "referenceType": "purl"
+        }
+      ],
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "name": "google-auth",
+      "properties": {
+        "ecosystem": "pypi",
+        "scope": "gpu-workload"
+      },
+      "supplier": "NOASSERTION",
+      "versionInfo": "2.58.0"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-pypi-googleapis-common-protos-1.75.3-gpu-workload",
+      "downloadLocation": "https://pypi.org/simple",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceLocator": "pkg:pypi/googleapis-common-protos@1.75.3",
+          "referenceType": "purl"
+        }
+      ],
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "name": "googleapis-common-protos",
+      "properties": {
+        "ecosystem": "pypi",
+        "scope": "gpu-workload"
+      },
+      "supplier": "NOASSERTION",
+      "versionInfo": "1.75.3"
     },
     {
       "SPDXID": "SPDXRef-Package-pypi-grpcio-1.83.1",
@@ -7489,6 +8814,226 @@
       "versionInfo": "1.83.1"
     },
     {
+      "SPDXID": "SPDXRef-Package-pypi-grpcio-1.83.1-gpu-workload",
+      "downloadLocation": "https://pypi.org/simple",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceLocator": "pkg:pypi/grpcio@1.83.1",
+          "referenceType": "purl"
+        }
+      ],
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "name": "grpcio",
+      "properties": {
+        "ecosystem": "pypi",
+        "scope": "gpu-workload"
+      },
+      "supplier": "NOASSERTION",
+      "versionInfo": "1.83.1"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-pypi-h11-0.16.0-gpu-workload",
+      "downloadLocation": "https://pypi.org/simple",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceLocator": "pkg:pypi/h11@0.16.0",
+          "referenceType": "purl"
+        }
+      ],
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "name": "h11",
+      "properties": {
+        "ecosystem": "pypi",
+        "scope": "gpu-workload"
+      },
+      "supplier": "NOASSERTION",
+      "versionInfo": "0.16.0"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-pypi-hf-xet-1.6.0-gpu-workload",
+      "downloadLocation": "https://pypi.org/simple",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceLocator": "pkg:pypi/hf-xet@1.6.0",
+          "referenceType": "purl"
+        }
+      ],
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "name": "hf-xet",
+      "properties": {
+        "ecosystem": "pypi",
+        "scope": "gpu-workload"
+      },
+      "supplier": "NOASSERTION",
+      "versionInfo": "1.6.0"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-pypi-httpcore-1.0.9-gpu-workload",
+      "downloadLocation": "https://pypi.org/simple",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceLocator": "pkg:pypi/httpcore@1.0.9",
+          "referenceType": "purl"
+        }
+      ],
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "name": "httpcore",
+      "properties": {
+        "ecosystem": "pypi",
+        "scope": "gpu-workload"
+      },
+      "supplier": "NOASSERTION",
+      "versionInfo": "1.0.9"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-pypi-httpcore2-2.12.0-gpu-workload",
+      "downloadLocation": "https://pypi.org/simple",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceLocator": "pkg:pypi/httpcore2@2.12.0",
+          "referenceType": "purl"
+        }
+      ],
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "name": "httpcore2",
+      "properties": {
+        "ecosystem": "pypi",
+        "scope": "gpu-workload"
+      },
+      "supplier": "NOASSERTION",
+      "versionInfo": "2.12.0"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-pypi-httptools-0.8.0-gpu-workload",
+      "downloadLocation": "https://pypi.org/simple",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceLocator": "pkg:pypi/httptools@0.8.0",
+          "referenceType": "purl"
+        }
+      ],
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "name": "httptools",
+      "properties": {
+        "ecosystem": "pypi",
+        "scope": "gpu-workload"
+      },
+      "supplier": "NOASSERTION",
+      "versionInfo": "0.8.0"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-pypi-httpx-0.28.1-gpu-workload",
+      "downloadLocation": "https://pypi.org/simple",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceLocator": "pkg:pypi/httpx@0.28.1",
+          "referenceType": "purl"
+        }
+      ],
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "name": "httpx",
+      "properties": {
+        "ecosystem": "pypi",
+        "scope": "gpu-workload"
+      },
+      "supplier": "NOASSERTION",
+      "versionInfo": "0.28.1"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-pypi-httpx2-2.12.0-gpu-workload",
+      "downloadLocation": "https://pypi.org/simple",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceLocator": "pkg:pypi/httpx2@2.12.0",
+          "referenceType": "purl"
+        }
+      ],
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "name": "httpx2",
+      "properties": {
+        "ecosystem": "pypi",
+        "scope": "gpu-workload"
+      },
+      "supplier": "NOASSERTION",
+      "versionInfo": "2.12.0"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-pypi-huggingface-hub-1.30.0-gpu-workload",
+      "downloadLocation": "https://pypi.org/simple",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceLocator": "pkg:pypi/huggingface-hub@1.30.0",
+          "referenceType": "purl"
+        }
+      ],
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "name": "huggingface-hub",
+      "properties": {
+        "ecosystem": "pypi",
+        "scope": "gpu-workload"
+      },
+      "supplier": "NOASSERTION",
+      "versionInfo": "1.30.0"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-pypi-humming-kernels-0.1.12-gpu-workload",
+      "downloadLocation": "https://pypi.org/simple",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceLocator": "pkg:pypi/humming-kernels@0.1.12",
+          "referenceType": "purl"
+        }
+      ],
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "name": "humming-kernels",
+      "properties": {
+        "ecosystem": "pypi",
+        "scope": "gpu-workload"
+      },
+      "supplier": "NOASSERTION",
+      "versionInfo": "0.1.12"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-pypi-hydra-core-1.3.6-gpu-workload",
+      "downloadLocation": "https://pypi.org/simple",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceLocator": "pkg:pypi/hydra-core@1.3.6",
+          "referenceType": "purl"
+        }
+      ],
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "name": "hydra-core",
+      "properties": {
+        "ecosystem": "pypi",
+        "scope": "gpu-workload"
+      },
+      "supplier": "NOASSERTION",
+      "versionInfo": "1.3.6"
+    },
+    {
       "SPDXID": "SPDXRef-Package-pypi-hypothesis-6.167.0",
       "downloadLocation": "https://pypi.org/simple",
       "externalRefs": [
@@ -7507,6 +9052,66 @@
       },
       "supplier": "NOASSERTION",
       "versionInfo": "6.167.0"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-pypi-idna-3.19-gpu-workload",
+      "downloadLocation": "https://pypi.org/simple",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceLocator": "pkg:pypi/idna@3.19",
+          "referenceType": "purl"
+        }
+      ],
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "name": "idna",
+      "properties": {
+        "ecosystem": "pypi",
+        "scope": "gpu-workload"
+      },
+      "supplier": "NOASSERTION",
+      "versionInfo": "3.19"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-pypi-ijson-3.5.1-gpu-workload",
+      "downloadLocation": "https://pypi.org/simple",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceLocator": "pkg:pypi/ijson@3.5.1",
+          "referenceType": "purl"
+        }
+      ],
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "name": "ijson",
+      "properties": {
+        "ecosystem": "pypi",
+        "scope": "gpu-workload"
+      },
+      "supplier": "NOASSERTION",
+      "versionInfo": "3.5.1"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-pypi-importlib-metadata-9.0.1-gpu-workload",
+      "downloadLocation": "https://pypi.org/simple",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceLocator": "pkg:pypi/importlib-metadata@9.0.1",
+          "referenceType": "purl"
+        }
+      ],
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "name": "importlib-metadata",
+      "properties": {
+        "ecosystem": "pypi",
+        "scope": "gpu-workload"
+      },
+      "supplier": "NOASSERTION",
+      "versionInfo": "9.0.1"
     },
     {
       "SPDXID": "SPDXRef-Package-pypi-iniconfig-2.3.0",
@@ -7529,6 +9134,146 @@
       "versionInfo": "2.3.0"
     },
     {
+      "SPDXID": "SPDXRef-Package-pypi-interegular-0.3.3-gpu-workload",
+      "downloadLocation": "https://pypi.org/simple",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceLocator": "pkg:pypi/interegular@0.3.3",
+          "referenceType": "purl"
+        }
+      ],
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "name": "interegular",
+      "properties": {
+        "ecosystem": "pypi",
+        "scope": "gpu-workload"
+      },
+      "supplier": "NOASSERTION",
+      "versionInfo": "0.3.3"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-pypi-jinja2-3.1.6-gpu-workload",
+      "downloadLocation": "https://pypi.org/simple",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceLocator": "pkg:pypi/jinja2@3.1.6",
+          "referenceType": "purl"
+        }
+      ],
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "name": "jinja2",
+      "properties": {
+        "ecosystem": "pypi",
+        "scope": "gpu-workload"
+      },
+      "supplier": "NOASSERTION",
+      "versionInfo": "3.1.6"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-pypi-jiter-0.16.0-gpu-workload",
+      "downloadLocation": "https://pypi.org/simple",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceLocator": "pkg:pypi/jiter@0.16.0",
+          "referenceType": "purl"
+        }
+      ],
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "name": "jiter",
+      "properties": {
+        "ecosystem": "pypi",
+        "scope": "gpu-workload"
+      },
+      "supplier": "NOASSERTION",
+      "versionInfo": "0.16.0"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-pypi-jmespath-1.1.0-gpu-workload",
+      "downloadLocation": "https://pypi.org/simple",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceLocator": "pkg:pypi/jmespath@1.1.0",
+          "referenceType": "purl"
+        }
+      ],
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "name": "jmespath",
+      "properties": {
+        "ecosystem": "pypi",
+        "scope": "gpu-workload"
+      },
+      "supplier": "NOASSERTION",
+      "versionInfo": "1.1.0"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-pypi-jsonschema-4.26.0-gpu-workload",
+      "downloadLocation": "https://pypi.org/simple",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceLocator": "pkg:pypi/jsonschema@4.26.0",
+          "referenceType": "purl"
+        }
+      ],
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "name": "jsonschema",
+      "properties": {
+        "ecosystem": "pypi",
+        "scope": "gpu-workload"
+      },
+      "supplier": "NOASSERTION",
+      "versionInfo": "4.26.0"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-pypi-jsonschema-specifications-2025.9.1-gpu-workload",
+      "downloadLocation": "https://pypi.org/simple",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceLocator": "pkg:pypi/jsonschema-specifications@2025.9.1",
+          "referenceType": "purl"
+        }
+      ],
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "name": "jsonschema-specifications",
+      "properties": {
+        "ecosystem": "pypi",
+        "scope": "gpu-workload"
+      },
+      "supplier": "NOASSERTION",
+      "versionInfo": "2025.9.1"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-pypi-lark-1.2.2-gpu-workload",
+      "downloadLocation": "https://pypi.org/simple",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceLocator": "pkg:pypi/lark@1.2.2",
+          "referenceType": "purl"
+        }
+      ],
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "name": "lark",
+      "properties": {
+        "ecosystem": "pypi",
+        "scope": "gpu-workload"
+      },
+      "supplier": "NOASSERTION",
+      "versionInfo": "1.2.2"
+    },
+    {
       "SPDXID": "SPDXRef-Package-pypi-librt-0.15.0",
       "downloadLocation": "https://pypi.org/simple",
       "externalRefs": [
@@ -7547,6 +9292,366 @@
       },
       "supplier": "NOASSERTION",
       "versionInfo": "0.15.0"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-pypi-llguidance-1.7.6-gpu-workload",
+      "downloadLocation": "https://pypi.org/simple",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceLocator": "pkg:pypi/llguidance@1.7.6",
+          "referenceType": "purl"
+        }
+      ],
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "name": "llguidance",
+      "properties": {
+        "ecosystem": "pypi",
+        "scope": "gpu-workload"
+      },
+      "supplier": "NOASSERTION",
+      "versionInfo": "1.7.6"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-pypi-llvmlite-0.47.0-gpu-workload",
+      "downloadLocation": "https://pypi.org/simple",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceLocator": "pkg:pypi/llvmlite@0.47.0",
+          "referenceType": "purl"
+        }
+      ],
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "name": "llvmlite",
+      "properties": {
+        "ecosystem": "pypi",
+        "scope": "gpu-workload"
+      },
+      "supplier": "NOASSERTION",
+      "versionInfo": "0.47.0"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-pypi-lm-format-enforcer-0.11.3-gpu-workload",
+      "downloadLocation": "https://pypi.org/simple",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceLocator": "pkg:pypi/lm-format-enforcer@0.11.3",
+          "referenceType": "purl"
+        }
+      ],
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "name": "lm-format-enforcer",
+      "properties": {
+        "ecosystem": "pypi",
+        "scope": "gpu-workload"
+      },
+      "supplier": "NOASSERTION",
+      "versionInfo": "0.11.3"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-pypi-loguru-0.7.3-gpu-workload",
+      "downloadLocation": "https://pypi.org/simple",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceLocator": "pkg:pypi/loguru@0.7.3",
+          "referenceType": "purl"
+        }
+      ],
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "name": "loguru",
+      "properties": {
+        "ecosystem": "pypi",
+        "scope": "gpu-workload"
+      },
+      "supplier": "NOASSERTION",
+      "versionInfo": "0.7.3"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-pypi-markdown-3.10.3-gpu-workload",
+      "downloadLocation": "https://pypi.org/simple",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceLocator": "pkg:pypi/markdown@3.10.3",
+          "referenceType": "purl"
+        }
+      ],
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "name": "markdown",
+      "properties": {
+        "ecosystem": "pypi",
+        "scope": "gpu-workload"
+      },
+      "supplier": "NOASSERTION",
+      "versionInfo": "3.10.3"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-pypi-markdown-it-py-4.2.0-gpu-workload",
+      "downloadLocation": "https://pypi.org/simple",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceLocator": "pkg:pypi/markdown-it-py@4.2.0",
+          "referenceType": "purl"
+        }
+      ],
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "name": "markdown-it-py",
+      "properties": {
+        "ecosystem": "pypi",
+        "scope": "gpu-workload"
+      },
+      "supplier": "NOASSERTION",
+      "versionInfo": "4.2.0"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-pypi-markupsafe-3.0.3-gpu-workload",
+      "downloadLocation": "https://pypi.org/simple",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceLocator": "pkg:pypi/markupsafe@3.0.3",
+          "referenceType": "purl"
+        }
+      ],
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "name": "markupsafe",
+      "properties": {
+        "ecosystem": "pypi",
+        "scope": "gpu-workload"
+      },
+      "supplier": "NOASSERTION",
+      "versionInfo": "3.0.3"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-pypi-mcp-2.2.0-gpu-workload",
+      "downloadLocation": "https://pypi.org/simple",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceLocator": "pkg:pypi/mcp@2.2.0",
+          "referenceType": "purl"
+        }
+      ],
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "name": "mcp",
+      "properties": {
+        "ecosystem": "pypi",
+        "scope": "gpu-workload"
+      },
+      "supplier": "NOASSERTION",
+      "versionInfo": "2.2.0"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-pypi-mcp-types-2.2.0-gpu-workload",
+      "downloadLocation": "https://pypi.org/simple",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceLocator": "pkg:pypi/mcp-types@2.2.0",
+          "referenceType": "purl"
+        }
+      ],
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "name": "mcp-types",
+      "properties": {
+        "ecosystem": "pypi",
+        "scope": "gpu-workload"
+      },
+      "supplier": "NOASSERTION",
+      "versionInfo": "2.2.0"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-pypi-mdurl-0.1.2-gpu-workload",
+      "downloadLocation": "https://pypi.org/simple",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceLocator": "pkg:pypi/mdurl@0.1.2",
+          "referenceType": "purl"
+        }
+      ],
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "name": "mdurl",
+      "properties": {
+        "ecosystem": "pypi",
+        "scope": "gpu-workload"
+      },
+      "supplier": "NOASSERTION",
+      "versionInfo": "0.1.2"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-pypi-mistral-common-1.11.7-gpu-workload",
+      "downloadLocation": "https://pypi.org/simple",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceLocator": "pkg:pypi/mistral-common@1.11.7",
+          "referenceType": "purl"
+        }
+      ],
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "name": "mistral-common",
+      "properties": {
+        "ecosystem": "pypi",
+        "scope": "gpu-workload"
+      },
+      "supplier": "NOASSERTION",
+      "versionInfo": "1.11.7"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-pypi-ml-dtypes-0.6.0-gpu-workload",
+      "downloadLocation": "https://pypi.org/simple",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceLocator": "pkg:pypi/ml-dtypes@0.6.0",
+          "referenceType": "purl"
+        }
+      ],
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "name": "ml-dtypes",
+      "properties": {
+        "ecosystem": "pypi",
+        "scope": "gpu-workload"
+      },
+      "supplier": "NOASSERTION",
+      "versionInfo": "0.6.0"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-pypi-model-hosting-container-standards-0.1.16-gpu-workload",
+      "downloadLocation": "https://pypi.org/simple",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceLocator": "pkg:pypi/model-hosting-container-standards@0.1.16",
+          "referenceType": "purl"
+        }
+      ],
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "name": "model-hosting-container-standards",
+      "properties": {
+        "ecosystem": "pypi",
+        "scope": "gpu-workload"
+      },
+      "supplier": "NOASSERTION",
+      "versionInfo": "0.1.16"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-pypi-mpmath-1.3.0-gpu-workload",
+      "downloadLocation": "https://pypi.org/simple",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceLocator": "pkg:pypi/mpmath@1.3.0",
+          "referenceType": "purl"
+        }
+      ],
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "name": "mpmath",
+      "properties": {
+        "ecosystem": "pypi",
+        "scope": "gpu-workload"
+      },
+      "supplier": "NOASSERTION",
+      "versionInfo": "1.3.0"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-pypi-msgpack-1.2.2-gpu-workload",
+      "downloadLocation": "https://pypi.org/simple",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceLocator": "pkg:pypi/msgpack@1.2.2",
+          "referenceType": "purl"
+        }
+      ],
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "name": "msgpack",
+      "properties": {
+        "ecosystem": "pypi",
+        "scope": "gpu-workload"
+      },
+      "supplier": "NOASSERTION",
+      "versionInfo": "1.2.2"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-pypi-msgspec-0.21.1-gpu-workload",
+      "downloadLocation": "https://pypi.org/simple",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceLocator": "pkg:pypi/msgspec@0.21.1",
+          "referenceType": "purl"
+        }
+      ],
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "name": "msgspec",
+      "properties": {
+        "ecosystem": "pypi",
+        "scope": "gpu-workload"
+      },
+      "supplier": "NOASSERTION",
+      "versionInfo": "0.21.1"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-pypi-multidict-6.8.0-gpu-workload",
+      "downloadLocation": "https://pypi.org/simple",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceLocator": "pkg:pypi/multidict@6.8.0",
+          "referenceType": "purl"
+        }
+      ],
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "name": "multidict",
+      "properties": {
+        "ecosystem": "pypi",
+        "scope": "gpu-workload"
+      },
+      "supplier": "NOASSERTION",
+      "versionInfo": "6.8.0"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-pypi-multiprocess-0.70.19-gpu-workload",
+      "downloadLocation": "https://pypi.org/simple",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceLocator": "pkg:pypi/multiprocess@0.70.19",
+          "referenceType": "purl"
+        }
+      ],
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "name": "multiprocess",
+      "properties": {
+        "ecosystem": "pypi",
+        "scope": "gpu-workload"
+      },
+      "supplier": "NOASSERTION",
+      "versionInfo": "0.70.19"
     },
     {
       "SPDXID": "SPDXRef-Package-pypi-mypy-1.20.2",
@@ -7589,6 +9694,1046 @@
       "versionInfo": "1.1.0"
     },
     {
+      "SPDXID": "SPDXRef-Package-pypi-nccl4py-0.5.0-gpu-workload",
+      "downloadLocation": "https://pypi.org/simple",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceLocator": "pkg:pypi/nccl4py@0.5.0",
+          "referenceType": "purl"
+        }
+      ],
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "name": "nccl4py",
+      "properties": {
+        "ecosystem": "pypi",
+        "scope": "gpu-workload"
+      },
+      "supplier": "NOASSERTION",
+      "versionInfo": "0.5.0"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-pypi-networkx-3.6.1-gpu-workload",
+      "downloadLocation": "https://pypi.org/simple",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceLocator": "pkg:pypi/networkx@3.6.1",
+          "referenceType": "purl"
+        }
+      ],
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "name": "networkx",
+      "properties": {
+        "ecosystem": "pypi",
+        "scope": "gpu-workload"
+      },
+      "supplier": "NOASSERTION",
+      "versionInfo": "3.6.1"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-pypi-ninja-1.13.2-gpu-workload",
+      "downloadLocation": "https://pypi.org/simple",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceLocator": "pkg:pypi/ninja@1.13.2",
+          "referenceType": "purl"
+        }
+      ],
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "name": "ninja",
+      "properties": {
+        "ecosystem": "pypi",
+        "scope": "gpu-workload"
+      },
+      "supplier": "NOASSERTION",
+      "versionInfo": "1.13.2"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-pypi-numba-0.65.0-gpu-workload",
+      "downloadLocation": "https://pypi.org/simple",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceLocator": "pkg:pypi/numba@0.65.0",
+          "referenceType": "purl"
+        }
+      ],
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "name": "numba",
+      "properties": {
+        "ecosystem": "pypi",
+        "scope": "gpu-workload"
+      },
+      "supplier": "NOASSERTION",
+      "versionInfo": "0.65.0"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-pypi-numpy-2.3.5-gpu-workload",
+      "downloadLocation": "https://pypi.org/simple",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceLocator": "pkg:pypi/numpy@2.3.5",
+          "referenceType": "purl"
+        }
+      ],
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "name": "numpy",
+      "properties": {
+        "ecosystem": "pypi",
+        "scope": "gpu-workload"
+      },
+      "supplier": "NOASSERTION",
+      "versionInfo": "2.3.5"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-pypi-nvidia-cublas-13.1.1.3-gpu-workload",
+      "downloadLocation": "https://pypi.org/simple",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceLocator": "pkg:pypi/nvidia-cublas@13.1.1.3",
+          "referenceType": "purl"
+        }
+      ],
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "name": "nvidia-cublas",
+      "properties": {
+        "ecosystem": "pypi",
+        "scope": "gpu-workload"
+      },
+      "supplier": "NOASSERTION",
+      "versionInfo": "13.1.1.3"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-pypi-nvidia-cuda-cccl-13.3.4.2.1-gpu-workload",
+      "downloadLocation": "https://pypi.org/simple",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceLocator": "pkg:pypi/nvidia-cuda-cccl@13.3.4.2.1",
+          "referenceType": "purl"
+        }
+      ],
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "name": "nvidia-cuda-cccl",
+      "properties": {
+        "ecosystem": "pypi",
+        "scope": "gpu-workload"
+      },
+      "supplier": "NOASSERTION",
+      "versionInfo": "13.3.4.2.1"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-pypi-nvidia-cuda-crt-13.4.59-gpu-workload",
+      "downloadLocation": "https://pypi.org/simple",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceLocator": "pkg:pypi/nvidia-cuda-crt@13.4.59",
+          "referenceType": "purl"
+        }
+      ],
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "name": "nvidia-cuda-crt",
+      "properties": {
+        "ecosystem": "pypi",
+        "scope": "gpu-workload"
+      },
+      "supplier": "NOASSERTION",
+      "versionInfo": "13.4.59"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-pypi-nvidia-cuda-cupti-13.0.85-gpu-workload",
+      "downloadLocation": "https://pypi.org/simple",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceLocator": "pkg:pypi/nvidia-cuda-cupti@13.0.85",
+          "referenceType": "purl"
+        }
+      ],
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "name": "nvidia-cuda-cupti",
+      "properties": {
+        "ecosystem": "pypi",
+        "scope": "gpu-workload"
+      },
+      "supplier": "NOASSERTION",
+      "versionInfo": "13.0.85"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-pypi-nvidia-cuda-nvcc-13.4.59-gpu-workload",
+      "downloadLocation": "https://pypi.org/simple",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceLocator": "pkg:pypi/nvidia-cuda-nvcc@13.4.59",
+          "referenceType": "purl"
+        }
+      ],
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "name": "nvidia-cuda-nvcc",
+      "properties": {
+        "ecosystem": "pypi",
+        "scope": "gpu-workload"
+      },
+      "supplier": "NOASSERTION",
+      "versionInfo": "13.4.59"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-pypi-nvidia-cuda-nvdisasm-13.4.49-gpu-workload",
+      "downloadLocation": "https://pypi.org/simple",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceLocator": "pkg:pypi/nvidia-cuda-nvdisasm@13.4.49",
+          "referenceType": "purl"
+        }
+      ],
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "name": "nvidia-cuda-nvdisasm",
+      "properties": {
+        "ecosystem": "pypi",
+        "scope": "gpu-workload"
+      },
+      "supplier": "NOASSERTION",
+      "versionInfo": "13.4.49"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-pypi-nvidia-cuda-nvrtc-13.0.88-gpu-workload",
+      "downloadLocation": "https://pypi.org/simple",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceLocator": "pkg:pypi/nvidia-cuda-nvrtc@13.0.88",
+          "referenceType": "purl"
+        }
+      ],
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "name": "nvidia-cuda-nvrtc",
+      "properties": {
+        "ecosystem": "pypi",
+        "scope": "gpu-workload"
+      },
+      "supplier": "NOASSERTION",
+      "versionInfo": "13.0.88"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-pypi-nvidia-cuda-runtime-13.0.96-gpu-workload",
+      "downloadLocation": "https://pypi.org/simple",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceLocator": "pkg:pypi/nvidia-cuda-runtime@13.0.96",
+          "referenceType": "purl"
+        }
+      ],
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "name": "nvidia-cuda-runtime",
+      "properties": {
+        "ecosystem": "pypi",
+        "scope": "gpu-workload"
+      },
+      "supplier": "NOASSERTION",
+      "versionInfo": "13.0.96"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-pypi-nvidia-cudnn-cu13-9.20.0.48-gpu-workload",
+      "downloadLocation": "https://pypi.org/simple",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceLocator": "pkg:pypi/nvidia-cudnn-cu13@9.20.0.48",
+          "referenceType": "purl"
+        }
+      ],
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "name": "nvidia-cudnn-cu13",
+      "properties": {
+        "ecosystem": "pypi",
+        "scope": "gpu-workload"
+      },
+      "supplier": "NOASSERTION",
+      "versionInfo": "9.20.0.48"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-pypi-nvidia-cudnn-frontend-1.28.0-gpu-workload",
+      "downloadLocation": "https://pypi.org/simple",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceLocator": "pkg:pypi/nvidia-cudnn-frontend@1.28.0",
+          "referenceType": "purl"
+        }
+      ],
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "name": "nvidia-cudnn-frontend",
+      "properties": {
+        "ecosystem": "pypi",
+        "scope": "gpu-workload"
+      },
+      "supplier": "NOASSERTION",
+      "versionInfo": "1.28.0"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-pypi-nvidia-cufft-12.0.0.61-gpu-workload",
+      "downloadLocation": "https://pypi.org/simple",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceLocator": "pkg:pypi/nvidia-cufft@12.0.0.61",
+          "referenceType": "purl"
+        }
+      ],
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "name": "nvidia-cufft",
+      "properties": {
+        "ecosystem": "pypi",
+        "scope": "gpu-workload"
+      },
+      "supplier": "NOASSERTION",
+      "versionInfo": "12.0.0.61"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-pypi-nvidia-cufile-1.15.1.6-gpu-workload",
+      "downloadLocation": "https://pypi.org/simple",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceLocator": "pkg:pypi/nvidia-cufile@1.15.1.6",
+          "referenceType": "purl"
+        }
+      ],
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "name": "nvidia-cufile",
+      "properties": {
+        "ecosystem": "pypi",
+        "scope": "gpu-workload"
+      },
+      "supplier": "NOASSERTION",
+      "versionInfo": "1.15.1.6"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-pypi-nvidia-curand-10.4.0.35-gpu-workload",
+      "downloadLocation": "https://pypi.org/simple",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceLocator": "pkg:pypi/nvidia-curand@10.4.0.35",
+          "referenceType": "purl"
+        }
+      ],
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "name": "nvidia-curand",
+      "properties": {
+        "ecosystem": "pypi",
+        "scope": "gpu-workload"
+      },
+      "supplier": "NOASSERTION",
+      "versionInfo": "10.4.0.35"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-pypi-nvidia-cusolver-12.0.4.66-gpu-workload",
+      "downloadLocation": "https://pypi.org/simple",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceLocator": "pkg:pypi/nvidia-cusolver@12.0.4.66",
+          "referenceType": "purl"
+        }
+      ],
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "name": "nvidia-cusolver",
+      "properties": {
+        "ecosystem": "pypi",
+        "scope": "gpu-workload"
+      },
+      "supplier": "NOASSERTION",
+      "versionInfo": "12.0.4.66"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-pypi-nvidia-cusparse-12.6.3.3-gpu-workload",
+      "downloadLocation": "https://pypi.org/simple",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceLocator": "pkg:pypi/nvidia-cusparse@12.6.3.3",
+          "referenceType": "purl"
+        }
+      ],
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "name": "nvidia-cusparse",
+      "properties": {
+        "ecosystem": "pypi",
+        "scope": "gpu-workload"
+      },
+      "supplier": "NOASSERTION",
+      "versionInfo": "12.6.3.3"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-pypi-nvidia-cusparselt-cu13-0.8.1-gpu-workload",
+      "downloadLocation": "https://pypi.org/simple",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceLocator": "pkg:pypi/nvidia-cusparselt-cu13@0.8.1",
+          "referenceType": "purl"
+        }
+      ],
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "name": "nvidia-cusparselt-cu13",
+      "properties": {
+        "ecosystem": "pypi",
+        "scope": "gpu-workload"
+      },
+      "supplier": "NOASSERTION",
+      "versionInfo": "0.8.1"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-pypi-nvidia-cutlass-dsl-4.6.2-gpu-workload",
+      "downloadLocation": "https://pypi.org/simple",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceLocator": "pkg:pypi/nvidia-cutlass-dsl@4.6.2",
+          "referenceType": "purl"
+        }
+      ],
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "name": "nvidia-cutlass-dsl",
+      "properties": {
+        "ecosystem": "pypi",
+        "scope": "gpu-workload"
+      },
+      "supplier": "NOASSERTION",
+      "versionInfo": "4.6.2"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-pypi-nvidia-cutlass-dsl-libs-base-4.6.2-gpu-workload",
+      "downloadLocation": "https://pypi.org/simple",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceLocator": "pkg:pypi/nvidia-cutlass-dsl-libs-base@4.6.2",
+          "referenceType": "purl"
+        }
+      ],
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "name": "nvidia-cutlass-dsl-libs-base",
+      "properties": {
+        "ecosystem": "pypi",
+        "scope": "gpu-workload"
+      },
+      "supplier": "NOASSERTION",
+      "versionInfo": "4.6.2"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-pypi-nvidia-cutlass-dsl-libs-core-4.6.2-gpu-workload",
+      "downloadLocation": "https://pypi.org/simple",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceLocator": "pkg:pypi/nvidia-cutlass-dsl-libs-core@4.6.2",
+          "referenceType": "purl"
+        }
+      ],
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "name": "nvidia-cutlass-dsl-libs-core",
+      "properties": {
+        "ecosystem": "pypi",
+        "scope": "gpu-workload"
+      },
+      "supplier": "NOASSERTION",
+      "versionInfo": "4.6.2"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-pypi-nvidia-cutlass-dsl-libs-cu12-4.6.2-gpu-workload",
+      "downloadLocation": "https://pypi.org/simple",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceLocator": "pkg:pypi/nvidia-cutlass-dsl-libs-cu12@4.6.2",
+          "referenceType": "purl"
+        }
+      ],
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "name": "nvidia-cutlass-dsl-libs-cu12",
+      "properties": {
+        "ecosystem": "pypi",
+        "scope": "gpu-workload"
+      },
+      "supplier": "NOASSERTION",
+      "versionInfo": "4.6.2"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-pypi-nvidia-cutlass-dsl-libs-cu13-4.6.2-gpu-workload",
+      "downloadLocation": "https://pypi.org/simple",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceLocator": "pkg:pypi/nvidia-cutlass-dsl-libs-cu13@4.6.2",
+          "referenceType": "purl"
+        }
+      ],
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "name": "nvidia-cutlass-dsl-libs-cu13",
+      "properties": {
+        "ecosystem": "pypi",
+        "scope": "gpu-workload"
+      },
+      "supplier": "NOASSERTION",
+      "versionInfo": "4.6.2"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-pypi-nvidia-ml-py-13.610.43-gpu-workload",
+      "downloadLocation": "https://pypi.org/simple",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceLocator": "pkg:pypi/nvidia-ml-py@13.610.43",
+          "referenceType": "purl"
+        }
+      ],
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "name": "nvidia-ml-py",
+      "properties": {
+        "ecosystem": "pypi",
+        "scope": "gpu-workload"
+      },
+      "supplier": "NOASSERTION",
+      "versionInfo": "13.610.43"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-pypi-nvidia-nccl-cu13-2.29.7-gpu-workload",
+      "downloadLocation": "https://pypi.org/simple",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceLocator": "pkg:pypi/nvidia-nccl-cu13@2.29.7",
+          "referenceType": "purl"
+        }
+      ],
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "name": "nvidia-nccl-cu13",
+      "properties": {
+        "ecosystem": "pypi",
+        "scope": "gpu-workload"
+      },
+      "supplier": "NOASSERTION",
+      "versionInfo": "2.29.7"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-pypi-nvidia-nvjitlink-13.4.52-gpu-workload",
+      "downloadLocation": "https://pypi.org/simple",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceLocator": "pkg:pypi/nvidia-nvjitlink@13.4.52",
+          "referenceType": "purl"
+        }
+      ],
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "name": "nvidia-nvjitlink",
+      "properties": {
+        "ecosystem": "pypi",
+        "scope": "gpu-workload"
+      },
+      "supplier": "NOASSERTION",
+      "versionInfo": "13.4.52"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-pypi-nvidia-nvshmem-cu13-3.4.5-gpu-workload",
+      "downloadLocation": "https://pypi.org/simple",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceLocator": "pkg:pypi/nvidia-nvshmem-cu13@3.4.5",
+          "referenceType": "purl"
+        }
+      ],
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "name": "nvidia-nvshmem-cu13",
+      "properties": {
+        "ecosystem": "pypi",
+        "scope": "gpu-workload"
+      },
+      "supplier": "NOASSERTION",
+      "versionInfo": "3.4.5"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-pypi-nvidia-nvtx-13.0.85-gpu-workload",
+      "downloadLocation": "https://pypi.org/simple",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceLocator": "pkg:pypi/nvidia-nvtx@13.0.85",
+          "referenceType": "purl"
+        }
+      ],
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "name": "nvidia-nvtx",
+      "properties": {
+        "ecosystem": "pypi",
+        "scope": "gpu-workload"
+      },
+      "supplier": "NOASSERTION",
+      "versionInfo": "13.0.85"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-pypi-nvidia-nvvm-13.4.59-gpu-workload",
+      "downloadLocation": "https://pypi.org/simple",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceLocator": "pkg:pypi/nvidia-nvvm@13.4.59",
+          "referenceType": "purl"
+        }
+      ],
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "name": "nvidia-nvvm",
+      "properties": {
+        "ecosystem": "pypi",
+        "scope": "gpu-workload"
+      },
+      "supplier": "NOASSERTION",
+      "versionInfo": "13.4.59"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-pypi-nvtx-0.2.15-gpu-workload",
+      "downloadLocation": "https://pypi.org/simple",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceLocator": "pkg:pypi/nvtx@0.2.15",
+          "referenceType": "purl"
+        }
+      ],
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "name": "nvtx",
+      "properties": {
+        "ecosystem": "pypi",
+        "scope": "gpu-workload"
+      },
+      "supplier": "NOASSERTION",
+      "versionInfo": "0.2.15"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-pypi-omegaconf-2.3.1-gpu-workload",
+      "downloadLocation": "https://pypi.org/simple",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceLocator": "pkg:pypi/omegaconf@2.3.1",
+          "referenceType": "purl"
+        }
+      ],
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "name": "omegaconf",
+      "properties": {
+        "ecosystem": "pypi",
+        "scope": "gpu-workload"
+      },
+      "supplier": "NOASSERTION",
+      "versionInfo": "2.3.1"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-pypi-openai-3.11.0-gpu-workload",
+      "downloadLocation": "https://pypi.org/simple",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceLocator": "pkg:pypi/openai@3.11.0",
+          "referenceType": "purl"
+        }
+      ],
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "name": "openai",
+      "properties": {
+        "ecosystem": "pypi",
+        "scope": "gpu-workload"
+      },
+      "supplier": "NOASSERTION",
+      "versionInfo": "3.11.0"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-pypi-openai-harmony-0.0.8-gpu-workload",
+      "downloadLocation": "https://pypi.org/simple",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceLocator": "pkg:pypi/openai-harmony@0.0.8",
+          "referenceType": "purl"
+        }
+      ],
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "name": "openai-harmony",
+      "properties": {
+        "ecosystem": "pypi",
+        "scope": "gpu-workload"
+      },
+      "supplier": "NOASSERTION",
+      "versionInfo": "0.0.8"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-pypi-opencensus-0.11.4-gpu-workload",
+      "downloadLocation": "https://pypi.org/simple",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceLocator": "pkg:pypi/opencensus@0.11.4",
+          "referenceType": "purl"
+        }
+      ],
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "name": "opencensus",
+      "properties": {
+        "ecosystem": "pypi",
+        "scope": "gpu-workload"
+      },
+      "supplier": "NOASSERTION",
+      "versionInfo": "0.11.4"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-pypi-opencensus-context-0.1.3-gpu-workload",
+      "downloadLocation": "https://pypi.org/simple",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceLocator": "pkg:pypi/opencensus-context@0.1.3",
+          "referenceType": "purl"
+        }
+      ],
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "name": "opencensus-context",
+      "properties": {
+        "ecosystem": "pypi",
+        "scope": "gpu-workload"
+      },
+      "supplier": "NOASSERTION",
+      "versionInfo": "0.1.3"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-pypi-opencv-python-headless-5.0.0.93-gpu-workload",
+      "downloadLocation": "https://pypi.org/simple",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceLocator": "pkg:pypi/opencv-python-headless@5.0.0.93",
+          "referenceType": "purl"
+        }
+      ],
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "name": "opencv-python-headless",
+      "properties": {
+        "ecosystem": "pypi",
+        "scope": "gpu-workload"
+      },
+      "supplier": "NOASSERTION",
+      "versionInfo": "5.0.0.93"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-pypi-opentelemetry-api-1.44.0-gpu-workload",
+      "downloadLocation": "https://pypi.org/simple",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceLocator": "pkg:pypi/opentelemetry-api@1.44.0",
+          "referenceType": "purl"
+        }
+      ],
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "name": "opentelemetry-api",
+      "properties": {
+        "ecosystem": "pypi",
+        "scope": "gpu-workload"
+      },
+      "supplier": "NOASSERTION",
+      "versionInfo": "1.44.0"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-pypi-opentelemetry-exporter-otlp-1.44.0-gpu-workload",
+      "downloadLocation": "https://pypi.org/simple",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceLocator": "pkg:pypi/opentelemetry-exporter-otlp@1.44.0",
+          "referenceType": "purl"
+        }
+      ],
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "name": "opentelemetry-exporter-otlp",
+      "properties": {
+        "ecosystem": "pypi",
+        "scope": "gpu-workload"
+      },
+      "supplier": "NOASSERTION",
+      "versionInfo": "1.44.0"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-pypi-opentelemetry-exporter-otlp-proto-common-1.44.0-gpu-workload",
+      "downloadLocation": "https://pypi.org/simple",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceLocator": "pkg:pypi/opentelemetry-exporter-otlp-proto-common@1.44.0",
+          "referenceType": "purl"
+        }
+      ],
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "name": "opentelemetry-exporter-otlp-proto-common",
+      "properties": {
+        "ecosystem": "pypi",
+        "scope": "gpu-workload"
+      },
+      "supplier": "NOASSERTION",
+      "versionInfo": "1.44.0"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-pypi-opentelemetry-exporter-otlp-proto-grpc-1.44.0-gpu-workload",
+      "downloadLocation": "https://pypi.org/simple",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceLocator": "pkg:pypi/opentelemetry-exporter-otlp-proto-grpc@1.44.0",
+          "referenceType": "purl"
+        }
+      ],
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "name": "opentelemetry-exporter-otlp-proto-grpc",
+      "properties": {
+        "ecosystem": "pypi",
+        "scope": "gpu-workload"
+      },
+      "supplier": "NOASSERTION",
+      "versionInfo": "1.44.0"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-pypi-opentelemetry-exporter-otlp-proto-http-1.44.0-gpu-workload",
+      "downloadLocation": "https://pypi.org/simple",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceLocator": "pkg:pypi/opentelemetry-exporter-otlp-proto-http@1.44.0",
+          "referenceType": "purl"
+        }
+      ],
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "name": "opentelemetry-exporter-otlp-proto-http",
+      "properties": {
+        "ecosystem": "pypi",
+        "scope": "gpu-workload"
+      },
+      "supplier": "NOASSERTION",
+      "versionInfo": "1.44.0"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-pypi-opentelemetry-exporter-prometheus-0.65b0-gpu-workload",
+      "downloadLocation": "https://pypi.org/simple",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceLocator": "pkg:pypi/opentelemetry-exporter-prometheus@0.65b0",
+          "referenceType": "purl"
+        }
+      ],
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "name": "opentelemetry-exporter-prometheus",
+      "properties": {
+        "ecosystem": "pypi",
+        "scope": "gpu-workload"
+      },
+      "supplier": "NOASSERTION",
+      "versionInfo": "0.65b0"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-pypi-opentelemetry-proto-1.44.0-gpu-workload",
+      "downloadLocation": "https://pypi.org/simple",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceLocator": "pkg:pypi/opentelemetry-proto@1.44.0",
+          "referenceType": "purl"
+        }
+      ],
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "name": "opentelemetry-proto",
+      "properties": {
+        "ecosystem": "pypi",
+        "scope": "gpu-workload"
+      },
+      "supplier": "NOASSERTION",
+      "versionInfo": "1.44.0"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-pypi-opentelemetry-sdk-1.44.0-gpu-workload",
+      "downloadLocation": "https://pypi.org/simple",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceLocator": "pkg:pypi/opentelemetry-sdk@1.44.0",
+          "referenceType": "purl"
+        }
+      ],
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "name": "opentelemetry-sdk",
+      "properties": {
+        "ecosystem": "pypi",
+        "scope": "gpu-workload"
+      },
+      "supplier": "NOASSERTION",
+      "versionInfo": "1.44.0"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-pypi-opentelemetry-semantic-conventions-0.65b0-gpu-workload",
+      "downloadLocation": "https://pypi.org/simple",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceLocator": "pkg:pypi/opentelemetry-semantic-conventions@0.65b0",
+          "referenceType": "purl"
+        }
+      ],
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "name": "opentelemetry-semantic-conventions",
+      "properties": {
+        "ecosystem": "pypi",
+        "scope": "gpu-workload"
+      },
+      "supplier": "NOASSERTION",
+      "versionInfo": "0.65b0"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-pypi-opentelemetry-semantic-conventions-ai-0.5.1-gpu-workload",
+      "downloadLocation": "https://pypi.org/simple",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceLocator": "pkg:pypi/opentelemetry-semantic-conventions-ai@0.5.1",
+          "referenceType": "purl"
+        }
+      ],
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "name": "opentelemetry-semantic-conventions-ai",
+      "properties": {
+        "ecosystem": "pypi",
+        "scope": "gpu-workload"
+      },
+      "supplier": "NOASSERTION",
+      "versionInfo": "0.5.1"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-pypi-orjson-3.12.0-gpu-workload",
+      "downloadLocation": "https://pypi.org/simple",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceLocator": "pkg:pypi/orjson@3.12.0",
+          "referenceType": "purl"
+        }
+      ],
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "name": "orjson",
+      "properties": {
+        "ecosystem": "pypi",
+        "scope": "gpu-workload"
+      },
+      "supplier": "NOASSERTION",
+      "versionInfo": "3.12.0"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-pypi-outlines-core-0.2.14-gpu-workload",
+      "downloadLocation": "https://pypi.org/simple",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceLocator": "pkg:pypi/outlines-core@0.2.14",
+          "referenceType": "purl"
+        }
+      ],
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "name": "outlines-core",
+      "properties": {
+        "ecosystem": "pypi",
+        "scope": "gpu-workload"
+      },
+      "supplier": "NOASSERTION",
+      "versionInfo": "0.2.14"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-pypi-packaging-25.0-gpu-workload",
+      "downloadLocation": "https://pypi.org/simple",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceLocator": "pkg:pypi/packaging@25.0",
+          "referenceType": "purl"
+        }
+      ],
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "name": "packaging",
+      "properties": {
+        "ecosystem": "pypi",
+        "scope": "gpu-workload"
+      },
+      "supplier": "NOASSERTION",
+      "versionInfo": "25.0"
+    },
+    {
       "SPDXID": "SPDXRef-Package-pypi-packaging-26.3",
       "downloadLocation": "https://pypi.org/simple",
       "externalRefs": [
@@ -7607,6 +10752,46 @@
       },
       "supplier": "NOASSERTION",
       "versionInfo": "26.3"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-pypi-pandas-3.0.5-gpu-workload",
+      "downloadLocation": "https://pypi.org/simple",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceLocator": "pkg:pypi/pandas@3.0.5",
+          "referenceType": "purl"
+        }
+      ],
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "name": "pandas",
+      "properties": {
+        "ecosystem": "pypi",
+        "scope": "gpu-workload"
+      },
+      "supplier": "NOASSERTION",
+      "versionInfo": "3.0.5"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-pypi-partial-json-parser-0.2.1.1.post7-gpu-workload",
+      "downloadLocation": "https://pypi.org/simple",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceLocator": "pkg:pypi/partial-json-parser@0.2.1.1.post7",
+          "referenceType": "purl"
+        }
+      ],
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "name": "partial-json-parser",
+      "properties": {
+        "ecosystem": "pypi",
+        "scope": "gpu-workload"
+      },
+      "supplier": "NOASSERTION",
+      "versionInfo": "0.2.1.1.post7"
     },
     {
       "SPDXID": "SPDXRef-Package-pypi-pathspec-1.1.1",
@@ -7629,6 +10814,66 @@
       "versionInfo": "1.1.1"
     },
     {
+      "SPDXID": "SPDXRef-Package-pypi-peft-0.20.0-gpu-workload",
+      "downloadLocation": "https://pypi.org/simple",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceLocator": "pkg:pypi/peft@0.20.0",
+          "referenceType": "purl"
+        }
+      ],
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "name": "peft",
+      "properties": {
+        "ecosystem": "pypi",
+        "scope": "gpu-workload"
+      },
+      "supplier": "NOASSERTION",
+      "versionInfo": "0.20.0"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-pypi-pillow-12.3.0-gpu-workload",
+      "downloadLocation": "https://pypi.org/simple",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceLocator": "pkg:pypi/pillow@12.3.0",
+          "referenceType": "purl"
+        }
+      ],
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "name": "pillow",
+      "properties": {
+        "ecosystem": "pypi",
+        "scope": "gpu-workload"
+      },
+      "supplier": "NOASSERTION",
+      "versionInfo": "12.3.0"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-pypi-platformdirs-4.11.8-gpu-workload",
+      "downloadLocation": "https://pypi.org/simple",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceLocator": "pkg:pypi/platformdirs@4.11.8",
+          "referenceType": "purl"
+        }
+      ],
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "name": "platformdirs",
+      "properties": {
+        "ecosystem": "pypi",
+        "scope": "gpu-workload"
+      },
+      "supplier": "NOASSERTION",
+      "versionInfo": "4.11.8"
+    },
+    {
       "SPDXID": "SPDXRef-Package-pypi-pluggy-1.6.0",
       "downloadLocation": "https://pypi.org/simple",
       "externalRefs": [
@@ -7647,6 +10892,86 @@
       },
       "supplier": "NOASSERTION",
       "versionInfo": "1.6.0"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-pypi-prometheus-client-0.26.0-gpu-workload",
+      "downloadLocation": "https://pypi.org/simple",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceLocator": "pkg:pypi/prometheus-client@0.26.0",
+          "referenceType": "purl"
+        }
+      ],
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "name": "prometheus-client",
+      "properties": {
+        "ecosystem": "pypi",
+        "scope": "gpu-workload"
+      },
+      "supplier": "NOASSERTION",
+      "versionInfo": "0.26.0"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-pypi-prometheus-fastapi-instrumentator-8.1.0-gpu-workload",
+      "downloadLocation": "https://pypi.org/simple",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceLocator": "pkg:pypi/prometheus-fastapi-instrumentator@8.1.0",
+          "referenceType": "purl"
+        }
+      ],
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "name": "prometheus-fastapi-instrumentator",
+      "properties": {
+        "ecosystem": "pypi",
+        "scope": "gpu-workload"
+      },
+      "supplier": "NOASSERTION",
+      "versionInfo": "8.1.0"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-pypi-propcache-0.5.2-gpu-workload",
+      "downloadLocation": "https://pypi.org/simple",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceLocator": "pkg:pypi/propcache@0.5.2",
+          "referenceType": "purl"
+        }
+      ],
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "name": "propcache",
+      "properties": {
+        "ecosystem": "pypi",
+        "scope": "gpu-workload"
+      },
+      "supplier": "NOASSERTION",
+      "versionInfo": "0.5.2"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-pypi-proto-plus-1.28.4-gpu-workload",
+      "downloadLocation": "https://pypi.org/simple",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceLocator": "pkg:pypi/proto-plus@1.28.4",
+          "referenceType": "purl"
+        }
+      ],
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "name": "proto-plus",
+      "properties": {
+        "ecosystem": "pypi",
+        "scope": "gpu-workload"
+      },
+      "supplier": "NOASSERTION",
+      "versionInfo": "1.28.4"
     },
     {
       "SPDXID": "SPDXRef-Package-pypi-protobuf-5.29.6",
@@ -7669,6 +10994,306 @@
       "versionInfo": "5.29.6"
     },
     {
+      "SPDXID": "SPDXRef-Package-pypi-protobuf-6.33.6-gpu-workload",
+      "downloadLocation": "https://pypi.org/simple",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceLocator": "pkg:pypi/protobuf@6.33.6",
+          "referenceType": "purl"
+        }
+      ],
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "name": "protobuf",
+      "properties": {
+        "ecosystem": "pypi",
+        "scope": "gpu-workload"
+      },
+      "supplier": "NOASSERTION",
+      "versionInfo": "6.33.6"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-pypi-psutil-7.2.2-gpu-workload",
+      "downloadLocation": "https://pypi.org/simple",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceLocator": "pkg:pypi/psutil@7.2.2",
+          "referenceType": "purl"
+        }
+      ],
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "name": "psutil",
+      "properties": {
+        "ecosystem": "pypi",
+        "scope": "gpu-workload"
+      },
+      "supplier": "NOASSERTION",
+      "versionInfo": "7.2.2"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-pypi-py-cpuinfo-9.0.0-gpu-workload",
+      "downloadLocation": "https://pypi.org/simple",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceLocator": "pkg:pypi/py-cpuinfo@9.0.0",
+          "referenceType": "purl"
+        }
+      ],
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "name": "py-cpuinfo",
+      "properties": {
+        "ecosystem": "pypi",
+        "scope": "gpu-workload"
+      },
+      "supplier": "NOASSERTION",
+      "versionInfo": "9.0.0"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-pypi-py-spy-0.4.2-gpu-workload",
+      "downloadLocation": "https://pypi.org/simple",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceLocator": "pkg:pypi/py-spy@0.4.2",
+          "referenceType": "purl"
+        }
+      ],
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "name": "py-spy",
+      "properties": {
+        "ecosystem": "pypi",
+        "scope": "gpu-workload"
+      },
+      "supplier": "NOASSERTION",
+      "versionInfo": "0.4.2"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-pypi-pyarrow-25.0.1-gpu-workload",
+      "downloadLocation": "https://pypi.org/simple",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceLocator": "pkg:pypi/pyarrow@25.0.1",
+          "referenceType": "purl"
+        }
+      ],
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "name": "pyarrow",
+      "properties": {
+        "ecosystem": "pypi",
+        "scope": "gpu-workload"
+      },
+      "supplier": "NOASSERTION",
+      "versionInfo": "25.0.1"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-pypi-pyasn1-0.6.4-gpu-workload",
+      "downloadLocation": "https://pypi.org/simple",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceLocator": "pkg:pypi/pyasn1@0.6.4",
+          "referenceType": "purl"
+        }
+      ],
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "name": "pyasn1",
+      "properties": {
+        "ecosystem": "pypi",
+        "scope": "gpu-workload"
+      },
+      "supplier": "NOASSERTION",
+      "versionInfo": "0.6.4"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-pypi-pyasn1-modules-0.4.2-gpu-workload",
+      "downloadLocation": "https://pypi.org/simple",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceLocator": "pkg:pypi/pyasn1-modules@0.4.2",
+          "referenceType": "purl"
+        }
+      ],
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "name": "pyasn1-modules",
+      "properties": {
+        "ecosystem": "pypi",
+        "scope": "gpu-workload"
+      },
+      "supplier": "NOASSERTION",
+      "versionInfo": "0.4.2"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-pypi-pybase64-1.5.0-gpu-workload",
+      "downloadLocation": "https://pypi.org/simple",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceLocator": "pkg:pypi/pybase64@1.5.0",
+          "referenceType": "purl"
+        }
+      ],
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "name": "pybase64",
+      "properties": {
+        "ecosystem": "pypi",
+        "scope": "gpu-workload"
+      },
+      "supplier": "NOASSERTION",
+      "versionInfo": "1.5.0"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-pypi-pybind11-3.1.0-gpu-workload",
+      "downloadLocation": "https://pypi.org/simple",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceLocator": "pkg:pypi/pybind11@3.1.0",
+          "referenceType": "purl"
+        }
+      ],
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "name": "pybind11",
+      "properties": {
+        "ecosystem": "pypi",
+        "scope": "gpu-workload"
+      },
+      "supplier": "NOASSERTION",
+      "versionInfo": "3.1.0"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-pypi-pycountry-26.2.16-gpu-workload",
+      "downloadLocation": "https://pypi.org/simple",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceLocator": "pkg:pypi/pycountry@26.2.16",
+          "referenceType": "purl"
+        }
+      ],
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "name": "pycountry",
+      "properties": {
+        "ecosystem": "pypi",
+        "scope": "gpu-workload"
+      },
+      "supplier": "NOASSERTION",
+      "versionInfo": "26.2.16"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-pypi-pycparser-3.0-gpu-workload",
+      "downloadLocation": "https://pypi.org/simple",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceLocator": "pkg:pypi/pycparser@3.0",
+          "referenceType": "purl"
+        }
+      ],
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "name": "pycparser",
+      "properties": {
+        "ecosystem": "pypi",
+        "scope": "gpu-workload"
+      },
+      "supplier": "NOASSERTION",
+      "versionInfo": "3.0"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-pypi-pydantic-2.13.5-gpu-workload",
+      "downloadLocation": "https://pypi.org/simple",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceLocator": "pkg:pypi/pydantic@2.13.5",
+          "referenceType": "purl"
+        }
+      ],
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "name": "pydantic",
+      "properties": {
+        "ecosystem": "pypi",
+        "scope": "gpu-workload"
+      },
+      "supplier": "NOASSERTION",
+      "versionInfo": "2.13.5"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-pypi-pydantic-core-2.46.5-gpu-workload",
+      "downloadLocation": "https://pypi.org/simple",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceLocator": "pkg:pypi/pydantic-core@2.46.5",
+          "referenceType": "purl"
+        }
+      ],
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "name": "pydantic-core",
+      "properties": {
+        "ecosystem": "pypi",
+        "scope": "gpu-workload"
+      },
+      "supplier": "NOASSERTION",
+      "versionInfo": "2.46.5"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-pypi-pydantic-extra-types-2.11.1-gpu-workload",
+      "downloadLocation": "https://pypi.org/simple",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceLocator": "pkg:pypi/pydantic-extra-types@2.11.1",
+          "referenceType": "purl"
+        }
+      ],
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "name": "pydantic-extra-types",
+      "properties": {
+        "ecosystem": "pypi",
+        "scope": "gpu-workload"
+      },
+      "supplier": "NOASSERTION",
+      "versionInfo": "2.11.1"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-pypi-pydantic-settings-2.15.0-gpu-workload",
+      "downloadLocation": "https://pypi.org/simple",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceLocator": "pkg:pypi/pydantic-settings@2.15.0",
+          "referenceType": "purl"
+        }
+      ],
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "name": "pydantic-settings",
+      "properties": {
+        "ecosystem": "pypi",
+        "scope": "gpu-workload"
+      },
+      "supplier": "NOASSERTION",
+      "versionInfo": "2.15.0"
+    },
+    {
       "SPDXID": "SPDXRef-Package-pypi-pygments-2.21.0",
       "downloadLocation": "https://pypi.org/simple",
       "externalRefs": [
@@ -7687,6 +11312,86 @@
       },
       "supplier": "NOASSERTION",
       "versionInfo": "2.21.0"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-pypi-pygments-2.21.0-gpu-workload",
+      "downloadLocation": "https://pypi.org/simple",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceLocator": "pkg:pypi/pygments@2.21.0",
+          "referenceType": "purl"
+        }
+      ],
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "name": "pygments",
+      "properties": {
+        "ecosystem": "pypi",
+        "scope": "gpu-workload"
+      },
+      "supplier": "NOASSERTION",
+      "versionInfo": "2.21.0"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-pypi-pyjwt-2.13.0-gpu-workload",
+      "downloadLocation": "https://pypi.org/simple",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceLocator": "pkg:pypi/pyjwt@2.13.0",
+          "referenceType": "purl"
+        }
+      ],
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "name": "pyjwt",
+      "properties": {
+        "ecosystem": "pypi",
+        "scope": "gpu-workload"
+      },
+      "supplier": "NOASSERTION",
+      "versionInfo": "2.13.0"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-pypi-pylatexenc-2.11-gpu-workload",
+      "downloadLocation": "https://pypi.org/simple",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceLocator": "pkg:pypi/pylatexenc@2.11",
+          "referenceType": "purl"
+        }
+      ],
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "name": "pylatexenc",
+      "properties": {
+        "ecosystem": "pypi",
+        "scope": "gpu-workload"
+      },
+      "supplier": "NOASSERTION",
+      "versionInfo": "2.11"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-pypi-pynvvideocodec-2.0.4-gpu-workload",
+      "downloadLocation": "https://pypi.org/simple",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceLocator": "pkg:pypi/pynvvideocodec@2.0.4",
+          "referenceType": "purl"
+        }
+      ],
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "name": "pynvvideocodec",
+      "properties": {
+        "ecosystem": "pypi",
+        "scope": "gpu-workload"
+      },
+      "supplier": "NOASSERTION",
+      "versionInfo": "2.0.4"
     },
     {
       "SPDXID": "SPDXRef-Package-pypi-pytest-8.4.2",
@@ -7729,6 +11434,346 @@
       "versionInfo": "0.26.0"
     },
     {
+      "SPDXID": "SPDXRef-Package-pypi-python-dateutil-2.9.0.post0-gpu-workload",
+      "downloadLocation": "https://pypi.org/simple",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceLocator": "pkg:pypi/python-dateutil@2.9.0.post0",
+          "referenceType": "purl"
+        }
+      ],
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "name": "python-dateutil",
+      "properties": {
+        "ecosystem": "pypi",
+        "scope": "gpu-workload"
+      },
+      "supplier": "NOASSERTION",
+      "versionInfo": "2.9.0.post0"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-pypi-python-discovery-1.6.0-gpu-workload",
+      "downloadLocation": "https://pypi.org/simple",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceLocator": "pkg:pypi/python-discovery@1.6.0",
+          "referenceType": "purl"
+        }
+      ],
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "name": "python-discovery",
+      "properties": {
+        "ecosystem": "pypi",
+        "scope": "gpu-workload"
+      },
+      "supplier": "NOASSERTION",
+      "versionInfo": "1.6.0"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-pypi-python-dotenv-1.2.3-gpu-workload",
+      "downloadLocation": "https://pypi.org/simple",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceLocator": "pkg:pypi/python-dotenv@1.2.3",
+          "referenceType": "purl"
+        }
+      ],
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "name": "python-dotenv",
+      "properties": {
+        "ecosystem": "pypi",
+        "scope": "gpu-workload"
+      },
+      "supplier": "NOASSERTION",
+      "versionInfo": "1.2.3"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-pypi-python-json-logger-4.2.0-gpu-workload",
+      "downloadLocation": "https://pypi.org/simple",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceLocator": "pkg:pypi/python-json-logger@4.2.0",
+          "referenceType": "purl"
+        }
+      ],
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "name": "python-json-logger",
+      "properties": {
+        "ecosystem": "pypi",
+        "scope": "gpu-workload"
+      },
+      "supplier": "NOASSERTION",
+      "versionInfo": "4.2.0"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-pypi-python-multipart-0.0.32-gpu-workload",
+      "downloadLocation": "https://pypi.org/simple",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceLocator": "pkg:pypi/python-multipart@0.0.32",
+          "referenceType": "purl"
+        }
+      ],
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "name": "python-multipart",
+      "properties": {
+        "ecosystem": "pypi",
+        "scope": "gpu-workload"
+      },
+      "supplier": "NOASSERTION",
+      "versionInfo": "0.0.32"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-pypi-pyvers-0.1.0-gpu-workload",
+      "downloadLocation": "https://pypi.org/simple",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceLocator": "pkg:pypi/pyvers@0.1.0",
+          "referenceType": "purl"
+        }
+      ],
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "name": "pyvers",
+      "properties": {
+        "ecosystem": "pypi",
+        "scope": "gpu-workload"
+      },
+      "supplier": "NOASSERTION",
+      "versionInfo": "0.1.0"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-pypi-pyyaml-6.0.3-gpu-workload",
+      "downloadLocation": "https://pypi.org/simple",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceLocator": "pkg:pypi/pyyaml@6.0.3",
+          "referenceType": "purl"
+        }
+      ],
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "name": "pyyaml",
+      "properties": {
+        "ecosystem": "pypi",
+        "scope": "gpu-workload"
+      },
+      "supplier": "NOASSERTION",
+      "versionInfo": "6.0.3"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-pypi-pyzmq-27.2.0-gpu-workload",
+      "downloadLocation": "https://pypi.org/simple",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceLocator": "pkg:pypi/pyzmq@27.2.0",
+          "referenceType": "purl"
+        }
+      ],
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "name": "pyzmq",
+      "properties": {
+        "ecosystem": "pypi",
+        "scope": "gpu-workload"
+      },
+      "supplier": "NOASSERTION",
+      "versionInfo": "27.2.0"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-pypi-quack-kernels-0.6.4-gpu-workload",
+      "downloadLocation": "https://pypi.org/simple",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceLocator": "pkg:pypi/quack-kernels@0.6.4",
+          "referenceType": "purl"
+        }
+      ],
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "name": "quack-kernels",
+      "properties": {
+        "ecosystem": "pypi",
+        "scope": "gpu-workload"
+      },
+      "supplier": "NOASSERTION",
+      "versionInfo": "0.6.4"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-pypi-ray-2.58.0-gpu-workload",
+      "downloadLocation": "https://pypi.org/simple",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceLocator": "pkg:pypi/ray@2.58.0",
+          "referenceType": "purl"
+        }
+      ],
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "name": "ray",
+      "properties": {
+        "ecosystem": "pypi",
+        "scope": "gpu-workload"
+      },
+      "supplier": "NOASSERTION",
+      "versionInfo": "2.58.0"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-pypi-referencing-0.37.0-gpu-workload",
+      "downloadLocation": "https://pypi.org/simple",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceLocator": "pkg:pypi/referencing@0.37.0",
+          "referenceType": "purl"
+        }
+      ],
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "name": "referencing",
+      "properties": {
+        "ecosystem": "pypi",
+        "scope": "gpu-workload"
+      },
+      "supplier": "NOASSERTION",
+      "versionInfo": "0.37.0"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-pypi-regex-2026.9.10-gpu-workload",
+      "downloadLocation": "https://pypi.org/simple",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceLocator": "pkg:pypi/regex@2026.9.10",
+          "referenceType": "purl"
+        }
+      ],
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "name": "regex",
+      "properties": {
+        "ecosystem": "pypi",
+        "scope": "gpu-workload"
+      },
+      "supplier": "NOASSERTION",
+      "versionInfo": "2026.9.10"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-pypi-requests-2.34.2-gpu-workload",
+      "downloadLocation": "https://pypi.org/simple",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceLocator": "pkg:pypi/requests@2.34.2",
+          "referenceType": "purl"
+        }
+      ],
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "name": "requests",
+      "properties": {
+        "ecosystem": "pypi",
+        "scope": "gpu-workload"
+      },
+      "supplier": "NOASSERTION",
+      "versionInfo": "2.34.2"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-pypi-rich-15.0.0-gpu-workload",
+      "downloadLocation": "https://pypi.org/simple",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceLocator": "pkg:pypi/rich@15.0.0",
+          "referenceType": "purl"
+        }
+      ],
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "name": "rich",
+      "properties": {
+        "ecosystem": "pypi",
+        "scope": "gpu-workload"
+      },
+      "supplier": "NOASSERTION",
+      "versionInfo": "15.0.0"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-pypi-rich-toolkit-0.20.5-gpu-workload",
+      "downloadLocation": "https://pypi.org/simple",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceLocator": "pkg:pypi/rich-toolkit@0.20.5",
+          "referenceType": "purl"
+        }
+      ],
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "name": "rich-toolkit",
+      "properties": {
+        "ecosystem": "pypi",
+        "scope": "gpu-workload"
+      },
+      "supplier": "NOASSERTION",
+      "versionInfo": "0.20.5"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-pypi-rignore-0.8.1-gpu-workload",
+      "downloadLocation": "https://pypi.org/simple",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceLocator": "pkg:pypi/rignore@0.8.1",
+          "referenceType": "purl"
+        }
+      ],
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "name": "rignore",
+      "properties": {
+        "ecosystem": "pypi",
+        "scope": "gpu-workload"
+      },
+      "supplier": "NOASSERTION",
+      "versionInfo": "0.8.1"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-pypi-rpds-py-2026.6.3-gpu-workload",
+      "downloadLocation": "https://pypi.org/simple",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceLocator": "pkg:pypi/rpds-py@2026.6.3",
+          "referenceType": "purl"
+        }
+      ],
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "name": "rpds-py",
+      "properties": {
+        "ecosystem": "pypi",
+        "scope": "gpu-workload"
+      },
+      "supplier": "NOASSERTION",
+      "versionInfo": "2026.6.3"
+    },
+    {
       "SPDXID": "SPDXRef-Package-pypi-ruff-0.16.5",
       "downloadLocation": "https://pypi.org/simple",
       "externalRefs": [
@@ -7747,6 +11792,186 @@
       },
       "supplier": "NOASSERTION",
       "versionInfo": "0.16.5"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-pypi-safetensors-0.8.0-gpu-workload",
+      "downloadLocation": "https://pypi.org/simple",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceLocator": "pkg:pypi/safetensors@0.8.0",
+          "referenceType": "purl"
+        }
+      ],
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "name": "safetensors",
+      "properties": {
+        "ecosystem": "pypi",
+        "scope": "gpu-workload"
+      },
+      "supplier": "NOASSERTION",
+      "versionInfo": "0.8.0"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-pypi-sentencepiece-0.2.2-gpu-workload",
+      "downloadLocation": "https://pypi.org/simple",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceLocator": "pkg:pypi/sentencepiece@0.2.2",
+          "referenceType": "purl"
+        }
+      ],
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "name": "sentencepiece",
+      "properties": {
+        "ecosystem": "pypi",
+        "scope": "gpu-workload"
+      },
+      "supplier": "NOASSERTION",
+      "versionInfo": "0.2.2"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-pypi-sentry-sdk-2.69.1-gpu-workload",
+      "downloadLocation": "https://pypi.org/simple",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceLocator": "pkg:pypi/sentry-sdk@2.69.1",
+          "referenceType": "purl"
+        }
+      ],
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "name": "sentry-sdk",
+      "properties": {
+        "ecosystem": "pypi",
+        "scope": "gpu-workload"
+      },
+      "supplier": "NOASSERTION",
+      "versionInfo": "2.69.1"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-pypi-setproctitle-1.3.7-gpu-workload",
+      "downloadLocation": "https://pypi.org/simple",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceLocator": "pkg:pypi/setproctitle@1.3.7",
+          "referenceType": "purl"
+        }
+      ],
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "name": "setproctitle",
+      "properties": {
+        "ecosystem": "pypi",
+        "scope": "gpu-workload"
+      },
+      "supplier": "NOASSERTION",
+      "versionInfo": "1.3.7"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-pypi-setuptools-80.10.2-gpu-workload",
+      "downloadLocation": "https://pypi.org/simple",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceLocator": "pkg:pypi/setuptools@80.10.2",
+          "referenceType": "purl"
+        }
+      ],
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "name": "setuptools",
+      "properties": {
+        "ecosystem": "pypi",
+        "scope": "gpu-workload"
+      },
+      "supplier": "NOASSERTION",
+      "versionInfo": "80.10.2"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-pypi-shellingham-1.5.4-gpu-workload",
+      "downloadLocation": "https://pypi.org/simple",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceLocator": "pkg:pypi/shellingham@1.5.4",
+          "referenceType": "purl"
+        }
+      ],
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "name": "shellingham",
+      "properties": {
+        "ecosystem": "pypi",
+        "scope": "gpu-workload"
+      },
+      "supplier": "NOASSERTION",
+      "versionInfo": "1.5.4"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-pypi-six-1.17.0-gpu-workload",
+      "downloadLocation": "https://pypi.org/simple",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceLocator": "pkg:pypi/six@1.17.0",
+          "referenceType": "purl"
+        }
+      ],
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "name": "six",
+      "properties": {
+        "ecosystem": "pypi",
+        "scope": "gpu-workload"
+      },
+      "supplier": "NOASSERTION",
+      "versionInfo": "1.17.0"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-pypi-smart-open-8.0.1-gpu-workload",
+      "downloadLocation": "https://pypi.org/simple",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceLocator": "pkg:pypi/smart-open@8.0.1",
+          "referenceType": "purl"
+        }
+      ],
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "name": "smart-open",
+      "properties": {
+        "ecosystem": "pypi",
+        "scope": "gpu-workload"
+      },
+      "supplier": "NOASSERTION",
+      "versionInfo": "8.0.1"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-pypi-sniffio-1.3.1-gpu-workload",
+      "downloadLocation": "https://pypi.org/simple",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceLocator": "pkg:pypi/sniffio@1.3.1",
+          "referenceType": "purl"
+        }
+      ],
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "name": "sniffio",
+      "properties": {
+        "ecosystem": "pypi",
+        "scope": "gpu-workload"
+      },
+      "supplier": "NOASSERTION",
+      "versionInfo": "1.3.1"
     },
     {
       "SPDXID": "SPDXRef-Package-pypi-sortedcontainers-2.4.0",
@@ -7769,6 +11994,166 @@
       "versionInfo": "2.4.0"
     },
     {
+      "SPDXID": "SPDXRef-Package-pypi-sse-starlette-3.4.11-gpu-workload",
+      "downloadLocation": "https://pypi.org/simple",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceLocator": "pkg:pypi/sse-starlette@3.4.11",
+          "referenceType": "purl"
+        }
+      ],
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "name": "sse-starlette",
+      "properties": {
+        "ecosystem": "pypi",
+        "scope": "gpu-workload"
+      },
+      "supplier": "NOASSERTION",
+      "versionInfo": "3.4.11"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-pypi-starlette-1.6.0-gpu-workload",
+      "downloadLocation": "https://pypi.org/simple",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceLocator": "pkg:pypi/starlette@1.6.0",
+          "referenceType": "purl"
+        }
+      ],
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "name": "starlette",
+      "properties": {
+        "ecosystem": "pypi",
+        "scope": "gpu-workload"
+      },
+      "supplier": "NOASSERTION",
+      "versionInfo": "1.6.0"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-pypi-supervisor-4.3.0-gpu-workload",
+      "downloadLocation": "https://pypi.org/simple",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceLocator": "pkg:pypi/supervisor@4.3.0",
+          "referenceType": "purl"
+        }
+      ],
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "name": "supervisor",
+      "properties": {
+        "ecosystem": "pypi",
+        "scope": "gpu-workload"
+      },
+      "supplier": "NOASSERTION",
+      "versionInfo": "4.3.0"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-pypi-sympy-1.14.0-gpu-workload",
+      "downloadLocation": "https://pypi.org/simple",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceLocator": "pkg:pypi/sympy@1.14.0",
+          "referenceType": "purl"
+        }
+      ],
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "name": "sympy",
+      "properties": {
+        "ecosystem": "pypi",
+        "scope": "gpu-workload"
+      },
+      "supplier": "NOASSERTION",
+      "versionInfo": "1.14.0"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-pypi-tabulate-0.10.0-gpu-workload",
+      "downloadLocation": "https://pypi.org/simple",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceLocator": "pkg:pypi/tabulate@0.10.0",
+          "referenceType": "purl"
+        }
+      ],
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "name": "tabulate",
+      "properties": {
+        "ecosystem": "pypi",
+        "scope": "gpu-workload"
+      },
+      "supplier": "NOASSERTION",
+      "versionInfo": "0.10.0"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-pypi-tensorboard-2.21.0-gpu-workload",
+      "downloadLocation": "https://pypi.org/simple",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceLocator": "pkg:pypi/tensorboard@2.21.0",
+          "referenceType": "purl"
+        }
+      ],
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "name": "tensorboard",
+      "properties": {
+        "ecosystem": "pypi",
+        "scope": "gpu-workload"
+      },
+      "supplier": "NOASSERTION",
+      "versionInfo": "2.21.0"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-pypi-tensorboard-data-server-0.7.2-gpu-workload",
+      "downloadLocation": "https://pypi.org/simple",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceLocator": "pkg:pypi/tensorboard-data-server@0.7.2",
+          "referenceType": "purl"
+        }
+      ],
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "name": "tensorboard-data-server",
+      "properties": {
+        "ecosystem": "pypi",
+        "scope": "gpu-workload"
+      },
+      "supplier": "NOASSERTION",
+      "versionInfo": "0.7.2"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-pypi-tensordict-0.10.0-gpu-workload",
+      "downloadLocation": "https://pypi.org/simple",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceLocator": "pkg:pypi/tensordict@0.10.0",
+          "referenceType": "purl"
+        }
+      ],
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "name": "tensordict",
+      "properties": {
+        "ecosystem": "pypi",
+        "scope": "gpu-workload"
+      },
+      "supplier": "NOASSERTION",
+      "versionInfo": "0.10.0"
+    },
+    {
       "SPDXID": "SPDXRef-Package-pypi-tgsrl-runtime-0.1.0",
       "downloadLocation": "NOASSERTION",
       "externalRefs": [
@@ -7787,6 +12172,326 @@
       },
       "supplier": "NOASSERTION",
       "versionInfo": "0.1.0"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-pypi-tiktoken-0.14.0-gpu-workload",
+      "downloadLocation": "https://pypi.org/simple",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceLocator": "pkg:pypi/tiktoken@0.14.0",
+          "referenceType": "purl"
+        }
+      ],
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "name": "tiktoken",
+      "properties": {
+        "ecosystem": "pypi",
+        "scope": "gpu-workload"
+      },
+      "supplier": "NOASSERTION",
+      "versionInfo": "0.14.0"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-pypi-tilelang-0.1.12-gpu-workload",
+      "downloadLocation": "https://pypi.org/simple",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceLocator": "pkg:pypi/tilelang@0.1.12",
+          "referenceType": "purl"
+        }
+      ],
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "name": "tilelang",
+      "properties": {
+        "ecosystem": "pypi",
+        "scope": "gpu-workload"
+      },
+      "supplier": "NOASSERTION",
+      "versionInfo": "0.1.12"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-pypi-tokenizers-0.22.2-gpu-workload",
+      "downloadLocation": "https://pypi.org/simple",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceLocator": "pkg:pypi/tokenizers@0.22.2",
+          "referenceType": "purl"
+        }
+      ],
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "name": "tokenizers",
+      "properties": {
+        "ecosystem": "pypi",
+        "scope": "gpu-workload"
+      },
+      "supplier": "NOASSERTION",
+      "versionInfo": "0.22.2"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-pypi-tokenspeed-mla-0.1.8-gpu-workload",
+      "downloadLocation": "https://pypi.org/simple",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceLocator": "pkg:pypi/tokenspeed-mla@0.1.8",
+          "referenceType": "purl"
+        }
+      ],
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "name": "tokenspeed-mla",
+      "properties": {
+        "ecosystem": "pypi",
+        "scope": "gpu-workload"
+      },
+      "supplier": "NOASSERTION",
+      "versionInfo": "0.1.8"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-pypi-tokenspeed-triton-3.8.10.post20260906-gpu-workload",
+      "downloadLocation": "https://pypi.org/simple",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceLocator": "pkg:pypi/tokenspeed-triton@3.8.10.post20260906",
+          "referenceType": "purl"
+        }
+      ],
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "name": "tokenspeed-triton",
+      "properties": {
+        "ecosystem": "pypi",
+        "scope": "gpu-workload"
+      },
+      "supplier": "NOASSERTION",
+      "versionInfo": "3.8.10.post20260906"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-pypi-torch-2.13.0-cu130-gpu-workload",
+      "downloadLocation": "https://download.pytorch.org/whl/cu130",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceLocator": "pkg:pypi/torch@2.13.0+cu130",
+          "referenceType": "purl"
+        }
+      ],
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "name": "torch",
+      "properties": {
+        "ecosystem": "pypi",
+        "scope": "gpu-workload"
+      },
+      "supplier": "NOASSERTION",
+      "versionInfo": "2.13.0+cu130"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-pypi-torch-c-dlpack-ext-0.1.5-gpu-workload",
+      "downloadLocation": "https://pypi.org/simple",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceLocator": "pkg:pypi/torch-c-dlpack-ext@0.1.5",
+          "referenceType": "purl"
+        }
+      ],
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "name": "torch-c-dlpack-ext",
+      "properties": {
+        "ecosystem": "pypi",
+        "scope": "gpu-workload"
+      },
+      "supplier": "NOASSERTION",
+      "versionInfo": "0.1.5"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-pypi-torchaudio-2.11.0-cu130-gpu-workload",
+      "downloadLocation": "https://pypi.org/simple",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceLocator": "pkg:pypi/torchaudio@2.11.0+cu130",
+          "referenceType": "purl"
+        }
+      ],
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "name": "torchaudio",
+      "properties": {
+        "ecosystem": "pypi",
+        "scope": "gpu-workload"
+      },
+      "supplier": "NOASSERTION",
+      "versionInfo": "2.11.0+cu130"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-pypi-torchcodec-0.16.0-cu130-gpu-workload",
+      "downloadLocation": "https://pypi.org/simple",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceLocator": "pkg:pypi/torchcodec@0.16.0+cu130",
+          "referenceType": "purl"
+        }
+      ],
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "name": "torchcodec",
+      "properties": {
+        "ecosystem": "pypi",
+        "scope": "gpu-workload"
+      },
+      "supplier": "NOASSERTION",
+      "versionInfo": "0.16.0+cu130"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-pypi-torchdata-0.11.0-gpu-workload",
+      "downloadLocation": "https://pypi.org/simple",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceLocator": "pkg:pypi/torchdata@0.11.0",
+          "referenceType": "purl"
+        }
+      ],
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "name": "torchdata",
+      "properties": {
+        "ecosystem": "pypi",
+        "scope": "gpu-workload"
+      },
+      "supplier": "NOASSERTION",
+      "versionInfo": "0.11.0"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-pypi-torchvision-0.28.0-cu130-gpu-workload",
+      "downloadLocation": "https://pypi.org/simple",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceLocator": "pkg:pypi/torchvision@0.28.0+cu130",
+          "referenceType": "purl"
+        }
+      ],
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "name": "torchvision",
+      "properties": {
+        "ecosystem": "pypi",
+        "scope": "gpu-workload"
+      },
+      "supplier": "NOASSERTION",
+      "versionInfo": "0.28.0+cu130"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-pypi-tqdm-4.70.0-gpu-workload",
+      "downloadLocation": "https://pypi.org/simple",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceLocator": "pkg:pypi/tqdm@4.70.0",
+          "referenceType": "purl"
+        }
+      ],
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "name": "tqdm",
+      "properties": {
+        "ecosystem": "pypi",
+        "scope": "gpu-workload"
+      },
+      "supplier": "NOASSERTION",
+      "versionInfo": "4.70.0"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-pypi-transformers-5.10.4-gpu-workload",
+      "downloadLocation": "https://pypi.org/simple",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceLocator": "pkg:pypi/transformers@5.10.4",
+          "referenceType": "purl"
+        }
+      ],
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "name": "transformers",
+      "properties": {
+        "ecosystem": "pypi",
+        "scope": "gpu-workload"
+      },
+      "supplier": "NOASSERTION",
+      "versionInfo": "5.10.4"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-pypi-triton-3.7.1-gpu-workload",
+      "downloadLocation": "https://pypi.org/simple",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceLocator": "pkg:pypi/triton@3.7.1",
+          "referenceType": "purl"
+        }
+      ],
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "name": "triton",
+      "properties": {
+        "ecosystem": "pypi",
+        "scope": "gpu-workload"
+      },
+      "supplier": "NOASSERTION",
+      "versionInfo": "3.7.1"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-pypi-truststore-0.10.4-gpu-workload",
+      "downloadLocation": "https://pypi.org/simple",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceLocator": "pkg:pypi/truststore@0.10.4",
+          "referenceType": "purl"
+        }
+      ],
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "name": "truststore",
+      "properties": {
+        "ecosystem": "pypi",
+        "scope": "gpu-workload"
+      },
+      "supplier": "NOASSERTION",
+      "versionInfo": "0.10.4"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-pypi-typer-0.27.2-gpu-workload",
+      "downloadLocation": "https://pypi.org/simple",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceLocator": "pkg:pypi/typer@0.27.2",
+          "referenceType": "purl"
+        }
+      ],
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "name": "typer",
+      "properties": {
+        "ecosystem": "pypi",
+        "scope": "gpu-workload"
+      },
+      "supplier": "NOASSERTION",
+      "versionInfo": "0.27.2"
     },
     {
       "SPDXID": "SPDXRef-Package-pypi-types-grpcio-1.83.0.20260730",
@@ -7847,6 +12552,366 @@
       },
       "supplier": "NOASSERTION",
       "versionInfo": "4.16.0"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-pypi-typing-extensions-4.16.0-gpu-workload",
+      "downloadLocation": "https://pypi.org/simple",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceLocator": "pkg:pypi/typing-extensions@4.16.0",
+          "referenceType": "purl"
+        }
+      ],
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "name": "typing-extensions",
+      "properties": {
+        "ecosystem": "pypi",
+        "scope": "gpu-workload"
+      },
+      "supplier": "NOASSERTION",
+      "versionInfo": "4.16.0"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-pypi-typing-inspection-0.4.4-gpu-workload",
+      "downloadLocation": "https://pypi.org/simple",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceLocator": "pkg:pypi/typing-inspection@0.4.4",
+          "referenceType": "purl"
+        }
+      ],
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "name": "typing-inspection",
+      "properties": {
+        "ecosystem": "pypi",
+        "scope": "gpu-workload"
+      },
+      "supplier": "NOASSERTION",
+      "versionInfo": "0.4.4"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-pypi-urllib3-2.7.0-gpu-workload",
+      "downloadLocation": "https://pypi.org/simple",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceLocator": "pkg:pypi/urllib3@2.7.0",
+          "referenceType": "purl"
+        }
+      ],
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "name": "urllib3",
+      "properties": {
+        "ecosystem": "pypi",
+        "scope": "gpu-workload"
+      },
+      "supplier": "NOASSERTION",
+      "versionInfo": "2.7.0"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-pypi-uvicorn-0.52.4-gpu-workload",
+      "downloadLocation": "https://pypi.org/simple",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceLocator": "pkg:pypi/uvicorn@0.52.4",
+          "referenceType": "purl"
+        }
+      ],
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "name": "uvicorn",
+      "properties": {
+        "ecosystem": "pypi",
+        "scope": "gpu-workload"
+      },
+      "supplier": "NOASSERTION",
+      "versionInfo": "0.52.4"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-pypi-uvloop-0.22.1-gpu-workload",
+      "downloadLocation": "https://pypi.org/simple",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceLocator": "pkg:pypi/uvloop@0.22.1",
+          "referenceType": "purl"
+        }
+      ],
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "name": "uvloop",
+      "properties": {
+        "ecosystem": "pypi",
+        "scope": "gpu-workload"
+      },
+      "supplier": "NOASSERTION",
+      "versionInfo": "0.22.1"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-pypi-verl-0.9.0-gpu-workload",
+      "downloadLocation": "https://pypi.org/simple",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceLocator": "pkg:pypi/verl@0.9.0",
+          "referenceType": "purl"
+        }
+      ],
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "name": "verl",
+      "properties": {
+        "ecosystem": "pypi",
+        "scope": "gpu-workload"
+      },
+      "supplier": "NOASSERTION",
+      "versionInfo": "0.9.0"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-pypi-virtualenv-21.7.9-gpu-workload",
+      "downloadLocation": "https://pypi.org/simple",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceLocator": "pkg:pypi/virtualenv@21.7.9",
+          "referenceType": "purl"
+        }
+      ],
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "name": "virtualenv",
+      "properties": {
+        "ecosystem": "pypi",
+        "scope": "gpu-workload"
+      },
+      "supplier": "NOASSERTION",
+      "versionInfo": "21.7.9"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-pypi-vllm-0.28.0-gpu-workload",
+      "downloadLocation": "https://pypi.org/simple",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceLocator": "pkg:pypi/vllm@0.28.0",
+          "referenceType": "purl"
+        }
+      ],
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "name": "vllm",
+      "properties": {
+        "ecosystem": "pypi",
+        "scope": "gpu-workload"
+      },
+      "supplier": "NOASSERTION",
+      "versionInfo": "0.28.0"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-pypi-wandb-0.30.0-gpu-workload",
+      "downloadLocation": "https://pypi.org/simple",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceLocator": "pkg:pypi/wandb@0.30.0",
+          "referenceType": "purl"
+        }
+      ],
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "name": "wandb",
+      "properties": {
+        "ecosystem": "pypi",
+        "scope": "gpu-workload"
+      },
+      "supplier": "NOASSERTION",
+      "versionInfo": "0.30.0"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-pypi-watchfiles-1.2.0-gpu-workload",
+      "downloadLocation": "https://pypi.org/simple",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceLocator": "pkg:pypi/watchfiles@1.2.0",
+          "referenceType": "purl"
+        }
+      ],
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "name": "watchfiles",
+      "properties": {
+        "ecosystem": "pypi",
+        "scope": "gpu-workload"
+      },
+      "supplier": "NOASSERTION",
+      "versionInfo": "1.2.0"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-pypi-websockets-17.1-gpu-workload",
+      "downloadLocation": "https://pypi.org/simple",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceLocator": "pkg:pypi/websockets@17.1",
+          "referenceType": "purl"
+        }
+      ],
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "name": "websockets",
+      "properties": {
+        "ecosystem": "pypi",
+        "scope": "gpu-workload"
+      },
+      "supplier": "NOASSERTION",
+      "versionInfo": "17.1"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-pypi-werkzeug-3.1.8-gpu-workload",
+      "downloadLocation": "https://pypi.org/simple",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceLocator": "pkg:pypi/werkzeug@3.1.8",
+          "referenceType": "purl"
+        }
+      ],
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "name": "werkzeug",
+      "properties": {
+        "ecosystem": "pypi",
+        "scope": "gpu-workload"
+      },
+      "supplier": "NOASSERTION",
+      "versionInfo": "3.1.8"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-pypi-wrapt-2.4.0-gpu-workload",
+      "downloadLocation": "https://pypi.org/simple",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceLocator": "pkg:pypi/wrapt@2.4.0",
+          "referenceType": "purl"
+        }
+      ],
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "name": "wrapt",
+      "properties": {
+        "ecosystem": "pypi",
+        "scope": "gpu-workload"
+      },
+      "supplier": "NOASSERTION",
+      "versionInfo": "2.4.0"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-pypi-xgrammar-0.2.6-gpu-workload",
+      "downloadLocation": "https://pypi.org/simple",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceLocator": "pkg:pypi/xgrammar@0.2.6",
+          "referenceType": "purl"
+        }
+      ],
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "name": "xgrammar",
+      "properties": {
+        "ecosystem": "pypi",
+        "scope": "gpu-workload"
+      },
+      "supplier": "NOASSERTION",
+      "versionInfo": "0.2.6"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-pypi-xxhash-4.0.1-gpu-workload",
+      "downloadLocation": "https://pypi.org/simple",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceLocator": "pkg:pypi/xxhash@4.0.1",
+          "referenceType": "purl"
+        }
+      ],
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "name": "xxhash",
+      "properties": {
+        "ecosystem": "pypi",
+        "scope": "gpu-workload"
+      },
+      "supplier": "NOASSERTION",
+      "versionInfo": "4.0.1"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-pypi-yarl-1.24.5-gpu-workload",
+      "downloadLocation": "https://pypi.org/simple",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceLocator": "pkg:pypi/yarl@1.24.5",
+          "referenceType": "purl"
+        }
+      ],
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "name": "yarl",
+      "properties": {
+        "ecosystem": "pypi",
+        "scope": "gpu-workload"
+      },
+      "supplier": "NOASSERTION",
+      "versionInfo": "1.24.5"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-pypi-z3-solver-4.15.4.0-gpu-workload",
+      "downloadLocation": "https://pypi.org/simple",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceLocator": "pkg:pypi/z3-solver@4.15.4.0",
+          "referenceType": "purl"
+        }
+      ],
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "name": "z3-solver",
+      "properties": {
+        "ecosystem": "pypi",
+        "scope": "gpu-workload"
+      },
+      "supplier": "NOASSERTION",
+      "versionInfo": "4.15.4.0"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-pypi-zipp-4.1.0-gpu-workload",
+      "downloadLocation": "https://pypi.org/simple",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE-MANAGER",
+          "referenceLocator": "pkg:pypi/zipp@4.1.0",
+          "referenceType": "purl"
+        }
+      ],
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "name": "zipp",
+      "properties": {
+        "ecosystem": "pypi",
+        "scope": "gpu-workload"
+      },
+      "supplier": "NOASSERTION",
+      "versionInfo": "4.1.0"
     }
   ],
   "spdxVersion": "SPDX-2.3"

@@ -127,3 +127,9 @@ func TestValidateRuntimeConfigRequiresCompleteBootstrapContract(t *testing.T) {
 		})
 	}
 }
+
+func TestValidateRuntimeConfigRejectsHostNetworkWithoutBootstrap(t *testing.T) {
+	if _, err := ValidateRuntimeConfig(RuntimeConfig{Bootstrap: WorkerBootstrapConfig{HostNetwork: true}}); err == nil || !strings.Contains(err.Error(), "host networking requires worker bootstrap") {
+		t.Fatalf("host network validation error = %v", err)
+	}
+}

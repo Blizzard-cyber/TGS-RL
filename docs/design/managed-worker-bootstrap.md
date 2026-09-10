@@ -76,8 +76,11 @@ Operator 为每个 concrete binding 生成独立 Job，设置 `backoffLimit: 0`�
 从不可变 digest 镜像安装 bootstrap。main container 的原命令被包装为：
 
 ```text
-/opt/tgsrl/tgsrl-worker-bootstrap --listen 0.0.0.0:50092 -- <manifest command...>
+/var/run/tgsrl-bootstrap/tgsrl-worker-bootstrap --listen 0.0.0.0:50092 -- <manifest command...>
 ```
+
+bootstrap 使用独立的 `/var/run/tgsrl-bootstrap` emptyDir；不得挂载到 `/opt/tgsrl` 等常见
+workload 路径，否则会遮住镜像自身的代码和入口。
 
 bootstrap 的启动顺序为：
 

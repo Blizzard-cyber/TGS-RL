@@ -52,6 +52,9 @@ spec:
             - --worker-registry-url={{ .Values.controller.workerBootstrap.registryURL }}
             - --worker-registry-signing-key-file=/var/run/secrets/tgsrl-worker-registry/signing-key
             - --worker-verify-device-identities={{ .Values.controller.workerBootstrap.verifyDeviceIdentities }}
+{{ if .Values.controller.workerBootstrap.hostNetwork }}
+            - --worker-host-network=true
+{{ end }}
 {{ end }}
             - --cursor-dir={{ .Values.persistence.mountPath }}
           ports:

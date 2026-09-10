@@ -160,6 +160,7 @@ func TestCompileWrapsWorkloadWithManagedWorkerBootstrap(t *testing.T) {
 		RegistryURL:        "https://scheduler.example.test:50091",
 		RegistrySigningKey: signingKey,
 		VerifyDeviceIDs:    true,
+		HostNetwork:        true,
 	}})
 	if err != nil {
 		t.Fatal(err)
@@ -174,6 +175,9 @@ func TestCompileWrapsWorkloadWithManagedWorkerBootstrap(t *testing.T) {
 	input.JobRun.Runtime.Environment["TGSRL_GENERATION"] = "malicious"
 	input.RuntimeManifest.WorkingDirectory = "/workspace"
 	input.RuntimeManifest.Framework = "verl"
+	input.RuntimeManifest.ExecutionBackend = "ray"
+	input.RuntimeManifest.Trainer = "pytorch"
+	input.RuntimeManifest.RolloutEngine = "vllm"
 	input.RuntimeManifest.Environment["MANIFEST_ONLY"] = "frozen"
 	input.RuntimeManifest.Environment["TGSRL_VERL_CONTROL_SOCKET"] = "/tmp/gate/worker.sock"
 	input.RuntimeManifest.Environment["TGSRL_VERL_TRACE_PATH"] = "/tmp/gate/trace.ndjson"
@@ -195,9 +199,15 @@ func TestCompileWrapsWorkloadWithManagedWorkerBootstrap(t *testing.T) {
 	if pod.SecurityContext == nil || pod.SecurityContext.FSGroup != 65532 || pod.SecurityContext.FSGroupChangePolicy != "OnRootMismatch" {
 		t.Fatalf("bootstrap pod security context = %+v", pod.SecurityContext)
 	}
+	if !pod.HostNetwork || pod.DNSPolicy != "ClusterFirstWithHostNet" {
+		t.Fatalf("bootstrap network mode = host:%v dns:%q", pod.HostNetwork, pod.DNSPolicy)
+	}
 	main := pod.Containers[0]
-	if len(main.Command) != 1 || main.Command[0] != "/opt/tgsrl/tgsrl-worker-bootstrap" {
+	if len(main.Command) != 1 || main.Command[0] != WorkerBootstrapBinaryPath {
 		t.Fatalf("bootstrap command = %+v", main.Command)
+	}
+	if len(main.VolumeMounts) != 1 || main.VolumeMounts[0].MountPath != WorkerBootstrapMountPath {
+		t.Fatalf("bootstrap mount must not shadow the workload image: %+v", main.VolumeMounts)
 	}
 	wantArgs := []string{"--listen", "0.0.0.0:50092", "--", "python", "train.py", "--steps", "10"}
 	if !slices.Equal(main.Args, wantArgs) {
@@ -215,6 +225,9 @@ func TestCompileWrapsWorkloadWithManagedWorkerBootstrap(t *testing.T) {
 	}
 	if environment["TGSRL_POLICY_VERSION"].Value != input.RuntimeManifest.GetPolicyVersion() || environment["TGSRL_ALGORITHM"].Value != input.RuntimeManifest.GetAnnotations()["algorithm"] {
 		t.Fatalf("veRL execution environment = %+v", environment)
+	}
+	if environment["TGSRL_REQUIRED_PYTHON_MODULES"].Value != "ray,torch,verl,vllm" {
+		t.Fatalf("workload dependency contract = %+v", environment["TGSRL_REQUIRED_PYTHON_MODULES"])
 	}
 	if environment["TGSRL_WORKER_ID"].Value != "unit-1" || environment["TGSRL_RUNTIME_UNIT_ID"].Value != "unit-1" {
 		t.Fatalf("veRL worker identity environment = %+v", environment)
@@ -251,8 +264,9 @@ func TestCompileWrapsWorkloadWithManagedWorkerBootstrap(t *testing.T) {
 
 func TestCompileAcceleratedWorkloadRequiresPullableImmutableImageReference(t *testing.T) {
 	c := New()
-	c.SetCapabilities(discoveredGPUCapabilities(GPUProfileNVIDIADevicePlugin))
+	c.SetCapabilities(discoveredGPUCapabilities(GPUProfileKubernetesDRA))
 	input := singleBindingInput(testCompileInput(), 0)
+	input.GPUProfiles = []string{GPUProfileKubernetesDRA}
 	input.RuntimeManifest.Artifacts = nil
 
 	if _, err := c.compileBinding(input); err == nil || !strings.Contains(err.Error(), "workload oci_image artifact") {

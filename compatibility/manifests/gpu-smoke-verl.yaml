@@ -1,0 +1,58 @@
+schema_version: "tgsrl.io/compatibility-manifest/v1alpha1"
+manifest_id: "gpu-smoke-verl"
+revision: 1
+status: "implemented-hardware-verification-pending"
+scope: "single-node NVIDIA DRA full-GPU end-to-end smoke"
+references:
+  bom: "compatibility/bom/runtime.yaml"
+  profile: "compatibility/profiles/gpu-smoke-verl-v1.yaml"
+  capabilities: "configs/capabilities/nvidia-gpu-smoke.yaml"
+  policy: "configs/policies/static.yaml"
+  representative_scenario: "configs/scenarios/gpu-smoke-verl.yaml"
+  patch_ledger: "upstream/patches.json"
+  compatibility_matrix: "compatibility/matrix.json"
+protocol:
+  protobuf_package: "tgsrl.v1"
+  protocol_release: "v0.3"
+  northbound_api_version: null
+  execution_contract_versions:
+    - "1.0.0"
+combination:
+  framework:
+    name: "verl"
+    version: "0.9.0"
+  execution_backend:
+    name: "ray"
+    version: "2.58.0"
+  trainer:
+    name: "pytorch"
+    version: "2.13.0"
+  rollout_engine:
+    name: "vllm"
+    version: "0.28.0"
+  resource_provider:
+    name: "nvidia"
+    source: "nvidia"
+  kubernetes:
+    enabled: true
+    version: "1.35.1"
+  gpu_management_profile: "kubernetes-dra"
+declared_matrix:
+  algorithms:
+    - "grpo"
+  rollout_modes:
+    - "partially_async"
+  data_kinds:
+    - "live"
+  evidence_status: "not-run"
+  evidence:
+    - "docs/guides/gpu-smoke.md"
+verification_commands:
+  preflight: "make gpu-preflight"
+  smoke: "make gpu-smoke"
+limitations:
+  single_node_only: true
+  minimal_smoke_trainer_only: true
+  mps: false
+  mig: false
+  performance_claims_allowed: false

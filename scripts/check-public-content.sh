@@ -24,9 +24,13 @@ blocked_parts+=("AK""IA[0-9A-Z]{16}")
 blocked_parts+=("AS""IA[0-9A-Z]{16}")
 blocked_parts+=("xox""[baprs]-[A-Za-z0-9-]{10,}")
 blocked_parts+=("BEGIN ([A-Z0-9]+ )?PRI""VATE KEY")
-blocked_parts+=("(^|[^0-9])10\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}([^0-9]|$)")
-blocked_parts+=("(^|[^0-9])192\.168\.[0-9]{1,3}\.[0-9]{1,3}([^0-9]|$)")
-blocked_parts+=("(^|[^0-9])172\.(1[6-9]|2[0-9]|3[01])\.[0-9]{1,3}\.[0-9]{1,3}([^0-9]|$)")
+# Match private addresses where prose, JSON/YAML, or a URL normally starts a
+# value. Dotted dependency versions are filtered separately below.
+private_ip_prefix='(^|[^0-9])'
+private_ip_suffix='([^0-9]|$)'
+blocked_parts+=("${private_ip_prefix}10\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}${private_ip_suffix}")
+blocked_parts+=("${private_ip_prefix}192\.168\.[0-9]{1,3}\.[0-9]{1,3}${private_ip_suffix}")
+blocked_parts+=("${private_ip_prefix}172\.(1[6-9]|2[0-9]|3[01])\.[0-9]{1,3}\.[0-9]{1,3}${private_ip_suffix}")
 blocked_parts+=("Co-[Aa]uthored-[Bb]y:[[:space:]]+TR""AE CLI")
 
 for label in "${company_labels[@]}"; do
@@ -62,13 +66,45 @@ report_hit() {
   failed=1
 }
 
+contains_blocked_content() {
+  local source_path=$1
+  # SPDX can contain four-part dotted numeric package versions. They are not
+  # network addresses; exclude only the generated versionInfo field while
+  # preserving private-IP checks everywhere else, including URLs.
+  if [[ "$source_path" == compatibility/sbom/lockfiles.spdx.json || "$source_path" == configs/hardware/gpu-requirements.lock ]]; then
+    LC_ALL=C grep -IEiv '^[[:space:]]*"versionInfo":[[:space:]]*"[0-9]+(\.[0-9]+){3}([^"]*)",?[[:space:]]*$' | \
+      LC_ALL=C grep -IEiq "$blocked"
+  else
+    LC_ALL=C grep -IEiq "$blocked"
+  fi
+}
+
+contains_blocked_content_text() {
+  local source_path=$1 content=$2
+  printf '%s\n' "$content" | contains_blocked_content "$source_path"
+}
+
+self_check() {
+  contains_blocked_content_text README.md 'connect to 10.'"23.45.67" || {
+    printf '%s\n' 'error: private IPv4 detector rejected its own positive fixture' >&2
+    exit 1
+  }
+  if contains_blocked_content_text compatibility/sbom/lockfiles.spdx.json '  "versionInfo": "10.'"23.45.67"'",'; then
+    printf '%s\n' 'error: dependency-version exclusion is not working' >&2
+    exit 1
+  fi
+}
+
+self_check
+
 scan_worktree() {
   local path
   while IFS= read -r -d '' path; do
     if [[ ! -f "$path" ]]; then
       continue
     fi
-    if LC_ALL=C grep -IEiq "$blocked" -- "$path"; then
+    # shellcheck disable=SC2094
+    if contains_blocked_content "$path" <"$path"; then
       report_hit "WORKTREE:$path"
     fi
   done < <(git ls-files -z --cached --others --exclude-standard)
@@ -89,7 +125,7 @@ scan_history() {
     if [[ "$object_type" != "blob" || -z "$object_name" ]]; then
       continue
     fi
-    if LC_ALL=C git cat-file -p "$object_id" | grep -IEiq "$blocked"; then
+    if LC_ALL=C git cat-file -p "$object_id" | contains_blocked_content "$object_name"; then
       report_hit "$object_id:$object_name"
     fi
   done < <(git rev-list --objects --all | git cat-file --batch-check='%(objectname) %(objecttype) %(rest)')

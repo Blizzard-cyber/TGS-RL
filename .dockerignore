@@ -4,6 +4,7 @@
 !Dockerfile.worker-bootstrap
 !Dockerfile.services
 !Dockerfile.local
+!Dockerfile.gpu-smoke
 !go.mod
 !go.sum
 !pyproject.toml
@@ -55,6 +56,9 @@ console/*.tsbuildinfo
 !upstream/**
 !gateway-python/
 !gateway-python/**
+!scripts/
+scripts/**
+!scripts/gpu-smoke-workload.py
 
 # Re-included source trees may contain local caches and runtime output. Keep
 # them out of every build context even when their parent directory is needed.

@@ -15,7 +15,9 @@ COMPOSE = ROOT / "compose.yaml"
 DOCKERFILES = (
     ROOT / "Dockerfile.operator",
     ROOT / "Dockerfile.local",
+    ROOT / "Dockerfile.gpu-smoke",
 )
+PINNED_IMAGE_REFERENCES = (ROOT / "scripts" / "gpu-preflight.sh",)
 BOM = ROOT / "compatibility" / "bom" / "runtime.yaml"
 SUPPORTED = "supported"
 HARDWARE_PENDING = "implemented-hardware-verification-pending"
@@ -27,9 +29,17 @@ REAL_COMPONENTS = {"verl", "openrlhf", "ray", "pytorch", "vllm", "sglang", "nvid
 
 def locked_names() -> set[str]:
     names: set[str] = set()
-    for path in (ROOT / "go.mod", ROOT / "uv.lock", ROOT / "console" / "package-lock.json"):
+    for path in (
+        ROOT / "go.mod",
+        ROOT / "uv.lock",
+        ROOT / "console" / "package-lock.json",
+        ROOT / "configs" / "hardware" / "gpu-requirements.lock",
+    ):
         text = path.read_text(encoding="utf-8").lower()
         names.update(re.findall(r'(?:name\s*=\s*|"name"\s*:\s*)"([^"]+)"', text))
+        names.update(re.findall(r"^([a-z0-9_.-]+)==", text, flags=re.MULTILINE))
+    if "torch" in names:
+        names.add("pytorch")
     return names
 
 
@@ -217,14 +227,25 @@ def parse_image_reference(image: str) -> tuple[str, str | None]:
 
 def parse_dockerfile_images(text: str) -> list[str]:
     images: list[str] = []
+    arguments: dict[str, str] = {}
     for line in text.splitlines():
+        argument_match = re.match(r"^\s*ARG\s+([A-Za-z_][A-Za-z0-9_]*)=(\S+)\s*$", line)
+        if argument_match:
+            arguments[argument_match.group(1)] = argument_match.group(2)
+            continue
         match = re.match(
             r"^\s*FROM\s+(?:--[A-Za-z0-9_-]+=(?:\"[^\"]+\"|'[^']+'|[^\s]+)\s+)*([^\s]+)",
             line,
             flags=re.IGNORECASE,
         )
         if match:
-            images.append(match.group(1))
+            image = match.group(1)
+            variable = re.fullmatch(
+                r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}|\$([A-Za-z_][A-Za-z0-9_]*)", image
+            )
+            if variable:
+                image = arguments.get(variable.group(1) or variable.group(2), image)
+            images.append(image)
     return images
 
 
@@ -299,7 +320,7 @@ def validate_compose_images(errors: list[str]) -> None:
         )
     for dockerfile in DOCKERFILES:
         if (
-            dockerfile != ROOT / "Dockerfile.operator"
+            dockerfile not in {ROOT / "Dockerfile.operator", ROOT / "Dockerfile.gpu-smoke"}
             and dockerfile.name not in referenced_dockerfiles
         ):
             errors.append(f"compose: unreferenced development Dockerfile {dockerfile.name}")
@@ -313,6 +334,24 @@ def validate_compose_images(errors: list[str]) -> None:
             validate_pinned_image(
                 image,
                 context=f"{dockerfile.name}:FROM[{index}]",
+                bom_images=bom_images,
+                errors=errors,
+            )
+    for path in PINNED_IMAGE_REFERENCES:
+        if not path.is_file():
+            errors.append(f"{path.name}: file is missing")
+            continue
+        matches = re.findall(
+            r"([a-z0-9][a-z0-9._-]*(?:/[a-z0-9._-]+)+(?::[A-Za-z0-9._-]+)?@sha256:[0-9a-f]{64})",
+            path.read_text(encoding="utf-8"),
+            flags=re.MULTILINE,
+        )
+        if not matches:
+            errors.append(f"{path.name}: no pinned image references were found")
+        for index, image in enumerate(matches, 1):
+            validate_pinned_image(
+                image,
+                context=f"{path.name}:IMAGE[{index}]",
                 bom_images=bom_images,
                 errors=errors,
             )

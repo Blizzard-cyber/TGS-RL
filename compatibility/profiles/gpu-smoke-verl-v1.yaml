@@ -1,0 +1,52 @@
+schema_version: "tgsrl.io/compatibility-profile/v1alpha1"
+profile_id: "gpu-smoke-verl-v1"
+revision: 1
+status: "implemented-hardware-verification-pending"
+description: "Single-node Full GPU smoke through NVIDIA DRA and a managed veRL adapter workload; not a full model-training claim."
+provider:
+  kind: "nvidia"
+  source: "nvidia"
+  live_hardware: true
+  authoritative_for: "local-nvidia-device-identity"
+runtime_scope:
+  required_host_resources:
+    - "cpu"
+    - "memory"
+    - "nvidia-gpu"
+    - "kubernetes"
+    - "dra"
+  data_kinds:
+    - "live"
+  algorithms:
+    - "grpo"
+  rollout_modes:
+    - "partially_async"
+  lifecycle_actions:
+    - "bind"
+    - "release"
+gpu_management_profile:
+  selected: "kubernetes-dra"
+  allowed_values:
+    - "none"
+    - "nvidia-device-plugin"
+    - "kubernetes-dra"
+    - "volcano-hami"
+  mutually_exclusive: true
+  maximum_active_profiles: 1
+  admission_rejects_multiple_profiles: true
+  enabled_profiles:
+    - "kubernetes-dra"
+unsupported_scope:
+  - "MPS sharing"
+  - "MIG reconfiguration"
+  - "multi-node execution"
+  - "performance or convergence claims"
+admission:
+  require_explicit_capability: true
+  unknown_capability_supported: false
+  reject_live_data: false
+  reject_physical_device_claims: false
+evidence:
+  status: "not-run"
+  hardware_smoke:
+    - "docs/guides/gpu-smoke.md"

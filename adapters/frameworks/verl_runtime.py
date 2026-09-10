@@ -264,6 +264,7 @@ class VerlTrainerCallbacks:
         batch_size: int = 0,
         component: str = "worker",
         display_name: str = "",
+        safe_point: bool | None = None,
         policy_lag: int = 0,
         sample_stale: bool = False,
         effective_sample_size: float | None = None,
@@ -293,6 +294,7 @@ class VerlTrainerCallbacks:
             batch_size=batch_size,
             component=component,
             display_name=display_name,
+            safe_point=safe_point,
         )
 
     def emit_step_observation(
@@ -393,6 +395,7 @@ class VerlControlHook:
                     effective_sample_size=effective_sample_size,
                     accepted_samples=accepted_samples,
                     expected_samples=expected_samples,
+                    safe_point=True,
                 )
                 self.callbacks.wait_until_resumed()
             finally:

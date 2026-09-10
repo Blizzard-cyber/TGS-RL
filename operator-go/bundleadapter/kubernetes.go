@@ -375,7 +375,7 @@ func bundleUsesWorkerBootstrap(bundle *api.Bundle) bool {
 		return false
 	}
 	container := bundle.Job.Spec.Template.Spec.Containers[0]
-	return len(container.Command) == 1 && container.Command[0] == "/opt/tgsrl/tgsrl-worker-bootstrap"
+	return len(container.Command) == 1 && container.Command[0] == compiler.WorkerBootstrapBinaryPath
 }
 
 func podListReady(payload []byte) (bool, error) {

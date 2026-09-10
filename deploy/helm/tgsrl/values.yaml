@@ -126,6 +126,7 @@ operator:
       registrySigningKeySecret: ""
       registrySigningKeyKey: signing-key
       verifyDeviceIdentities: false
+      hostNetwork: false
   service:
     type: ClusterIP
     port: 50081

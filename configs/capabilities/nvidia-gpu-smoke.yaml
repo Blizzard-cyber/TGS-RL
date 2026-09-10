@@ -1,0 +1,27 @@
+schema_version: "tgsrl.io/capability-set/v1alpha1"
+capability_id: "nvidia-gpu-smoke-v1"
+revision: 1
+source: "nvidia"
+measured_at: null
+semantics: "live-hardware-discovered-at-runtime"
+verification_status: "hardware-verification-pending"
+runtime_loader: false
+names:
+  - "nvidia-gpu"
+attributes:
+  data_origin: "live"
+  hardware_backed: "true"
+  accelerator_vendor: "nvidia"
+algorithms:
+  - "grpo"
+rollout_modes:
+  - "partially_async"
+supported_actions:
+  - "bind"
+  - "release"
+limits: {}
+claims:
+  mock_only: false
+  live_gpu: true
+  hardware_latency: false
+  performance: false

@@ -51,6 +51,9 @@ func TestLocalDriverProbePublishesObservedDriverVersionFromFakeCommand(t *testin
 	if len(probe.Devices) != 2 {
 		t.Fatalf("devices = %d, want 2", len(probe.Devices))
 	}
+	if probe.Devices[0].GetAllocatable().GetCpuMillis() != ^uint64(0) || probe.Devices[0].GetAllocatable().GetEphemeralStorageBytes() != ^uint64(0) {
+		t.Fatalf("GPU scheduling projection must not reject pod-level CPU/storage demand: %+v", probe.Devices[0].GetAllocatable())
+	}
 	assertObservedDriverVersion(t, probe.Capabilities, observedAt, "550.54.14")
 	for index, device := range probe.Devices {
 		assertObservedDriverVersion(t, device.GetCapabilities(), observedAt, "550.54.14")

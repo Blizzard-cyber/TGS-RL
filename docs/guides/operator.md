@@ -44,6 +44,7 @@ Operator 同时运行两个长期服务：它订阅 Scheduler Decision，并在 
 | `-worker-registry-url` | 空 | workload 可访问的 Scheduler registry HTTP(S) base URL |
 | `-worker-registry-signing-key-file` | 空 | 派生 scoped registration token 的主 HMAC key；至少 32 bytes |
 | `-worker-verify-device-identities` | `false` | 注册前用 `nvidia-smi -L` 核对 UUID；DRA claim 会强制开启 |
+| `-worker-host-network` | `false` | 仅供单机单 worker smoke：让宿主机 Scheduler 能回连 worker；常规部署保持关闭 |
 | `-worker-bootstrap-binary` | `tgsrl-worker-bootstrap` | `process` 模式使用的本机 bootstrap 路径 |
 | `-process-state-dir` | `<cursor-dir>/processes` | `process` 模式的 worker 日志与状态根目录，必须是绝对路径 |
 

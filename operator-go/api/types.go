@@ -115,6 +115,8 @@ type Probe struct {
 
 type PodSpec struct {
 	RuntimeClassName string              `json:"runtimeClassName,omitempty"`
+	HostNetwork      bool                `json:"hostNetwork,omitempty"`
+	DNSPolicy        string              `json:"dnsPolicy,omitempty"`
 	SecurityContext  *PodSecurityContext `json:"securityContext,omitempty"`
 	ResourceClaims   []PodResourceClaim  `json:"resourceClaims,omitempty"`
 	NodeSelector     map[string]string   `json:"nodeSelector,omitempty"`

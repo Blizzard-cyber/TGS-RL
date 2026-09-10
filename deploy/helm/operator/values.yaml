@@ -47,6 +47,7 @@ controller:
     registrySigningKeySecret: ""
     registrySigningKeyKey: signing-key
     verifyDeviceIdentities: false
+    hostNetwork: false
 
 service:
   type: ClusterIP

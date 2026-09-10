@@ -118,6 +118,9 @@ Operator 的 Sandbox 观测并回报带 `runtime.source=runtime-observation` 的
 
 Runtime 恢复时只重放明确可安全重试的 outbox 项。Checkpoint 记录的是完成元数据，不是
 训练进程镜像；外部 worker 的 checkpoint、reload 和 readiness 必须由 bridge 明确确认。
+`RuntimeManifest.image_digests` 保存内容身份，`oci_image` artifact 保存可拉取的
+`repository@sha256:...` 引用；Operator 只用后者填 Kubernetes `container.image`。训练依赖在
+worker bootstrap 内验证，不能要求 Runtime 服务镜像安装整套训练栈。
 
 ## 5. Scheduler 的两层决策
 
@@ -319,6 +322,10 @@ CPU 证据、身份不一致或故障未恢复都不能通过；`calibration_req
 | 硬件 workflow 约束单独占用一个极小测试文件 | 增加碎片化，但与治理门禁属于同一职责 | 合并到既有 governance 测试；继续禁止 CPU/模拟证据冒充 GPU | `tests/governance/test_governance.py` |
 | Scheduler UUID 只进入 RuntimeTarget，且 MIG class 无法区分 | 调度账本与训练进程可能分别使用 GPU-A/GPU-B，MIG claim 可能永远无法满足 | typed DRA inventory 区分 Full GPU/MIG class；claim 使用 UUID selector；allocation 回读不一致时 fail closed | Operator Compiler、Kube client、BundleAdapter 与 StatusWatch 测试 |
 | Kubernetes Job 直接执行用户命令，无 PID/control 注册与退出回报 | Scheduler 动作没有真实进程对象可控，Pod active 可能被误报为 Runtime running | 增加 workload bootstrap、scoped registry、PID/Pod UID/process token fence、readiness gate 与 exit observation；manifest 成为执行输入权威 | bootstrap、runtimehelper、Scheduler registry、Operator compiler/statuswatch 测试 |
+| bootstrap emptyDir 挂载到 workload 的 `/opt/tgsrl` | 注入 bootstrap 时遮住镜像自身代码，Pod 启动后找不到 workload | 将 bootstrap 安装目录隔离到 `/var/run/tgsrl-bootstrap` 并保持原 working directory | Operator compiler 与 StatusWatch 测试 |
+| Full GPU v2 复用 MPS 默认与 capability 名称 | 普通整卡 smoke 会启动无关 MPS，或因重复 capability 被 Scheduler 拒绝 | 增加无分区 mutation 的 `full` backend，默认选择 full，并去重 capability | NVIDIA Driver v2 与 Scheduler CLI 测试 |
+| Kueue DRA patch 只做字符串断言 | 错误缩进的 YAML 可绕过测试并在目标集群失败 | 修正嵌套列表缩进，并对生成结构做回归校验 | `tests/governance/test_gpu_setup.py` |
+| GPU workload 与控制面共用 Python dependency 约束 | vLLM CUDA 13 需要 protobuf 6，而控制面锁定 protobuf 5，镜像会产生不可满足依赖 | GPU workload 使用独立 hash lock 与 site-packages，通过 protobuf wire/HTTP registry 连接控制面 | GPU lock、SBOM 与 governance 测试 |
 
 ## 12. 测试和提交边界
 

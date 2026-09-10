@@ -110,7 +110,8 @@ func buildEnv(input *normalizedInput) []api.EnvVar {
 		"TGSRL_WORKER_ID":       struct{}{}, "TGSRL_STAGE_ID": struct{}{},
 		"TGSRL_PHASE_KIND": struct{}{}, "TGSRL_ROLLOUT_MODE": struct{}{},
 		"TGSRL_DATA_KIND": struct{}{}, "TGSRL_WORKER_TRACE_URL": struct{}{},
-		"TGSRL_WORKER_TRACE_TOKEN": struct{}{},
+		"TGSRL_WORKER_TRACE_TOKEN":      struct{}{},
+		"TGSRL_REQUIRED_PYTHON_MODULES": struct{}{},
 	}
 	values := make([]api.EnvVar, 0, len(input.Manifest.GetEnvironment())+12)
 	for _, key := range sortedProtoLabelKeys(input.Manifest.GetEnvironment()) {
@@ -153,10 +154,36 @@ func buildEnv(input *normalizedInput) []api.EnvVar {
 			api.EnvVar{Name: "TGSRL_VERL_CONTROL_SOCKET", Value: controlSocket},
 			api.EnvVar{Name: "TGSRL_VERL_TRACE_PATH", Value: tracePath},
 			api.EnvVar{Name: "TGSRL_VERL_STATE_PATH", Value: statePath},
+			api.EnvVar{Name: "TGSRL_REQUIRED_PYTHON_MODULES", Value: requiredPythonModules(input)},
 		)
 	}
 	sort.Slice(values, func(i, j int) bool { return values[i].Name < values[j].Name })
 	return values
+}
+
+func requiredPythonModules(input *normalizedInput) string {
+	if input == nil || primaryImage(input.Manifest) == "" {
+		return ""
+	}
+	manifest := input.Manifest
+	modules := make([]string, 0, 4)
+	if strings.EqualFold(manifest.GetFramework(), "verl") {
+		modules = append(modules, "verl")
+	}
+	if strings.EqualFold(manifest.GetExecutionBackend(), "ray") {
+		modules = append(modules, "ray")
+	}
+	if strings.EqualFold(manifest.GetTrainer(), "pytorch") {
+		modules = append(modules, "torch")
+	}
+	if strings.EqualFold(manifest.GetRolloutEngine(), "vllm") {
+		modules = append(modules, "vllm")
+	}
+	if strings.EqualFold(manifest.GetRolloutEngine(), "sglang") {
+		modules = append(modules, "sglang")
+	}
+	sort.Strings(modules)
+	return strings.Join(modules, ",")
 }
 
 func phaseKindForStage(manifest *tgsrlv1.RuntimeManifest, stageID string) tgsrlv1.PhaseKind {

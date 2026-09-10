@@ -25,6 +25,12 @@ def package_id(ecosystem: str, name: str, version: str) -> str:
     return f"SPDXRef-Package-{value.strip('-')}"
 
 
+def scoped_package_id(ecosystem: str, name: str, version: str, scope: str) -> str:
+    base = package_id(ecosystem, name, version)
+    normalized = re.sub(r"[^A-Za-z0-9.-]+", "-", scope).strip("-")
+    return f"{base}-{normalized}"
+
+
 def package(
     ecosystem: str,
     name: str,
@@ -101,6 +107,33 @@ def python_packages() -> list[dict[str, Any]]:
     return sorted(result, key=lambda value: (value["name"], value["versionInfo"]))
 
 
+def gpu_workload_packages() -> list[dict[str, Any]]:
+    """Read the pip-compile style lock for the isolated GPU workload image."""
+    path = ROOT / "configs" / "hardware" / "gpu-requirements.lock"
+    result: list[dict[str, Any]] = []
+    for line in path.read_text(encoding="utf-8").splitlines():
+        match = re.fullmatch(r"([A-Za-z0-9_.-]+)==([^ \\]+)(?: \\)?", line)
+        if match is None:
+            continue
+        name, version = match.groups()
+        item = package(
+            "pypi",
+            name,
+            version,
+            scope="gpu-workload",
+            source=(
+                "https://download.pytorch.org/whl/cu130"
+                if name.casefold() == "torch" and "+cu130" in version
+                else "https://pypi.org/simple"
+            ),
+        )
+        item["SPDXID"] = scoped_package_id("pypi", name, version, "gpu-workload")
+        result.append(item)
+    if not result:
+        raise ValueError(f"GPU workload lock contains no packages: {path}")
+    return sorted(result, key=lambda value: (value["name"], value["versionInfo"]))
+
+
 def node_packages() -> list[dict[str, Any]]:
     lock = json.loads((ROOT / "console" / "package-lock.json").read_text(encoding="utf-8"))
     result: list[dict[str, Any]] = []
@@ -126,9 +159,16 @@ def node_packages() -> list[dict[str, Any]]:
 
 
 def build_document() -> dict[str, Any]:
-    lockfiles = [Path("go.mod"), Path("go.sum"), Path("uv.lock"), Path("console/package-lock.json")]
+    lockfiles = [
+        Path("go.mod"),
+        Path("go.sum"),
+        Path("uv.lock"),
+        Path("console/package-lock.json"),
+        Path("configs/hardware/gpu-requirements.lock"),
+    ]
     packages_by_id = {
-        item["SPDXID"]: item for item in go_packages() + python_packages() + node_packages()
+        item["SPDXID"]: item
+        for item in go_packages() + python_packages() + gpu_workload_packages() + node_packages()
     }
     packages = sorted(packages_by_id.values(), key=lambda item: item["SPDXID"])
     return {

@@ -247,6 +247,7 @@ assert(values.dig("controller", "nodeSelector") == {}, "node selector must defau
 assert(values.dig("controller", "workerBootstrap", "enabled") == false, "worker bootstrap must be opt-in")
 assert(values.dig("controller", "workerBootstrap", "installerImage") == "", "worker bootstrap image must be explicit")
 assert(values.dig("controller", "workerBootstrap", "registrySigningKeyKey") == "signing-key", "worker registry signing-key Secret key default changed")
+assert(values.dig("controller", "workerBootstrap", "hostNetwork") == false, "worker host networking must default to disabled")
 assert(values.dig("podSecurityContext", "runAsNonRoot") == true, "pod security context must default to non-root")
 assert(values.dig("podSecurityContext", "seccompProfile", "type") == "RuntimeDefault", "pod security context must default to RuntimeDefault seccomp")
 assert(values.dig("securityContext", "allowPrivilegeEscalation") == false, "container must forbid privilege escalation by default")
@@ -279,6 +280,7 @@ deployment_template = File.read(File.join(CHART_DIR, "templates/deployment.yaml"
   "--worker-bootstrap-image={{ .Values.controller.workerBootstrap.installerImage }}" => "worker bootstrap image is not configurable",
   "--worker-registry-url={{ .Values.controller.workerBootstrap.registryURL }}" => "worker registry URL is not configurable",
   "--worker-registry-signing-key-file=/var/run/secrets/tgsrl-worker-registry/signing-key" => "worker registry signing-key file is not configured",
+  "--worker-host-network=true" => "worker host-network flag is not configurable",
   "--cursor-dir={{ .Values.persistence.mountPath }}" => "cursor directory is not configurable",
   "containerPort: {{ .Values.service.port }}" => "container port does not share the Service port value",
   "mountPath: {{ .Values.persistence.mountPath }}" => "cursor mount does not share the cursor-dir value",
@@ -373,6 +375,15 @@ bootstrap_container = bootstrap_deployment.dig("spec", "template", "spec", "cont
 assert(bootstrap_container.fetch("volumeMounts").any? { |mount| mount["name"] == "worker-registry-signing-key" && mount["readOnly"] == true }, "operator must mount the registry signing key read-only")
 bootstrap_volume = bootstrap_deployment.dig("spec", "template", "spec", "volumes").find { |volume| volume["name"] == "worker-registry-signing-key" }
 assert(bootstrap_volume.dig("secret", "secretName") == "tgsrl-worker-registry", "operator signing-key volume uses the wrong Secret")
+host_network_docs = render_chart(
+  "--set", "controller.workerBootstrap.enabled=true",
+  "--set", "controller.workerBootstrap.installerImage=registry.example.test/tgsrl/bootstrap@sha256:#{'2' * 64}",
+  "--set", "controller.workerBootstrap.registryURL=http://host.example.test:50091",
+  "--set", "controller.workerBootstrap.registrySigningKeySecret=tgsrl-worker-registry",
+  "--set", "controller.workerBootstrap.hostNetwork=true"
+)
+host_network_args = one(host_network_docs, "Deployment").dig("spec", "template", "spec", "containers").first.fetch("args")
+assert(host_network_args.include?("--worker-host-network=true"), "host-network smoke mode must reach the Operator")
 missing_bootstrap_key_output, missing_bootstrap_key_status = run_chart(
   HELM_RELEASE,
   HELM_NAMESPACE,

@@ -286,6 +286,20 @@ development_images:
     license_status: "composite-image-sbom-pending"
     status: "development-only"
     evidence: "Dockerfile.operator"
+  - name: "gpu-smoke-cuda-devel"
+    image: "docker.io/nvidia/cuda:13.0.2-devel-ubuntu24.04"
+    image_digest: "sha256:5dc1bca23d05bd37b011be68ec470c03b403a5da07ec3a86e41af9470e9d0cc6"
+    license_spdx: null
+    license_status: "composite-image-sbom-pending"
+    status: "hardware-smoke-only"
+    evidence: "Dockerfile.gpu-smoke"
+  - name: "gpu-runtime-check-cuda-base"
+    image: "docker.io/nvidia/cuda:13.0.2-base-ubuntu24.04"
+    image_digest: "sha256:2ab6381d970b211fb93853796dc6707eb8a72575a375c422b17cf4d8b2641701"
+    license_spdx: null
+    license_status: "composite-image-sbom-pending"
+    status: "hardware-smoke-only"
+    evidence: "scripts/gpu-preflight.sh"
 
 generated_sbom:
   format: "SPDX-2.3-json-lite"
@@ -296,6 +310,7 @@ generated_sbom:
     - "go.sum"
     - "uv.lock"
     - "console/package-lock.json"
+    - "configs/hardware/gpu-requirements.lock"
 
 registered_patches: []
 patch_ledger: "upstream/patches.json"
@@ -309,6 +324,10 @@ host_tooling:
   helm: "4.2.4"
   kubectl: "1.35.8"
   minikube: "1.38.1"
+  nvidia_driver_minimum: "580.95.05"
+  nvidia_container_toolkit_minimum: "1.18.0"
+  nvidia_dra_driver_gpu: "0.5.0"
+  node_feature_discovery: "0.18.3"
 
 external_integration_targets:
   note: >-

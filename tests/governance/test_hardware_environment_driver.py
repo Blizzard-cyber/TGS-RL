@@ -452,6 +452,7 @@ def _job_template(path: Path) -> None:
                     "rolloutEngine": "vllm",
                     "rolloutEngineVersion": "1.0.0",
                     "imageDigest": "sha256:" + "1" * 64,
+                    "artifactUri": "registry.example.test/verl@sha256:" + "1" * 64,
                     "compatibilityProfile": "verl-ray-pytorch-vllm-nvidia",
                     "command": ["python", "-m", "hardware_workload"],
                     "args": ["--seed", "${SEED}"],

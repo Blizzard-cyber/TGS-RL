@@ -125,7 +125,7 @@ func TestKubernetesObserverWaitsForBootstrapReadiness(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	bundle := &api.Bundle{Namespace: "test-ns", Generation: 4, RuntimeTargets: []api.RuntimeTarget{{DeviceIDs: []string{"GPU-a"}}}, Workload: api.Workload{TypeMeta: api.TypeMeta{APIVersion: "kueue.x-k8s.io/v1", Kind: "Workload"}, ObjectMeta: api.ObjectMeta{Name: "workload-a", Namespace: "test-ns"}}, Job: api.Job{ObjectMeta: api.ObjectMeta{Name: "job-a", Namespace: "test-ns"}, Spec: api.JobSpec{Template: api.PodTemplateSpec{Spec: api.PodSpec{Containers: []api.Container{{Command: []string{"/opt/tgsrl/tgsrl-worker-bootstrap"}}}}}}}}
+	bundle := &api.Bundle{Namespace: "test-ns", Generation: 4, RuntimeTargets: []api.RuntimeTarget{{DeviceIDs: []string{"GPU-a"}}}, Workload: api.Workload{TypeMeta: api.TypeMeta{APIVersion: "kueue.x-k8s.io/v1", Kind: "Workload"}, ObjectMeta: api.ObjectMeta{Name: "workload-a", Namespace: "test-ns"}}, Job: api.Job{ObjectMeta: api.ObjectMeta{Name: "job-a", Namespace: "test-ns"}, Spec: api.JobSpec{Template: api.PodTemplateSpec{Spec: api.PodSpec{Containers: []api.Container{{Command: []string{compiler.WorkerBootstrapBinaryPath}}}}}}}}
 	stream, err := observer.Watch(context.Background(), Request{Bundle: bundle, Bindings: []*tgsrlv1.Binding{{BindingId: "binding-a"}}})
 	if err != nil {
 		t.Fatal(err)

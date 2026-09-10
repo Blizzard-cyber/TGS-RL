@@ -23,9 +23,9 @@
 | 性能回归门禁 | **支持（CI 回归）** | 独立非 race CI 检查 Scheduler 8 devices/100 units、1000 devices/1000 units 与 NVIDIA Provider observation apply 的 P95 预算 | 预算只约束固定 CPU fixture 的代码回退，不是生产 SLA、GPU 性能或训练收益证明 |
 | CPU Mock Provider | **支持** | 能力匹配、逻辑资源绑定、L1–L4 逻辑模拟动作、故障注入、generation fence 和逐动作 rollback | Adaptive Planner 会在满足观测、能力与安全条件时生成 L1–L4 动作；这些结果只验证控制逻辑，不代表真实硬件行为或性能 |
 | NVIDIA Provider（默认） | **有条件（Conditional）** | `LocalDriver` 可通过 `nvidia-smi` 形成设备快照 | 需要 NVIDIA 驱动和 `nvidia-smi`；默认不声明资源动作 |
-| NVIDIA Driver v2 | **有条件（Conditional）** | 已实现 inventory、MPS `set_share` 写入与读回，以及 binding/runtime/MIG helper、Scheduler worker registry 和 workload bootstrap 的 generation fence、scoped registration、幂等 durable receipt、原子落盘、进程监管、PID 信号控制和 managed-worker lifecycle | DRA/CDI 负责设备注入；offload/reload 需要训练 worker 实现 Unix socket 协议；signal pause 不释放 GPU 显存；MPS PID 自动发布需要 host PID 可见性和共享目录；MIG 仅在已存在实例间切换；现有证据为真实本地子进程 + fake-command/CPU conformance，尚无真实 NVIDIA/CUDA 证据 |
-| 外部 Runtime Adapter | **已实现，待硬件验证** | veRL 已有第一方 lifecycle/observation bridge，以及面向 veRL 0.9 trainer/worker-group/checkpoint-manager 公共接口的 callback adapter；支持显式 safe-point hook、checkpoint、rollout abort/sleep/wake、actor/critic offload/reload、policy update、durable receipt 与 typed TraceEvent | 当前验证使用 CPU 对象替身和 reference workload；真实 veRL/Ray/PyTorch/vLLM 依赖组合、分布式 collective 和 GPU 资源释放仍待目标环境验证；SGLang 与 OpenRLHF 仍只有通用 adapter 边界 |
-| Kubernetes Operator | **有条件支持** | 编译和调和 `JobRunBundle`、Kueue `Workload`、Kubernetes `Job`、可选 `ResourceClaim`/`RuntimeClass`；typed NVIDIA DRA inventory 精确兑现 Full GPU/MIG UUID；可选 bootstrap 包装 RuntimeManifest command，自动注册真实 PID/control endpoint，并用 Pod readiness 阻止提前发布 RUNNING；全栈 Helm chart 部署六个控制面服务；namespaced RBAC 覆盖 Job、Workload、ResourceClaim 与 JobRunBundle 的创建、更新和终态清理 | 精确 UUID 仅适用于 NVIDIA DRA 的整数个完整 GPU/MIG；尚无真实 Kubernetes/DRA/Pod 证据；MPS 仍需节点侧 PID namespace/shared mount；Kueue 和 GPU 管理组件由平台侧提供 |
+| NVIDIA Driver v2 | **有条件（Conditional）** | 已实现 Full GPU、MPS、MIG inventory，以及 binding/runtime/MIG helper、Scheduler worker registry 和 workload bootstrap 的 generation fence、scoped registration、幂等 durable receipt、原子落盘、进程监管、PID 信号控制和 managed-worker lifecycle | DRA/CDI 负责设备注入；Full GPU `full` 模式不启动 MPS；offload/reload 需要训练 worker 实现 Unix socket 协议；signal pause 不释放 GPU 显存；MPS PID 自动发布需要 host PID 可见性和共享目录；MIG 仅在已存在实例间切换；真实 NVIDIA/CUDA 证据仍待执行 |
+| 外部 Runtime Adapter | **已实现，待硬件验证** | veRL 已有第一方 lifecycle/observation bridge，以及面向 veRL 0.9 trainer/worker-group/checkpoint-manager 公共接口的 callback adapter；支持显式 safe-point hook、checkpoint、rollout abort/sleep/wake、actor/critic offload/reload、policy update、durable receipt 与 typed TraceEvent | 训练包由不可变 workload 镜像承载，Runtime 控制面不要求导入 `verl/ray/torch/vllm`；bootstrap 在启动用户进程前验证声明的包；真实依赖组合、distributed collective 和显存释放仍待目标环境验证；SGLang 与 OpenRLHF 仍只有通用 adapter 边界 |
+| Kubernetes Operator | **有条件支持** | 编译和调和 `JobRunBundle`、Kueue `Workload`、Kubernetes `Job`、可选 `ResourceClaim`/`RuntimeClass`；typed NVIDIA DRA inventory 精确兑现 Full GPU/MIG UUID；可选 bootstrap 包装 RuntimeManifest command，自动注册真实 PID/control endpoint，并用 Pod readiness 阻止提前发布 RUNNING；全栈 Helm chart 部署六个控制面服务；namespaced RBAC 覆盖 Job、Workload、ResourceClaim 与 JobRunBundle 的创建、更新和终态清理 | 精确 UUID 仅适用于 NVIDIA DRA 的整数个完整 GPU/MIG；真实硬件证据待执行；MPS 仍需节点侧 PID namespace/shared mount；Kueue 和 GPU 管理组件由平台侧提供；首轮单机 smoke 可显式使用 host network，该选项默认关闭且仅用于单 worker 验证 |
 
 ## 单机方案
 
@@ -57,7 +57,8 @@ Runtime 可以选择以下 Adapter：
 
 Adapter 将 manifest 转换为结构化 `LaunchSpec`，并支持 direct command、Python module
 hook 或 API hook。veRL 可使用 `adapters.frameworks.verl_runtime.install_verl_control` 连接 0.9
-trainer，并由训练循环显式调用 safe-point hook；其余 adapter 需要显式 bridge。要运行训练，还必须提供
+trainer，并由训练循环显式调用 safe-point hook。Runtime 只验证声明和控制桥，不在控制面容器
+导入 Ray/PyTorch/vLLM；这些依赖由 workload 镜像提供，并由 bootstrap 在启动前 fail closed。要运行训练，还必须提供
 与所选组合匹配的镜像、命令、资源后端、网络和分布式配置。缺少执行条件时请求会明确失败，
 不会回退为成功。
 
@@ -87,7 +88,8 @@ discovery 提供只读 `list` 集群权限。只有在设置 `runtimeClassCreate
 
 ## NVIDIA Driver v2 启用条件
 
-Scheduler 可通过 `-nvidia-driver-v2` 选择 v2 编排，默认分区模式是 MPS，也可选择 MIG。
+Scheduler 可通过 `-nvidia-driver-v2` 选择 v2 编排，默认是不会启动 MPS 的 `full` 模式；
+需要动态份额或 MIG 时显式选择 `mps` 或 `mig`。
 启动后只有 helper 的 capability handshake、generation fencing、幂等与 durable receipt 条件
 全部满足时，Provider 才会公开对应 action。helper 缺失或协议不匹配时返回 unavailable，
 不会静默回退到模拟成功。`-nvidia-dry-run` 只验证命令计划，不能生成 GPU 通过证据。

@@ -35,10 +35,10 @@
         "scheduler-go/provider/nvidia/provider.go"
       ],
       "id": "verl-ray-pytorch-vllm-nvidia",
-      "missing_dependencies": ["nvidia", "pytorch", "ray", "verl", "vllm"],
+      "missing_dependencies": ["nvidia"],
       "required_dependencies": ["verl", "ray", "pytorch", "vllm", "nvidia"],
       "status": "conditional",
-      "verification_scope": "adapter and provider boundaries declared; dependencies and hardware are not present in lockfiles"
+      "verification_scope": "veRL/Ray/PyTorch/vLLM are hash-locked for the GPU smoke image; NVIDIA hardware and full training evidence remain external"
     },
     {
       "components": {
@@ -56,10 +56,10 @@
         "scheduler-go/provider/nvidia/provider.go"
       ],
       "id": "openrlhf-ray-pytorch-sglang-nvidia",
-      "missing_dependencies": ["nvidia", "openrlhf", "pytorch", "ray", "sglang"],
+      "missing_dependencies": ["nvidia", "openrlhf", "sglang"],
       "required_dependencies": ["openrlhf", "ray", "pytorch", "sglang", "nvidia"],
       "status": "conditional",
-      "verification_scope": "adapter and provider boundaries declared; dependencies and hardware are not present in lockfiles"
+      "verification_scope": "shared Ray/PyTorch packages are locked for the GPU workload; OpenRLHF/SGLang, NVIDIA hardware, and full training evidence remain external"
     }
   ],
   "policy": {

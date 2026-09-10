@@ -1,0 +1,27 @@
+apiVersion: kueue.x-k8s.io/v1beta2
+kind: ResourceFlavor
+metadata:
+  name: tgsrl-default
+---
+apiVersion: kueue.x-k8s.io/v1beta2
+kind: ClusterQueue
+metadata:
+  name: tgsrl-default
+spec:
+  namespaceSelector: {}
+  resourceGroups:
+    - coveredResources: ["cpu", "memory", "tgsrl.io/gpu"]
+      flavors:
+        - name: tgsrl-default
+          resources:
+            - {name: cpu, nominalQuota: 64}
+            - {name: memory, nominalQuota: 256Gi}
+            - {name: tgsrl.io/gpu, nominalQuota: 8}
+---
+apiVersion: kueue.x-k8s.io/v1beta2
+kind: LocalQueue
+metadata:
+  name: default
+  namespace: tgsrl-system
+spec:
+  clusterQueue: tgsrl-default
