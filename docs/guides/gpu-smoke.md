@@ -43,6 +43,35 @@ cd TGS-RL
 make gpu-install-host
 ```
 
+如果机器位于中国大陆，或 `dl.k8s.io`、Docker Hub 等跨境端点明显限速，启用公开的 `cn`
+网络配置后再运行安装。这个配置会贯穿主机工具、Minikube 与集群依赖安装：
+
+```bash
+export TGSRL_NETWORK_PROFILE=cn
+make gpu-install-host
+```
+
+| 配置项 | `official`（默认） | `cn` | 覆盖变量 |
+|---|---|---|---|
+| 工具文件 | canonical upstream | DaoCloud 文件代理 | `TGSRL_DOWNLOAD_MIRROR_PREFIX` |
+| Python 包 | 环境默认/PyPI | 清华 PyPI | `TGSRL_PYPI_INDEX_URL` |
+| uv Python | upstream | DaoCloud GitHub 文件代理 | `TGSRL_UV_PYTHON_INSTALL_MIRROR` |
+| Docker Hub | Docker Hub | DaoCloud 镜像加速 | `TGSRL_DOCKER_REGISTRY_MIRRORS` |
+| Minikube kicbase | `gcr.io/k8s-minikube` | DaoCloud gcr proxy | `TGSRL_MINIKUBE_BASE_IMAGE` |
+| Minikube/Kubeadm 组件 | `registry.k8s.io` | Minikube `auto`（当前为阿里云） | `TGSRL_MINIKUBE_IMAGE_REPOSITORY` |
+| 扩展 OCI chart | `registry.k8s.io` | DaoCloud registry proxy | `TGSRL_K8S_OCI_REGISTRY` |
+| Kueue/NFD/DRA 镜像 | `registry.k8s.io` | DaoCloud registry proxy | `TGSRL_K8S_IMAGE_REGISTRY` |
+
+`cn` 只改变传输地址，不改变锁定版本、镜像 digest 或校验标准。kubectl、Minikube、Helm
+归档仍使用 canonical upstream 发布的 SHA-256；下载支持 HTTP/1.1、重试、断点续传，并将
+已校验缓存保存在 `.cache/tgsrl/downloads/`。镜像代理不可用时应修复网络或显式覆盖变量，
+不要删除 digest 或跳过预检。
+`gpu-create-cluster` 还会用同一校验流程预填 Minikube 所需的 kubeadm、kubelet 和 kubectl
+缓存，避免 Minikube 在启动中途绕过镜像配置重新访问慢速 `dl.k8s.io`。
+Compose 与 GPU workload 构建使用的 Go、Python、Node、distroless 和 CUDA 基础镜像也会在
+`cn` 模式下切换为代理仓库中的同 digest 引用；Go、PyPI 和 npm 构建依赖分别使用
+`TGSRL_GOPROXY`、`TGSRL_PYPI_INDEX_URL` 和 `TGSRL_NPM_REGISTRY`。
+
 NVIDIA 580.95.05+ 内核驱动必须由机器提供方提前安装。默认情况下，该命令不会替换 Docker 或 NVIDIA
 Container Toolkit；缺少时会停止并给出显式开关：
 
@@ -50,9 +79,16 @@ Container Toolkit；缺少时会停止并给出显式开关：
 TGSRL_INSTALL_DOCKER=1 TGSRL_INSTALL_NVIDIA_TOOLKIT=1 make gpu-install-host
 ```
 
+安装器会在下载其他工具前读取 `nvidia-smi` 并验证驱动版本；版本不足时立即停止。云镜像若使用
+NVIDIA `.run` 安装器提供旧驱动，应先用该安装器卸载旧版本，再安装发行版管理的 580+ 驱动并
+重启，避免 runfile 与 apt 两套用户态库/内核模块混装。驱动升级属于宿主机维护动作，不由
+TGS-RL 自动执行。
+
 脚本随后安装并校验 kubectl 1.35.1、Minikube 1.38.1、Helm 4.2.4、uv 0.12.7，生成
 NVIDIA CDI spec，并用 `uv.lock` 准备 Python 3.12.14 环境。kubectl、Minikube 和 Helm
 下载都做 SHA-256 校验。安装会调用 `sudo`，且可能配置 Docker/NVIDIA apt source；安装后
+它还会安装 `conntrack`/`socat` 等 Kubernetes 主机依赖，持久化 `overlay`/`br_netfilter`，
+并启用 bridge netfilter 与 IPv4 forwarding。
 重新登录一次，确认当前用户可以直接执行 `docker info`。该步骤不会拉取项目 Docker 镜像。
 如果 Docker 与 Toolkit 已经由机器管理员准备好，直接执行无开关版本即可；脚本只完成配置、
 校验和其余锁定工具安装。若两者都缺失，再使用上面的双开关命令。
@@ -81,6 +117,11 @@ Kubernetes 1.35.1、CUDA 13.0 Update 2 所需的 580.95.05+ 驱动。
 `gpu-create-cluster` 使用 Minikube 的 NVIDIA CDI 模式（`--gpus=nvidia.com`）。
 `gpu-prepare-cluster` 会下载 Kueue/NFD/DRA chart 与镜像，因此应在具备外网或镜像代理的
 环境中显式执行；仓库不会在 clone、doctor 或普通测试时自动拉取它们。
+`TGSRL_NETWORK_PROFILE` 必须在 `gpu-install-host`、`gpu-create-cluster` 和
+`gpu-prepare-cluster` 三步中保持一致。
+Minikube Docker driver 默认拒绝 root。推荐创建普通测试用户并加入 `docker` 组；若这是一台
+一次性、专用且可重建的 root-only 测试 ECS，需显式设置
+`TGSRL_MINIKUBE_ALLOW_ROOT=1`，脚本才会传入 `--force`，避免在普通主机上静默放宽边界。
 
 然后创建仅供本机外置 Operator 使用的 24 小时短期凭据：
 

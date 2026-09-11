@@ -1,11 +1,15 @@
-FROM --platform=$BUILDPLATFORM golang:1.26.4-bookworm@sha256:b305420a68d0f229d91eb3b3ed9e519fcf2cf5461da4bef997bf927e8c0bfd2b AS build
+ARG TGSRL_GO_BASE_IMAGE=golang:1.26.4-bookworm@sha256:b305420a68d0f229d91eb3b3ed9e519fcf2cf5461da4bef997bf927e8c0bfd2b
+ARG TGSRL_DISTROLESS_BASE_IMAGE=gcr.io/distroless/static-debian12:nonroot@sha256:afa5c872c891853ca7fcf1f12c3edb23f7eeef36189728842dd51042ff57f7ab
+
+FROM --platform=$BUILDPLATFORM ${TGSRL_GO_BASE_IMAGE} AS build
 
 ARG TARGETOS
 ARG TARGETARCH
+ARG TGSRL_GOPROXY=https://proxy.golang.org,direct
 
 WORKDIR /src
 COPY go.mod go.sum ./
-RUN go mod download
+RUN GOPROXY="${TGSRL_GOPROXY}" go mod download
 COPY cmd/tgsrl-worker-bootstrap ./cmd/tgsrl-worker-bootstrap
 COPY internal ./internal
 COPY gen/go ./gen/go
@@ -13,7 +17,7 @@ COPY gen/go ./gen/go
 RUN CGO_ENABLED=0 GOOS="${TARGETOS}" GOARCH="${TARGETARCH}" \
     go build -trimpath -ldflags='-s -w' -o /out/tgsrl-worker-bootstrap ./cmd/tgsrl-worker-bootstrap
 
-FROM gcr.io/distroless/static-debian12:nonroot@sha256:afa5c872c891853ca7fcf1f12c3edb23f7eeef36189728842dd51042ff57f7ab
+FROM ${TGSRL_DISTROLESS_BASE_IMAGE}
 LABEL org.opencontainers.image.licenses="Apache-2.0"
 COPY --from=build /out/tgsrl-worker-bootstrap /usr/local/bin/tgsrl-worker-bootstrap
 COPY LICENSE /licenses/TGS-RL/LICENSE

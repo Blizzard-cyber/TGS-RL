@@ -65,8 +65,11 @@ def test_gpu_build_script_forwards_only_an_immutable_base_image() -> None:
     text = (ROOT / "scripts" / "gpu-build-images.sh").read_text(encoding="utf-8")
 
     assert "TGSRL_VERL_BASE_IMAGE" in text
+    assert "TGSRL_GO_BASE_IMAGE" in text
+    assert "TGSRL_DISTROLESS_BASE_IMAGE" in text
+    assert "TGSRL_PYPI_INDEX_URL" in text
     assert "@sha256:" in text
-    assert '--build-arg "$build_arg"' in text
+    assert 'args+=(--build-arg "$build_arg")' in text
     assert "TGSRL_IMAGE_PLATFORM=linux/amd64" in text
     assert "GPU evidence images require a clean checkout" in text
 
@@ -113,6 +116,102 @@ def test_gpu_shell_scripts_are_syntactically_valid() -> None:
     for script in scripts:
         subprocess.run(["bash", "-n", str(script)], check=True)
         assert os.access(script, os.X_OK), f"{script.name} must be executable"
+
+
+def test_gpu_network_profiles_keep_integrity_checks_and_are_explicit() -> None:
+    helper = (ROOT / "scripts" / "lib" / "network-profile.sh").read_text(
+        encoding="utf-8"
+    )
+    install = (ROOT / "scripts" / "gpu-install-host.sh").read_text(encoding="utf-8")
+    create = (ROOT / "scripts" / "gpu-create-cluster.sh").read_text(encoding="utf-8")
+    prepare = (ROOT / "scripts" / "gpu-prepare-cluster.sh").read_text(encoding="utf-8")
+    cn_profile = (ROOT / "configs" / "network" / "cn.env").read_text(encoding="utf-8")
+
+    subprocess.run(["bash", "-n", str(ROOT / "scripts" / "lib" / "network-profile.sh")], check=True)
+    subprocess.run(["bash", "-n", str(ROOT / "configs" / "network" / "cn.env")], check=True)
+    assert "official or cn" in helper
+    assert "--continue-at -" in helper
+    assert "checksum verification failed" in helper
+    assert "sha256sum" in helper
+    assert "tgsrl_download_verified" in install
+    assert "TGSRL_DOCKER_REGISTRY_MIRRORS" in install
+    assert "TGSRL_UV_PYTHON_INSTALL_MIRROR" in install
+    assert 'uv_python_args+=(--mirror' in install
+    assert "MIN_DRIVER_VERSION" in install
+    assert "br_netfilter" in install
+    assert "net.ipv4.ip_forward=1" in install
+    assert "tgsrl_load_network_profile" in create
+    assert "TGSRL_MINIKUBE_IMAGE_REPOSITORY" in create
+    assert "TGSRL_MINIKUBE_BASE_IMAGE" in create
+    assert "TGSRL_MINIKUBE_ALLOW_ROOT" in create
+    assert "start_args+=(--force)" in create
+    assert "preload_kubernetes_binaries" in create
+    assert "component in kubeadm kubelet kubectl" in create
+    assert "TGSRL_K8S_OCI_REGISTRY" in prepare
+    assert "TGSRL_K8S_IMAGE_REGISTRY" in prepare
+    assert "image.repository=${K8S_IMAGE_REGISTRY}/nfd/node-feature-discovery" in prepare
+    assert "image.repository=${K8S_IMAGE_REGISTRY}/dra-driver-nvidia" in prepare
+    assert "Kueue webhook has no ready endpoint" in prepare
+    assert "Kueue queue resources failed after webhook readiness retries" in prepare
+    assert "dra_daemonsets" in prepare
+    assert 'rollout status -n dra-driver-nvidia-gpu "$daemonset"' in prepare
+    assert "daemonset --all" not in prepare
+    assert "https://files.m.daocloud.io" in cn_profile
+    assert "https://pypi.tuna.tsinghua.edu.cn/simple" in cn_profile
+    assert "m.daocloud.io/gcr.io/distroless" in cn_profile
+    assert "m.daocloud.io/docker.io/nvidia/cuda" in cn_profile
+    assert "m.daocloud.io/gcr.io/k8s-minikube/kicbase" in cn_profile
+    assert 'TGSRL_MINIKUBE_IMAGE_REPOSITORY:=auto' in cn_profile
+    assert "http://" not in cn_profile
+
+    result = subprocess.run(
+        [
+            "bash",
+            "-c",
+            (
+                f"ROOT_DIR={ROOT!s}; "
+                "TGSRL_NETWORK_PROFILE=cn; "
+                "source scripts/lib/network-profile.sh; "
+                "tgsrl_load_network_profile; "
+                "tgsrl_mirror_url https://dl.k8s.io/release/test"
+            ),
+        ],
+        check=True,
+        cwd=ROOT,
+        text=True,
+        capture_output=True,
+    )
+    assert result.stdout.strip() == "https://files.m.daocloud.io/dl.k8s.io/release/test"
+
+    compose_env = subprocess.run(
+        [
+            "bash",
+            "-c",
+            (
+                f"ROOT_DIR={ROOT!s}; "
+                "TGSRL_NETWORK_PROFILE=cn; "
+                "source scripts/lib/network-profile.sh; "
+                "tgsrl_load_network_profile; "
+                "printf '%s\n' \"$TGSRL_GO_BASE_IMAGE\" \"$TGSRL_NPM_REGISTRY\""
+            ),
+        ],
+        check=True,
+        cwd=ROOT,
+        text=True,
+        capture_output=True,
+    ).stdout.splitlines()
+    assert compose_env[0].startswith("m.daocloud.io/docker.io/library/golang:")
+    assert compose_env[1] == "https://registry.npmmirror.com"
+
+    compose = (ROOT / "compose.yaml").read_text(encoding="utf-8")
+    local_dockerfile = (ROOT / "Dockerfile.local").read_text(encoding="utf-8")
+    bootstrap_dockerfile = (ROOT / "Dockerfile.worker-bootstrap").read_text(encoding="utf-8")
+    gpu_dockerfile = (ROOT / "Dockerfile.gpu-smoke").read_text(encoding="utf-8")
+    assert "x-tgsrl-build-args: &tgsrl-build-args" in compose
+    assert "args: *tgsrl-build-args" in compose
+    assert "GOPROXY=\"${TGSRL_GOPROXY}\" go mod download" in local_dockerfile
+    assert "FROM ${TGSRL_DISTROLESS_BASE_IMAGE}" in bootstrap_dockerfile
+    assert "TGSRL_PYPI_INDEX_URL" in gpu_dockerfile
 
 
 def test_bootstrap_mount_does_not_shadow_gpu_workload() -> None:

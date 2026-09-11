@@ -3,6 +3,9 @@ set -Eeuo pipefail
 
 ROOT_DIR=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)
 cd "$ROOT_DIR"
+# shellcheck disable=SC1091
+. "$ROOT_DIR/scripts/lib/network-profile.sh"
+tgsrl_load_network_profile
 NAMESPACE=${TGSRL_WORKLOAD_NAMESPACE:-tgsrl-system}
 PROFILE=${TGSRL_GPU_PROFILE:-full-gpu}
 MIN_DRIVER_VERSION=${TGSRL_MIN_NVIDIA_DRIVER_VERSION:-580.95.05}

@@ -1,5 +1,6 @@
 ARG TGSRL_VERL_BASE_IMAGE=nvidia/cuda:13.0.2-devel-ubuntu24.04@sha256:5dc1bca23d05bd37b011be68ec470c03b403a5da07ec3a86e41af9470e9d0cc6
 FROM ${TGSRL_VERL_BASE_IMAGE}
+ARG TGSRL_PYPI_INDEX_URL=https://pypi.org/simple
 
 LABEL org.opencontainers.image.licenses="Apache-2.0"
 
@@ -13,7 +14,8 @@ COPY gen/python ./gen/python
 COPY configs/hardware/gpu-requirements.lock /tmp/gpu-requirements.lock
 COPY scripts/gpu-smoke-workload.py ./scripts/gpu-smoke-workload.py
 COPY LICENSE /licenses/TGS-RL/LICENSE
-RUN python3.12 -m pip install --break-system-packages --disable-pip-version-check --no-cache-dir --require-hashes \
+RUN sed -i "s#^--index-url .*#--index-url ${TGSRL_PYPI_INDEX_URL}#" /tmp/gpu-requirements.lock \
+    && python3.12 -m pip install --break-system-packages --disable-pip-version-check --no-cache-dir --require-hashes \
         --only-binary=:all: \
         --extra-index-url https://download.pytorch.org/whl/cu130 \
         -r /tmp/gpu-requirements.lock \

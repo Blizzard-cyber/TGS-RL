@@ -1,6 +1,6 @@
 # TGS-RL handoff and status
 
-Updated: 2026-09-11
+Updated: 2026-09-12
 
 This file is a shared handoff record between the development machine and the GPU test machine.
 It is committed on purpose so both sides can pull it and stay in sync. It is temporary
@@ -21,9 +21,10 @@ Communication happens through this GitHub repo: dev pushes code, test pushes evi
 
 ## Repository state
 
-- Branch: `main`; working tree clean.
-- Local `HEAD` == `origin/main` == `0af2e25` (`docs: align project guidance with current implementation`).
+- Branch: `main`. The GPU host initially cloned `origin/main` at `6e190a1`; it must pull the
+  network-profile commit produced by this preparation work before cluster creation.
 - Recent commits:
+  - `6e190a1 docs: add shared dev/GPU-test handoff log`
   - `0af2e25 docs: align project guidance with current implementation`
   - `8dbafc3 feat(gpu): add reproducible full-stack smoke workflow`
   - `4df3d5e fix(runtime): separate workload and control dependencies`
@@ -43,6 +44,33 @@ Re-ran real checks on this machine (not from memory):
 Prior full-suite runs also covered Full-stack CPU Gate, Go race, staticcheck, Ruff, mypy,
 generated-proto/migration checks, Helm/deploy contracts, SBOM, repository-hygiene, public-content,
 `make check-docs`, and P95 performance budgets.
+
+## GPU test host preparation (2026-09-12)
+
+- A fresh Ubuntu 22.04 x86_64 ECS is reachable through the approved Kerberos ProxyJump path.
+- Hardware verified: 14 vCPU, 54 GiB RAM, 181 GiB free disk and one NVIDIA A10 (23 GiB).
+- The image-provided NVIDIA 550 runfile driver was safely replaced with the Ubuntu-managed
+  `580.178.04` server driver; a reboot confirmed CUDA driver API 13.0 and the same physical UUID.
+- Docker 29.8.0, Compose 5.5.1, Buildx 0.37.1 and NVIDIA Container Toolkit 1.20.0 are active.
+  CDI publishes both ordinal and exact UUID device names. No project image has been pulled or built.
+- Kubernetes host modules/sysctls, cgroup v2, zero swap, cache directories and required host ports
+  are ready. The GitHub clone is clean at `6e190a1`.
+- Network evidence: `dl.k8s.io` is about 33 KiB/s and Docker Hub times out, while DaoCloud file
+  proxy, Minikube upstream, Helm upstream, GitHub releases and Tsinghua PyPI are usable. The current
+  development change adds `TGSRL_NETWORK_PROFILE=cn`; push it before the test host can pull and
+  finish kubectl/Minikube/Helm/Python setup.
+- Using those verified mirrors, the host now has kubectl 1.35.1, Minikube 1.38.1, Helm 4.2.4,
+  uv 0.12.7 and Python 3.12.14. Tool archives matched canonical upstream SHA-256 values.
+- `uv sync --frozen` was stopped after sustained low throughput; its partial cache is reusable.
+  It completed after the network-profile commit was pulled and reused that cache.
+- This ECS currently uses root for the disposable smoke environment. Run cluster creation with
+  `TGSRL_MINIKUBE_ALLOW_ROOT=1`; normal reusable hosts should use a non-root user in the Docker group.
+- Kubernetes 1.35.1 is Ready on the single-node `tgsrl-gpu` profile. Kueue 0.19.2, NFD 0.18.3
+  and NVIDIA DRA 0.5.0 Pods are Running; Full GPU and MIG DeviceClasses plus a GPU ResourceSlice
+  are published. `ResourceFlavor`, `ClusterQueue` and `LocalQueue` exist. Two first-host bugs were
+  found and fixed: the Kueue webhook readiness race and the unsupported `kubectl rollout status
+  daemonset --all` invocation. Image builds and E1 have not started. Keep
+  `gpu_stack_integrated: false`.
 
 ## Completion snapshot
 
@@ -97,12 +125,13 @@ Follow `docs/guides/gpu-smoke.md` exactly; it is the source of truth. Summary:
    (`make gpu-build-images` rejects a dirty tree).
 2. Host + cluster prep (each step only pulls/builds when explicitly invoked):
    ```bash
+   export TGSRL_NETWORK_PROFILE=cn  # for mainland-China/cross-border-limited hosts
    make gpu-install-host        # pinned host tooling (needs sudo)
    make gpu-create-cluster      # GPU-enabled minikube
    make gpu-prepare-cluster     # Kueue / NFD / NVIDIA DRA / smoke queue
    make gpu-configure-access    # scoped external-Operator kubeconfig
-   make gpu-configure-registry  # push immutable bootstrap/workload images
    make gpu-build-images
+   make gpu-configure-registry  # copy registry credentials after the namespace exists
    make gpu-render-config
    make gpu-preflight           # host GPU + Docker + K8s + DRA + Kueue
    make gpu-up
@@ -156,7 +185,7 @@ Rules for pushing results:
 
 - Pull the `test/*` branch, read `handoff/**/NOTES.md` + `report.json`, reproduce the failure logic
   in CPU/Mock/process tests where possible, fix, and push code back for a re-run.
-- Never weaken identity, safe-point, generation, receipt or readback checks just to make a smoke pass.
+- Never weaken identity, safe-point, generation, receipt or readback checks merely to force a smoke pass.
 - Keep `gpu_stack_integrated: false` until accepted real E1 evidence exists.
 
 ## Test-machine run log

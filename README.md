@@ -346,6 +346,16 @@ make gpu-up
 make gpu-smoke
 ```
 
+中国大陆或跨境下载受限的机器可以在所有 GPU 准备命令前启用仓库内置的公共镜像配置：
+
+```bash
+export TGSRL_NETWORK_PROFILE=cn
+TGSRL_INSTALL_DOCKER=1 TGSRL_INSTALL_NVIDIA_TOOLKIT=1 make gpu-install-host
+```
+
+`cn` 配置使用 DaoCloud 文件/容器代理和清华 PyPI；工具版本与官方模式完全相同，下载后仍以
+canonical upstream 的 SHA-256 校验。任何镜像地址都可通过 `TGSRL_*` 环境变量覆盖。
+
 `make gpu-smoke` 只执行并验收 E1。命令非零表示 E1 执行失败、证据无效或规则未通过；
 命令成功表示 E1 报告为 `PASSED`，不表示尚未执行的 E2–E8 已通过，也不代表完整 campaign
 达到发布准入。

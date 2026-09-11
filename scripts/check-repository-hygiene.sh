@@ -20,10 +20,12 @@ required_files=(
   configs/hardware/verl-job.example.json
   configs/hardware/gpu-requirements.in
   configs/hardware/gpu-requirements.lock
+  configs/network/cn.env
   compose.gpu.yaml
   Dockerfile.gpu-smoke
   scripts/check-docs.py
   scripts/gpu-configure-registry.sh
+  scripts/lib/network-profile.sh
   README.md
   LICENSE
   docs/README.md

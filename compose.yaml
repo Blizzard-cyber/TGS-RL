@@ -1,5 +1,13 @@
 name: "${COMPOSE_PROJECT_NAME:-tgsrl-local}"
 
+x-tgsrl-build-args: &tgsrl-build-args
+  TGSRL_GO_BASE_IMAGE: "${TGSRL_GO_BASE_IMAGE:-golang:1.26.4-bookworm@sha256:b305420a68d0f229d91eb3b3ed9e519fcf2cf5461da4bef997bf927e8c0bfd2b}"
+  TGSRL_PYTHON_BASE_IMAGE: "${TGSRL_PYTHON_BASE_IMAGE:-python:3.12.14-slim-bookworm@sha256:0f5b26b9518d002b6173fd61daad821fa340635ebfec5bba471013f9ca114579}"
+  TGSRL_NODE_BASE_IMAGE: "${TGSRL_NODE_BASE_IMAGE:-node:24.20.0-bookworm-slim@sha256:ba849c60be29959425b8734d57b8b4b7d56f98edd9504c9af091d5281095a71e}"
+  TGSRL_GOPROXY: "${TGSRL_GOPROXY:-https://proxy.golang.org,direct}"
+  TGSRL_PYPI_INDEX_URL: "${TGSRL_PYPI_INDEX_URL:-https://pypi.org/simple}"
+  TGSRL_NPM_REGISTRY: "${TGSRL_NPM_REGISTRY:-https://registry.npmjs.org}"
+
 # Complete local product stack. It exercises the production control flow while
 # replacing external hardware and Kubernetes with deterministic local backends.
 services:
@@ -9,6 +17,7 @@ services:
       context: .
       dockerfile: Dockerfile.local
       target: go-service
+      args: *tgsrl-build-args
     working_dir: /workspace
     command:
       - go
@@ -52,6 +61,7 @@ services:
       context: .
       dockerfile: Dockerfile.local
       target: python-service
+      args: *tgsrl-build-args
     working_dir: /workspace
     environment:
       # Development-only HMAC shared with compose-smoke.py. Override this value
@@ -101,6 +111,7 @@ services:
       context: .
       dockerfile: Dockerfile.local
       target: go-service
+      args: *tgsrl-build-args
     working_dir: /workspace
     command:
       - go
@@ -140,6 +151,7 @@ services:
       context: .
       dockerfile: Dockerfile.local
       target: go-service
+      args: *tgsrl-build-args
     working_dir: /workspace
     command:
       - go
@@ -186,6 +198,7 @@ services:
       context: .
       dockerfile: Dockerfile.local
       target: python-service
+      args: *tgsrl-build-args
     working_dir: /workspace
     command:
       - /bin/sh
@@ -224,6 +237,7 @@ services:
       context: .
       dockerfile: Dockerfile.local
       target: console
+      args: *tgsrl-build-args
     working_dir: /workspace/console
     command:
       - /bin/sh
@@ -258,6 +272,7 @@ services:
       context: .
       dockerfile: Dockerfile.local
       target: python-service
+      args: *tgsrl-build-args
     working_dir: /workspace
     environment:
       PYTHONPATH: /workspace:/workspace/runtime-python:/workspace/gateway-python:/workspace/gen/python

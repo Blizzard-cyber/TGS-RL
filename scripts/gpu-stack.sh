@@ -3,6 +3,9 @@ set -Eeuo pipefail
 
 ROOT_DIR=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)
 cd "$ROOT_DIR"
+# shellcheck disable=SC1091
+. "$ROOT_DIR/scripts/lib/network-profile.sh"
+tgsrl_load_network_profile
 ACTION=${1:-up}
 RUNTIME_ENV=${TGSRL_GPU_RUNTIME_ENV:-.cache/tgsrl/gpu-runtime.env}
 KEY_FILE=${TGSRL_GPU_REGISTRY_KEY_FILE:-.cache/tgsrl/worker-registry.key}
