@@ -30,7 +30,8 @@
 | 10 | `scripts/gate-tools.py` | 验证证据如何从原始事件重算，而不是信任汇总值 |
 
 `gen/` 是由 Proto 生成的代码，不应手工修改。`.cache/`、`.tmp/`、`bin/`、虚拟环境、
-Node 依赖、Console 构建目录和 `WORKLOG.local.md` 都是本地产物，不属于提交内容。
+Node 依赖和 Console 构建目录都是本地产物，不属于提交内容。`WORKLOG.local.md` 与 `handoff/`
+是开发机与 GPU 测试机之间的临时交接材料，会被提交但发布前删除。
 
 ## 2. 三个系统与五个状态权威
 
@@ -383,11 +384,14 @@ make check-public-content
 
 逐文件暂存源码、必要测试和文档，不使用 `git add .`。以下内容必须留在本地：
 
-- `WORKLOG.local.md`；
 - `.cache/`、`.tmp/`、`bin/`；
 - `.venv/`、`node_modules/`、`console/dist/`；
 - `__pycache__`、pytest/mypy/Ruff cache、`*.tsbuildinfo`；
+- kubeconfig、registry 凭据、签名 key、`.env` 和 `configs/hardware/environment.json`；
 - Gate 输出、运行时数据库、checkpoint、journal、日志和本机凭据。
+
+`WORKLOG.local.md` 与脱敏后的 `handoff/` 是开发机与 GPU 测试机之间的临时交接材料，会被提交，
+发布前删除。
 
 ## 13. 当前仍需真实环境完成的验证
 

@@ -16,6 +16,13 @@
 | 部署契约 | Dockerfiles、`compose.yaml`、`compose.gpu.yaml`、`deploy/` | 本机与 Kubernetes 打包 |
 | 开源入口 | `README.md`、`LICENSE`、`CONTRIBUTING.md`、`SECURITY.md`、`.gitattributes` | 首次运行、许可证、贡献、安全与跨平台行为 |
 | 脱敏示例 | `.example.*` 文件，例如 `configs/hardware/environment.example.json` | 展示输入结构而不携带真实环境数据 |
+| 临时协作文件 | `WORKLOG.local.md`、`handoff/`（脱敏后的 Gate 报告与日志） | 开发机与 GPU 测试机通过 GitHub 互相拉取的临时交接材料；发布前删除 |
+
+`WORKLOG.local.md` 与 `handoff/` 是开发机（无 GPU）和测试机（有 GPU）之间的临时交接约定：
+测试机把脱敏后的 E1-E8 报告和日志放入 `handoff/`，开发机拉取后修复。二者是临时脚手架，
+确定发布前应删除，并把 `/WORKLOG.local.md` 重新加入 `.gitignore`。真实凭据、kubeconfig、
+签名 key 和 `configs/hardware/environment.json` 仍然禁止提交；`evidence/`、`reports/`、
+`artifacts/` 仍被 `make check-repository` 拒绝，测试结果统一放入 `handoff/`。
 
 生成的 Proto、OpenAPI 和确定性 SBOM 是有意纳入版本控制的产物。先修改其源文件，再按文档
 命令重新生成，并在同一个变更中提交源文件和产物。
@@ -31,7 +38,7 @@
 | Gate 证据 | `artifacts/`、`evidence/`、`reports/`、原始 Trace 与下载归档 |
 | 真实环境配置 | `.env`、kubeconfig、registry 登录文件、`configs/hardware/environment.json`、`values.production.yaml` |
 | Secret | 私钥、证书、凭据、访问令牌和生产签名 key |
-| 工作站文件 | `.DS_Store`、IDE 目录、swap 文件和 `WORKLOG.local.md` |
+| 工作站文件 | `.DS_Store`、IDE 目录、swap 文件 |
 
 提交前执行：
 
