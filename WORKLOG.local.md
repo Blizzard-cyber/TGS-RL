@@ -29,8 +29,8 @@ run the real H1 fractional-GPU smoke.
   real CUDA smoke workload and requires Scheduler/Node/Pod/worker UUID equality.
 - `scripts/gpu-prepare-hami.sh` pins HAMi chart 2.10.0 and its SHA-256, switches the dedicated
   Minikube node from the NVIDIA Device Plugin to HAMi, creates an isolated Kueue queue and records
-  enough state to restore the previous plugin. It refuses active TGS-RL workloads and rolls back a
-  failed install.
+  the previous labels, HAMi annotations and GPU capacity before switching. It refuses active TGS-RL
+  workloads and only clears recovery state after the original plugin is Ready and capacity matches.
 - The Gateway exposes `GET /v1/resources`; the Chinese Console now has a ninth “算力资源”
   workspace with device capabilities, allocations and responsive desktop/mobile layout.
 - HAMi/HAMi-WebUI were used only as Apache-2.0 protocol and information-architecture references.

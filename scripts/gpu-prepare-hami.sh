@@ -51,37 +51,94 @@ require_idle_namespace() {
 }
 
 restore_previous_gpu_manager() {
-  kubectl delete -f deploy/kubernetes/hami-smoke-queue.yaml --ignore-not-found=true >/dev/null 2>&1 || true
-  helm uninstall hami --namespace kube-system --wait >/dev/null 2>&1 || true
+  kubectl delete -f deploy/kubernetes/hami-smoke-queue.yaml --ignore-not-found=true >/dev/null ||
+    return 1
+  if helm status hami --namespace kube-system >/dev/null 2>&1; then
+    helm uninstall hami --namespace kube-system --wait >/dev/null || return 1
+  fi
   while read -r node; do
     [[ -n $node ]] || continue
-    kubectl label node "$node" gpu=on --overwrite >/dev/null 2>&1 || true
+    kubectl label node "$node" gpu=on --overwrite >/dev/null || return 1
   done <"$STATE_PREFIX.preexisting-labels" 2>/dev/null || true
   while read -r node; do
     [[ -n $node ]] || continue
     if ! grep -Fxq "$node" "$STATE_PREFIX.preexisting-labels" 2>/dev/null; then
-      kubectl label node "$node" gpu- >/dev/null 2>&1 || true
+      kubectl label node "$node" gpu- >/dev/null || return 1
     fi
   done < <(
     kubectl get nodes -l gpu=on -o jsonpath='{range .items[*]}{.metadata.name}{"\n"}{end}' \
-      2>/dev/null || true
+      2>/dev/null
   )
+  restore_hami_annotations || return 1
   if [[ $(cat "$STATE_PREFIX.nvidia-addon" 2>/dev/null || true) == enabled ]]; then
-    minikube addons enable nvidia-device-plugin -p "$PROFILE" >/dev/null 2>&1 || true
+    minikube addons enable nvidia-device-plugin -p "$PROFILE" >/dev/null || return 1
+    for _ in $(seq 1 60); do
+      kubectl -n kube-system get daemonset nvidia-device-plugin-daemonset >/dev/null 2>&1 &&
+        break
+      sleep 2
+    done
+    kubectl -n kube-system get daemonset nvidia-device-plugin-daemonset >/dev/null 2>&1 ||
+      return 1
     kubectl -n kube-system rollout status daemonset/nvidia-device-plugin-daemonset \
-      --timeout=5m >/dev/null 2>&1 || true
+      --timeout=5m >/dev/null || return 1
+    wait_for_gpu_capacity_restore || return 1
   fi
   rm -f \
     "$STATE_PREFIX.installed" \
     "$STATE_PREFIX.preexisting-labels" \
+    "$STATE_PREFIX.preexisting-hami-annotations.json" \
+    "$STATE_PREFIX.preexisting-gpu-capacity.json" \
     "$STATE_PREFIX.nvidia-addon"
+}
+
+restore_hami_annotations() {
+  local nodes node current desired patch
+  [[ -f $STATE_PREFIX.preexisting-hami-annotations.json ]] || return 0
+  nodes=$(kubectl get nodes -o json | jq -r '.items[].metadata.name') || return 1
+  while read -r node; do
+    [[ -n $node ]] || continue
+    current=$(kubectl get node "$node" -o json | jq -c '
+      (.metadata.annotations // {})
+      | with_entries(select(.key | startswith("hami.io/")))
+    ') || return 1
+    desired=$(jq -c --arg node "$node" '
+      map(select(.name == $node))[0].annotations // {}
+    ' "$STATE_PREFIX.preexisting-hami-annotations.json") || return 1
+    patch=$(jq -cn --argjson current "$current" --argjson desired "$desired" '
+      {metadata: {annotations: (($current | with_entries(.value = null)) + $desired)}}
+    ') || return 1
+    kubectl patch node "$node" --type=merge --patch "$patch" >/dev/null || return 1
+  done <<<"$nodes"
+}
+
+wait_for_gpu_capacity_restore() {
+  local expected current
+  [[ -f $STATE_PREFIX.preexisting-gpu-capacity.json ]] || return 1
+  expected=$(cat "$STATE_PREFIX.preexisting-gpu-capacity.json")
+  for _ in $(seq 1 120); do
+    current=$(kubectl get nodes -o json | jq -c '
+      [.items[] | {
+        name: .metadata.name,
+        gpu: (.status.allocatable["nvidia.com/gpu"] // "0")
+      }] | sort_by(.name)
+    ') || return 1
+    if [[ $current == "$expected" ]]; then
+      return 0
+    fi
+    sleep 2
+  done
+  echo 'previous NVIDIA GPU capacity was not restored' >&2
+  return 1
 }
 
 rollback_failed_install() {
   local status=$?
   if (( SWITCH_STARTED == 1 && INSTALL_SUCCEEDED == 0 )); then
     echo 'HAMi preparation failed; restoring the previous NVIDIA device-plugin state' >&2
-    restore_previous_gpu_manager
+    trap - ERR
+    restore_previous_gpu_manager || {
+      echo "automatic GPU-manager restoration failed; state remains under $CACHE_DIR" >&2
+    }
   fi
   exit "$status"
 }
@@ -105,6 +162,21 @@ install_hami() {
   else
     kubectl get nodes -l gpu=on -o jsonpath='{range .items[*]}{.metadata.name}{"\n"}{end}' \
       >"$STATE_PREFIX.preexisting-labels"
+    kubectl get nodes -o json | jq '
+      [.items[] | {
+        name: .metadata.name,
+        annotations: (
+          (.metadata.annotations // {})
+          | with_entries(select(.key | startswith("hami.io/")))
+        )
+      }] | sort_by(.name)
+    ' >"$STATE_PREFIX.preexisting-hami-annotations.json"
+    kubectl get nodes -o json | jq -c '
+      [.items[] | {
+        name: .metadata.name,
+        gpu: (.status.allocatable["nvidia.com/gpu"] // "0")
+      }] | sort_by(.name)
+    ' >"$STATE_PREFIX.preexisting-gpu-capacity.json"
     if minikube addons list -p "$PROFILE" | grep -E 'nvidia-device-plugin.*enabled' >/dev/null; then
       printf 'enabled\n' >"$STATE_PREFIX.nvidia-addon"
     else
@@ -183,7 +255,10 @@ uninstall_hami() {
     printf 'HAMi is already absent; no recorded GPU-manager state needs restoration\n'
     return
   fi
-  restore_previous_gpu_manager
+  restore_previous_gpu_manager || {
+    echo "failed to restore the previous GPU manager; recovery state remains under $CACHE_DIR" >&2
+    exit 1
+  }
   printf 'HAMi removed and previous NVIDIA device-plugin state restored\n'
 }
 

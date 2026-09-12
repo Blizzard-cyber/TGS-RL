@@ -237,7 +237,9 @@ make gpu-hami-smoke
 `gpu-prepare-hami` 从 HAMi 官方 GitHub Release 获取并锁定 chart `2.10.0` 及其 SHA-256；
 启用 `TGSRL_NETWORK_PROFILE=cn` 时只替换下载传输地址，仍校验同一摘要。脚本停用 Minikube 自带 NVIDIA
 Device Plugin，安装 HAMi、标记测试节点并创建独立 Kueue `hami` queue。脚本拒绝在
-namespace 仍有 JobRunBundle、Workload、Job 或 Pod 时切换；安装失败会尝试恢复原插件状态。
+namespace 仍有 JobRunBundle、Workload、Job 或 Pod 时切换；安装前记录节点标签、HAMi
+注解和原 GPU capacity。安装失败或显式恢复时，只有原 Device Plugin Ready、capacity 恢复且
+HAMi 残留注解清理完成，脚本才删除恢复状态并返回成功。
 
 H1 必须同时满足：
 

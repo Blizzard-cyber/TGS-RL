@@ -248,6 +248,9 @@ def test_hami_smoke_installer_is_pinned_reversible_and_fail_closed() -> None:
     assert "minikube addons disable nvidia-device-plugin" in source
     assert "minikube addons enable nvidia-device-plugin" in source
     assert "rollback_failed_install" in source
+    assert "preexisting-hami-annotations.json" in source
+    assert "preexisting-gpu-capacity.json" in source
+    assert "wait_for_gpu_capacity_restore" in source
     assert "scheduler.kubeScheduler.image.registry" in source
     assert "scheduler.kubeScheduler.image.repository" in source
     assert "deploy/kubernetes/hami-smoke-queue.yaml" in source
