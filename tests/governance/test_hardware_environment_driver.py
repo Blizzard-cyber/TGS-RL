@@ -670,6 +670,53 @@ def test_driver_state_lock_fails_fast_when_another_operation_is_active(tmp_path:
             pass
 
 
+def test_driver_state_compacts_legacy_cleaned_receipts_on_load(tmp_path: Path) -> None:
+    store = DRIVER.StateStore(tmp_path / "state")
+    cleanup_response = {
+        "schema_version": DRIVER.RESPONSE_SCHEMA,
+        "request_id": "cleanup-request",
+        "status": "SUCCEEDED",
+        "events": [],
+    }
+    DRIVER._write_json(
+        store.path,
+        {
+            "schema_version": DRIVER.STATE_SCHEMA,
+            "runs": {
+                "campaign\u0000H2\u0000run": {
+                    "attempt": 2,
+                    "job_id": "job-a",
+                    "run_id": "run-a",
+                    "cleaned": True,
+                    "cleanup_request_id": "cleanup-request",
+                    "receipts": {
+                        "measure-request": {
+                            "request_digest": "measure-digest",
+                            "response": {"events": [{"payload": "x" * DRIVER.MAX_JSON_BYTES}]},
+                        },
+                        "cleanup-request": {
+                            "request_digest": "cleanup-digest",
+                            "response": cleanup_response,
+                        },
+                    },
+                }
+            },
+        },
+    )
+    assert store.path.stat().st_size > DRIVER.MAX_JSON_BYTES
+
+    with store.locked() as state:
+        run = state["runs"]["campaign\u0000H2\u0000run"]
+        assert run["receipts"] == {
+            "cleanup-request": {
+                "request_digest": "cleanup-digest",
+                "response": cleanup_response,
+            }
+        }
+
+    assert store.path.stat().st_size < DRIVER.MAX_JSON_BYTES
+
+
 def test_hardware_job_identity_is_stable_and_attempt_scoped() -> None:
     request = _request("provision", 1)
     first = DRIVER._job_id(request, 1)
@@ -786,6 +833,24 @@ def test_driver_starts_new_attempt_after_completed_cleanup(
     assert len(start_keys) == 2
     assert start_keys[0].endswith("-a1-start")
     assert start_keys[1].endswith("-a2-start")
+
+    cleanup = _request("cleanup", 8)
+    cleanup_root = root / "second-cleanup"
+    cleanup_root.mkdir()
+    first_cleanup = cast(
+        JsonObject,
+        driver.execute(cleanup, cleanup_root / "response.json"),
+    )
+    replay_root = root / "replayed-cleanup"
+    replay_root.mkdir()
+    replayed_cleanup = cast(
+        JsonObject,
+        driver.execute(cleanup, replay_root / "response.json"),
+    )
+    assert replayed_cleanup == first_cleanup
+    persisted = json.loads((root / "state/state.json").read_text(encoding="utf-8"))
+    run = next(iter(persisted["runs"].values()))
+    assert list(run["receipts"]) == [cleanup["request_id"]]
 
 
 def test_cleanup_accepts_unmaterialized_failed_start(

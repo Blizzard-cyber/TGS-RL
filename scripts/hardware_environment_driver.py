@@ -86,6 +86,7 @@ UUID_PATTERN = re.compile(r"(?:GPU|MIG)-[A-Za-z0-9][A-Za-z0-9./_-]*")
 PLACEHOLDER_PATTERN = re.compile(r"\$\{([A-Z][A-Z0-9_]*)\}")
 DNS_LABEL_PATTERN = re.compile(r"^[a-z0-9](?:[-a-z0-9]*[a-z0-9])?$")
 MAX_JSON_BYTES = 4 << 20
+MAX_STATE_BYTES = 64 << 20
 MAX_TRACE_BYTES = 64 << 20
 MAX_EVENTS = 100_000
 SENSITIVE_NAMES = frozenset(
@@ -169,6 +170,33 @@ def _write_json(path: Path, value: Mapping[str, Any]) -> None:
 def _canonical_digest(value: object) -> str:
     payload = json.dumps(value, sort_keys=True, separators=(",", ":")).encode()
     return hashlib.sha256(payload).hexdigest()
+
+
+def _compact_cleaned_run(run: JsonObject) -> None:
+    if run.get("cleaned") is not True:
+        return
+    receipts = _mapping(run.get("receipts", {}), label="cleaned run receipts")
+    cleanup_request_id = str(run.get("cleanup_request_id", "")).strip()
+    compacted_receipts = (
+        {cleanup_request_id: copy.deepcopy(receipts[cleanup_request_id])}
+        if cleanup_request_id in receipts
+        else {}
+    )
+    retained = {
+        key: run[key]
+        for key in (
+            "attempt",
+            "job_id",
+            "run_id",
+            "last_step_index",
+            "cleaned",
+            "cleanup_request_id",
+        )
+        if key in run
+    }
+    retained["receipts"] = compacted_receipts
+    run.clear()
+    run.update(retained)
 
 
 def _job_id(request_value: Mapping[str, Any], attempt: int) -> str:
@@ -580,12 +608,16 @@ class _StateLock:
             raise DriverError("another hardware environment driver operation is active") from exc
         try:
             if self.store.path.is_file():
-                self.state = _read_json(self.store.path)
+                self.state = _read_json(self.store.path, maximum=MAX_STATE_BYTES)
                 if self.state.get("schema_version") != STATE_SCHEMA:
                     raise DriverError("hardware driver state schema is invalid")
             else:
                 self.state = {"schema_version": STATE_SCHEMA, "runs": {}}
-            _mapping(self.state.get("runs"), label="hardware driver state runs")
+            runs = _mapping(self.state.get("runs"), label="hardware driver state runs")
+            for value in runs.values():
+                _compact_cleaned_run(
+                    _mapping(value, label="hardware driver persisted run")
+                )
             self.ready = True
             return self.state
         except Exception:
@@ -1055,6 +1087,8 @@ class HardwareEnvironmentDriver:
             run["last_step_index"] = int(request_value["step_index"])
             if request_value["operation"] == "cleanup":
                 run["cleaned"] = True
+                run["cleanup_request_id"] = request_id
+                _compact_cleaned_run(run)
             return response
 
     def _validate_request(self, value: JsonObject) -> None:
