@@ -4,6 +4,7 @@ import type {
   ExperimentSummary,
   JobSummary,
   OverviewResponse,
+  ResourceSnapshot,
   RunSummary,
   SandboxResponse,
   TimelineResponse,
@@ -337,7 +338,7 @@ export function mapSandbox(inputValue: unknown, jobId: string): SandboxResponse[
     nodeLabel: deviceIds[0] ?? '未绑定',
     gpuAttached:
       acceleratorUnits > 0 ||
-      deviceIds.some((id) => /(^mig-)|gpu|nvidia|cuda|a100|h100/i.test(id)),
+      deviceIds.some((id) => /(^mig-)|gpu|nvidia|cuda/i.test(id)),
     share: typeof input.share === 'number' ? input.share : 0,
     priority: typeof input.priority === 'number' ? input.priority : 0,
     safePoint: Boolean(input.safePoint),
@@ -430,6 +431,112 @@ export function mapTopology(input: unknown, jobId: string): TopologySnapshot {
     nodes,
     edges,
     lastUpdated: toTimestamp(run.createdAt ?? manifest.createdAt),
+  };
+}
+
+export function mapResources(input: unknown): ResourceSnapshot {
+  const payload = ensureObject(input);
+  const snapshot = ensureObject(payload.snapshot);
+  const allAllocations = ensureArray<Record<string, unknown>>(snapshot.allocations).map((allocation) => {
+    const resources = ensureObject(allocation.resources);
+    return {
+      id: String(allocation.allocationId ?? ''),
+      jobId: String(allocation.jobId ?? ''),
+      runId: typeof allocation.runId === 'string' ? allocation.runId : undefined,
+      sandboxId: typeof allocation.sandboxId === 'string' ? allocation.sandboxId : undefined,
+      stageId: String(allocation.stageId ?? ''),
+      deviceIds: ensureArray<string>(allocation.deviceIds).map(String),
+      share: Number(resources.acceleratorUnits ?? 0),
+      memoryBytes: Number(resources.memoryBytes ?? 0),
+      state: String(allocation.state ?? 'ALLOCATION_STATE_UNKNOWN'),
+      generation: Number(allocation.generation ?? 0),
+    };
+  });
+  const usedByDevice = new Map<string, number>();
+  for (const allocation of allAllocations) {
+    for (const deviceId of allocation.deviceIds) {
+      usedByDevice.set(deviceId, (usedByDevice.get(deviceId) ?? 0) + allocation.share);
+    }
+  }
+  const devices = ensureArray<Record<string, unknown>>(snapshot.devices)
+    .filter((device) => {
+      const kind = String(device.deviceKind ?? device.kind ?? '').toUpperCase();
+      return kind === 'DEVICE_KIND_GPU' ||
+        kind === 'DEVICE_KIND_NPU' ||
+        kind === 'DEVICE_KIND_TPU' ||
+        kind === 'DEVICE_KIND_CUSTOM';
+    })
+    .map((device) => {
+    const kind = String(device.deviceKind ?? device.kind ?? '')
+      .replace(/^DEVICE_KIND_/, '')
+      .toLowerCase() as ResourceSnapshot['devices'][number]['kind'];
+    const labels = ensureObject(device.labels);
+    const capabilities = ensureObject(device.capabilities);
+    const attributes = ensureObject(capabilities.attributes);
+    const capacity = ensureObject(device.capacity);
+    const allocatable = ensureObject(device.allocatable);
+    const names = new Set(ensureArray<string>(capabilities.names).map(String));
+    const provider = String(labels.provider ?? capabilities.source ?? 'unknown');
+    const isNvidiaGPU = kind === 'gpu' && provider.toLowerCase() === 'nvidia';
+    const modeText = String(
+      labels.partition_mode ??
+      labels.partitionMode ??
+      attributes.partition_mode ??
+      attributes.partitionMode ??
+      '',
+    ).toLowerCase();
+    const activeMode = (
+      !isNvidiaGPU ? 'native'
+        : modeText.includes('mig') ? 'mig'
+          : modeText.includes('mps') ? 'mps'
+            : modeText.includes('hami') ? 'hami'
+              : 'full'
+    ) as ResourceSnapshot['devices'][number]['activeMode'];
+    const availableModes: ResourceSnapshot['devices'][number]['availableModes'] =
+      !isNvidiaGPU ? ['native'] : activeMode === 'mig' ? ['mig'] : ['full'];
+    if (isNvidiaGPU && (labels.supports_hami === 'true' || names.has('hami-vgpu'))) availableModes.push('hami');
+    if (isNvidiaGPU && (labels.supports_mps === 'true' || names.has('nvidia-mps'))) availableModes.push('mps');
+    if (isNvidiaGPU && activeMode !== 'mig' && (labels.supports_mig === 'true' || names.has('nvidia-mig'))) availableModes.push('mig');
+    const capacityUnits = Number(capacity.acceleratorUnits ?? 0);
+    const allocatableUnits = Number(allocatable.acceleratorUnits ?? 0);
+    const observedUsed = usedByDevice.get(String(device.deviceId ?? '')) ?? Math.max(0, capacityUnits - allocatableUnits);
+    return {
+      id: String(device.deviceId ?? ''),
+      name: String(labels.name ?? labels.model ?? device.deviceId ?? '未知加速卡'),
+      kind,
+      node: String(labels.node ?? labels.hostname ?? labels.pool ?? '未上报节点'),
+      provider,
+      health: String(device.health ?? 'DEVICE_HEALTH_UNKNOWN').replace(/^DEVICE_HEALTH_/, '').toLowerCase() as ResourceSnapshot['devices'][number]['health'],
+      memoryBytes: Number(capacity.memoryBytes ?? 0),
+      allocatableMemoryBytes: Number(allocatable.memoryBytes ?? 0),
+      capacity: capacityUnits,
+      allocatable: allocatableUnits,
+      utilization: capacityUnits > 0 ? Math.min(1, Math.max(0, observedUsed / capacityUnits)) : 0,
+      activeMode,
+      availableModes: [...new Set(availableModes)],
+      capabilities: [...names].sort(),
+      driverVersion: String(
+        attributes.driver_version ??
+        attributes.driverVersion ??
+        labels.driver_version ??
+        labels.driverVersion ??
+        '',
+      ),
+      parentUuid: typeof labels.parent_uuid === 'string' ? labels.parent_uuid : undefined,
+      profile: typeof labels.profile === 'string' ? labels.profile : undefined,
+    };
+    });
+  const acceleratorDeviceIDs = new Set(devices.map((device) => device.id));
+  const allocations = allAllocations.filter((allocation) =>
+    allocation.deviceIds.some((deviceId) => acceleratorDeviceIDs.has(deviceId)),
+  );
+  return {
+    id: String(snapshot.snapshotId ?? ''),
+    revision: Number(snapshot.revision ?? 0),
+    observedAt: toTimestamp(snapshot.observedAt),
+    devices,
+    allocations,
+    pendingUnits: ensureArray(snapshot.pendingUnits).length,
   };
 }
 

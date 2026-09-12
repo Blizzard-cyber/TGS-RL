@@ -6,6 +6,7 @@ const routes = [
   ['/traces', '链路追踪'],
   ['/timeline', '事件时间线'],
   ['/topology', '资源拓扑'],
+  ['/resources', '算力资源'],
   ['/sandboxes', '运行沙箱'],
   ['/decisions', '调度决策'],
   ['/experiments', '实验对比'],

@@ -103,6 +103,7 @@ describe('JobDetailPage controls', () => {
 
     const client: ApiClient = {
       listOverview: async () => ready({ metrics: [], jobs: [], experiments: [], decisions: [], capabilities: { protocolVersion: 'v0.3', dataKinds: [], pagination: 'opaque' }, systemHealth: { status: 'ok', observedAt: '', counts: {} }, alerts: [] }),
+      getResources: async () => ready({ id: '', revision: 0, observedAt: '', devices: [], allocations: [], pendingUnits: 0 }),
       listJobs: async () => ready(jobs),
       getJobDetail: async () => ready(detail),
       listRuns: async () => ready(runs),

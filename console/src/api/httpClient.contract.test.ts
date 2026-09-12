@@ -539,6 +539,119 @@ describe('HttpApiClient contract', () => {
     expect(sandboxes.pageInfo?.nextPageToken).toBe('sandbox-page-3');
   });
 
+  it('maps scheduler resource snapshots into accelerator inventory', async () => {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = new URL(String(input), 'http://localhost');
+      expect(url.pathname).toBe('/v1/resources');
+      return jsonResponse({
+        snapshot: {
+          snapshotId: 'snapshot-42',
+          revision: '42',
+          observedAt: '2026-08-27T08:20:00Z',
+          devices: [
+            {
+              deviceId: 'mock-cpu-0',
+              kind: 'DEVICE_KIND_CPU',
+              health: 'DEVICE_HEALTH_READY',
+              capacity: { acceleratorUnits: 1, memoryBytes: '17179869184' },
+              allocatable: { acceleratorUnits: 1, memoryBytes: '17179869184' },
+              capabilities: { names: ['logical-cpu'] },
+              labels: { provider: 'mock' },
+            },
+            {
+              deviceId: 'GPU-a10',
+              kind: 'DEVICE_KIND_GPU',
+              health: 'DEVICE_HEALTH_READY',
+              capacity: { acceleratorUnits: 1, memoryBytes: '25769803776' },
+              allocatable: { acceleratorUnits: 0.4, memoryBytes: '8589934592' },
+              capabilities: {
+                names: ['nvidia-gpu', 'hami-vgpu', 'nvidia-mps'],
+                attributes: { partitionMode: 'hami-core', driverVersion: '580.178.04' },
+              },
+              labels: {
+                name: 'NVIDIA A10',
+                node: 'gpu-a10-01',
+                provider: 'nvidia',
+                supports_hami: 'true',
+                supports_mps: 'true',
+                supports_mig: 'false',
+              },
+            },
+            {
+              deviceId: 'MIG-a100/1/0',
+              kind: 'DEVICE_KIND_GPU',
+              health: 'DEVICE_HEALTH_READY',
+              capacity: { acceleratorUnits: 1, memoryBytes: '10737418240' },
+              allocatable: { acceleratorUnits: 1, memoryBytes: '10737418240' },
+              capabilities: {
+                names: ['nvidia-gpu', 'nvidia-mig'],
+                attributes: { partitionMode: 'auto', driverVersion: '580.178.04' },
+              },
+              labels: {
+                name: 'NVIDIA A100',
+                node: 'gpu-a100-01',
+                provider: 'nvidia',
+                partition_mode: 'mig',
+                supports_mig: 'true',
+                parent_uuid: 'GPU-a100',
+                profile: '1g.10gb',
+              },
+            },
+          ],
+          allocations: [{
+            allocationId: 'allocation-1',
+            jobId: 'job-live-017',
+            runId: 'run-live-017-a',
+            stageId: 'actor-rollout',
+            sandboxId: 'sbx-1',
+            deviceIds: ['GPU-a10'],
+            resources: { acceleratorUnits: 0.6, memoryBytes: '17179869184' },
+            state: 'ALLOCATION_STATE_ACTIVE',
+            generation: '7',
+          }, {
+            allocationId: 'allocation-cpu',
+            jobId: 'job-cpu',
+            stageId: 'trainer',
+            deviceIds: ['mock-cpu-0'],
+            resources: { acceleratorUnits: 1 },
+            state: 'ALLOCATION_STATE_ACTIVE',
+            generation: '1',
+          }],
+          pendingUnits: [{ pendingUnitId: 'pending-1' }],
+        },
+      });
+    });
+    globalThis.fetch = fetchMock as typeof fetch;
+
+    const result = await new HttpApiClient('').getResources();
+
+    expect(result.state).toBe('ready');
+    expect(result.data).toMatchObject({
+      id: 'snapshot-42',
+      revision: 42,
+      pendingUnits: 1,
+      devices: [{
+        id: 'GPU-a10',
+        name: 'NVIDIA A10',
+        kind: 'gpu',
+        activeMode: 'hami',
+        availableModes: ['full', 'hami', 'mps'],
+        capabilities: ['hami-vgpu', 'nvidia-gpu', 'nvidia-mps'],
+      }, {
+        id: 'MIG-a100/1/0',
+        kind: 'gpu',
+        activeMode: 'mig',
+        availableModes: ['mig'],
+      }],
+      allocations: [{
+        id: 'allocation-1',
+        deviceIds: ['GPU-a10'],
+        share: 0.6,
+        generation: 7,
+      }],
+    });
+  });
+
   it('maps rolled back and unknown decision action statuses without false success', async () => {
     const fetchMock = vi.fn(async () =>
       jsonResponse({

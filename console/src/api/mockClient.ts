@@ -6,6 +6,7 @@ import {
   getRunList,
   jobs,
   overview,
+  resources,
   sandboxes,
   timeline,
   traceEvents,
@@ -31,6 +32,7 @@ import type {
   JobCommand,
   JobSummary,
   OverviewResponse,
+  ResourceSnapshot,
   QueryOptions,
   QueryResult,
   ReplayCommand,
@@ -112,6 +114,11 @@ export class MockApiClient implements ApiClient {
     await delay(180, options?.signal);
     const mode = parseSimulation(options?.filters);
     return applySimulation(mode, overview, '当前数据来源下没有总览指标。');
+  }
+
+  async getResources(options?: QueryOptions): Promise<QueryResult<ResourceSnapshot>> {
+    await delay(180, options?.signal);
+    return applySimulation(parseSimulation(options?.filters), resources, '当前没有发现可调度的算力设备。');
   }
 
   async listJobs(options?: QueryOptions): Promise<QueryResult<JobSummary[]>> {

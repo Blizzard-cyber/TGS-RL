@@ -5,6 +5,7 @@ import {
   mapDecisionExplorer,
   mapExperiment,
   mapJob,
+  mapResources,
   mapRun,
   mapSandbox,
   mapTimelineEvent,
@@ -22,6 +23,7 @@ import type {
   JobCommand,
   JobSummary,
   OverviewResponse,
+  ResourceSnapshot,
   QueryOptions,
   QueryResult,
   ReplayCommand,
@@ -136,6 +138,16 @@ export class HttpApiClient implements ApiClient {
       ),
       pageInfo: { nextPageToken: jobsResult.pageInfo?.nextPageToken },
     };
+  }
+
+  async getResources(options?: QueryOptions): Promise<QueryResult<ResourceSnapshot>> {
+    const result = await this.transport.get<Record<string, unknown>>('/v1/resources', options, {
+      includePagination: false,
+    });
+    if (result.state !== 'ready') {
+      return asResult<ResourceSnapshot>(result);
+    }
+    return { state: 'ready', data: mapResources(result.data) };
   }
 
   async listJobs(options?: QueryOptions): Promise<QueryResult<JobSummary[]>> {

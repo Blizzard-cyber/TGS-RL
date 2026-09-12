@@ -1851,6 +1851,37 @@
           "replays"
         ]
       }
+    },
+    "/v1/resources": {
+      "get": {
+        "operationId": "getResources",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Scheduler resource snapshot"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            },
+            "description": "Error response"
+          }
+        },
+        "summary": "Get accelerator resources",
+        "tags": [
+          "resources"
+        ]
+      }
     }
   },
   "servers": [
@@ -1873,6 +1904,9 @@
     },
     {
       "name": "replays"
+    },
+    {
+      "name": "resources"
     },
     {
       "name": "runtime"

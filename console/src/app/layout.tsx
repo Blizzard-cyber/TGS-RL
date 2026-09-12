@@ -21,6 +21,7 @@ const navigation: Array<{ group: string; items: Array<{ to: string; label: strin
   {
     group: '资源',
     items: [
+      { to: '/resources', label: '算力资源', icon: 'resource' },
       { to: '/topology', label: '资源拓扑', icon: 'topology' },
       { to: '/sandboxes', label: '运行沙箱', icon: 'sandbox' },
     ],
@@ -55,11 +56,11 @@ export function AppLayoutWithClient({ client }: AppLayoutWithClientProps) {
       <div className="app-shell">
         <aside className="sidebar">
           <div className="brand-block">
-            <div className="brand-mark"><Icon name="pulse" /></div>
+            <div className="brand-mark"><Icon name="resource" /></div>
             <div>
-              <p className="eyebrow">强化学习训练系统</p>
+              <p className="eyebrow">异构算力调度</p>
               <h1>TGS-RL</h1>
-              <p className="brand-copy">以链路证据连接任务、调度决策与运行资源。</p>
+              <p className="brand-copy">统一编排训练任务、设备能力与运行证据。</p>
             </div>
           </div>
           <nav className="nav-list" aria-label="主导航">
@@ -93,7 +94,7 @@ export function AppLayoutWithClient({ client }: AppLayoutWithClientProps) {
         </aside>
         <div className="workspace">
           <header className="workspace-bar">
-            <div><span className="workspace-product">TGS-RL</span><span className="workspace-separator">/</span><strong>本机调度集群</strong></div>
+            <div><span className="workspace-product">TGS-RL</span><span className="workspace-separator">/</span><strong>算力控制中心</strong></div>
             <div className="workspace-state"><span className="status-beacon" /><strong>{mockMode ? '演示数据' : '控制面在线'}</strong><span>协议 v0.3</span></div>
           </header>
           <main className="content-area">

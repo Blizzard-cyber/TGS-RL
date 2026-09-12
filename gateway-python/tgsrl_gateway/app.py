@@ -250,6 +250,9 @@ class GatewayApplication:
             return self.openapi
         if method == "GET" and path == route_path("capabilities"):
             return self.backend.capabilities()
+        if method == "GET" and path == route_path("get_resources"):
+            result = self.backend.get_resources()
+            return {"snapshot": message_to_dict(result["snapshot"])}
 
         if not segments or segments[0] != "v1":
             raise NotFoundError("route", path)

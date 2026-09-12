@@ -56,6 +56,9 @@ class GatewayClient:
     def capabilities(self) -> dict[str, object]:
         return self._request("GET", route_path("capabilities"))
 
+    def get_resources(self) -> dict[str, object]:
+        return self._request("GET", route_path("get_resources"))
+
     def list_jobs(
         self,
         *,

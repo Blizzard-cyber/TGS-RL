@@ -2,7 +2,7 @@ import type { ButtonHTMLAttributes, PropsWithChildren, ReactNode } from 'react';
 import type { LoadStateKind, MetricCard as MetricCardType } from '../api/types';
 import { dataKindLabel } from '../app/utils';
 
-export type IconName = 'overview' | 'jobs' | 'trace' | 'experiment' | 'timeline' | 'topology' | 'sandbox' | 'decision' | 'pulse';
+export type IconName = 'overview' | 'jobs' | 'trace' | 'experiment' | 'timeline' | 'topology' | 'sandbox' | 'decision' | 'pulse' | 'resource';
 
 export function Icon({ name }: { name: IconName }) {
   const paths: Record<IconName, ReactNode> = {
@@ -15,6 +15,7 @@ export function Icon({ name }: { name: IconName }) {
     sandbox: <><path d="m12 3 8 4.5v9L12 21l-8-4.5v-9z"/><path d="m4 7.5 8 4.5 8-4.5M12 12v9"/></>,
     decision: <><path d="M4 5h7M4 12h12M4 19h7"/><circle cx="17" cy="5" r="2"/><circle cx="20" cy="12" r="2"/><circle cx="14" cy="19" r="2"/></>,
     pulse: <path d="M3 12h4l2-6 4 12 2-6h6"/>,
+    resource: <><rect x="3" y="5" width="18" height="14" rx="2"/><path d="M7 9h4v6H7zM15 9h2M15 12h2M15 15h2"/></>,
   };
   return <svg className="icon" viewBox="0 0 24 24" aria-hidden="true">{paths[name]}</svg>;
 }

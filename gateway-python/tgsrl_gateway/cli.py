@@ -48,6 +48,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     subparsers.add_parser("health", parents=[client_parent])
     subparsers.add_parser("capabilities", parents=[client_parent])
+    subparsers.add_parser("resources", parents=[client_parent])
     list_jobs = subparsers.add_parser("list-jobs", parents=[client_parent])
     list_jobs.add_argument("--limit", type=int)
     list_jobs.add_argument("--page-token")
@@ -220,6 +221,8 @@ def main(argv: list[str] | None = None) -> int:
         return _print(client.health())
     if args.command == "capabilities":
         return _print(client.capabilities())
+    if args.command == "resources":
+        return _print(client.get_resources())
     if args.command == "list-jobs":
         return _print(
             client.list_jobs(

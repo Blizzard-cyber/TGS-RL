@@ -115,6 +115,18 @@ ROUTE_CONTRACTS: tuple[RouteContract, ...] = (
         sdk_method="capabilities",
     ),
     RouteContract(
+        name="get_resources",
+        method="GET",
+        path_template="/v1/resources",
+        tag="resources",
+        summary="Get accelerator resources",
+        operation_id="getResources",
+        success_status=200,
+        success_description="Scheduler resource snapshot",
+        cli_command="resources",
+        sdk_method="get_resources",
+    ),
+    RouteContract(
         name="list_jobs",
         method="GET",
         path_template="/v1/jobs",

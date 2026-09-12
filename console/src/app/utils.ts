@@ -55,6 +55,9 @@ const labels: Record<string, string> = {
   warn: '警告',
   critical: '严重',
   applied: '已应用',
+  active: '使用中',
+  releasing: '释放中',
+  released: '已释放',
   fallback: '回退',
   selected: '已选择',
   feasible: '可行',
@@ -111,6 +114,8 @@ export function titleCase(value: string) {
     .replace(/^JOB_STATE_/, '')
     .replace(/^RUNTIME_STATE_/, '')
     .replace(/^EXPERIMENT_STATE_/, '')
+    .replace(/^ALLOCATION_STATE_/, '')
+    .replace(/^DEVICE_HEALTH_/, '')
     .toLowerCase();
   return labels[normalized] ?? value.replace(/[_-]/g, ' ');
 }

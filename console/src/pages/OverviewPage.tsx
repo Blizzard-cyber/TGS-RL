@@ -18,6 +18,10 @@ export function OverviewPage() {
     }),
     [client, dataKind, mode],
   );
+  const resourcesQuery = useQuery(
+    (signal) => client.getResources({ filters: toQueryFilters({ mode }), signal }),
+    [client, mode],
+  );
   const visibleJobs = useMemo(
     () =>
       [...(result.data?.jobs ?? [])]
@@ -53,6 +57,12 @@ export function OverviewPage() {
           const jobs = data?.jobs ?? [];
           const activeJobs = jobs.filter((job) => job.state === 'running' || job.state === 'paused').length;
           const unhealthyJobs = jobs.filter((job) => job.health !== 'healthy').length;
+          const resourceSnapshot = resourcesQuery.result.data;
+          const accelerators = resourceSnapshot?.devices ?? [];
+          const resourceModes = new Set(accelerators.flatMap((device) => device.availableModes));
+          const activeAllocations = resourceSnapshot?.allocations.filter((allocation) =>
+            allocation.state.includes('ACTIVE'),
+          ).length ?? 0;
           const statusItems = [
             { label: '任务总数', value: String(jobs.length), tone: 'neutral' },
             { label: '活跃任务', value: String(activeJobs), tone: 'good' },
@@ -69,6 +79,19 @@ export function OverviewPage() {
                     <span>{item.label}</span><strong>{item.value}</strong>
                   </div>
                 ))}
+              </section>
+              <section className="fleet-ribbon" aria-label="异构算力池">
+                <div className="fleet-ribbon-copy">
+                  <p className="eyebrow">异构算力池</p>
+                  <strong>{accelerators.length ? `${accelerators.length} 张设备正在纳管` : '等待资源快照'}</strong>
+                  <span>按卡独立识别整卡、共享与 MIG 能力；最终 DRA/HAMi 兑现结果由 Operator 回读确认。</span>
+                </div>
+                <div className="fleet-ribbon-facts">
+                  <span><b>{activeAllocations}</b> 个活动分配</span>
+                  <span><b>{resourceModes.size}</b> 种可用方式</span>
+                  <span><b>{resourceSnapshot?.pendingUnits ?? 0}</b> 个等待单元</span>
+                </div>
+                <Link className="button primary" to="/resources"><Icon name="resource" />查看算力资源</Link>
               </section>
               <div className="overview-layout">
                 <Panel className="overview-jobs" title="任务运行态" subtitle="按当前状态快速进入任务或链路。">

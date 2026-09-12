@@ -7,6 +7,7 @@ import type {
   JobDetailResponse,
   JobSummary,
   OverviewResponse,
+  ResourceSnapshot,
   QueryResult,
   RunSummary,
   SandboxResponse,
@@ -31,6 +32,7 @@ export function createTestApiClient(overrides: Partial<ApiClient> = {}): ApiClie
         systemHealth: { status: 'ok', observedAt: '', counts: {} },
         alerts: [],
       }),
+    getResources: async () => ready<ResourceSnapshot>({ id: '', revision: 0, observedAt: '', devices: [], allocations: [], pendingUnits: 0 }),
     listJobs: async () => ready<JobSummary[]>([]),
     getJobDetail: async () =>
       ready<JobDetailResponse>({

@@ -326,6 +326,15 @@ class _SchedulerServicer(scheduling_pb2_grpc.SchedulerServiceServicer):
         self.backend = backend
         self.last_list_decisions_request: scheduling_pb2.ListDecisionsRequest | None = None
 
+    def GetSnapshot(
+        self, request: scheduling_pb2.GetSnapshotRequest, context: grpc.ServicerContext
+    ) -> scheduling_pb2.GetSnapshotResponse:
+        del request, context
+        return scheduling_pb2.GetSnapshotResponse(
+            snapshot=self.backend.get_resources()["snapshot"],
+            cursor="resources",
+        )
+
     def ListDecisions(
         self, request: scheduling_pb2.ListDecisionsRequest, context: grpc.ServicerContext
     ) -> scheduling_pb2.ListDecisionsResponse:
@@ -903,6 +912,7 @@ def test_openapi_artifact_is_present_and_declares_required_routes() -> None:
     for route in (
         "/health",
         "/v1/capabilities",
+        "/v1/resources",
         "/v1/jobs",
         "/v1/operations",
         "/v1/replays",
@@ -1233,6 +1243,22 @@ def test_latest_run_semantics_match_list_runs_and_topology_in_memory_gateway() -
     assert topology_status == 200
     assert topology["run"]["runId"] == second_run_id
     assert topology["manifest"]["runId"] == second_run_id
+
+
+def test_memory_resources_exposes_device_capabilities_and_allocations() -> None:
+    harness = WsgiHarness()
+
+    status, payload = harness.request("GET", "/v1/resources")
+
+    assert status == 200
+    snapshot = payload["snapshot"]
+    assert snapshot["revision"] == "12"
+    devices = snapshot["devices"]
+    assert devices[0]["labels"]["name"] == "NVIDIA A10"
+    assert devices[0]["labels"]["supports_hami"] == "true"
+    assert devices[0]["labels"]["supports_mig"] == "false"
+    assert devices[0]["capabilities"]["names"] == ["nvidia-gpu", "hami-vgpu", "nvidia-mps"]
+    assert snapshot["allocations"][0]["deviceIds"] == ["GPU-A10-DEMO"]
 
 
 def test_unknown_path_is_404_and_method_mismatch_is_405_with_allow_in_memory_gateway() -> None:
@@ -1890,6 +1916,10 @@ def test_grpc_default_backend_routes_reach_in_process_servicers() -> None:
         assert capabilities["contract_features"]["create_job_run_job_id"] is True
         assert capabilities["contract_features"]["list_decisions_unary"] is True
         assert capabilities["contract_features"]["list_operations_unary"] is True
+
+        resources_status, resources = harness.request("GET", "/v1/resources")
+        assert resources_status == 200
+        assert resources["snapshot"]["devices"][0]["labels"]["name"] == "NVIDIA A10"
 
         create_status, created = harness.request(
             "POST",

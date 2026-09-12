@@ -132,6 +132,51 @@ export interface TopologySnapshot {
   lastUpdated: string;
 }
 
+export type AcceleratorMode = 'native' | 'full' | 'hami' | 'mps' | 'mig';
+export type AcceleratorKind = 'gpu' | 'npu' | 'tpu' | 'custom';
+
+export interface AcceleratorDevice {
+  id: string;
+  name: string;
+  kind: AcceleratorKind;
+  node: string;
+  provider: string;
+  health: 'ready' | 'degraded' | 'draining' | 'unavailable' | 'unknown';
+  memoryBytes: number;
+  allocatableMemoryBytes: number;
+  capacity: number;
+  allocatable: number;
+  utilization: number;
+  activeMode: AcceleratorMode;
+  availableModes: AcceleratorMode[];
+  capabilities: string[];
+  driverVersion: string;
+  parentUuid?: string;
+  profile?: string;
+}
+
+export interface AcceleratorAllocation {
+  id: string;
+  jobId: string;
+  runId?: string;
+  sandboxId?: string;
+  stageId: string;
+  deviceIds: string[];
+  share: number;
+  memoryBytes: number;
+  state: string;
+  generation: number;
+}
+
+export interface ResourceSnapshot {
+  id: string;
+  revision: number;
+  observedAt: string;
+  devices: AcceleratorDevice[];
+  allocations: AcceleratorAllocation[];
+  pendingUnits: number;
+}
+
 export interface TimelineEvent {
   id: string;
   jobId: string;
@@ -313,6 +358,7 @@ export interface SandboxResponse {
 
 export interface ApiClient {
   listOverview(options?: QueryOptions): Promise<QueryResult<OverviewResponse>>;
+  getResources(options?: QueryOptions): Promise<QueryResult<ResourceSnapshot>>;
   listJobs(options?: QueryOptions): Promise<QueryResult<JobSummary[]>>;
   getJobDetail(jobId: string, options?: QueryOptions): Promise<QueryResult<JobDetailResponse>>;
   listRuns(jobId: string, options?: QueryOptions): Promise<QueryResult<RunSummary[]>>;

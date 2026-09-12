@@ -616,6 +616,13 @@ class GrpcGatewayBackend:
             "decision": decision,
         }
 
+    def get_resources(self) -> dict[str, object]:
+        response = self._call(
+            self._scheduler.GetSnapshot,
+            scheduling_pb2.GetSnapshotRequest(minimum_revision=0, include_pending_units=True),
+        )
+        return {"snapshot": clone_message(response.snapshot)}
+
     def list_sandboxes(
         self,
         job_id: str,
@@ -869,6 +876,7 @@ class GrpcGatewayBackend:
                 "/health",
                 "/openapi.json",
                 "/v1/capabilities",
+                "/v1/resources",
                 "/v1/jobs",
                 "/v1/jobs/{job_id}/traces",
                 "/v1/operations",

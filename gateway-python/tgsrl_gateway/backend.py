@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import Any, Protocol, cast
 
-from tgsrl.v1 import control_pb2, experiment_pb2, job_pb2, scheduling_pb2, trace_pb2
+from tgsrl.v1 import control_pb2, experiment_pb2, job_pb2, resource_pb2, scheduling_pb2, trace_pb2
 
 from tgsrl_gateway.backend_memory_experiments import (
     MemoryExperimentService,
@@ -29,6 +29,7 @@ from tgsrl_gateway.backend_memory_runtime import (
 )
 from tgsrl_gateway.errors import BadRequestError
 from tgsrl_gateway.pagination import paginate
+from tgsrl_gateway.protojson import timestamp_from_datetime
 
 
 def _event_type_for_command(command: int) -> int:
@@ -219,6 +220,8 @@ class GatewayBackend(Protocol):
 
     def get_topology(self, job_id: str, *, run_id: str | None) -> dict[str, object]: ...
 
+    def get_resources(self) -> dict[str, object]: ...
+
     def list_sandboxes(
         self,
         job_id: str,
@@ -330,6 +333,99 @@ class InMemoryGatewayBackend:
 
     def list_jobs(self) -> list[job_pb2.RLTrainingJob]:
         return self.job_state.list_jobs()
+
+    def get_resources(self) -> dict[str, object]:
+        return {
+            "snapshot": resource_pb2.ClusterSnapshot(
+                snapshot_id="snapshot-demo-resources",
+                revision=12,
+                observed_at=timestamp_from_datetime(),
+                devices=[
+                    resource_pb2.Device(
+                        device_id="GPU-A10-DEMO",
+                        kind=resource_pb2.DEVICE_KIND_GPU,
+                        health=resource_pb2.DEVICE_HEALTH_READY,
+                        capacity=resource_pb2.ResourceVector(
+                            accelerator_units=1,
+                            memory_bytes=24 * 1024 * 1024 * 1024,
+                        ),
+                        allocatable=resource_pb2.ResourceVector(
+                            accelerator_units=0.3,
+                            memory_bytes=8 * 1024 * 1024 * 1024,
+                        ),
+                        capabilities=resource_pb2.CapabilitySet(
+                            names=["nvidia-gpu", "hami-vgpu", "nvidia-mps"],
+                            supported_actions=["bind", "set_share"],
+                            attributes={
+                                "partition_mode": "hami-core",
+                                "driver_version": "580.178.04",
+                            },
+                        ),
+                        labels={
+                            "provider": "nvidia",
+                            "node": "gpu-a10-01",
+                            "name": "NVIDIA A10",
+                            "uuid": "GPU-A10-DEMO",
+                            "partition_mode": "hami-core",
+                            "supports_full": "true",
+                            "supports_hami": "true",
+                            "supports_mps": "true",
+                            "supports_mig": "false",
+                        },
+                    ),
+                    resource_pb2.Device(
+                        device_id="MIG-A100-DEMO",
+                        kind=resource_pb2.DEVICE_KIND_GPU,
+                        health=resource_pb2.DEVICE_HEALTH_READY,
+                        capacity=resource_pb2.ResourceVector(
+                            accelerator_units=1,
+                            memory_bytes=10 * 1024 * 1024 * 1024,
+                        ),
+                        allocatable=resource_pb2.ResourceVector(
+                            accelerator_units=1,
+                            memory_bytes=10 * 1024 * 1024 * 1024,
+                        ),
+                        capabilities=resource_pb2.CapabilitySet(
+                            names=["nvidia-gpu", "nvidia-mig"],
+                            supported_actions=["bind", "rebind", "recreate"],
+                            attributes={"partition_mode": "mig"},
+                        ),
+                        labels={
+                            "provider": "nvidia",
+                            "node": "gpu-a100-03",
+                            "name": "NVIDIA A100",
+                            "uuid": "MIG-A100-DEMO",
+                            "parent_uuid": "GPU-A100-MIG-PARENT-DEMO",
+                            "profile": "1g.10gb",
+                            "partition_mode": "mig",
+                            "supports_full": "false",
+                            "supports_hami": "false",
+                            "supports_mps": "false",
+                            "supports_mig": "true",
+                        },
+                    ),
+                ],
+                allocations=[
+                    resource_pb2.Allocation(
+                        allocation_id="allocation-a10-rollout",
+                        execution_id="exec-live-017",
+                        stage_id="actor-rollout",
+                        job_id="job-live-017",
+                        pending_unit_id="unit-rollout-1",
+                        device_ids=["GPU-A10-DEMO"],
+                        resources=resource_pb2.ResourceVector(
+                            accelerator_units=0.7,
+                            memory_bytes=16 * 1024 * 1024 * 1024,
+                        ),
+                        state=resource_pb2.ALLOCATION_STATE_ACTIVE,
+                        run_id="run-live-017-a",
+                        sandbox_id="sbx-live-a14",
+                        binding_id="binding-a10",
+                        generation=7,
+                    )
+                ],
+            )
+        }
 
     def list_jobs_paginated(
         self,

@@ -608,6 +608,7 @@ class MemoryJobService:
                 "/health",
                 "/openapi.json",
                 "/v1/capabilities",
+                "/v1/resources",
                 "/v1/jobs",
                 "/v1/jobs/{job_id}/traces",
                 "/v1/operations",
