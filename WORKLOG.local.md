@@ -40,7 +40,7 @@ Re-ran real checks on this machine (not from memory):
 
 - `go build ./...` and `go vet` pass.
 - `go test` across `scheduler-go/ operator-go/ job-controller-go/ internal/ cmd/ storage/` all `ok`.
-- `pytest tests/python tests/storage tests/governance tests/api` -> 493 passed.
+- `pytest tests/python tests/storage tests/governance tests/api` -> 497 passed (459 + 38).
 - No Docker image was pulled or built.
 
 Prior full-suite runs also covered Full-stack CPU Gate, Go race, staticcheck, Ruff, mypy,
