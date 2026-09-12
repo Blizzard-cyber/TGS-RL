@@ -1588,18 +1588,21 @@ class HardwareEnvironmentDriver:
                 # Job definitions remain as audit records; no admitted run means
                 # the Operator could not have materialized cluster resources.
                 return []
+        kube = Kubernetes(target)
+        bundles = self._bundles(kube, run, required=False)
         if not run.get("stop_operation_id"):
             try:
                 self._command(request_value, target, run, "terminate")
             except DriverError as exc:
                 normalized = str(exc).lower()
-                if not any(
+                no_materialized_sandboxes = (
+                    "no materialized sandboxes" in normalized and not bundles
+                )
+                if not no_materialized_sandboxes and not any(
                     marker in normalized
                     for marker in ("invalid transition", "not found", "http 404")
                 ):
                     raise
-        kube = Kubernetes(target)
-        bundles = self._bundles(kube, run, required=False)
         for bundle in bundles:
             bundle_spec = _mapping(
                 _mapping(bundle.get("spec"), label="JobRunBundle spec").get("bundle"),

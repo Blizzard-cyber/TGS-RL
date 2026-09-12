@@ -788,6 +788,50 @@ def test_driver_starts_new_attempt_after_completed_cleanup(
     assert start_keys[1].endswith("-a2-start")
 
 
+def test_cleanup_accepts_unmaterialized_failed_start(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    driver = object.__new__(DRIVER.HardwareEnvironmentDriver)
+    target = SimpleNamespace()
+    monkeypatch.setattr(driver, "_bundles", lambda *_args, **_kwargs: [])
+
+    def no_materialized(*_args: object, **_kwargs: object) -> None:
+        raise DRIVER.DriverError("run 'run-a' has no materialized sandboxes")
+
+    monkeypatch.setattr(driver, "_command", no_materialized)
+
+    assert (
+        driver._cleanup(
+            {},
+            target,
+            {"job_id": "job-a", "run_id": "run-a"},
+            Path("/tmp/unused-response.json"),
+        )
+        == []
+    )
+
+
+def test_cleanup_rejects_unmaterialized_error_when_bundle_exists(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    driver = object.__new__(DRIVER.HardwareEnvironmentDriver)
+    target = SimpleNamespace()
+    monkeypatch.setattr(driver, "_bundles", lambda *_args, **_kwargs: [{}])
+
+    def no_materialized(*_args: object, **_kwargs: object) -> None:
+        raise DRIVER.DriverError("run 'run-a' has no materialized sandboxes")
+
+    monkeypatch.setattr(driver, "_command", no_materialized)
+
+    with pytest.raises(DRIVER.DriverError, match="no materialized sandboxes"):
+        driver._cleanup(
+            {},
+            target,
+            {"job_id": "job-a", "run_id": "run-a"},
+            Path("/tmp/unused-response.json"),
+        )
+
+
 def test_driver_preflight_accepts_full_gpu_inventory(
     driver_environment: tuple[Any, _GatewayState, Path],
 ) -> None:
