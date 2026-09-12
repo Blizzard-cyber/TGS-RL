@@ -180,6 +180,10 @@ def _job_id(request_value: Mapping[str, Any], attempt: int) -> str:
     return "hardware-" + _canonical_digest(identity)[:24]
 
 
+def _operation_key(request_value: Mapping[str, Any], run: Mapping[str, Any], suffix: str) -> str:
+    return f"hardware-{request_value['request_id']}-a{int(run.get('attempt', 1))}-{suffix}"
+
+
 def _is_sensitive_name(value: object) -> bool:
     normalized = str(value).casefold().replace("-", "_")
     compact = normalized.replace("_", "")
@@ -1310,7 +1314,7 @@ class HardwareEnvironmentDriver:
                     "actor": "hardware-gate",
                     "reason": "hardware Gate bind and launch",
                 },
-                f"hardware-{request_value['request_id']}-start",
+                _operation_key(request_value, run, "start"),
             )
             run["start_operation_id"] = _operation_id(result)
         decision = self._wait_decision(target, run, "bind", after_sequence=0)
@@ -1628,7 +1632,7 @@ class HardwareEnvironmentDriver:
         self, request_value: JsonObject, target: TargetConfig, run: JsonObject, command: str
     ) -> JsonObject:
         gateway = Gateway(target.gateway_url, target.timeout)
-        key = f"hardware-{request_value['request_id']}-{command}"
+        key = _operation_key(request_value, run, command)
         result = gateway.post(
             f"/v1/jobs/{parse.quote(str(run['job_id']), safe='')}/runs/"
             f"{parse.quote(str(run['run_id']), safe='')}/commands/{command}",

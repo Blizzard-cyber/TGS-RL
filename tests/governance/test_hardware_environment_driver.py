@@ -63,6 +63,7 @@ class _GatewayState:
         self.job_id = job_id
         self.requests: list[tuple[str, str]] = []
         self.created_job_ids: list[str] = []
+        self.idempotency_keys: list[tuple[str, str]] = []
 
     @property
     def generation(self) -> int:
@@ -137,12 +138,22 @@ def _gateway_server(
                         ]
                     }
                 )
-            elif path == f"/v1/jobs/{state.job_id}/decisions":
+            elif (
+                path.startswith("/v1/jobs/")
+                and path.endswith("/decisions")
+                and path.removeprefix("/v1/jobs/").removesuffix("/decisions").strip("/")
+                in state.created_job_ids
+            ):
                 decisions = [_decision(1, "bind", "MIG-1/1/0", 1)]
                 if state.marker.exists():
                     decisions.append(_decision(2, "rebind", "MIG-2/1/0", 2))
                 self._write({"decisions": decisions})
-            elif path == f"/v1/jobs/{state.job_id}/topology":
+            elif (
+                path.startswith("/v1/jobs/")
+                and path.endswith("/topology")
+                and path.removeprefix("/v1/jobs/").removesuffix("/topology").strip("/")
+                in state.created_job_ids
+            ):
                 generation = state.generation
                 self._write(
                     {
@@ -168,6 +179,7 @@ def _gateway_server(
 
         def do_POST(self) -> None:
             state.requests.append(("POST", self.path))
+            state.idempotency_keys.append((self.path, str(self.headers.get("Idempotency-Key", ""))))
             length = int(self.headers.get("Content-Length", "0"))
             body = json.loads(self.rfile.read(length) or b"{}")
             if self.path == "/v1/jobs":
@@ -742,6 +754,7 @@ def test_driver_starts_new_attempt_after_completed_cleanup(
     driver, state, root = driver_environment
     provision = _request("provision", 1)
     first = _execute(driver, root, provision)
+    _execute(driver, root, _request("apply_action", 2, action="bind"))
     _execute(driver, root, _request("cleanup", 8))
 
     replay_root = root / "second-attempt"
@@ -750,6 +763,9 @@ def test_driver_starts_new_attempt_after_completed_cleanup(
         JsonObject,
         driver.execute(provision, replay_root / "response.json"),
     )
+    bind_root = root / "second-bind"
+    bind_root.mkdir()
+    driver.execute(_request("apply_action", 2, action="bind"), bind_root / "response.json")
 
     assert first["status"] == second["status"] == "SUCCEEDED"
     assert state.requests.count(("POST", "/v1/jobs")) == 2
@@ -761,6 +777,10 @@ def test_driver_starts_new_attempt_after_completed_cleanup(
     run = next(iter(persisted["runs"].values()))
     assert run["attempt"] == 2
     assert run["job_id"] == DRIVER._job_id(provision, 2)
+    start_keys = [key for path, key in state.idempotency_keys if path.endswith("/commands/start")]
+    assert len(start_keys) == 2
+    assert start_keys[0].endswith("-a1-start")
+    assert start_keys[1].endswith("-a2-start")
 
 
 def test_driver_preflight_accepts_full_gpu_inventory(
