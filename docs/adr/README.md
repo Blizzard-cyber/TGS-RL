@@ -7,3 +7,4 @@ ADR 记录影响协议和运行时边界的长期设计决定。它们解释“�
 - [ADR-0001：Proto-first 跨系统契约](0001-proto-first-dual-plane.md)
 - [ADR-0002：Mock-first ResourceProvider](0002-mock-first-resource-provider.md)
 - [ADR-0003：Scheduler 持有设备身份，NVIDIA DRA 强制兑现](0003-scheduler-owned-device-identity.md)
+- [ADR-0004：按设备能力发布资源，按 Binding 选择兑现方式](0004-capability-aware-heterogeneous-gpu.md)

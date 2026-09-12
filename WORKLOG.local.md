@@ -9,6 +9,42 @@ coordination scaffolding, not durable product documentation: durable capability 
 `docs/project-design-and-code-review.md`, `docs/guides/gpu-smoke.md`). Once the project is ready to
 release, this file and the `handoff/` directory should be deleted.
 
+## Current local development batch
+
+This macOS checkout is completing the heterogeneous-GPU and Console batch locally. No ECS command,
+GPU image pull or hardware test is part of this batch.
+
+- Scheduler NVIDIA Driver v2 now defaults to capability-aware `auto`: non-MIG GPUs remain Full GPU
+  resources, while MIG-enabled GPUs publish existing MIG children only. A physical card is never
+  counted in both forms, and Full GPU devices do not advertise MIG-only actions.
+- Operator accepts ordered realization profiles. With
+  `-gpu-profile=kubernetes-dra,hami-vgpu`, every concrete Binding independently selects the first
+  profile that can enforce its UUIDs and share.
+- `hami-vgpu` now uses HAMi's public NVIDIA resource/annotation protocol: typed Node inventory,
+  `use-gpuuuid`, core/memory percentages, Pod allocation UUID readback and mandatory bootstrap
+  device verification.
+- The Gateway exposes `GET /v1/resources`; the Chinese Console now has a ninth “算力资源”
+  workspace with device capabilities, allocations and responsive desktop/mobile layout.
+- HAMi/HAMi-WebUI were used only as Apache-2.0 protocol and information-architecture references.
+  No source was copied, vendored or patched.
+- Current production hardware support remains NVIDIA-only. The generic `Device`/`DeviceKind`,
+  `CapabilitySet` and `CompleteResourceProvider` contracts are the extension boundary for a future
+  vendor implementation. The provider contracts now live outside the Mock implementation, and the
+  Scheduler composition root uses a factory registry containing only Mock and NVIDIA. No Ascend/NPU
+  provider, placeholder device class or fake support claim was added in this batch.
+
+Local validation completed during this batch:
+
+- `make test` passes, including 459 Python/runtime/storage/governance tests, 39 Gateway API tests,
+  71 Console unit tests, all Go packages, generated-contract round trips, deployment contracts and
+  repository/documentation/governance checks;
+- `make lint`, `make staticcheck` and `make race` pass;
+- `make test-performance` passes the Scheduler small/large P95 and NVIDIA observation budgets;
+- Console browser tests: 17 passed, including all nine routes and
+  1366/1180/1024/820/390 px responsive checks.
+
+These results prove code contracts only. HAMi vGPU, MPS and MIG hardware behavior remains unverified.
+
 ## Machine roles
 
 - **This machine (macOS, no GPU): development only.** It writes and reviews code, runs CPU/Mock,
@@ -88,9 +124,9 @@ closed; the remaining gap is real hardware evidence, not code structure.
 | Runtime / Trace / Replay | Closed on single-node path (desired/observed split, typed observation, SQLite recovery) |
 | Scheduler + transactions | Closed (constraints, scoring, budgets, reservation, receipt, compensation, recovery) |
 | CPU Mock + process E2E | Verified (real subprocess, bootstrap, Unix socket, service restart) |
-| Console (8 workspaces) | Closed (8 pages + tests, responsive layout) |
-| NVIDIA Provider/helper | Full GPU E1 verified; MIG/MPS pending |
-| Kubernetes / DRA | E1 ClaimTemplate → generated Claim → CDI chain verified |
+| Console (9 workspaces) | Closed locally (9 Chinese pages, resource inventory + Trace, responsive layout) |
+| NVIDIA Provider/helper | Full GPU E1 verified; capability-aware Full/MIG code verified locally; MIG/MPS hardware pending |
+| Kubernetes / DRA / HAMi | DRA E1 verified; HAMi typed inventory/projection/readback implemented, hardware pending |
 | veRL adapter | Implemented, real veRL/Ray/PyTorch/vLLM combination pending |
 | Hardware Campaign E1-E8 | E1 PASSED; E2–E8 not run, E3–E8 have 9 thresholds to calibrate |
 | Production release | Not admitted (MIG/MPS/full training/E2–E8 evidence missing) |
@@ -105,7 +141,7 @@ committed, redacted result is `docs/validation/e1-full-gpu-2026-09-12.md`.
 
 ```text
 E1 Full GPU   | GPU_SINGLE_NODE | 1 rule  | PASSED 2026-09-12
-E2 MIG        | GPU_SINGLE_NODE | 1 rule  | no calibration        <- runnable now
+E2 MIG        | GPU_SINGLE_NODE | 1 rule  | no calibration; requires MIG-capable hardware
 E3 throughput | GPU_SINGLE_NODE | 2 rules | 1 threshold pending
 E4 staleness  | GPU_SINGLE_NODE | 2 rules | 2 thresholds pending
 E5 interfere  | GPU_SINGLE_NODE | 1 rule  | 1 threshold pending
@@ -114,8 +150,9 @@ E7 recovery   | GPU_SINGLE_NODE | 2 rules | 1 threshold pending
 E8 multi-node | GPU_MULTI_NODE  | 2 rules | 1 threshold pending
 ```
 
-E1/E2 have no calibration-required thresholds and can produce a verdict immediately. E3-E8 hold
-9 thresholds that stay `BLOCKED` until calibrated from real baseline data.
+E1/E2 have no calibration-required thresholds, but E2 still requires a GPU model with MIG enabled.
+The current A10 host should be used for Full GPU and HAMi/MPS work, not for E2. E3-E8 hold 9
+thresholds that stay `BLOCKED` until calibrated from real baseline data.
 
 ---
 
@@ -150,8 +187,10 @@ hardware scenario. Summary:
    ```
    `make gpu-smoke` exits non-zero on any E1 failure/invalid-evidence/rule failure. A pass only means
    E1; it is not E2-E8 and not release admission.
-4. After E1 passes, run E2 (MIG) and, once hooks/thresholds are ready, E3-E8 via
-   `make gate-campaign-run` (see `docs/design/gate-e1-e8.md`).
+4. On the current A10 host, verify the HAMi single-GPU fractional path described in
+   `docs/guides/hami.md`; do not block it on MIG support.
+5. Run E2 only after moving to a GPU model with actual MIG support. Once hooks/thresholds are ready,
+   continue E3-E8 via `make gate-campaign-run` (see `docs/design/gate-e1-e8.md`).
 
 ## Where results go (so the dev machine can pull and fix)
 
@@ -209,7 +248,10 @@ Append one row per run so both sides share history.
 ## Work still requiring target-environment evidence
 
 - Preserve the accepted E1 evidence fingerprint. Re-run E1 only if a later change touches the E1
-  execution path; otherwise proceed to MIG DeviceClass/parent-UUID/rebind E2.
+  execution path.
+- On A10 or another non-MIG GPU, run a separate HAMi fractional-allocation smoke and record
+  Scheduler UUID = Node inventory UUID = Pod allocation UUID = worker-visible UUID.
+- Run MIG DeviceClass/parent-UUID/rebind E2 only on hardware that actually supports and enables MIG.
 - MPS server PID visibility, share mutation and readback.
 - Complete model-training callbacks and distributed veRL/Ray behavior.
 - E3-E8 workload/action/fault hooks and nine calibrated thresholds.

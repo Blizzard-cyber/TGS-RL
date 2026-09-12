@@ -35,12 +35,12 @@ Operator 同时运行两个长期服务：它订阅 Scheduler Decision，并在 
 | `-namespace` | `default` | 编译对象的 namespace |
 | `-cursor-dir` | 系统临时目录 | cursor、delivery/observation 与 backend-control ledger 所在目录 |
 | `-kubeconfig` | 空 | 显式 kubeconfig；仅 `kubernetes` 模式使用 |
-| `-gpu-profile` | `none` | `none`、`nvidia-device-plugin`、`kubernetes-dra` 或 `volcano-hami` |
+| `-gpu-profile` | `none` | 逗号分隔的有序兑现候选：`none`、`kubernetes-dra`、`hami-vgpu`、`nvidia-device-plugin` 或旧 `volcano-hami` |
 | `-runtime-class-name` | 空 | 引用已有 RuntimeClass；默认不设置 |
 | `-runtime-class-handler` | 空 | `-runtime-class-create` 启用时必填的 RuntimeClass handler |
 | `-runtime-class-create` | `false` | 是否由 Operator 创建 RuntimeClass；启用时还需 handler 和额外集群权限 |
 | `-node-selector` | 空 | Pod node selector，使用可重复的 `key=value` 参数 |
-| `-worker-bootstrap` | `false` | 用 managed-worker bootstrap 包装 workload；`process` 模式自动启用，`kubernetes-dra` 未启用时拒绝启动 |
+| `-worker-bootstrap` | `false` | 用 managed-worker bootstrap 包装 workload；`process` 模式自动启用，`kubernetes-dra`/`hami-vgpu` 未启用时拒绝启动 |
 | `-worker-bootstrap-image` | 空 | 只接受 `repository@sha256:...` 的 bootstrap installer 镜像 |
 | `-worker-registry-url` | 空 | workload 可访问的 Scheduler registry HTTP(S) base URL |
 | `-worker-registry-signing-key-file` | 空 | 派生 scoped registration token 的主 HMAC key；至少 32 bytes |
@@ -105,20 +105,36 @@ namespace，并具有 namespaced Pod `get/list/watch` 权限以读取 managed-wo
 生成的 ResourceClaim 只有 namespaced `get/list/watch` 权限。Kubernetes observer 轮询 Workload、
 Job、Pod 和生成的 ResourceClaim：从 `pod.status.resourceClaimStatuses` 获取实际 claim 名，先发布 `BOUND`，只有
 bootstrap 注册成功、Pod Ready 后才允许 `RUNNING`；失败和完成也由观察状态投影。仓库的
-本地 HTTP 合同测试覆盖这些 JSON 约定，但仍没有真实 Kubernetes/Kueue/DRA 集群 E2E。
+本地 HTTP 合同测试覆盖这些 JSON 约定；单节点 A10 的 Kubernetes/Kueue/DRA E1 已通过，
+HAMi、MIG 和 MPS 仍需各自目标环境验证。
 Scheduler binding 中的 `device_ids` 代表 NVIDIA GPU/MIG UUID。`kubernetes-dra` profile 根据
 ResourceSlice 的 typed inventory 选择 Full GPU 或 MIG DeviceClass，把这些 UUID 编译进
 ResourceClaimTemplate 的 CEL selector，并在观察阶段用生成 claim allocation 的
 `driver/pool/device` 从最新 ResourceSlice 解析实际 UUID；缺失、数量不符或身份不符都会
 fail closed，不能发布 `BOUND`/`RUNNING`。NVIDIA DRA driver 再通过 Pod resource claim/CDI
-将已分配设备注入容器。Device Plugin 与 HAMi profile 仍只表达资源数量，不保证具体 UUID。
+将已分配设备注入容器。
+
+`hami-vgpu` profile 从 Node 的 `hami.io/node-nvidia-register` 读取物理 GPU UUID、节点、
+型号、健康状态、split count、显存和 core limit。单卡 `(0,1]` 份额被编译为
+`nvidia.com/gpu=1`、`nvidia.com/gpucores`、`nvidia.com/gpumem-percentage`，
+并用 `nvidia.com/use-gpuuuid` 限定 Scheduler 已选择的卡。Pod 启动后，Operator 从
+`hami.io/vgpu-devices-allocated` 回读实际 UUID；未发布、格式错误或与 Binding 不一致时
+不会发布 `BOUND`/`RUNNING`。HAMi 会通过 admission webhook 设置自己的 scheduler，TGS-RL
+不在 Pod spec 中硬编码 scheduler name。
+
+`-gpu-profile=kubernetes-dra,hami-vgpu` 表示有序候选，而不是同时给一个 Pod 注入两套资源。
+Compiler 对每个 concrete Binding 独立选择首个兼容 profile，因此一个 PlacementPlan 可让
+整数 Full GPU/MIG Binding 走 DRA，让未启用 MIG 的物理卡上的单卡分数 Binding 走 HAMi。
+传统 Device Plugin 和旧 `volcano-hami` profile 仍只有数量语义；携带具体 UUID 且无法证明
+exact placement 时不会被选中。完整接入见 [HAMi vGPU 接入指南](hami.md)。
+
 一个 binding 不能混用 Full GPU 与 MIG DeviceClass。top-level 与 v1beta1 `basic` attributes 会
 合并，同名字段冲突、未知类型、过期 inventory 或重复 UUID 都会被拒绝。当前 DRA claim 未生成 NVIDIA MPS/time-slicing sharing configuration，因此只接受整数个完整
 GPU/MIG 设备；分数 share 会在编译时 fail closed。
 同一 NVIDIA driver 发布但当前不支持调度的 VFIO 设备不会进入 TGS-RL capability inventory。
 鉴于当前 `Binding` 的资源所有权属于 Scheduler，Operator 不会在 Device Plugin/HAMi 模式下
-丢弃 `device_ids` 后继续创建 Pod；这两种 count-only profile 会在启动预检或编译时被拒绝，
-直到实现可验证的身份映射。
+丢弃 `device_ids` 后继续创建 Pod；没有 typed identity/readback 的 count-only profile 会在
+编译时被跳过或拒绝。
 
 ## Managed-worker bootstrap
 
@@ -188,8 +204,10 @@ Scheduler 与 Runtime 默认使用镜像内的锁定配置图；`config.existing
 `scripts/deploy-full-stack.sh rollback REVISION` 回退到已有 release revision。CRD 仍需在升级前
 单独审查，因为 Helm 不会通过普通 upgrade 更新 `crds/`。
 
-默认 `gpuProfile=none`，所以该流程不会声称 GPU 可用。Operator 启动日志会记录 discovery
-选择的 Kueue 和 DRA API 版本。若显式选择的 GPU profile、Kueue API 或 RBAC 不可用，
+默认 `gpuProfile=none`，所以该流程不会声称 GPU 可用。可将 Helm value 设置为
+`"kubernetes-dra,hami-vgpu"`；引号用于保证 YAML 将逗号分隔值作为一个字符串传给
+Operator。Operator 启动日志会记录 profile 候选以及 discovery 选择的 Kueue 和 DRA API
+版本。若所有 GPU profile、Kueue API 或 RBAC 均不可用，
 启动前置检查会失败。
 
 仓库不假定已有公开镜像。先从当前源码构建默认镜像，并按集群运行时要求将其加载到

@@ -108,11 +108,12 @@ uv run --frozen tgsrl serve --backend-mode memory
 
 ## 3. 使用 CLI
 
-### 查询健康、能力和资源列表
+### 查询健康、能力和资源
 
 ```bash
 uv run --frozen tgsrl health
 uv run --frozen tgsrl capabilities
+uv run --frozen tgsrl resources
 uv run --frozen tgsrl list-jobs --limit 20
 uv run --frozen tgsrl list-jobs --limit 20 --data-kind DATA_KIND_LIVE
 uv run --frozen tgsrl list-operations --limit 20
@@ -129,6 +130,11 @@ uv run --frozen tgsrl list-jobs \
   --limit 20 \
   --page-token '<上一页的 next_page_token>'
 ```
+
+`resources` 调用 `GET /v1/resources`，返回 Scheduler 当前 `ClusterSnapshot`，包括设备、
+allocation、pending unit、revision 和观察时间。它是调度资源账本的只读投影；DRA/HAMi
+最终是否成功兑现仍由 Operator 的 allocation readback 与 managed-worker observation 证明。
+内存后端返回的 A10/A100/MIG 数据只用于界面预览，不能作为硬件证据。
 
 ### 校验、创建并运行 Job
 
@@ -235,6 +241,7 @@ job = json.loads(Path("job.json").read_text(encoding="utf-8"))
 try:
     print(client.health())
     print(client.capabilities())
+    print(client.get_resources())
     print(client.list_jobs(limit=20))
 
     validation = client.validate_job(
@@ -284,6 +291,7 @@ except HTTPError as error:
 | `GET` | `/health` | Gateway 依赖的 gRPC 就绪状态 |
 | `GET` | `/openapi.json` | 读取运行中 Gateway 的 OpenAPI 文档 |
 | `GET` | `/v1/capabilities` | 协议版本、命令、数据类型和契约特性 |
+| `GET` | `/v1/resources` | 读取 Scheduler 当前设备、allocation 与 pending unit 快照 |
 
 ### Job 与 Run 生命周期
 

@@ -265,8 +265,14 @@ ResourceClaimTemplate，Kubernetes 再为 Pod 生成 ResourceClaim。GPU 身份�
 NVIDIA Driver v2 的 device ID 就是 GPU/MIG UUID；
 `kubernetes-dra` 按 typed inventory 为 Full GPU/MIG 选择不同 DeviceClass，再编译 NVIDIA DRA
 `uuid` CEL selector。Operator 从 ResourceClaim 的
-`driver/pool/device` 和最新 ResourceSlice 回读 UUID，完全一致后才发布收敛状态。传统
-Device Plugin/HAMi 只承诺数量，不能用于证明精确 UUID 落点。
+`driver/pool/device` 和最新 ResourceSlice 回读 UUID，完全一致后才发布收敛状态。
+
+`hami-vgpu` 是独立的 exact identity adapter：Operator 从 Node
+`hami.io/node-nvidia-register` 建立物理 GPU inventory，将单卡分数份额投影为 HAMi 的
+`nvidia.com/gpu`、core/memory percentage 与 `use-gpuuuid`，并从 Pod
+`hami.io/vgpu-devices-allocated` 回读实际 UUID。一个计划中的不同 Binding 可以分别选择
+DRA 或 HAMi。传统 Device Plugin 和旧 `volcano-hami` 仍只承诺数量，不能用于证明精确
+UUID 落点。
 
 启用 managed-worker 后，compiler 以不可变 `RuntimeManifest` 的 command/args/environment/
 working directory 包装主容器，并通过 init container 安装 `tgsrl-worker-bootstrap`。Operator
@@ -286,6 +292,9 @@ Gateway 不保存业务状态，只做 Proto/JSON 转换、分页 token 封装�
 Console 的 `HttpApiClient` 再把 Gateway JSON 映射为页面模型。前端判断 Sandbox 是否使用
 accelerator 时，应以 binding resource 为主、设备标识为辅；MIG UUID 不包含普通 `gpu`
 文本，不能只靠字符串 `gpu`/`a100` 判断。
+`GET /v1/resources` 直接代理 Scheduler `GetSnapshot(include_pending_units=true)`；算力资源页
+只能把它当作调度账本。DRA/HAMi 的最终设备兑现仍必须由 Operator readback 和 worker
+observation 证明。
 
 ## 10. Gate G/I 证据链
 
@@ -333,9 +342,12 @@ CPU 证据、身份不一致或故障未恢复都不能通过；`calibration_req
 | 测试 fake 与仅测试使用的查询方法位于生产源码 | 扩大公开表面，并让读者误判其为产品能力 | 将 NVIDIA driver/command fake 移入既有 `_test.go`，删除未使用的 `Guard.Snapshot` | NVIDIA、Protection 与 Provider 测试集 |
 | 硬件 workflow 约束单独占用一个极小测试文件 | 增加碎片化，但与治理门禁属于同一职责 | 合并到既有 governance 测试；继续禁止 CPU/模拟证据冒充 GPU | `tests/governance/test_governance.py` |
 | Scheduler UUID 只进入 RuntimeTarget，且 MIG class 无法区分 | 调度账本与训练进程可能分别使用 GPU-A/GPU-B，MIG claim 可能永远无法满足 | typed DRA inventory 区分 Full GPU/MIG class；claim 使用 UUID selector；allocation 回读不一致时 fail closed | Operator Compiler、Kube client、BundleAdapter 与 StatusWatch 测试 |
+| 单一 NVIDIA partition mode 无法描述不同分区能力的 GPU 共存 | 无 MIG 的卡被排除，或父卡与切片被重复计量 | Scheduler CLI 默认 `auto`，逐卡发布 Full/MIG，并按设备过滤 MIG capability/action | NVIDIA Driver v2 混合 inventory 测试 |
+| Operator GPU profile 是全局单选 | 一个计划中的不同 Binding 无法分别选择 DRA/HAMi | 把配置改为有序候选，按 UUID inventory 和份额逐 Binding 选择 | Operator Compiler fallback/异构计划测试 |
+| HAMi 旧 profile 只申请数量 | Scheduler 选中 UUID 与 Pod 实际设备可能分叉 | 新增 `hami-vgpu` typed inventory、UUID 注解、allocation readback 和 bootstrap 核验 | Operator Compiler、Kube client、BundleAdapter 与 Worker 测试 |
 | Kubernetes Job 直接执行用户命令，无 PID/control 注册与退出回报 | Scheduler 动作没有真实进程对象可控，Pod active 可能被误报为 Runtime running | 增加 workload bootstrap、scoped registry、PID/Pod UID/process token fence、readiness gate 与 exit observation；manifest 成为执行输入权威 | bootstrap、runtimehelper、Scheduler registry、Operator compiler/statuswatch 测试 |
 | bootstrap emptyDir 挂载到 workload 的 `/opt/tgsrl` | 注入 bootstrap 时遮住镜像自身代码，Pod 启动后找不到 workload | 将 bootstrap 安装目录隔离到 `/var/run/tgsrl-bootstrap` 并保持原 working directory | Operator compiler 与 StatusWatch 测试 |
-| Full GPU v2 复用 MPS 默认与 capability 名称 | 普通整卡 smoke 会启动无关 MPS，或因重复 capability 被 Scheduler 拒绝 | 增加无分区 mutation 的 `full` backend，默认选择 full，并去重 capability | NVIDIA Driver v2 与 Scheduler CLI 测试 |
+| Full GPU v2 复用 MPS 默认与 capability 名称 | 普通整卡 smoke 会启动无关 MPS，或因重复 capability 被 Scheduler 拒绝 | 增加无分区 mutation 的 `full` backend；CLI 后续升级为逐卡 `auto`，并去重 capability | NVIDIA Driver v2 与 Scheduler CLI 测试 |
 | Kueue DRA patch 只做字符串断言 | 错误缩进的 YAML 可绕过测试并在目标集群失败 | 修正嵌套列表缩进，并对生成结构做回归校验 | `tests/governance/test_gpu_setup.py` |
 | GPU workload 与控制面共用 Python dependency 约束 | vLLM CUDA 13 需要 protobuf 6，而控制面锁定 protobuf 5，镜像会产生不可满足依赖 | GPU workload 使用独立 hash lock 与 site-packages，通过 protobuf wire/HTTP registry 连接控制面 | GPU lock、SBOM 与 governance 测试 |
 | veRL bridge 在持锁状态等待 safe point | 训练线程若同时上报完成事件，会等待同一 state lock，控制线程最终超时 | lifecycle mutation 与状态/Trace 锁分离；safe-point observation 显式写入 true | `tests/python/test_adapters_runtime.py`、`make gate-cpu-integration` |
@@ -400,6 +412,7 @@ E1 已证明单节点 Full GPU 的 NVIDIA CUDA、DRA/CDI、bootstrap、Trace 和
 代码和本地门禁仍不能替代以下证据：
 
 - NVIDIA MPS share 写入、读回与显存释放；
+- HAMi 单物理 GPU 分数分配、core/memory 限制与 UUID 回读；
 - 真实 MIG 实例 rebind/recreate 与故障恢复；
 - 真实 veRL/Ray/PyTorch/vLLM/SGLang 训练进程；
 - bootstrap registry/control endpoint 的 Pod restart 与 NetworkPolicy 行为；

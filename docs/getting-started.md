@@ -18,7 +18,7 @@ docker compose up -d --build --wait
 Compose 启动 Scheduler、Runtime/Experiment、Job Controller、Operator、Gateway 和
 Console。首次启动需要下载基础镜像和依赖。所有宿主机端口只绑定到 `127.0.0.1`，
 四个有状态组件使用 named volumes。服务就绪后打开 <http://127.0.0.1:4173>。
-Console 默认使用中文，主导航包含运行总览、任务中心、链路追踪和实验对比。启动任务后，
+Console 默认使用中文，主导航包含运行总览、任务中心、链路追踪、算力资源和实验对比。启动任务后，
 可以从任务详情进入链路追踪，查看 Runtime 持久化的 `TraceEvent` 时间轨，并关联对应的
 Run、Decision 和 Sandbox。
 链路页面在一条统一横向时间轴上展示训练阶段、请求处理、推理调度和工作进程轨道。
@@ -80,8 +80,9 @@ scripts/deploy-full-stack.sh install ./values.production.yaml
 ```
 
 默认 tag 只用于本地镜像验证。真实环境必须为六个服务和 bootstrap 配置已推送的不可变
-digest，并预先安装 Kueue 与所选 GPU/DRA 控制器。当前验证范围是镜像构建与 Helm 合同；
-尚不代表真实 Kubernetes、DRA、MIG、MPS 或训练负载通过。
+digest，并预先安装 Kueue 与所选 DRA/HAMi GPU 控制器。单节点 A10 的 Full GPU
+DRA/bootstrap/CUDA E1 已有真实验证记录；HAMi、MIG、MPS、多节点和完整模型训练仍待各自
+目标环境证据，不能由 Helm render 或本机测试替代。
 Scheduler 与 Runtime 默认读取镜像内的锁定配置图；如需环境配置，可用
 `config.existingConfigMap` 和 `config.items` 将经审查的 ConfigMap 挂载到两者的同一
 `config.mountPath`。Secret 不通过全局环境变量广播；worker registry key 只挂载到
@@ -218,6 +219,7 @@ make run-console
 ```bash
 uv run --frozen tgsrl health
 uv run --frozen tgsrl capabilities
+uv run --frozen tgsrl resources
 curl -fsS http://127.0.0.1:9090/metrics >/dev/null
 ```
 
@@ -229,9 +231,10 @@ curl -fsS http://127.0.0.1:9090/metrics >/dev/null
 - 还需确认 Operator `127.0.0.1:50081` 正在监听；
 - 提交任务后，应通过 Run、Operation、Sandbox 和 Decision 查询确认控制链结果。
 
-Console 提供八个中文工作区：运行总览、任务中心、链路追踪、事件时间线、资源拓扑、
-运行沙箱、调度决策和实验对比。任务中心可创建 Job/Run、执行准入、创建 Replay，
-以及发送 Run/Replay 生命周期命令。
+Console 提供九个中文工作区：运行总览、任务中心、链路追踪、事件时间线、算力资源、
+资源拓扑、运行沙箱、调度决策和实验对比。算力资源页直接读取 Scheduler snapshot，
+按设备展示健康状态、容量、调度分区、可用方式、UUID 与活动 allocation；任务中心可创建
+Job/Run、执行准入、创建 Replay，以及发送 Run/Replay 生命周期命令。
 
 ## 4. 提交并启动 Job
 

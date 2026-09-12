@@ -49,6 +49,13 @@ flowchart LR
   OPERATOR --> OBJECTS
 ```
 
+当前可执行硬件实现仅为 NVIDIA。Proto `DeviceKind` 已保留 GPU、NPU、TPU 和 CUSTOM，
+Scheduler 的 `CompleteResourceProvider` 使用通用 `Device`/`CapabilitySet`，不根据型号名称
+做决策。`provider.Registry` 在 Scheduler composition root 当前只注册 Mock 与 NVIDIA；
+未来厂商以新的 Provider、Operator realization adapter 和 worker identity verifier 接入，
+不预写空实现，也不修改通用候选、评分、事务与 Runtime 协议。见
+[加速器 Provider 扩展设计](accelerator-extension.md)。
+
 Runtime 和 Experiment 是同一个 Python 进程中的两个 gRPC 服务，共用 SQLite 状态。
 Operator 订阅 Scheduler 的 Decision stream，并在 `50081` 提供
 `RuntimeBackendControlService`，用于对 backend 对象执行带 generation fence 的生命周期操作。
@@ -141,16 +148,19 @@ ResourceProvider 是硬件或基础设施能力边界。通用 Intent、Plan 和
   只提供逻辑资源，不代表真实硬件行为。
 - **NVIDIA Provider + 默认 LocalDriver**：可以通过 `nvidia-smi` 发现本机设备；
   不声明或执行 bind/release、MIG/MPS、resize 或 Runtime 控制。
-- **NVIDIA Driver v2（可选）**：Go 侧实现 inventory、MPS/MIG、binding、runtime command、
+- **NVIDIA Driver v2（可选）**：Go 侧实现能力感知的 Full GPU/MIG inventory、MPS/MIG、
+  binding、runtime command、
   transaction、reconciliation 和审计编排；仓库内 `tgsrl-nvidia-binding` 负责持久化
   binding authority、generation fence、幂等 receipt 与重启发现；仓库内
   `tgsrl-nvidia-runtime` 负责本机进程信号控制与 managed-worker safe-point/checkpoint/offload/
   reload/readiness 协议；仓库内 `tgsrl-nvidia-mig` 在现有 MIG 实例之间执行完整 lifecycle
   后的 rebind/recreate，并用 `nvidia-smi -L` 回读目标实例。MPS share 需可用 server PID 与
-  硬件读回后才形成 observation。当前 helper 不隐式创建或销毁 MIG 拓扑，且真实 GPU 验证
-  证据尚未提供，因此该路径是 Conditional，不是 Supported。
-  Scheduler CLI 的 v2 默认 partition mode 是 `full`：每个物理 UUID 形成 share=1 的整卡分区且
-  不启动 MPS。底层 Go 构造器保留 MPS 兼容默认，因此嵌入式调用方必须显式传入期望模式。
+  硬件读回后才形成 observation。当前 helper 不隐式创建或销毁 MIG 拓扑。
+  Scheduler CLI 的 v2 默认 partition mode 是 `auto`：未启用 MIG 的卡形成 share=1 的整卡
+  分区，已启用 MIG 的卡只发布已有 MIG 子设备，因此不支持或未启用 MIG 的设备不会退出资源池，
+  同一物理卡也不会被整卡和 MIG 重复计量。Full GPU 设备不继承 MIG 专属动作。`full`、`mps`
+  和 `mig` 仍可显式选择，MPS 不会被 `auto` 隐式启动。底层 Go 构造器保留 MPS 兼容默认，
+  嵌入式调用方必须显式传入期望模式。
   NVIDIA device 只对 accelerator 维度做容量约束；CPU、memory、storage 和 network 由后续
   Kubernetes/节点层调度，不能错误地拿单张 GPU 的属性拒绝整个 workload。
 
@@ -172,10 +182,34 @@ Operator 从最新 ResourceSlice 维护 UUID 对应的 type、driver、pool/devi
 `kubernetes-dra` profile 为 Full GPU 选择 `gpu.nvidia.com` DeviceClass，为 MIG 选择
 `mig.nvidia.com` DeviceClass，并将 UUID 编译为 NVIDIA DRA `uuid` CEL selector。Operator 只有在
 Pod 生成的 ResourceClaim allocation 可通过最新 ResourceSlice 反查到完全相同的 UUID 集合后，才发布
-`BOUND`/`RUNNING`。Device Plugin 与 HAMi 只表达数量，不宣称精确 UUID 一致。随附部署工件
-不会安装这些依赖。由于当前 Binding 语义始终包含具体设备身份，不能执行该身份约束的
-Device Plugin/HAMi profile 会在 Operator capability preflight/compile 阶段 fail closed；它们
-保留为已识别但尚不可执行的兼容 profile。
+`BOUND`/`RUNNING`。
+
+HAMi 采用另一条显式 identity adapter：Operator 从 Node
+`hami.io/node-nvidia-register` 建立物理 GPU typed inventory；`hami-vgpu` 把单卡分数份额
+投影为 `nvidia.com/gpu=1`、core/memory percentage 和 `nvidia.com/use-gpuuuid`，并固定到
+该 UUID 所在节点。Pod 启动后，Operator 从 `hami.io/vgpu-devices-allocated` 回读实际 UUID；
+只有与 Binding 完全一致才发布 `BOUND`/`RUNNING`。传统 `nvidia-device-plugin` 和旧
+`volcano-hami` 仍只有数量语义；无法证明 exact placement 时不用于携带具体 UUID 的 Binding。
+随附部署工件不会安装 DRA、HAMi 或其他集群级 GPU 组件。
+
+Operator 的 GPU profile 配置是有序候选而非集群级单选开关。例如
+`kubernetes-dra,hami-vgpu` 会对每个 concrete Binding 分别判断 UUID inventory 与份额：
+整数 Full GPU/MIG 可走 DRA，单物理卡分数份额可走 HAMi；不兼容候选被跳过，没有任何候选
+可兑现时 fail closed。
+
+```mermaid
+flowchart TD
+  B[Binding: UUID + share] --> C{逐个检查有序 profile}
+  C -->|DRA inventory 匹配且份额为整数| D[ResourceClaimTemplate]
+  C -->|HAMi inventory 匹配且单卡份额不大于 1| H[HAMi resources + UUID annotation]
+  C -->|均不匹配| F[拒绝编译]
+  D --> DR[ResourceClaim / ResourceSlice 回读]
+  H --> HR[Pod allocation annotation 回读]
+  DR --> V{UUID 一致?}
+  HR --> V
+  V -->|是| O[发布 observed BOUND/RUNNING]
+  V -->|否| F
+```
 
 显式启用 managed-worker bootstrap 后，Operator 以不可变 `RuntimeManifest` 作为容器命令、
 参数、环境和工作目录的权威来源，并为每个 binding 派生只覆盖 run/job/unit/sandbox/

@@ -7,8 +7,9 @@
 
 Scheduler 的 reservation、rebind、MIG 和 NVIDIA receipt 均以 `Binding.device_ids` 中的
 GPU/MIG UUID 为事务身份。如果 Operator 只向 Kubernetes 请求设备数量，Pod 可能获得另一块
-设备，调度账本、Provider 状态和训练进程就会分叉。传统 Device Plugin 和 HAMi 的扩展资源
-请求只能表达数量，不能兑现 Scheduler 已选择的 UUID。
+设备，调度账本、Provider 状态和训练进程就会分叉。传统 Device Plugin 和旧
+`volcano-hami` 扩展资源只能表达数量；HAMi 的 NVIDIA 协议还提供 Node typed inventory、
+`use-gpuuuid` 过滤和 Pod allocation annotation，可用于建立另一条可验证身份链。
 
 Kubernetes DRA 可以用 driver-specific CEL selector 约束设备，并在 ResourceClaim status 中
 返回 `driver/pool/device`。NVIDIA DRA ResourceSlice 同时发布 `gpu.nvidia.com` driver 和
@@ -30,18 +31,24 @@ Kubernetes DRA 可以用 driver-specific CEL selector 约束设备，并在 Reso
 - Pod 生成的 ResourceClaim allocation 后，Operator 用 `driver/pool/device` 在最新 ResourceSlice 中反查
   UUID。实际集合与 Binding 不完全一致时 fail closed，不发布 `BOUND` 或 `RUNNING`。
 - 经过验证的 allocation UUID 写回 SandboxEvent，保持 Runtime 与 Scheduler 的观测一致。
-- Device Plugin 与 HAMi 仍可被探测，但当前不能兑现 UUID，因此 Operator 不将它们作为可执行
-  profile。
+- Operator 的 `hami-vgpu` profile 从 `hami.io/node-nvidia-register` 读取物理 GPU UUID、
+  节点、型号、模式和容量，以 `nvidia.com/use-gpuuuid` 限定目标设备，并从 Pod
+  `hami.io/vgpu-devices-allocated` 回读实际 UUID。
+- `hami-vgpu` 当前只接受一张物理 GPU 和 `(0,1]` 份额；core 与 memory percentage 使用同一
+  份额并向上取整。设备不健康、元数据不完整、模式非 `hami-core` 或 UUID 不一致均拒绝。
+- 传统 Device Plugin 和旧 `volcano-hami` 可被探测，但在不能证明 exact placement 时不能
+  兑现携带具体 UUID 的 Binding。
 - 在 NVIDIA DRA sharing configuration 接线前，只接受整数个完整 GPU/MIG 设备；分数 share
-  必须拒绝。
+  必须改走可验证的 HAMi profile，或显式拒绝。
 
 ## 结果
 
 这项决定避免了两个资源权威，也保留现有 Scheduler 事务和 MIG 重配置语义。代价是 Kubernetes
-精确 GPU 路径明确依赖 NVIDIA DRA schema，不能再表述为通用 DRA 支持；ResourceSlice 的
+精确 DRA 路径明确依赖 NVIDIA DRA schema，不能再表述为通用 DRA 支持；ResourceSlice 的
 top-level 和 v1beta1 `basic` attributes 会合并，相同字段冲突时拒绝；ResourceSlice 读取需要
-最小集群级 `list` 权限。未来若支持其他 DRA driver，必须新增明确的 identity adapter 和
-readback 规则，不能复用 NVIDIA 属性名称。
+最小集群级 `list` 权限。HAMi 路径同样遵守“选择、申请、回读”三段式校验，但其 inventory
+来自 Node annotation、allocation 证据来自 Pod annotation。未来若支持其他 DRA driver 或
+加速器，必须新增明确的 identity adapter 和 readback 规则，不能复用 NVIDIA 属性名称。
 
 本决策只关闭资源身份从 Scheduler 到 Pod 的一致性。后续 workload bootstrap 已实现
 PID/control endpoint 注册和 generation-fenced MPS PID 发布；

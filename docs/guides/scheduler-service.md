@@ -24,7 +24,7 @@ go run ./scheduler-go/cmd/scheduler \
 | `-state-dir` | `.tmp/scheduler-state` | checkpoint 与 journal 目录 |
 | `-metrics-listen` | `127.0.0.1:9090` | Prometheus 地址；空字符串可禁用 |
 | `-nvidia-driver-v2` | `false` | 启用 NVIDIA Driver v2 |
-| `-nvidia-partition-mode` | `full` | CLI 的 v2 分区模式：`full`、`mps` 或 `mig` |
+| `-nvidia-partition-mode` | `auto` | CLI 的 v2 分区模式：`auto`、`full`、`mps` 或 `mig`；`auto` 按设备能力发布 Full/MIG，且不启动 MPS |
 | `-nvidia-dry-run` | `false` | 只规划 NVIDIA mutation，不生成硬件证据 |
 | `-nvidia-command-timeout` | `15s` | 单次 helper 命令超时 |
 | `-nvidia-binding-helper` | `tgsrl-nvidia-binding` | binding helper 路径 |
@@ -222,8 +222,11 @@ resource/sandbox watch；执行 action 时先调用 Driver，再提交 Provider 
 因此默认 NVIDIA 方案只支持设备发现，不能分配 GPU 或运行训练。要执行资源动作，
 可显式启用 `-nvidia-driver-v2`。v2 已实现 Go 侧 inventory、MPS/MIG、binding、runtime
 command、事务、幂等、超时、回滚、重启发现、dry-run 和审计编排。仓库内
-Scheduler CLI 的默认分区模式是 `full`，只发布整卡 UUID 且不会启动 MPS；动态份额和 MIG 必须分别显式设置
-`-nvidia-partition-mode=mps` 或 `-nvidia-partition-mode=mig`。仓库内
+Scheduler CLI 的默认分区模式是 `auto`，按物理卡实际状态发布资源：未启用 MIG 的设备
+发布整卡 UUID，已启用 MIG 的设备只发布已存在的 MIG 子设备；同一物理卡不会重复贡献容量，
+且不支持或未启用 MIG 的设备仍正常进入资源池。`auto` 不启动 MPS。需要强制整卡、动态份额
+或纯 MIG 时分别设置 `-nvidia-partition-mode=full|mps|mig`；显式 `full` 也会排除已经启用
+MIG mode 的物理卡。仓库内
 `tgsrl-nvidia-binding` 提供 binding 状态、generation fence、幂等 durable receipt 和重启
 发现；它不直接修改已启动进程的 GPU 可见性，实际设备注入由 Kubernetes DRA/CDI 完成。
 仓库内 `tgsrl-nvidia-runtime` 提供 PID identity、generation fence、幂等 receipt、
@@ -239,7 +242,9 @@ partition mode 时仍保留 MPS 兼容默认；生产入口应始终显式选择
 明确返回 unavailable。MPS 当前只公开带 active-thread percentage 读回校验的
 `set_share`；通用 `resize` 不作为 MPS 能力公开。MIG `rebind/recreate` helper 还必须显式
 声明 safe-point、checkpoint、stop、restore、readiness、durable receipt、generation fence 和
-idempotency，才会公开对应 L4 action。仓库当前没有真实 NVIDIA/CUDA 验证证据。
+idempotency，才会公开对应 L4 action。`auto` 下这些 MIG 专属 action 只出现在 MIG 子设备，
+不会错误地出现在 Full GPU 设备上。仓库已有单节点 Full GPU E1 证据；MPS、MIG 和
+HAMi 仍待各自目标环境验证。
 
 使用 `make build-nvidia-binding` 构建 helper。Scheduler 的 `-nvidia-binding-helper` 指定
 可执行文件，`-nvidia-binding-state` 指定状态文件（默认在 `-state-dir` 下），

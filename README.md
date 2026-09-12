@@ -52,7 +52,8 @@ TGS-RL 的定位不是新的训练框架，也不是 Kubernetes 的替代品。�
 - 通过确定性候选排序、事务执行、补偿、幂等与 generation fence 保证决策可重放。
 - 统一呈现 Runtime、Scheduler、Operator 与 worker 的 Trace、DAG、时间线和决策证据。
 - 提供中文 Web Console、HTTP/OpenAPI、CLI、Python SDK 和 `tgsrl.v1` gRPC 接口。
-- 支持 CPU Mock 单机闭环，并提供 NVIDIA、DRA、MIG、MPS、Kubernetes 与 veRL 接入代码。
+- 支持 CPU Mock 单机闭环，并提供 NVIDIA Full GPU、DRA、HAMi vGPU、MIG、MPS、
+  Kubernetes 与 veRL 接入代码。
 
 > **验证边界**：CPU/Mock、Replay 和 Synthetic Trace 用于验证控制行为，不代表 GPU 吞吐、
 > CUDA 行为、Kubernetes 可用性或模型收敛质量。NVIDIA 与真实训练路径仍需目标环境证据，
@@ -73,8 +74,8 @@ docker compose up -d --build --wait
 
 ### 2. 打开控制台并验证
 
-打开 <http://127.0.0.1:4173>。Console 包含运行总览、任务、拓扑、Trace、Sandbox、调度决策
-和实验对比等页面。
+打开 <http://127.0.0.1:4173>。Console 包含运行总览、任务、Trace、算力资源、拓扑、
+Sandbox、调度决策和实验对比等九个中文工作区。
 
 运行一次完整生命周期 smoke：
 
@@ -184,6 +185,54 @@ flowchart LR
 
 更完整的职责、状态权威和恢复模型见[系统架构](docs/design/system-design.md)。
 
+## 异构算力如何统一调度
+
+TGS-RL 不把 MIG 当作 GPU 的准入条件。每张卡都按自身能力进入资源池，再为具体
+`Binding` 选择能够兑现 Scheduler 设备身份的执行方式：
+
+```mermaid
+flowchart LR
+  I[nvidia-smi 物理卡发现] --> A{设备当前形态}
+  A -->|未启用 MIG| F[Full GPU UUID]
+  A -->|已启用 MIG| M[MIG 子设备 UUID]
+  F --> S[Scheduler 选择 UUID 与份额]
+  M --> S
+  S --> P{Operator 有序 profile 选择}
+  P -->|整数整卡或 MIG| D[NVIDIA DRA]
+  P -->|单卡分数份额| H[HAMi vGPU]
+  D --> R[allocation 回读 UUID/Class]
+  H --> Q[Pod 注解回读实际 UUID]
+  R --> W[bootstrap 核对进程可见设备]
+  Q --> W
+```
+
+| 设备与需求 | 可用路径 | 当前代码状态 |
+|---|---|---|
+| 当前未启用 MIG 的物理卡，独占需求 | Full GPU + NVIDIA DRA | 已实现；已有单节点 E1 证据 |
+| 当前未启用 MIG 的物理卡，单卡分数需求 | HAMi vGPU 或显式 MPS | HAMi 协议接线已实现、MPS 已实现；均待目标环境验证 |
+| 当前已启用 MIG 且已有实例的物理卡 | MIG 子设备 + NVIDIA DRA | 已实现，待 MIG 硬件验证 |
+| 混合集群 | 每个 Binding 分别选择 DRA/HAMi；每张卡分别发布 Full 或 MIG 容量 | CPU 合同测试已覆盖 |
+
+Scheduler CLI 的 NVIDIA Driver v2 默认使用 `auto`：未启用 MIG 的设备发布为整卡，
+已启用 MIG 的设备只发布已存在的 MIG 子设备，避免同一物理卡被重复计量。MPS 仍是
+显式模式。Operator 的 `-gpu-profile` 是逗号分隔的有序偏好，例如
+`kubernetes-dra,hami-vgpu`；它会结合 Binding UUID、份额和集群 inventory 为每个
+Binding 选择首个可精确兑现的 profile。
+
+HAMi 路径读取 `hami.io/node-nvidia-register`，写入
+`nvidia.com/use-gpuuuid`、`nvidia.com/gpucores` 与
+`nvidia.com/gpumem-percentage`，并从 Pod 的
+`hami.io/vgpu-devices-allocated` 回读实际 UUID。身份不一致时不会发布
+`BOUND/RUNNING`。详细部署与排障见 [HAMi 接入指南](docs/guides/hami.md)。
+
+当前可执行的硬件 Provider 与 Operator realization adapter **仅支持 NVIDIA**。通用
+`DeviceKind`、`ResourceVector`、`CapabilitySet` 和 `CompleteResourceProvider` 不包含型号判断，
+并为 NPU、TPU 和自定义加速器保留接口。Scheduler composition root 当前只向
+`provider.Registry` 注册 Mock 与 NVIDIA；未来接入昇腾等设备时，再新增独立 Provider、
+Kubernetes realization adapter 和 worker identity verifier 并注册工厂，而不是预写空实现，
+也不是在 Scheduler 核心算法中增加型号分支。详见
+[加速器 Provider 扩展设计](docs/design/accelerator-extension.md)。
+
 ## 一次任务如何流转
 
 ```mermaid
@@ -247,7 +296,7 @@ Operator  ───────────────────── apply 
 | 可观测性 | 多轨 Trace、Decision evidence、Replay、Experiment、Prometheus | CPU full-stack Gate |
 | 进程执行 | worker bootstrap、PID/control endpoint 注册、信号转发、退出清理 | CPU 真实子进程 |
 | Kubernetes | 六服务 Helm、JobRunBundle、Kueue Workload、Job、ResourceClaimTemplate 与生成的 ResourceClaim | E1 单节点 Full GPU 已验证 |
-| NVIDIA | typed inventory、Full GPU/MIG DeviceClass、MPS/MIG/runtime helpers | Full GPU E1 已验证；MIG/MPS 待验证 |
+| NVIDIA | 能力感知 Full/MIG inventory、DRA 精确分配、HAMi vGPU、MPS/MIG/runtime helpers | Full GPU E1 已验证；HAMi/MIG/MPS 待验证 |
 | veRL | lifecycle/observation bridge 与 callback adapter | 对象替身，待真实 veRL/Ray/GPU |
 
 详细状态以[支持范围与限制](docs/reference/current-capabilities.md)为准。
@@ -318,7 +367,7 @@ make test
 | `make test-performance` | Scheduler 与 Provider P95 预算 |
 | `make product-e2e` | 完整产品 API 控制链 |
 | `make gate-cpu-integration` | 六服务、真实子进程、worker 回执与多源 Trace |
-| `make test-console-browser` | 八条 Console 路由与多宽度浏览器 smoke |
+| `make test-console-browser` | 九条 Console 路由与多宽度浏览器 smoke |
 
 ## GPU 机器上的第一次全链路验证
 
@@ -370,8 +419,9 @@ Kubernetes 集成还需要 Docker、kubectl 和 minikube，使用 `make doctor-k
 ## Kubernetes 与真实 GPU
 
 全栈 Helm chart 位于 `deploy/helm/tgsrl/`。目标环境需要自行提供 Kubernetes、Kueue、
-NVIDIA DRA 或其他受支持资源后端，以及可访问的镜像仓库。TGS-RL 不会隐式安装或修改这些
-集群级依赖。
+NVIDIA DRA、HAMi 或其他受支持资源后端，以及可访问的镜像仓库。TGS-RL 不会隐式安装
+或修改这些集群级依赖。没有 MIG 的 GPU 不需要退出资源池；可继续使用整卡 DRA，或在
+安装并验证 HAMi/MPS 后使用共享路径。
 
 正式 GPU 验证按 E1–E8 campaign 推进：
 
@@ -410,6 +460,7 @@ git status --short --ignored
 - [文档导航](docs/README.md)
 - [快速上手](docs/getting-started.md)
 - [API、CLI 与 Console](docs/guides/api-and-console.md)
+- [HAMi vGPU 接入](docs/guides/hami.md)
 - [配置、持久化与恢复](docs/guides/configuration-and-recovery.md)
 - [Managed-worker bootstrap](docs/design/managed-worker-bootstrap.md)
 - [架构决策记录](docs/adr/README.md)

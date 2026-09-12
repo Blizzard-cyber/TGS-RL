@@ -18,14 +18,16 @@
 | 配置图 | **支持** | Scheduler 与 Runtime 从 compatibility manifest 加载 BOM、profile、capabilities、policy 和 scenario | 配置在启动时读取，不支持热更新；未知能力和冲突引用会被拒绝 |
 | 单机持久化 | **支持** | Scheduler checkpoint/journal、Job Controller 文件状态、Runtime/Experiment SQLite、Operator cursor 与 ledger；启动时调和遗留 delivery、终态 allocation 和已淘汰的重复 failure audit | 不提供跨服务事务、HA 或灾备；fake backend 对象只存在于进程内，Scheduler 通过 provider readback 保守修复其投影 |
 | Job、Runtime 与 Experiment 控制 | **支持** | JobControl、RuntimeControl、RuntimeBackendControl 和 Experiment gRPC 服务 | Runtime `start` 发布 Intent；workload 必须由 Operator/backend 启动并通过观察事件回报 |
-| HTTP Gateway | **支持** | Job、Run、Timeline、Trace、DAG、Topology、Sandbox、Decision、Replay、Experiment、OpenAPI、CLI 与 Python SDK | gRPC 模式要求四个逻辑后端可达；内存模式不持久化 |
-| Web Console | **支持** | 中文运行总览、任务详情、Trace 多轨时间轴、时间线、拓扑、Sandbox、Decision、实验比较，以及 Job/Run 准入和生命周期操作 | Trace 页面读取 Runtime 持久化事件；只有事件携带真实 duration 属性时才显示耗时条。静态 `mock` adapter 不访问 Gateway；静态部署需自行提供同源 API 代理 |
+| HTTP Gateway | **支持** | Job、Run、Timeline、Trace、DAG、Topology、Resource Snapshot、Sandbox、Decision、Replay、Experiment、OpenAPI、CLI 与 Python SDK | `GET /v1/resources` 直接读取 Scheduler `ClusterSnapshot`；gRPC 模式要求四个逻辑后端可达；内存模式不持久化 |
+| Web Console | **支持** | 九个中文工作区：运行总览、任务、Trace 多轨时间轴、时间线、算力资源、拓扑、Sandbox、Decision 和实验比较，以及 Job/Run 准入和生命周期操作 | 算力资源页显示 Scheduler 设备/分配账本，不替代 Operator allocation readback；Trace 只有事件携带真实 duration 属性时才显示耗时条。静态 `mock` adapter 不访问 Gateway；静态部署需自行提供同源 API 代理 |
 | 性能回归门禁 | **支持（CI 回归）** | 独立非 race CI 检查 Scheduler 8 devices/100 units、1000 devices/1000 units 与 NVIDIA Provider observation apply 的 P95 预算 | 预算只约束固定 CPU fixture 的代码回退，不是生产 SLA、GPU 性能或训练收益证明 |
 | CPU Mock Provider | **支持** | 能力匹配、逻辑资源绑定、L1–L4 逻辑模拟动作、故障注入、generation fence 和逐动作 rollback | Adaptive Planner 会在满足观测、能力与安全条件时生成 L1–L4 动作；这些结果只验证控制逻辑，不代表真实硬件行为或性能 |
 | NVIDIA Provider（默认） | **有条件（Conditional）** | `LocalDriver` 可通过 `nvidia-smi` 形成设备快照 | 需要 NVIDIA 驱动和 `nvidia-smi`；默认不声明资源动作 |
-| NVIDIA Driver v2 | **Full GPU E1 已验证** | 已实现 Full GPU、MPS、MIG inventory，以及 binding/runtime/MIG helper、Scheduler worker registry 和 workload bootstrap 的 generation fence、scoped registration、幂等 durable receipt、原子落盘、进程监管、PID 信号控制和 managed-worker lifecycle | E1 已在单节点 NVIDIA A10 上验证 Full GPU/DRA/CDI、真实 CUDA、注册、Trace 和清理；MIG、MPS、offload/reload、完整训练与多节点仍待验证 |
+| NVIDIA Driver v2 | **Full GPU E1 已验证** | `auto` 按设备发布 Full GPU 或已有 MIG 子设备；显式 MPS/MIG；binding/runtime/MIG helper、Scheduler worker registry 和 workload bootstrap 的 generation fence、scoped registration、幂等 durable receipt、原子落盘、进程监管、PID 信号控制和 managed-worker lifecycle | E1 已在单节点 NVIDIA A10 上验证 Full GPU/DRA/CDI、真实 CUDA、注册、Trace 和清理；`auto` 与异构卡能力模型有 CPU 合同测试，MIG、MPS、offload/reload、完整训练与多节点仍待验证 |
+| HAMi vGPU | **已实现，待硬件验证** | 从 `hami.io/node-nvidia-register` 建立物理 UUID inventory；把单卡分数份额投影为 `nvidia.com/gpu`、`gpucores`、`gpumem-percentage` 与 `use-gpuuuid`；从 Pod allocation annotation 回读 UUID | 当前只支持一个 Binding/一张物理 NVIDIA GPU、`hami-core`、同一份额同时约束 core/memory；要求 managed-worker bootstrap。尚无真实 HAMi/CUDA 隔离与共享证据 |
 | 外部 Runtime Adapter | **已实现，待硬件验证** | veRL 已有第一方 lifecycle/observation bridge，以及面向 veRL 0.9 trainer/worker-group/checkpoint-manager 公共接口的 callback adapter；支持显式 safe-point hook、checkpoint、rollout abort/sleep/wake、actor/critic offload/reload、policy update、durable receipt 与 typed TraceEvent | 训练包由不可变 workload 镜像承载，Runtime 控制面不要求导入 `verl/ray/torch/vllm`；只有带 workload OCI artifact 的 Python 命令才由 bootstrap 在启动前验证声明的包；真实依赖组合、distributed collective 和显存释放仍待目标环境验证；SGLang 与 OpenRLHF 仍只有通用 adapter 边界 |
-| Kubernetes Operator | **有条件支持** | 编译和调和 `JobRunBundle`、Kueue `Workload`、Kubernetes `Job`、可选 `ResourceClaimTemplate`/`RuntimeClass`；Kubernetes 为 Pod 生成 ResourceClaim，Operator 从 Pod status 回读名称；typed NVIDIA DRA inventory 精确兑现 Full GPU/MIG UUID；可选 bootstrap 包装 RuntimeManifest command，自动注册真实 PID/control endpoint，并用 Pod readiness 阻止提前发布 RUNNING；全栈 Helm chart 部署六个控制面服务 | 精确 UUID 仅适用于 NVIDIA DRA 的整数个完整 GPU/MIG；ResourceClaimTemplate/Job/Workload/JobRunBundle 为 namespaced 管理权限，生成的 ResourceClaim 只读；真实硬件证据待执行；MPS 仍需节点侧 PID namespace/shared mount；Kueue 和 GPU 管理组件由平台侧提供；首轮单机 smoke 可显式使用 host network，该选项默认关闭且仅用于单 worker 验证 |
+| Kubernetes Operator | **有条件支持** | 编译和调和 `JobRunBundle`、Kueue `Workload`、Kubernetes `Job`、可选 `ResourceClaimTemplate`/`RuntimeClass`；按每个 Binding 从有序 profile 中选择 DRA 或 HAMi；分别从 ResourceClaim/ResourceSlice 或 Pod HAMi annotation 回读实际 UUID；bootstrap 自动注册 PID/control endpoint，并用 Pod readiness 阻止提前发布 RUNNING；全栈 Helm chart 部署六个控制面服务 | DRA 支持整数个 Full GPU/MIG；HAMi 当前支持单物理卡 `(0,1]` 份额。两者均要求 exact UUID 与 managed worker；ResourceClaimTemplate/Job/Workload/JobRunBundle 为 namespaced 管理权限，生成的 ResourceClaim 只读；HAMi/MIG/MPS 仍需目标环境验证；Kueue 和 GPU 管理组件由平台侧提供 |
+| 其他加速器厂商 | **不支持（接口已预留）** | 通用 Proto 已有 `NPU`、`TPU`、`CUSTOM`，Scheduler 使用厂商中立 `Device`、`CompleteResourceProvider`、`CapabilitySet` 与工厂注册表 | 当前没有昇腾或其他厂商的 Provider、Operator realization adapter、worker identity verifier、依赖锁、假实现或硬件证据 |
 
 ## 单机方案
 
@@ -76,7 +78,11 @@ artifact 时，Operator 才把对应模块清单注入 bootstrap 并在启动前
   `v1beta2`/`v1beta1`；当前只支持 NVIDIA `gpu.nvidia.com` driver，Full GPU 使用
   `gpu.nvidia.com` DeviceClass、MIG 使用 `mig.nvidia.com` DeviceClass，并要求 ResourceSlice
   提供 `type`、`uuid` 以及 MIG 的 `profile`、`parentUUID` typed metadata；
-- 所选 GPU profile 所需的 Device Plugin、DRA 或 HAMi 组件；
+- 若使用 `hami-vgpu`，HAMi 必须发布健康、唯一且完整的
+  `hami.io/node-nvidia-register`；admission/scheduler/device plugin 必须能处理
+  `nvidia.com/gpu`、`nvidia.com/gpucores`、`nvidia.com/gpumem-percentage` 和
+  `nvidia.com/use-gpuuuid`；
+- 所选 GPU profile 所需的 Device Plugin、DRA 或 HAMi 组件；这些集群级依赖不由 TGS-RL 安装；
 - 可从 Operator 访问的 Scheduler、Job Controller 和 Runtime；可由 `deploy/helm/tgsrl`
   一并部署，也可使用 `deploy/helm/operator` 接入已有服务；
 - Operator cursor 目录的持久卷。
@@ -88,10 +94,14 @@ discovery 提供只读 `list` 集群权限。只有在设置 `runtimeClassCreate
 最小的 cluster-scoped RuntimeClass 写权限；否则应预先创建并引用 RuntimeClass。部署者
 需要先在目标集群确认 API 版本、RBAC、StorageClass、准入策略和 GPU 控制器兼容性。
 
-## NVIDIA Driver v2 启用条件
+## NVIDIA Driver v2 与异构设备
 
-Scheduler 可通过 `-nvidia-driver-v2` 选择 v2 编排，Scheduler CLI 默认是不会启动 MPS 的 `full` 模式；
-需要动态份额或 MIG 时显式选择 `mps` 或 `mig`。
+Scheduler 可通过 `-nvidia-driver-v2` 选择 v2 编排。Scheduler CLI 默认使用不会启动 MPS 的
+`auto` 模式：未启用 MIG 的物理卡发布为 Full GPU；已启用 MIG 的卡只发布已有 MIG 子设备；
+同一物理卡不会同时贡献整卡与 MIG 容量。不支持或未启用 MIG 的设备因此仍可正常整卡调度。
+`full`、`mps`、`mig` 仍可显式选择；显式 `full` 会排除已启用 MIG mode 的卡，MPS 只在
+显式 `mps` 下启用。底层 Go 构造器为兼容既有嵌入调用仍保留 MPS 默认，生产入口应显式传值。
+
 启动后只有 helper 的 capability handshake、generation fencing、幂等与 durable receipt 条件
 全部满足时，Provider 才会公开对应 action。helper 缺失或协议不匹配时返回 unavailable，
 不会静默回退到模拟成功。`-nvidia-dry-run` 只验证命令计划，不能生成 GPU 通过证据。
@@ -122,6 +132,24 @@ socket worker 显式确认 `prepare_pause → checkpoint → offload`，resume �
 reload → readiness`。`rebind` 必须指定不同的 source/target MIG UUID，`recreate` 必须保持
 同一 MIG UUID；当前不执行 `nvidia-smi mig -dci/-dgi/-cgi/-cci`，因为这种拓扑变更会生成
 新设备身份，必须先由 Scheduler 的资源拓扑事务显式表达后才能安全开放。
+
+## HAMi vGPU 启用条件
+
+Operator 的 `-gpu-profile` 支持逗号分隔的有序候选，例如
+`kubernetes-dra,hami-vgpu`。选择以每个 concrete Binding 为单位：
+
+- DRA 只接受整数份额，并要求所有 UUID 出现在 typed ResourceSlice inventory；
+- HAMi 只接受单物理 GPU、`accelerator_units ∈ (0,1]`，并要求 UUID 出现在 typed Node
+  registration inventory；
+- 候选不匹配时尝试下一个 profile；没有候选能兑现时直接拒绝；
+- `nvidia-device-plugin` 与旧 `volcano-hami` 仍是数量型兼容 profile；当 Binding 已携带
+  Scheduler 选择的 UUID 而 profile 无法证明 exact placement 时不会被选中。
+
+HAMi 编译器将份额向上取整为 `1..100` 的 core/memory 百分比，请求一张物理 GPU，并写入
+`nvidia.com/use-gpuuuid` 与 `nvidia.com/vgpu-mode=hami-core`。Operator 观察 Pod 的
+`hami.io/vgpu-devices-allocated`；只有实际 UUID 与 Binding 完全一致才视为已分配。
+bootstrap 还会从容器内再次核对可见设备。部署和故障定位见
+[HAMi vGPU 接入指南](../guides/hami.md)。
 
 Gate G/I runner 从同一个锁定 manifest 自动运行 baseline 和 variant，执行 warmup 与多次
 measurement，并从原始 NDJSON 事件重新计算吞吐、P50/P95/P99 延迟、iteration time、GPU active
@@ -167,8 +195,8 @@ Console 的链路追踪读取 Runtime 的真实 `TraceEvent`，支持 Trainer、
 
 - 直接把 Gateway、gRPC 或 Prometheus 端点暴露到公网或不可信共享网络；
 - 内置 TLS、身份认证、授权、多租户隔离、CORS 策略、限流或密钥管理；
-- 在未验证仓库内 binding/runtime/MIG helper 与目标环境时执行 GPU 分配、
-  MIG/MPS 管理或 Runtime lifecycle；
+- 在未验证仓库内 binding/runtime/MIG helper、HAMi 接入与目标环境时执行 GPU 分配、
+  HAMi/MIG/MPS 管理或 Runtime lifecycle；
 - 把 bootstrap/full-stack CPU 进程验证解释为真实 Kubernetes Pod、DRA/CDI、真实 veRL 包或 GPU 证据；
 - 把 `nvidia-smi` 设备发现、Mock 行为或单元测试解释为真实 GPU 调度与执行验证；
 - 依靠 fake backend 在进程重启后恢复 workload 对象；

@@ -63,7 +63,9 @@ managed-worker bootstrap、Gateway/SDK/CLI、Console、全栈部署工件和硬�
 | Runtime/Trace/Replay | 已闭环于单机代码路径 | desired/observed 分离、typed observation、Replay 和 SQLite 恢复完整 |
 | Scheduler 与事务 | 已闭环 | admission/adaptive planner、约束、预算、reservation、receipt、补偿和恢复完整 |
 | CPU Mock / process E2E | 已验证 | 包括真实子进程、worker bootstrap、Unix socket 和服务重启 |
-| NVIDIA Provider/helper | Full GPU E1 已验证 | Full GPU inventory、binding/runtime helper 与 worker registry 已在 A10 验证；MPS/MIG 待验证 |
+| NVIDIA Provider/helper | Full GPU E1 已验证 | `auto` 按设备发布 Full/MIG，binding/runtime helper 与 worker registry 已在 A10 验证；MPS/MIG 待验证 |
+| HAMi vGPU | 已实现，待硬件验证 | Node typed inventory、单卡分数资源投影、UUID 过滤、Pod allocation readback 和 bootstrap 核验已完成 |
+| 其他加速器厂商 | 接口已预留，未实现 | Proto 有 NPU/TPU/CUSTOM，Scheduler 有厂商中立 Provider 接口；缺少具体 Provider、Operator adapter 与 verifier |
 | Kubernetes/DRA | E1 主链已验证 | ClaimTemplate、生成 Claim、UUID selector/allocation readback、CDI 注入与 cleanup 已在真实集群通过 |
 | 硬件 Campaign | E1 `PASSED` | baseline/variant 各完成 warmup + 3 次 measurement；E2–E8 仍需目标 workload/hook 和真实证据 |
 | 生产发布 | 尚未准入 | E1 只证明单节点 Full GPU 集成；MIG/MPS/完整训练和 E2–E8 未完成 |
@@ -98,6 +100,10 @@ driver 输入和 workload image digest；本机 `environment.json`、Job templat
 | P0 验证阻塞 | E3–E8 有 9 条阈值未标定 | 保持 `BLOCKED`；只读 calibration report 不自动修改策略 |
 | P0 证据完整性 | E1 已锁定 workload image digest，但完整 campaign 尚未锁定 environment config、Job template、外部 hook、渲染后 Job 和 cluster identity | 首轮仅作为流程 smoke；正式实验前扩展 fingerprint/artifact |
 | 已关闭 | `KubernetesBackend.Cleanup` 所需的 Workload、ResourceClaimTemplate、JobRunBundle `delete` 权限 | Helm 与原生 manifest 已补齐，生成的 ResourceClaim 只读，部署 contract test 逐类约束 |
+| 已关闭 | 全局 NVIDIA mode 无法表达不同分区能力的 GPU 共存 | Scheduler CLI 默认 `auto`，逐卡发布 Full/MIG，排除父卡重复计量并隔离 MIG 专属 action |
+| 已关闭（待硬件验证） | Operator 只能全局选择一种 GPU 兑现方式 | 改为有序 profile；按每个 Binding 的 UUID 和份额选择 DRA/HAMi，无法精确兑现时 fail closed |
+| 已关闭（待硬件验证） | 旧 HAMi profile 只有数量资源，无法证明实际 UUID | 新增 `hami-vgpu` typed Node inventory、UUID 过滤、Pod allocation readback 和 bootstrap 核验 |
+| 已关闭 | Console 缺少真实资源账本入口 | Gateway 新增 `GET /v1/resources`，中文算力资源页展示 Scheduler 设备、能力和 allocation，并保持响应式布局 |
 | P1 生产阻塞 | 服务端点没有内建 TLS、用户认证、授权、租户隔离或限流 | 仅允许本机/隔离网络；生产前增加统一入口和服务间身份 |
 | P1 生产阻塞 | Job 只提供字符串环境变量，没有通用 Secret/ConfigMap 引用模型 | 依赖凭据的真实训练必须由 namespace/service account 或平台注入；后续应设计显式 secret refs |
 | P1 生产阻塞 | Helm 服务固定单副本且没有容器 CPU/memory requests/limits、PDB 或 HA | 当前 chart 是验证部署形态；容量规划和高可用需另行设计 |
@@ -142,6 +148,7 @@ Mock、本机进程或 Kubernetes/NVIDIA 环境。
 - 从 buffer、policy lag、staleness、ESS、safe point 等事实生成资源控制计划；
 - 对 bind、share、priority、pause、offload、rebind 等动作执行幂等、generation fence 和补偿；
 - 将 Scheduler 选择的具体 GPU/MIG UUID 兑现到 Kubernetes DRA；
+- 将不支持 MIG 的物理 GPU 通过 Full GPU 或 HAMi vGPU 继续纳入统一调度；
 - 启动和监管容器内训练进程，注册 PID/control endpoint，并回传观察；
 - 生成可复核的 Gate evidence，而不是信任 workload 自报的汇总结论。
 
@@ -152,6 +159,33 @@ Mock、本机进程或 Kubernetes/NVIDIA 环境。
 - 在 Scheduler 中直接 fork 训练进程；
 - 用 CPU/Mock/Synthetic 结果推断真实 GPU 性能或收敛质量；
 - 提供跨服务分布式事务、自动 HA、灾备或公网多租户安全边界。
+
+### 2.1 加速器扩展边界
+
+当前生产硬件路径只支持 NVIDIA。通用层使用 `tgsrl.v1.Device`、`DeviceKind`、
+`ResourceVector`、`CapabilitySet` 和 `CompleteResourceProvider` 表达设备与动作，不按型号
+分支；型号只作为 label 用于展示和诊断。未来接入昇腾 NPU 等设备时，新建厂商 Provider、
+Operator realization adapter 和 worker identity verifier，并仅通过 `provider.Registry` 在
+composition root 注册工厂。仓库不预写未来厂商空实现或假 fixture；不得把厂商资源键、命令
+或 SDK 写入 Scheduler 候选/评分核心。完整接入清单见
+[加速器 Provider 扩展设计](design/accelerator-extension.md)。
+
+### 2.2 开源组件复用边界
+
+TGS-RL 优先通过稳定协议组合成熟开源组件，而不是复制其控制面：
+
+| 项目 | TGS-RL 复用什么 | 边界 |
+|---|---|---|
+| Kubernetes | Job、Pod、ResourceClaimTemplate/ResourceClaim、RuntimeClass 与 API Server 持久化 | 不替代 Scheduler/Runtime 状态权威 |
+| Kueue | Workload 准入、队列和资源配额 | 不生成 TGS-RL PlacementPlan |
+| NVIDIA DRA Driver | DeviceClass、ResourceSlice、CEL selector、CDI 设备注入 | 不重新选择 Scheduler UUID |
+| HAMi | NVIDIA vGPU 资源、Node 注册和 Pod allocation 注解协议 | 不 vendoring、不 fork、不安装；不使用 HAMi WebUI 作为状态权威 |
+| veRL / Ray / PyTorch / vLLM | workload 训练与执行接口 | 只存在于不可变 workload 镜像，不进入控制面镜像 |
+| React / Vite / Playwright | Console 与浏览器验证 | 页面信息架构和视觉实现由 TGS-RL 独立维护 |
+
+HAMi 与 HAMi-WebUI 均为 Apache-2.0 项目。本次实现只依据公开协议和交互模式编写独立 adapter/
+页面，没有复制源码，也没有在 `upstream/patches.json` 注册下游 patch。协议核对基线记录在
+`compatibility/bom/runtime.yaml`；实际部署版本仍必须由环境配置和证据报告锁定。
 
 ## 3. 核心设计原则
 
@@ -191,6 +225,12 @@ Mock、本机进程或 Kubernetes/NVIDIA 环境。
 Kubernetes DRA claim 使用 UUID CEL selector；allocation 后再通过 `driver/pool/device` 和最新
 ResourceSlice 反查 UUID。三方集合不完全一致时不发布 `BOUND/RUNNING`。
 
+“统一调度”不等于所有 GPU 必须支持同一种切分能力。Scheduler 的 NVIDIA Driver v2 默认
+使用 `auto`，对每张卡独立投影：未启用 MIG 的设备发布 Full GPU UUID；已启用 MIG
+且已有实例的设备只发布 MIG 子设备。同一父卡不能同时以整卡和 MIG 身份出现。Operator 再按
+每个 Binding 的 UUID 和份额，从 `kubernetes-dra,hami-vgpu` 等有序候选中选择可验证的
+执行方式；因此一个计划可以同时包含 DRA 与 HAMi workload。
+
 ### 3.5 Fail closed
 
 未知 capability、过期 generation、缺少 safe point、缺少 control socket、身份冲突、未确认的
@@ -226,7 +266,7 @@ flowchart LR
   end
 
   subgraph Workload[Execution substrate]
-    DRA[Kueue / ResourceClaimTemplate / ResourceClaim / DRA]
+    RESOURCE[Kueue + DRA or HAMi]
     Bootstrap[worker bootstrap]
     Worker[veRL worker]
   end
@@ -239,7 +279,7 @@ flowchart LR
   Runtime -->|SchedulingIntent| Scheduler
   Scheduler --> Provider
   Scheduler -->|Decision stream| Operator
-  Operator --> Backend --> DRA --> Bootstrap --> Worker
+  Operator --> Backend --> RESOURCE --> Bootstrap --> Worker
   Bootstrap -->|scoped registration and trace| Scheduler
   Worker --> Adapter --> Bootstrap
   Backend -->|SandboxEvent| Runtime
@@ -573,6 +613,10 @@ NVIDIA Provider 复用同一事务接口，由 Driver 把厂商事实投影为�
 MPS 需要可见且身份匹配的 server PID 和共享状态目录。`SIGSTOP/SIGCONT` 只冻结 CPU 调度，
 不会释放 CUDA context 或显存；真实资源腾挪必须由 cooperative socket callback 确认 offload。
 
+默认 `auto` 不启动 MPS。它只在 `MIGEnabled=false` 的设备上发布 Full GPU，在
+`MIGEnabled=true` 的设备上发布已有 MIG 子设备；Full GPU 设备不会继承
+`rebind/recreate`。显式 `full` 同样排除已启用 MIG mode 的父卡，防止容量重复计量。
+
 ## 10. Operator 与 Kubernetes/DRA
 
 ### 10.1 Decision 消费
@@ -604,24 +648,27 @@ Kubernetes backend 的 completion marker 是 `JobRunBundle`。更新时先准备
 最小 read/upsert/delete 权限，生成的 ResourceClaim 只读，Pod、status 子资源和集群 discovery 权限仍保持收敛。真实 Kubernetes
 测试仍需用 ServiceAccount impersonation 或 namespace smoke 验证实际准入，而不能只依赖内存 Client。
 
-### 10.3 DRA 精确设备兑现
+### 10.3 DRA 与 HAMi 精确设备兑现
 
 ```text
 Scheduler Binding.device_ids
-→ Operator typed DRA inventory lookup
-→ ResourceClaimTemplate UUID CEL selector
-→ Kueue Workload and Job reference the same template
-→ Kubernetes creates a Pod-owned ResourceClaim
-→ Pod status reports the generated claim name
-→ allocation driver/pool/device
-→ latest ResourceSlice UUID/class lookup
-→ exact-set comparison
+→ Operator 按 Binding 检查有序 profile
+├─ DRA typed ResourceSlice → UUID CEL selector → ResourceClaim allocation
+└─ HAMi typed Node inventory → use-gpuuuid → Pod allocation annotation
+→ actual UUID exact-set comparison
 → BOUND/RUNNING or fail closed
 ```
 
 Full GPU 使用 DeviceClass `gpu.nvidia.com`；MIG 使用 `mig.nvidia.com`，但两者 driver domain 都是
 `gpu.nvidia.com`。MIG inventory 还必须有 profile 和 parent UUID。一个 binding 不能混合两个
-DeviceClass。Device Plugin/HAMi 只能表达数量，因此目前不开放精确身份执行。
+DeviceClass。
+
+HAMi 的 `hami-vgpu` profile 从 `hami.io/node-nvidia-register` 读取物理 UUID、节点、型号、
+模式、健康和容量，只接受单卡 `(0,1]` 份额。Operator 请求
+`nvidia.com/gpu=1`，把同一份额向上取整写入 `nvidia.com/gpucores` 与
+`nvidia.com/gpumem-percentage`，并以 `nvidia.com/use-gpuuuid` 指定目标卡。观察器从
+`hami.io/vgpu-devices-allocated` 回读实际 UUID；不一致时不发布收敛状态。传统 Device
+Plugin 和旧 `volcano-hami` 仍是数量型兼容路径，不能替代 exact readback。
 
 ### 10.4 Managed-worker bootstrap
 
@@ -647,12 +694,14 @@ binding、Runtime BOUND generation、source IP 和 worker identity。
 Gateway 是无状态 northbound adapter。`GatewayApplication` 负责路由、请求大小、参数和错误输出；
 `GrpcGatewayBackend` 调用四个逻辑后端：Job Control、Scheduler、Runtime、Experiment。Runtime
 和 Experiment 当前由同一个 Python 进程提供。
+`GET /v1/resources` 调用 Scheduler `GetSnapshot(include_pending_units=true)`，展示的是调度
+资源账本；它不会绕过 Operator，也不能单独证明 DRA/HAMi 已把设备兑现到 worker。
 
 对外能力包括：
 
 - Job 校验、创建、准入和 Run 创建；
 - start/pause/resume/stop/retry/terminate；
-- Job、Run、Operation、Timeline、Trace、DAG、Topology、Sandbox 和 Decision 查询；
+- Job、Run、Operation、Timeline、Trace、DAG、Topology、Resource Snapshot、Sandbox 和 Decision 查询；
 - Replay、Experiment；
 - OpenAPI 3.1、CLI 和 dependency-free Python `GatewayClient`。
 
@@ -661,9 +710,11 @@ snake_case。分页 token 是带 scope/filter 的 opaque token，不能跨资源
 invalid argument、not found、conflict、permission、rate limit、unimplemented、timeout 等状态映射为
 对应 HTTP 语义。
 
-Console 位于 `console/src/`，八个主要页面是运行总览、任务详情、链路追踪、事件时间线、资源拓扑、
+Console 位于 `console/src/`，九个主要页面是运行总览、任务详情、链路追踪、事件时间线、算力资源、资源拓扑、
 运行沙箱、调度决策和实验对比。`HttpApiClient` 通过 Gateway 获取真实数据，`MockApiClient`
 只用于静态预览和浏览器 fixture。Console 没有独立业务状态权威。
+算力资源页会过滤 CPU 设备；它展示的调度分区和 capability 来自 Scheduler snapshot，
+不是对 DRA/HAMi 最终执行状态的猜测。最终兑现仍以 Operator readback 和 worker observation 为准。
 
 Console 的信息架构按运维工作流组织，而不是按后端模块平铺：侧栏分为运行、可观测、资源和
 分析四组；顶部状态栏持续显示当前集群连接与协议版本；页面标题、筛选工具栏和内容工作区保持
@@ -674,7 +725,7 @@ Console 的信息架构按运维工作流组织，而不是按后端模块平铺
 
 页面外壳和所有主从工作区使用可收缩的 Flex 布局。列表、详情和辅助面板按可用空间动态伸缩，
 空间不足时自动换行成上下结构；固定宽度只作为理想基准，不作为不可突破的页面宽度。表格、
-资源分层图和 Trace 时间轴分别在自己的容器内滚动，禁止把整个文档撑宽。浏览器测试固定覆盖
+资源卡片/矩阵、资源分层图和 Trace 时间轴分别在自己的容器内滚动，禁止把整个文档撑宽。浏览器测试固定覆盖
 1366、1180、1024、820 和 390 像素，并断言页面不产生横向溢出。移动端将侧栏转换为可横向
 滚动的功能导航，不压缩表格字段或 Trace 轨道。
 
@@ -684,6 +735,9 @@ Console 的信息架构按运维工作流组织，而不是按后端模块平铺
 和 [Grafana Tempo](https://grafana.com/docs/grafana/latest/datasources/tempo/) 将统一时间轴与选中
 span 详情分离。Console 借鉴这些信息组织方式，但保留 TGS-RL 独有的
 任务 → 运行 → 决策 → 沙箱 → 设备关联，以及训练步骤、请求、执行器和 worker 多轨 Trace。
+算力资源页还借鉴 HAMi-WebUI 的“节点—设备—工作负载”下钻思路，但界面和代码均为独立实现；
+它读取 TGS-RL Scheduler snapshot，不直接依赖 HAMi WebUI，也不会把页面推断当作 Operator
+allocation evidence。
 
 ## 12. 存储、恢复与一致性
 
@@ -755,7 +809,9 @@ JobRunBundle CRD、RBAC、PVC、probe、Service 和 NetworkPolicy。`deploy/helm
 平台必须额外提供：
 
 - Kueue 和所选版本的 Workload API；
-- NVIDIA DRA Driver、DeviceClass 和 ResourceSlice；
+- 选择 DRA 时提供 NVIDIA DRA Driver、DeviceClass 和 ResourceSlice；
+- 选择 HAMi 时提供 HAMi scheduler/admission webhook/device plugin、Node registration 和
+ 对应的 Kueue 配额；
 - StorageClass、镜像 registry 和不可变 image digest；
 - worker registry signing-key Secret；
 - workload 可访问的 registry URL；
@@ -797,7 +853,7 @@ release evidence。
 | Go 单元/集成 | `make test-go`、`make race` | Scheduler、Provider、Controller、Operator 状态与并发正确性 |
 | Python/Storage/Governance | `make test-python` | Runtime、Adapter、SQLite、Gate 和 driver contract |
 | API | `make test-api` | HTTP/gRPC/SDK/OpenAPI 行为 |
-| Console | `make test-console`、`make test-console-browser` | 类型、lint、组件、八个主路由与五档视口布局 |
+| Console | `make test-console`、`make test-console-browser` | 类型、lint、组件、九个主路由与五档视口布局 |
 | 性能 | `make test-performance` | 固定 CPU fixture 的 P95 和 allocation 回归预算 |
 | Process/Product E2E | `make demo`、`make product-e2e` | 真实服务进程、重启、幂等和状态恢复 |
 | CPU full-stack Gate | `make gate-cpu-integration` | 实际服务链 + bootstrap + worker callback |
@@ -857,14 +913,14 @@ Console、race、容器镜像和 Product E2E 已由 CI workflow 定义为独立 
 | `scheduler-go/planexecutor/` | Provider 事务驱动 | pending checkpoint、receipt、逆序补偿 |
 | `scheduler-go/provider/` | Provider 抽象和 Mock | capability-gated 行为 |
 | `scheduler-go/provider/nvidia/` | NVIDIA LocalDriver/Driver v2 | inventory、helper handshake、readback |
-| `operator-go/compiler/` | Decision → Bundle | 每 binding 一 bundle、DRA UUID selector |
+| `operator-go/compiler/` | Decision → Bundle | 每 binding 一 bundle、DRA/HAMi profile 选择与 UUID 约束 |
 | `operator-go/backend/` | fake/process/Kubernetes 副作用 | marker commit、control progress、readback |
 | `operator-go/worker/` | Decision 消费和观察恢复 | durable handoff before cursor |
 | `internal/managedworker/` | registry/controller/store | scoped auth、PID/generation/idempotency |
 | `cmd/tgsrl-worker-bootstrap/` | 子进程监管 | signal、socket、device verification、exit cleanup |
 | `adapters/` | 框架/执行/训练/rollout 适配 | LaunchSpec 和 lifecycle protocol |
 | `gateway-python/tgsrl_gateway/` | HTTP、CLI、SDK | Proto JSON、分页、错误映射 |
-| `console/src/` | 八个产品页面 | API mapping、run scope、错误展示 |
+| `console/src/` | 九个产品页面 | API mapping、run scope、资源/Trace 展示与错误状态 |
 | `storage/` | Go 共享日志/快照存储 | checksum、atomic replace、recovery |
 | `scripts/` | Gate、部署、生成、兼容性工具 | 证据不可伪造、输入锁定 |
 | `deploy/` | Helm、CRD、原生 manifest | RBAC、PVC、probe、immutable image |
@@ -963,6 +1019,8 @@ resume、stop、observation。只有实际 callback 成功才能推进 observed 
 - Helm 使用不可变镜像 digest，签名 key、PVC、NetworkPolicy 配置完成；
 - 目标集群 Kueue、DRA API、DeviceClass、ResourceSlice 和 RBAC preflight 通过；
 - E1 workload 使用锁定的 veRL/Ray/PyTorch/vLLM 依赖、真实 CUDA 与最小 adapter trainer，并输出合规 worker trace；
+- 非 MIG 设备先保持 Full GPU E1 可复现，再单独执行 HAMi 单卡分数共享 smoke；HAMi
+  通过前不得把 CPU 合同测试写成共享隔离证据；
 - E3–E8 再切换到完整模型训练入口，不能用 E1 smoke 结果代替训练收益或收敛证据；
 - evidence 固化 environment config、Job template、hook、rendered Job 和 image digest，并记录目标
   cluster identity；

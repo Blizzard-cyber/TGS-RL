@@ -79,7 +79,7 @@ Scheduler 还支持以下启动覆盖：
 | `-state-dir` | `.tmp/scheduler-state` | 持久化根目录 |
 | `-metrics-listen` | `127.0.0.1:9090` | Prometheus 地址；空字符串关闭 |
 | `-nvidia-driver-v2` | `false` | 启用可执行 NVIDIA Driver v2；未启用时 LocalDriver 只发现设备 |
-| `-nvidia-partition-mode` | `full` | CLI 的 v2 模式：`full`、`mps` 或 `mig` |
+| `-nvidia-partition-mode` | `auto` | CLI 的 v2 模式：`auto`、`full`、`mps` 或 `mig`；`auto` 按每张卡的 MIG mode 发布 Full/MIG，且不启动 MPS |
 | `-nvidia-dry-run` | `false` | 只生成/校验 NVIDIA 命令计划，不形成硬件通过证据 |
 | `-nvidia-command-timeout` | `15s` | 单次 NVIDIA helper 命令超时 |
 | `-nvidia-binding-helper` | `tgsrl-nvidia-binding` | binding helper 路径 |
@@ -87,7 +87,7 @@ Scheduler 还支持以下启动覆盖：
 | `-nvidia-mps-pid-dir` | 空 | `<sandbox>.pid` MPS server 身份目录 |
 | `-nvidia-runtime-helper` | `tgsrl-nvidia-runtime` | managed-worker runtime helper 路径 |
 | `-nvidia-runtime-state` | `<state-dir>/nvidia-runtime.json` | worker/runtime receipt 状态 |
-| `-nvidia-mig-helper` | `tgsrl-nvidia-mig` | MIG lifecycle helper 路径；MIG 模式必需 |
+| `-nvidia-mig-helper` | `tgsrl-nvidia-mig` | MIG lifecycle helper 路径；`auto`/`mig` 模式必需 |
 | `-worker-registry-listen` | 空 | managed-worker registry HTTP 监听地址；可供本地 process 或 NVIDIA/Kubernetes workload 使用 |
 | `-worker-registry-runtime-target` | 空 | registry 发布 SandboxEvent 使用的 Runtime gRPC target |
 | `-worker-registry-signing-key-file` | 空 | 至少 32 bytes 的 HMAC 主签名 key；也可用 `TGSRL_WORKER_REGISTRY_SIGNING_KEY` |
@@ -171,12 +171,12 @@ export TGSRL_GATEWAY_EXPERIMENT_TARGET=127.0.0.1:50071
 | `-namespace` | `default` | `JobRunBundle` namespace |
 | `-cursor-dir` | 系统临时目录 | Decision cursor 目录 |
 | `-kubeconfig` | 空 | 显式 kubeconfig；仅 `kubernetes` 模式使用 |
-| `-gpu-profile` | `none` | `none`、`nvidia-device-plugin`、`kubernetes-dra` 或 `volcano-hami` |
+| `-gpu-profile` | `none` | 逗号分隔的有序兑现候选；支持 `none`、`kubernetes-dra`、`hami-vgpu`、`nvidia-device-plugin` 与旧 `volcano-hami` |
 | `-runtime-class-name` | 空 | 引用已有 RuntimeClass |
 | `-runtime-class-handler` | 空 | 创建 RuntimeClass 时使用的 handler |
 | `-runtime-class-create` | `false` | 是否创建 RuntimeClass；启用时需要额外 cluster-scoped 权限 |
 | `-node-selector` | 空 | 可重复的 `key=value` Pod node selector |
-| `-worker-bootstrap` | `false` | 包装 workload 并自动注册真实子进程；process 模式自动启用，`kubernetes-dra` 要求显式启用 |
+| `-worker-bootstrap` | `false` | 包装 workload 并自动注册真实子进程；process 模式自动启用，`kubernetes-dra`/`hami-vgpu` 要求显式启用 |
 | `-worker-bootstrap-image` | 空 | bootstrap installer 的不可变 digest 镜像 |
 | `-worker-registry-url` | 空 | workload 可访问的 Scheduler registry URL |
 | `-worker-registry-signing-key-file` | 空 | 与 Scheduler 相同的主签名 key，仅供 Operator 派生 scoped token |
@@ -207,8 +207,13 @@ RuntimeClass 写权限。全栈 chart 包含 `JobRunBundle` CRD，但不部署 K
 使用 NVIDIA `gpu.nvidia.com` driver，根据 ResourceSlice 的 typed metadata 为 Full GPU 选择
 `gpu.nvidia.com` DeviceClass、为 MIG 选择 `mig.nvidia.com` DeviceClass，并要求 `type`、`uuid`
 以及 MIG 的 `profile`、`parentUUID`。Operator 将 Scheduler `device_ids` 编译为 CEL selector，
-并在 allocation 后通过最新 ResourceSlice 回读 UUID 与 DeviceClass 一致性。Device Plugin/HAMi
-仍只提供数量语义。
+并在 allocation 后通过最新 ResourceSlice 回读 UUID 与 DeviceClass 一致性。
+
+`hami-vgpu` 使用 Node `hami.io/node-nvidia-register` 建立 typed physical-GPU inventory，
+将单卡分数份额编译为 HAMi 官方 NVIDIA 资源/注解，并从 Pod
+`hami.io/vgpu-devices-allocated` 回读实际 UUID。配置多个候选时，Compiler 按每个 Binding
+依次尝试；例如 `kubernetes-dra,hami-vgpu` 可让整数 DRA 设备和单卡 HAMi 分数任务共存。
+传统 Device Plugin 与旧 `volcano-hami` 仍只有数量语义。详见 [HAMi 接入指南](hami.md)。
 
 启用 bootstrap 时，Helm 的 `controller.workerBootstrap.registrySigningKeySecret` 必须指向已有
 Secret，默认 key 为 `signing-key`。同一主 key 还必须以文件或 Secret 挂载给 Scheduler。Pod 不会

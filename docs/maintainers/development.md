@@ -12,7 +12,7 @@ make lint             # Go vet、Buf lint、Ruff 与 mypy
 make staticcheck      # 固定版本 Go staticcheck
 make race             # Go race detector
 make test-performance # 非 race Scheduler/Provider P95 回归预算
-make test-console-browser # Chromium 八路由与多宽度 smoke（需先安装 Playwright browser）
+make test-console-browser # Chromium 九路由与多宽度 smoke（需先安装 Playwright browser）
 make demo             # Python → Scheduler → Mock Provider 最小进程演示
 make product-e2e      # 完整后端产品流与恢复检查
 make gate-campaign    # 校验 E1-E8 campaign 并汇总已有硬件证据
@@ -112,6 +112,8 @@ make proto-roundtrip
 - Console 依赖由 `console/package.json` / `console/package-lock.json` 锁定；
 - 工具链与运行时依赖记录在 `compatibility/bom/runtime.yaml`；
 - 下游 patch 登记在 `upstream/PATCHES.md`；
+- HAMi 等未 vendoring 的可选集群组件只记录协议核对基线，不进入 lockfile SBOM；部署版本必须
+  在环境配置和硬件证据中单独锁定；
 - 不使用 `latest` 等浮动版本表达可复现构建。
 
 ## CI
@@ -123,7 +125,7 @@ CI 分别验证：
 - 独立非 race Scheduler/Provider P95 回归预算；
 - Runtime、Adapter、Gateway/SDK/HTTP API 的 Python lint、类型检查与测试；
 - Console 的类型检查、lint、测试和构建；
-- Chromium 中八个产品路由的真实页面加载、主标题与浏览器错误 smoke；
+- Chromium 中九个产品路由的真实页面加载、主标题与浏览器错误 smoke；
 - 跨语言 Proto round-trip 与最小进程演示；
 - 完整后端产品流、重启恢复和幂等性；
 - SBOM、兼容性证据、patch ledger 与公开内容检查。
