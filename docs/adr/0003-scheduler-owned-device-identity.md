@@ -21,12 +21,13 @@ Kubernetes DRA 可以用 driver-specific CEL selector 约束设备，并在 Reso
 - Operator 的 `kubernetes-dra` profile 固定要求 NVIDIA DRA driver `gpu.nvidia.com`，并根据
   typed inventory 为 Full GPU 选择 `gpu.nvidia.com` DeviceClass、为 MIG 选择
   `mig.nvidia.com` DeviceClass。
-- 每个 binding 的 ResourceClaim 使用 `uuid` CEL selector，只允许绑定中列出的 UUID。
+- 每个 binding 的 ResourceClaimTemplate 使用 `uuid` CEL selector，只允许绑定中列出的 UUID；
+  Kubernetes 再为对应 Pod 生成 ResourceClaim。
 - Operator capability discovery 必须同时发现对应 DeviceClass、最新 ResourceSlice generation
   以及包含 type、driver、pool、device、profile、parent UUID 的唯一设备记录；仅发现 DRA API
   或 DeviceClass 不足以开放该 profile。
 - 同一个 binding 不能混用 Full GPU 与 MIG DeviceClass；未知类型和不完整 MIG 元数据直接拒绝。
-- ResourceClaim allocation 后，Operator 用 `driver/pool/device` 在最新 ResourceSlice 中反查
+- Pod 生成的 ResourceClaim allocation 后，Operator 用 `driver/pool/device` 在最新 ResourceSlice 中反查
   UUID。实际集合与 Binding 不完全一致时 fail closed，不发布 `BOUND` 或 `RUNNING`。
 - 经过验证的 allocation UUID 写回 SandboxEvent，保持 Runtime 与 Scheduler 的观测一致。
 - Device Plugin 与 HAMi 仍可被探测，但当前不能兑现 UUID，因此 Operator 不将它们作为可执行

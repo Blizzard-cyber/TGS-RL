@@ -15,7 +15,8 @@ sequenceDiagram
   participant S as Scheduler registry
   participant R as Runtime
 
-  O->>K: Job + ResourceClaim + scoped token
+  O->>K: Job + ResourceClaimTemplate + scoped token
+  K->>K: 为 Pod 生成 ResourceClaim
   K->>B: start Pod after device allocation
   B->>B: verify visible UUID and create process group
   B->>W: exec user command as supervised child

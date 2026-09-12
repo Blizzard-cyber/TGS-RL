@@ -31,6 +31,8 @@ Docker Compose 启动单机栈，再根据需要选择 Console、CLI、Python SD
   架构、端到端控制链、状态权威、源码入口、恢复、安全、部署、测试和真实环境准入。
 - [系统架构](design/system-design.md)：组件职责、端到端控制流、状态权威和部署边界。
 - [E1–E8 硬件验证 Campaign](design/gate-e1-e8.md)：实验矩阵、证据合同与 fail-closed 发布准入。
+- [E1 单节点 Full GPU 验证记录](validation/e1-full-gpu-2026-09-12.md)：真实 A10、DRA、
+  managed worker、CUDA、Trace 与 cleanup 的脱敏验收摘要。
 - [Managed-worker bootstrap](design/managed-worker-bootstrap.md)：Pod 内进程监管、身份、注册、
   生命周期控制、安全边界与真实环境验证要求。
 - [源码导读与维护边界](maintainers/code-walkthrough.md)：按真实调用链理解状态、事务、

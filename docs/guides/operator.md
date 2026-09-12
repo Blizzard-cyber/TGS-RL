@@ -68,7 +68,7 @@ flowchart LR
 只有包含 selected plan、至少一个 action result、所有 action 均成功且非 fallback 的
 Decision 会进入调和路径。每个 concrete binding 会编译为一个独立 bundle 和单副本
 Workload/Job，避免不同设备、资源或 generation 的副本被错误聚合。bundle key 由
-`pending_unit_id` 稳定派生，Workload、Job 与 ResourceClaim 名称包含 generation；重复
+`pending_unit_id` 稳定派生，Workload、Job 与 ResourceClaimTemplate 名称包含 generation；重复
 generation 和相同 fingerprint 是幂等操作。观察
 注册在 cursor 推进前落盘，之后由独立 watcher 读取 backend；因此 cursor 已推进不代表
 Sandbox 已经收敛。
@@ -79,7 +79,7 @@ Sandbox 已经收敛。
 |---|---|
 | `fake` | 在进程内保存编译后的 bundle，适合完整 CPU Mock 本地栈 |
 | `process` | 在本机真实启动 bootstrap/worker，以 registry readback 投影状态；只用于 CPU 集成，不代表容器/Kubernetes |
-| `kubernetes` | 使用窄 HTTP client 物化并读写 API Server 中的 JobRunBundle、Workload、Job 与按需创建的 ResourceClaim；仅当显式开启 `runtimeClassCreate` 时才创建 RuntimeClass，并选择配置的 GPU profile |
+| `kubernetes` | 使用窄 HTTP client 物化并读写 API Server 中的 JobRunBundle、Workload、Job 与 ResourceClaimTemplate；Kubernetes 为 Pod 生成 ResourceClaim；仅当显式开启 `runtimeClassCreate` 时才创建 RuntimeClass，并选择配置的 GPU profile |
 
 三种模式都会运行同一决策消费与状态回报链路。`kubernetes` 模式依次使用显式
 `-kubeconfig`、`KUBECONFIG`、用户默认 `.kube/config` 或集群内 ServiceAccount 配置。
@@ -91,7 +91,7 @@ Kubernetes wire payload 根据 API discovery 选择当前集群实际提供的�
 - Kueue Workload 优先 `kueue.x-k8s.io/v1beta2`，兼容 `v1beta1`，并从
   `status.conditions[type=Admitted]` 与 `status.admission` 读取准入结果；
 - Kubernetes `batch/v1` Job，pod template 包含合法的 `restartPolicy`；
-- 需要设备 claim 时优先使用稳定的 DRA `resource.k8s.io/v1` ResourceClaim，并兼容
+- 需要设备 claim 时优先使用稳定的 DRA `resource.k8s.io/v1` ResourceClaimTemplate，并兼容
   `v1beta2`/`v1beta1`；`v1`/`v1beta2` 使用 `devices.requests[].exactly`，`v1beta1`
   使用旧的扁平 request；`kubernetes-dra` 当前明确绑定 NVIDIA `gpu.nvidia.com` driver，
   Full GPU 使用 `gpu.nvidia.com` DeviceClass，MIG 使用 `mig.nvidia.com` DeviceClass；
@@ -100,14 +100,15 @@ Kubernetes wire payload 根据 API discovery 选择当前集群实际提供的�
   `creationTimestamp`、未解析 owner reference 和 `status` 等 server-owned 字段。
 
 Operator ServiceAccount 通过只读 ClusterRole 列举 Node、RuntimeClass、DeviceClass 和 ResourceSlice，
-用于上述能力发现；JobRunBundle、Workload、Job 与 ResourceClaim 的写权限仍限制在目标
+用于上述能力发现；JobRunBundle、Workload、Job 与 ResourceClaimTemplate 的写权限仍限制在目标
 namespace，并具有 namespaced Pod `get/list/watch` 权限以读取 managed-worker readiness。
-Kubernetes observer 轮询 Workload、Job、Pod 和可选 ResourceClaim：先发布 `BOUND`，只有
+生成的 ResourceClaim 只有 namespaced `get/list/watch` 权限。Kubernetes observer 轮询 Workload、
+Job、Pod 和生成的 ResourceClaim：从 `pod.status.resourceClaimStatuses` 获取实际 claim 名，先发布 `BOUND`，只有
 bootstrap 注册成功、Pod Ready 后才允许 `RUNNING`；失败和完成也由观察状态投影。仓库的
 本地 HTTP 合同测试覆盖这些 JSON 约定，但仍没有真实 Kubernetes/Kueue/DRA 集群 E2E。
 Scheduler binding 中的 `device_ids` 代表 NVIDIA GPU/MIG UUID。`kubernetes-dra` profile 根据
 ResourceSlice 的 typed inventory 选择 Full GPU 或 MIG DeviceClass，把这些 UUID 编译进
-ResourceClaim 的 CEL selector，并在观察阶段用 allocation 的
+ResourceClaimTemplate 的 CEL selector，并在观察阶段用生成 claim allocation 的
 `driver/pool/device` 从最新 ResourceSlice 解析实际 UUID；缺失、数量不符或身份不符都会
 fail closed，不能发布 `BOUND`/`RUNNING`。NVIDIA DRA driver 再通过 Pod resource claim/CDI
 将已分配设备注入容器。Device Plugin 与 HAMi profile 仍只表达资源数量，不保证具体 UUID。
@@ -238,8 +239,9 @@ umbrella chart 的 `crds/` 会在首次安装时创建 CRD，但 Helm 不会自�
 
 - Operator `50081` ClusterIP Service；
 - Scheduler、Job Controller 与 Runtime 的 service address 参数；
-- 默认将 JobRunBundle、Workload、Job 与 ResourceClaim 权限限制在目标 namespace 的
-  `Role` / `RoleBinding`，四类资源均具有 `get/list/watch/create/update/patch/delete`；
+- 默认将 JobRunBundle、Workload、Job 与 ResourceClaimTemplate 权限限制在目标 namespace 的
+  `Role` / `RoleBinding`，四类受管资源均具有 `get/list/watch/create/update/patch/delete`；
+  Kubernetes 自动生成的 ResourceClaim 仅有 `get/list/watch`；
 - 默认只授予 Node、RuntimeClass、DeviceClass 和 ResourceSlice 的集群级 `list` 权限；不授予
   `RuntimeClass` 写权限。仅 Helm 显式启用 `runtimeClassCreate=true` 时，
   才追加只含 `get/create` 的 `ClusterRole` / `ClusterRoleBinding`。已有 RuntimeClass
@@ -285,7 +287,8 @@ sequence 和 cursor 原子写入 `decision-cursor.json`。状态目录还包括�
 - 更新同一 bundle 时先创建新 generation 的全部对象，再清理旧对象，最后更新 marker；
   如果新对象创建失败，旧 workload 与旧 marker 保持不变；
 - Runtime 持久化 terminal observation 后，Operator 才执行 generation-fenced cleanup，删除
-  该 bundle 的 Job、Workload、ResourceClaim 和 marker；共享 RuntimeClass 不随单 bundle 删除；
+  该 bundle 的 Job、Workload、ResourceClaimTemplate 和 marker；Pod 生成的 ResourceClaim 随 Pod
+  owner 生命周期清理，共享 RuntimeClass 不随单 bundle 删除；
 - backend、Operator ledger、Runtime SQLite 与 Job Controller 文件之间没有分布式事务；
 - 若 Decision 在 observation registration 落盘前失败，它不会推进 cursor；若注册已落盘，
   watcher 可在重启后继续发布观察事件。
@@ -296,6 +299,7 @@ sequence 和 cursor 原子写入 `decision-cursor.json`。状态目录还包括�
 
 更多状态边界见[配置、持久化与恢复](configuration-and-recovery.md)，真实集成状态见
 [当前能力与限制](../reference/current-capabilities.md)。Helm、原生 Operator manifest 与 GPU smoke
-ServiceAccount 已为 Job、Workload、ResourceClaim 和 JobRunBundle 提供最小 read/upsert/delete
+ServiceAccount 已为 Job、Workload、ResourceClaimTemplate 和 JobRunBundle 提供最小
+read/upsert/delete 权限，并为生成的 ResourceClaim 提供只读权限；
 权限；`make check-deploy` 与 `make gpu-preflight` 分别校验静态规则和目标集群实际授权。真实
 generation replacement、terminal cleanup 与 ServiceAccount 行为仍须由 E1 集群运行证明。

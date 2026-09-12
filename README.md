@@ -246,8 +246,8 @@ Operator  ───────────────────── apply 
 | 调度 | Admission 与三档周期 Planner、L1–L4 动作、Top-K、fallback、补偿 | 单测、race、性能 CI |
 | 可观测性 | 多轨 Trace、Decision evidence、Replay、Experiment、Prometheus | CPU full-stack Gate |
 | 进程执行 | worker bootstrap、PID/control endpoint 注册、信号转发、退出清理 | CPU 真实子进程 |
-| Kubernetes | 六服务 Helm、JobRunBundle、Kueue Workload、Job、ResourceClaim | 契约测试，待真实集群 |
-| NVIDIA | typed inventory、Full GPU/MIG DeviceClass、MPS/MIG/runtime helpers | CPU conformance，待真实 GPU |
+| Kubernetes | 六服务 Helm、JobRunBundle、Kueue Workload、Job、ResourceClaimTemplate 与生成的 ResourceClaim | E1 单节点 Full GPU 已验证 |
+| NVIDIA | typed inventory、Full GPU/MIG DeviceClass、MPS/MIG/runtime helpers | Full GPU E1 已验证；MIG/MPS 待验证 |
 | veRL | lifecycle/observation bridge 与 callback adapter | 对象替身，待真实 veRL/Ray/GPU |
 
 详细状态以[支持范围与限制](docs/reference/current-capabilities.md)为准。
@@ -383,6 +383,11 @@ E1 Full GPU identity → E2 MIG identity → E3–E6 性能与动作代价
 其中 E1–E7 需要真实单节点 GPU 证据，E8 需要两个真实节点。硬件未到位时，报告保持
 `NOT_RUN` 或 `BLOCKED`，不会由 Mock 数据自动升级为通过。详见
 [E1–E8 硬件验证设计](docs/design/gate-e1-e8.md)。
+
+2026-09-12 已在 NVIDIA A10、Kubernetes 1.35.1、Kueue 0.19.2 与 NVIDIA DRA 0.5.0
+环境完成 E1，结果为 `PASSED`。完整边界、指标和证据摘要见
+[E1 单节点 Full GPU 验证记录](docs/validation/e1-full-gpu-2026-09-12.md)。E2–E8 仍保持
+`NOT_RUN`，本结果不代表 MIG/MPS、多节点或完整训练实验通过。
 
 ## 仓库内容边界
 

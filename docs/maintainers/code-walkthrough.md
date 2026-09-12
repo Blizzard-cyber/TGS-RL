@@ -261,7 +261,8 @@ fake backend 用于纯内存控制契约；process backend 在本机复用同一
 真实启动 `tgsrl-worker-bootstrap` 和子进程，并通过 Scheduler registry 的 scoped status/action
 接口执行 pause/resume/stop。它只用于 CPU 集成和 Gate harness，不模拟 Kubernetes 或 GPU。
 Kubernetes backend 管理 CRD、Kueue Workload、Job 和可选
-ResourceClaim。GPU 身份由 Scheduler 选择：NVIDIA Driver v2 的 device ID 就是 GPU/MIG UUID；
+ResourceClaimTemplate，Kubernetes 再为 Pod 生成 ResourceClaim。GPU 身份由 Scheduler 选择：
+NVIDIA Driver v2 的 device ID 就是 GPU/MIG UUID；
 `kubernetes-dra` 按 typed inventory 为 Full GPU/MIG 选择不同 DeviceClass，再编译 NVIDIA DRA
 `uuid` CEL selector。Operator 从 ResourceClaim 的
 `driver/pool/device` 和最新 ResourceSlice 回读 UUID，完全一致后才发布收敛状态。传统
@@ -385,7 +386,7 @@ make check-public-content
 逐文件暂存源码、必要测试和文档，不使用 `git add .`。以下内容必须留在本地：
 
 - `.cache/`、`.tmp/`、`bin/`；
-- `.venv/`、`node_modules/`、`console/dist/`；
+- `.venv/`、`node_modules/` 和前端构建输出目录；
 - `__pycache__`、pytest/mypy/Ruff cache、`*.tsbuildinfo`；
 - kubeconfig、registry 凭据、签名 key、`.env` 和 `configs/hardware/environment.json`；
 - Gate 输出、运行时数据库、checkpoint、journal、日志和本机凭据。
@@ -395,14 +396,15 @@ make check-public-content
 
 ## 13. 当前仍需真实环境完成的验证
 
-代码和本地门禁不能替代以下证据：
+E1 已证明单节点 Full GPU 的 NVIDIA CUDA、DRA/CDI、bootstrap、Trace 和 cleanup 主链。
+代码和本地门禁仍不能替代以下证据：
 
-- NVIDIA CUDA、MPS share 写入与读回；
+- NVIDIA MPS share 写入、读回与显存释放；
 - 真实 MIG 实例 rebind/recreate 与故障恢复；
 - 真实 veRL/Ray/PyTorch/vLLM/SGLang 训练进程；
-- bootstrap registry/control endpoint 在真实 Kubernetes 网络、Pod restart 与 NetworkPolicy 下的行为；
-- Kubernetes、Kueue、DRA 与 GPU 控制器的目标集群联调；
+- bootstrap registry/control endpoint 的 Pod restart 与 NetworkPolicy 行为；
+- Kubernetes、Kueue、DRA 与 GPU 控制器在 MIG 和多节点目标集群上的联调；
 - 单节点和多节点吞吐、延迟、恢复时间与训练质量。
 
-在这些验证完成前，对外表述应使用“已实现，CPU/fixture 验证通过，真实环境待验证”，
-不能写成生产可用或真实性能已证明。
+在这些验证完成前，对外只能声明“E1 单节点 Full GPU 集成已验证”；不能写成 MIG/MPS、
+完整训练、生产可用或真实性能收益已证明。

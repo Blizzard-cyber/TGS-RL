@@ -23,9 +23,9 @@
 | 性能回归门禁 | **支持（CI 回归）** | 独立非 race CI 检查 Scheduler 8 devices/100 units、1000 devices/1000 units 与 NVIDIA Provider observation apply 的 P95 预算 | 预算只约束固定 CPU fixture 的代码回退，不是生产 SLA、GPU 性能或训练收益证明 |
 | CPU Mock Provider | **支持** | 能力匹配、逻辑资源绑定、L1–L4 逻辑模拟动作、故障注入、generation fence 和逐动作 rollback | Adaptive Planner 会在满足观测、能力与安全条件时生成 L1–L4 动作；这些结果只验证控制逻辑，不代表真实硬件行为或性能 |
 | NVIDIA Provider（默认） | **有条件（Conditional）** | `LocalDriver` 可通过 `nvidia-smi` 形成设备快照 | 需要 NVIDIA 驱动和 `nvidia-smi`；默认不声明资源动作 |
-| NVIDIA Driver v2 | **有条件（Conditional）** | 已实现 Full GPU、MPS、MIG inventory，以及 binding/runtime/MIG helper、Scheduler worker registry 和 workload bootstrap 的 generation fence、scoped registration、幂等 durable receipt、原子落盘、进程监管、PID 信号控制和 managed-worker lifecycle | DRA/CDI 负责设备注入；Scheduler CLI 默认 `full` 且不启动 MPS，嵌入式构造器需显式传 mode；offload/reload 需要训练 worker 实现 Unix socket 协议；signal pause 不释放 GPU 显存；MPS PID 自动发布需要 host PID 可见性和共享目录；MIG 仅在已存在实例间切换；真实 NVIDIA/CUDA 证据仍待执行 |
+| NVIDIA Driver v2 | **Full GPU E1 已验证** | 已实现 Full GPU、MPS、MIG inventory，以及 binding/runtime/MIG helper、Scheduler worker registry 和 workload bootstrap 的 generation fence、scoped registration、幂等 durable receipt、原子落盘、进程监管、PID 信号控制和 managed-worker lifecycle | E1 已在单节点 NVIDIA A10 上验证 Full GPU/DRA/CDI、真实 CUDA、注册、Trace 和清理；MIG、MPS、offload/reload、完整训练与多节点仍待验证 |
 | 外部 Runtime Adapter | **已实现，待硬件验证** | veRL 已有第一方 lifecycle/observation bridge，以及面向 veRL 0.9 trainer/worker-group/checkpoint-manager 公共接口的 callback adapter；支持显式 safe-point hook、checkpoint、rollout abort/sleep/wake、actor/critic offload/reload、policy update、durable receipt 与 typed TraceEvent | 训练包由不可变 workload 镜像承载，Runtime 控制面不要求导入 `verl/ray/torch/vllm`；只有带 workload OCI artifact 的 Python 命令才由 bootstrap 在启动前验证声明的包；真实依赖组合、distributed collective 和显存释放仍待目标环境验证；SGLang 与 OpenRLHF 仍只有通用 adapter 边界 |
-| Kubernetes Operator | **有条件支持** | 编译和调和 `JobRunBundle`、Kueue `Workload`、Kubernetes `Job`、可选 `ResourceClaim`/`RuntimeClass`；typed NVIDIA DRA inventory 精确兑现 Full GPU/MIG UUID；可选 bootstrap 包装 RuntimeManifest command，自动注册真实 PID/control endpoint，并用 Pod readiness 阻止提前发布 RUNNING；全栈 Helm chart 部署六个控制面服务；namespaced RBAC 覆盖 Job、Workload、ResourceClaim 与 JobRunBundle 的创建、更新和终态清理 | 精确 UUID 仅适用于 NVIDIA DRA 的整数个完整 GPU/MIG；真实硬件证据待执行；MPS 仍需节点侧 PID namespace/shared mount；Kueue 和 GPU 管理组件由平台侧提供；首轮单机 smoke 可显式使用 host network，该选项默认关闭且仅用于单 worker 验证 |
+| Kubernetes Operator | **有条件支持** | 编译和调和 `JobRunBundle`、Kueue `Workload`、Kubernetes `Job`、可选 `ResourceClaimTemplate`/`RuntimeClass`；Kubernetes 为 Pod 生成 ResourceClaim，Operator 从 Pod status 回读名称；typed NVIDIA DRA inventory 精确兑现 Full GPU/MIG UUID；可选 bootstrap 包装 RuntimeManifest command，自动注册真实 PID/control endpoint，并用 Pod readiness 阻止提前发布 RUNNING；全栈 Helm chart 部署六个控制面服务 | 精确 UUID 仅适用于 NVIDIA DRA 的整数个完整 GPU/MIG；ResourceClaimTemplate/Job/Workload/JobRunBundle 为 namespaced 管理权限，生成的 ResourceClaim 只读；真实硬件证据待执行；MPS 仍需节点侧 PID namespace/shared mount；Kueue 和 GPU 管理组件由平台侧提供；首轮单机 smoke 可显式使用 host network，该选项默认关闭且仅用于单 worker 验证 |
 
 ## 单机方案
 
@@ -153,7 +153,8 @@ gate-tools/campaign/gate/scenario/executor/driver digest，拒绝旧 commit、�
 的 `e1-e8-run` 模式执行 campaign；`e1-e8-evaluate` 模式只消费名为
 `gate-e1-e8-evidence` 的已采集 artifact，不在普通 GitHub runner 上伪造硬件执行。
 仓库提供的 `scripts/tgsrl-hardware-environment-driver` 已用 fake Gateway/kubectl 验证 E1/E2
-原子链、持久 receipt 和 identity fail-closed，但这不构成真实 GPU 证据。部署者需要从
+原子链、持久 receipt 和 identity fail-closed；E1 还已取得真实 `GPU_SINGLE_NODE` 证据，见
+[E1 单节点 Full GPU 验证记录](../validation/e1-full-gpu-2026-09-12.md)。部署者需要从
 `configs/hardware/environment.example.json` 创建本地配置，并提供真实 workload 模板、trace
 导出命令与必要的 observation/fault hook；未配置的自适应动作会直接拒绝。
 

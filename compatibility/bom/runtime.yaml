@@ -350,4 +350,6 @@ claims:
   sbom_generated: true
   development_container_images_pinned: true
   release_container_images_pinned: false
-  gpu_stack_integrated: false
+  # E1 proves the single-node Full GPU DRA/bootstrap/trace path only.
+  # MIG, MPS, multi-node and E2-E8 remain separate evidence requirements.
+  gpu_stack_integrated: true

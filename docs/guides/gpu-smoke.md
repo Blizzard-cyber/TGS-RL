@@ -7,7 +7,8 @@
 浏览器 / CLI
   -> Gateway -> Job Controller -> Runtime
   -> Scheduler 选择真实 GPU UUID
-  -> Operator 创建 Kueue Workload + ResourceClaim + Job
+  -> Operator 创建 Kueue Workload + ResourceClaimTemplate + Job
+  -> Kubernetes 为 Pod 生成 ResourceClaim
   -> NVIDIA DRA 分配同一 UUID
   -> bootstrap 校验依赖和可见 UUID并注册真实 PID
   -> CUDA worker 上报 Trace
@@ -84,11 +85,16 @@ NVIDIA `.run` 安装器提供旧驱动，应先用该安装器卸载旧版本，
 重启，避免 runfile 与 apt 两套用户态库/内核模块混装。驱动升级属于宿主机维护动作，不由
 TGS-RL 自动执行。
 
-脚本随后安装并校验 kubectl 1.35.1、Minikube 1.38.1、Helm 4.2.4、uv 0.12.7，生成
+脚本随后安装主机侧 Git/Make/JQ/Ruby 等仓库测试依赖，并安装、校验 Go 1.26.4、
+Node 24.20.0、Buf 1.72.0、staticcheck 2026.1、kubectl 1.35.1、Minikube 1.38.1、
+Helm 4.2.4、uv 0.12.7，生成
 NVIDIA CDI spec，并用 `uv.lock` 准备 Python 3.12.14 环境。kubectl、Minikube 和 Helm
 下载都做 SHA-256 校验。安装会调用 `sudo`，且可能配置 Docker/NVIDIA apt source；安装后
 它还会安装 `conntrack`/`socat` 等 Kubernetes 主机依赖，持久化 `overlay`/`br_netfilter`，
 并启用 bridge netfilter 与 IPv4 forwarding。
+安装器还会使用当前网络 profile 预取 `go.mod` 和 `console/package-lock.json` 锁定的源码测试
+依赖；Makefile 也会在 `TGSRL_NETWORK_PROFILE=cn` 时为 Go 与 npm 选择同一组镜像，
+使后续 `make lint`、`make staticcheck` 和 `make test` 不再回退到慢速官方源。
 重新登录一次，确认当前用户可以直接执行 `docker info`。该步骤不会拉取项目 Docker 镜像。
 如果 Docker 与 Toolkit 已经由机器管理员准备好，直接执行无开关版本即可；脚本只完成配置、
 校验和其余锁定工具安装。若两者都缺失，再使用上面的双开关命令。
@@ -223,7 +229,7 @@ make gpu-smoke
 1. Gateway 创建、准入并启动真实 Job/Run；
 2. Scheduler 产生非 fallback `bind` Decision；
 3. Binding 中是 `GPU-…` UUID；
-4. ResourceClaim 使用 `gpu.nvidia.com` 并分配同一 UUID；
+4. ResourceClaimTemplate 使用 `gpu.nvidia.com`，Pod 生成的 ResourceClaim 分配同一 UUID；
 5. Pod Ready；bootstrap 注册 PID、generation、binding 和 worker endpoint；
 6. worker 内 `nvidia-smi -L` 只看到同一 GPU；
 7. CUDA matmul 真正执行，worker trace 含 `sample_consumed` 与 `workload_completed`；
@@ -238,7 +244,7 @@ make gpu-smoke
 查看现场：
 
 ```bash
-kubectl get workload,resourceclaim,job,pod -n tgsrl-system -o wide
+kubectl get workload,resourceclaimtemplate,resourceclaim,job,pod -n tgsrl-system -o wide
 kubectl describe workload -n tgsrl-system
 docker compose -f compose.yaml -f compose.gpu.yaml logs --tail=200
 ```
@@ -256,7 +262,7 @@ make gpu-down
 |---|---|
 | `nvidia-smi not found` | Compose GPU override 是否挂载主机 binary/library |
 | Workload 一直 Pending | Kueue `deviceClassMappings`、LocalQueue、ClusterQueue quota |
-| ResourceClaim Pending | DRA driver Pod、DeviceClass、ResourceSlice typed attributes |
+| ResourceClaim 未生成或 Pending | Pod `status.resourceClaimStatuses`、ResourceClaimTemplate、DRA driver Pod、DeviceClass、ResourceSlice typed attributes |
 | `InvalidImageName` | `artifactUri` 是否为 `repository@sha256:…` |
 | `ImagePullBackOff` | 专用 `DOCKER_CONFIG` 是否登录、`make gpu-configure-registry` 是否成功 |
 | bootstrap missing module | workload image 内 `verl/ray/torch/vllm` 版本或安装失败 |

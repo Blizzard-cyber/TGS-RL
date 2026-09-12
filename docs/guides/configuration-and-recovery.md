@@ -195,7 +195,8 @@ exec/auth-provider 插件，也不合并多文件 `KUBECONFIG`。
 限制控制面入口。`deploy/helm/operator` 与原生 YAML 仍支持只部署 Operator。Operator chart
 传入 Scheduler、Job Controller 和 Runtime 的 service address，并默认把
 `/var/lib/tgsrl-operator` 挂载到 `ReadWriteOnce` PVC。默认 RBAC 将 `JobRunBundle`、`Workload`、`Job` 和
-`ResourceClaim` 权限限制在目标 namespace 的 `Role` / `RoleBinding`，CRD 的 `spec`
+`ResourceClaimTemplate` 权限限制在目标 namespace 的 `Role` / `RoleBinding`，Pod 生成的
+`ResourceClaim` 只授予 read 权限，CRD 的 `spec`
 使用单一 `bundle` envelope；Node、RuntimeClass、DeviceClass 和 ResourceSlice discovery 使用只读
 `list` ClusterRole。Helm 可覆盖依赖地址、现有 PVC、storage class、容量和
 保留策略；仅当显式启用 `runtimeClassCreate=true` 时，才追加最小 cluster-scoped

@@ -63,24 +63,26 @@ managed-worker bootstrap、Gateway/SDK/CLI、Console、全栈部署工件和硬�
 | Runtime/Trace/Replay | 已闭环于单机代码路径 | desired/observed 分离、typed observation、Replay 和 SQLite 恢复完整 |
 | Scheduler 与事务 | 已闭环 | admission/adaptive planner、约束、预算、reservation、receipt、补偿和恢复完整 |
 | CPU Mock / process E2E | 已验证 | 包括真实子进程、worker bootstrap、Unix socket 和服务重启 |
-| NVIDIA Provider/helper | 代码完成，待硬件验证 | Full GPU/MPS/MIG inventory、runtime/binding helper 与 worker registry 已实现 |
-| Kubernetes/DRA | 代码主链完成，待环境验证 | Full GPU/MIG typed inventory、UUID selector、allocation readback 与 cleanup RBAC 已实现 |
-| 硬件 Campaign | runner 和 driver 主体已实现 | E1 有可执行最小 workload 与环境生成脚本；E2–E8 仍需目标 workload/hook 和真实证据 |
-| 生产发布 | 尚未准入 | 无真实 GPU/MIG/veRL 证据；E3–E8 有 9 条阈值待标定 |
+| NVIDIA Provider/helper | Full GPU E1 已验证 | Full GPU inventory、binding/runtime helper 与 worker registry 已在 A10 验证；MPS/MIG 待验证 |
+| Kubernetes/DRA | E1 主链已验证 | ClaimTemplate、生成 Claim、UUID selector/allocation readback、CDI 注入与 cleanup 已在真实集群通过 |
+| 硬件 Campaign | E1 `PASSED` | baseline/variant 各完成 warmup + 3 次 measurement；E2–E8 仍需目标 workload/hook 和真实证据 |
+| 生产发布 | 尚未准入 | E1 只证明单节点 Full GPU 集成；MIG/MPS/完整训练和 E2–E8 未完成 |
 
-这里的“代码主链完成”表示仓库已经提供可执行入口，BOM 中的 `gpu_stack_integrated` 在真实
-E1 证据产出前仍保持 `false`，避免把静态集成误写成硬件集成已经通过。
+BOM 中的 `gpu_stack_integrated: true` 只表示 E1 所覆盖的单节点 Full GPU
+DRA/bootstrap/Trace 主链已有真实证据，不扩展为 MIG、MPS、多节点或完整训练收益声明。
 
 CPU/Mock 主链没有发现新的 P0 结构断点。Kubernetes backend cleanup 所需的 Workload、
-ResourceClaim 和 JobRunBundle 最小 `delete` 权限已经同时进入 Helm、原生 manifest 和部署契约测试。
+ResourceClaimTemplate 和 JobRunBundle 最小 `delete` 权限已经同时进入 Helm、原生 manifest 和部署契约测试；
+Pod 生成的 ResourceClaim 保持只读并随 owner 生命周期回收。
 仓库现已提供单机 E1 的环境模板、GPU smoke workload、安装/预检/部署脚本，并要求
 workload 使用可拉取的 `repository@sha256:...`。这使首次 Full GPU 全链路验证具备可执行入口，
-但真实 GPU 证据仍必须在目标机生成。runner 已锁定仓库控制的 campaign/gate/scenario/executor/
+真实 E1 证据已在目标机生成并通过，摘要见
+[E1 单节点 Full GPU 验证记录](validation/e1-full-gpu-2026-09-12.md)。runner 已锁定仓库控制的 campaign/gate/scenario/executor/
 driver 输入和 workload image digest；本机 `environment.json`、Job template、外部 hook、渲染后 Job
 及目标 cluster UID/version 仍未全部进入证据指纹，`host_hash` 也只是 runner 主机身份。
 除此之外，发布层面的阻塞项是：
 
-- 按 [单机 GPU 全链路 Smoke](guides/gpu-smoke.md) 执行 E1 并归档证据；
+- 在最终合并 commit 上复跑 [单机 GPU 全链路 Smoke](guides/gpu-smoke.md)，刷新证据指纹；
 - 配置 E2 rebind 的 Scheduler-observation hook；
 - 为 E4–E8 配置动作或故障 hook，并证明它们作用于真实 worker/环境；
 - 依次执行 E1 Full GPU、E2 MIG，再运行 E3–E8；
@@ -91,11 +93,11 @@ driver 输入和 workload image digest；本机 `environment.json`、Job templat
 
 | 级别 | 发现 | 影响与处置 |
 |---|---|---|
-| P0 验证阻塞 | 仓库中没有可验收的真实 E1–E8 evidence bundle | 代码不能被表述为硬件验证通过；先执行 E1/E2 |
+| 已关闭 | E1 缺少真实 GPU evidence bundle | 2026-09-12 已取得 `GPU_SINGLE_NODE` PASSED 证据；E2–E8 保持独立门禁 |
 | P0 验证阻塞 | 仓库只提供 E1 最小 CUDA/veRL adapter workload，尚无完整训练 workload、E2 observation hook 和 E4–E8 action/fault hook | E1 smoke 可复现；其余是环境与实验特定集成，受保护环境必须配置并审计 |
 | P0 验证阻塞 | E3–E8 有 9 条阈值未标定 | 保持 `BLOCKED`；只读 calibration report 不自动修改策略 |
 | P0 证据完整性 | E1 已锁定 workload image digest，但完整 campaign 尚未锁定 environment config、Job template、外部 hook、渲染后 Job 和 cluster identity | 首轮仅作为流程 smoke；正式实验前扩展 fingerprint/artifact |
-| 已关闭 | `KubernetesBackend.Cleanup` 所需的 Workload、ResourceClaim、JobRunBundle `delete` 权限 | Helm 与原生 manifest 已补齐，部署 contract test 逐类约束 |
+| 已关闭 | `KubernetesBackend.Cleanup` 所需的 Workload、ResourceClaimTemplate、JobRunBundle `delete` 权限 | Helm 与原生 manifest 已补齐，生成的 ResourceClaim 只读，部署 contract test 逐类约束 |
 | P1 生产阻塞 | 服务端点没有内建 TLS、用户认证、授权、租户隔离或限流 | 仅允许本机/隔离网络；生产前增加统一入口和服务间身份 |
 | P1 生产阻塞 | Job 只提供字符串环境变量，没有通用 Secret/ConfigMap 引用模型 | 依赖凭据的真实训练必须由 namespace/service account 或平台注入；后续应设计显式 secret refs |
 | P1 生产阻塞 | Helm 服务固定单副本且没有容器 CPU/memory requests/limits、PDB 或 HA | 当前 chart 是验证部署形态；容量规划和高可用需另行设计 |
@@ -108,7 +110,7 @@ driver 输入和 workload image digest；本机 `environment.json`、Job templat
 
 外部 hook 是受信任的环境扩展点。driver 会校验其 authority receipt，并等待真正的 Scheduler
 Decision 或 worker receipt，但无法静态证明 hook 内部没有执行额外集群操作。因此 hook 脚本本身必须
-纳入版本、权限、代码审查和证据归档；其 ServiceAccount 不应拥有不必要的 ResourceClaim 写权限。
+纳入版本、权限、代码审查和证据归档；其 ServiceAccount 不应拥有 ResourceClaim 写权限。
 
 ### 1.5 Review 证据入口
 
@@ -224,7 +226,7 @@ flowchart LR
   end
 
   subgraph Workload[Execution substrate]
-    DRA[Kueue / ResourceClaim / DRA]
+    DRA[Kueue / ResourceClaimTemplate / ResourceClaim / DRA]
     Bootstrap[worker bootstrap]
     Worker[veRL worker]
   end
@@ -598,8 +600,8 @@ generation、再清理旧 generation，而不会把多个 unit 的身份混入�
 Kubernetes backend 的 completion marker 是 `JobRunBundle`。更新时先准备新 generation 对象，旧
 对象清理成功后才更新 marker；同 generation fingerprint 变化会拒绝。lifecycle control 对每个目标
 保存 pending/in-flight/ambiguous/completed progress，重启后根据 Job readback 决定是否安全重试。
-部署 RBAC 已与这条 cleanup 路径对齐：Job、Workload、ResourceClaim 和 JobRunBundle 均具备
-最小 read/upsert/delete 权限，Pod、status 子资源和集群 discovery 权限仍保持收敛。真实 Kubernetes
+部署 RBAC 已与这条 cleanup 路径对齐：Job、Workload、ResourceClaimTemplate 和 JobRunBundle 均具备
+最小 read/upsert/delete 权限，生成的 ResourceClaim 只读，Pod、status 子资源和集群 discovery 权限仍保持收敛。真实 Kubernetes
 测试仍需用 ServiceAccount impersonation 或 namespace smoke 验证实际准入，而不能只依赖内存 Client。
 
 ### 10.3 DRA 精确设备兑现
@@ -607,8 +609,10 @@ Kubernetes backend 的 completion marker 是 `JobRunBundle`。更新时先准备
 ```text
 Scheduler Binding.device_ids
 → Operator typed DRA inventory lookup
-→ ResourceClaim UUID CEL selector
-→ Kueue Workload and Job reference the same claim
+→ ResourceClaimTemplate UUID CEL selector
+→ Kueue Workload and Job reference the same template
+→ Kubernetes creates a Pod-owned ResourceClaim
+→ Pod status reports the generated claim name
 → allocation driver/pool/device
 → latest ResourceSlice UUID/class lookup
 → exact-set comparison
@@ -836,7 +840,8 @@ identity、Scheduler plan、worker identity、动作、故障和节点集合。
 Console、race、容器镜像和 Product E2E 已由 CI workflow 定义为独立 regression jobs；本地复核
 不能替代本批 commit 推送后的远端 CI 结果，是否作为分支 required check 由仓库保护规则决定。
 
-尚未验证：真实 CUDA、Full GPU DRA、MIG DRA、MPS、完整模型的真实 veRL 训练、跨节点 E8。
+真实 NVIDIA A10 上的 CUDA、Full GPU DRA 精确 UUID、managed-worker bootstrap、Trace 与清理
+已由 E1 验证。尚未验证：MIG DRA、MPS、完整模型的真实 veRL 训练和跨节点 E8。
 
 ## 15. 源码地图
 
@@ -927,7 +932,7 @@ resume、stop、observation。只有实际 callback 成功才能推进 observed 
 3. Scheduler：是否有 non-fallback Decision，action result 是否成功；
 4. Provider：reservation/receipt/generation 是否匹配；
 5. Operator：decision cursor、delivery ledger、Bundle generation；
-6. Kubernetes：Workload admission、ResourceClaim allocation、Job、Pod；
+6. Kubernetes：Workload admission、ResourceClaimTemplate、Pod 生成的 ResourceClaim allocation、Job、Pod；
 7. bootstrap：设备核验、registry 注册、`/readyz`；
 8. worker：Unix socket、safe point、trace batch、exit code；
 9. Runtime 回流：SandboxEvent 和 ComponentStatus 是否收敛。
@@ -938,7 +943,7 @@ resume、stop、observation。只有实际 callback 成功才能推进 observed 
 |---|---|
 | Operation 长期 RUNNING | Runtime dispatch/outbox、Sandbox observation、reconcile 日志 |
 | Decision fallback | capability、硬约束、observation freshness、action budget |
-| Pod Pending | Kueue admission、DeviceClass、ResourceClaim selector/allocation |
+| Pod Pending | Kueue admission、DeviceClass、ResourceClaimTemplate selector、Pod claim status/allocation |
 | Pod Active 但 Runtime 非 RUNNING | bootstrap readiness、registry token、Runtime BOUND generation |
 | offload unavailable | cooperative socket、safe point、worker callback |
 | MPS set_share unavailable | MPS PID 可见性、共享目录、readback capability |
@@ -951,7 +956,8 @@ resume、stop、observation。只有实际 callback 成功才能推进 observed 
 进入真实环境前应满足：
 
 - 待验证 commit 的普通 CI 全绿，且 Proto breaking 实际执行；
-- Operator Role 已补齐 Workload、ResourceClaim、JobRunBundle 的最小 delete 权限，并有 RBAC
+- Operator Role 已补齐 Workload、ResourceClaimTemplate、JobRunBundle 的最小 delete 权限，
+  ResourceClaim 保持只读，并有 RBAC
   contract/smoke；
 - `make gate-cpu-integration` 和 Product E2E 通过；
 - Helm 使用不可变镜像 digest，签名 key、PVC、NetworkPolicy 配置完成；

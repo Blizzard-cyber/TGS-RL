@@ -15,24 +15,23 @@ release, this file and the `handoff/` directory should be deleted.
   process E2E, unit/contract, static and governance checks. It cannot produce real GPU/Kubernetes/
   veRL evidence and must never mark hardware gates as PASS from local checks.
 - **The other machine (Linux + NVIDIA GPU): test only.** It pulls this repo and runs the GPU smoke
-  and E1-E8 campaign, then pushes results back so the dev machine can pull and fix.
+  and E1-E8 campaign, then pushes code/results back so the dev machine can review and integrate.
 
 Communication happens through this GitHub repo: dev pushes code, test pushes evidence, both pull.
 
 ## Repository state
 
-- Branch: `main`. The GPU host initially cloned `origin/main` at `6e190a1`; it must pull the
-  network-profile commit produced by this preparation work before cluster creation.
-- Recent commits:
-  - `6e190a1 docs: add shared dev/GPU-test handoff log`
-  - `0af2e25 docs: align project guidance with current implementation`
-  - `8dbafc3 feat(gpu): add reproducible full-stack smoke workflow`
-  - `4df3d5e fix(runtime): separate workload and control dependencies`
-  - `abd26c5 chore(repo): adopt Apache-2.0 license`
-- All reachable history was checked for automated assistant `Co-authored-by` trailers; none remain.
-- Do not push unless the user explicitly requests it.
+- Development integration branch: `main`; GPU validation was performed on `test/e1-build-fixes`.
+- The accepted E1 evidence is bound to `d033566`; later changes must receive a final E1 rerun before
+  release if they alter the E1 execution path.
+- Important GPU-host fixes are preserved as small Conventional Commits: DRA ClaimTemplate, bundle
+  TypeMeta, prebuilt Workload defaults, admission-suspend semantics, canonical CPU quantities and
+  deterministic hardware-driver cleanup.
+- All commits must use the repository-configured maintainer identity and must not contain automated
+  assistant attribution trailers.
+- Pushing the verified integration is authorized by the current handoff task.
 
-## Verified state (this checkpoint, dev machine, 2026-09-11)
+## Verified state
 
 Re-ran real checks on this machine (not from memory):
 
@@ -45,32 +44,34 @@ Prior full-suite runs also covered Full-stack CPU Gate, Go race, staticcheck, Ru
 generated-proto/migration checks, Helm/deploy contracts, SBOM, repository-hygiene, public-content,
 `make check-docs`, and P95 performance budgets.
 
-## GPU test host preparation (2026-09-12)
+The GPU host completed E1 on 2026-09-12: `GPU_SINGLE_NODE`, `simulated=false`, 8/8 workload
+executions, exact Scheduler/DRA/worker UUID equality, real CUDA events and clean resource teardown.
+See `docs/validation/e1-full-gpu-2026-09-12.md`.
+
+## GPU test host and E1 result (2026-09-12)
 
 - A fresh Ubuntu 22.04 x86_64 ECS is reachable through the approved Kerberos ProxyJump path.
 - Hardware verified: 14 vCPU, 54 GiB RAM, 181 GiB free disk and one NVIDIA A10 (23 GiB).
 - The image-provided NVIDIA 550 runfile driver was safely replaced with the Ubuntu-managed
   `580.178.04` server driver; a reboot confirmed CUDA driver API 13.0 and the same physical UUID.
 - Docker 29.8.0, Compose 5.5.1, Buildx 0.37.1 and NVIDIA Container Toolkit 1.20.0 are active.
-  CDI publishes both ordinal and exact UUID device names. No project image has been pulled or built.
+  CDI publishes both ordinal and exact UUID device names; immutable project images were built and used.
 - Kubernetes host modules/sysctls, cgroup v2, zero swap, cache directories and required host ports
-  are ready. The GitHub clone is clean at `6e190a1`.
+  are ready.
 - Network evidence: `dl.k8s.io` is about 33 KiB/s and Docker Hub times out, while DaoCloud file
   proxy, Minikube upstream, Helm upstream, GitHub releases and Tsinghua PyPI are usable. The current
   development change adds `TGSRL_NETWORK_PROFILE=cn`; push it before the test host can pull and
   finish kubectl/Minikube/Helm/Python setup.
 - Using those verified mirrors, the host now has kubectl 1.35.1, Minikube 1.38.1, Helm 4.2.4,
   uv 0.12.7 and Python 3.12.14. Tool archives matched canonical upstream SHA-256 values.
-- `uv sync --frozen` was stopped after sustained low throughput; its partial cache is reusable.
-  It completed after the network-profile commit was pulled and reused that cache.
+- `uv sync --frozen` completed with the network profile and reusable cache.
 - This ECS currently uses root for the disposable smoke environment. Run cluster creation with
   `TGSRL_MINIKUBE_ALLOW_ROOT=1`; normal reusable hosts should use a non-root user in the Docker group.
 - Kubernetes 1.35.1 is Ready on the single-node `tgsrl-gpu` profile. Kueue 0.19.2, NFD 0.18.3
   and NVIDIA DRA 0.5.0 Pods are Running; Full GPU and MIG DeviceClasses plus a GPU ResourceSlice
   are published. `ResourceFlavor`, `ClusterQueue` and `LocalQueue` exist. Two first-host bugs were
   found and fixed: the Kueue webhook readiness race and the unsupported `kubectl rollout status
-  daemonset --all` invocation. Image builds and E1 have not started. Keep
-  `gpu_stack_integrated: false`.
+  daemonset --all` invocation. Images were built and E1 was completed on 2026-09-12.
 
 ## Completion snapshot
 
@@ -85,20 +86,22 @@ closed; the remaining gap is real hardware evidence, not code structure.
 | Scheduler + transactions | Closed (constraints, scoring, budgets, reservation, receipt, compensation, recovery) |
 | CPU Mock + process E2E | Verified (real subprocess, bootstrap, Unix socket, service restart) |
 | Console (8 workspaces) | Closed (8 pages + tests, responsive layout) |
-| NVIDIA Provider/helper | Code complete, hardware verification pending |
-| Kubernetes / DRA | Main chain complete, cluster verification pending |
+| NVIDIA Provider/helper | Full GPU E1 verified; MIG/MPS pending |
+| Kubernetes / DRA | E1 ClaimTemplate → generated Claim → CDI chain verified |
 | veRL adapter | Implemented, real veRL/Ray/PyTorch/vLLM combination pending |
-| Hardware Campaign E1-E8 | Runner ready; E1/E2 runnable, E3-E8 have 9 thresholds to calibrate |
-| Production release | Not admitted (no real GPU/MIG/veRL evidence) |
+| Hardware Campaign E1-E8 | E1 PASSED; E2–E8 not run, E3–E8 have 9 thresholds to calibrate |
+| Production release | Not admitted (MIG/MPS/full training/E2–E8 evidence missing) |
 
-Rough progress: control plane ~90%, execution/hardware face ~60-65%, overall ~78%.
-`compatibility/bom/runtime.yaml` keeps `gpu_stack_integrated: false`; `.cache/tgsrl/gpu-smoke` is
-empty on the dev machine (no real GPU evidence yet), which is expected.
+The single-node Full GPU integration target is complete. Overall graduation/release work remains
+incomplete because E2–E8, MIG/MPS and full-model training evidence are separate requirements.
+`compatibility/bom/runtime.yaml` now records `gpu_stack_integrated: true` for the narrowly scoped E1
+Full GPU chain. The raw evidence remains only on the GPU host under `.cache/tgsrl/gpu-smoke`; the
+committed, redacted result is `docs/validation/e1-full-gpu-2026-09-12.md`.
 
 ## E1-E8 gate status (verified from configs/gates/e1-e8.json)
 
 ```text
-E1 Full GPU   | GPU_SINGLE_NODE | 1 rule  | no calibration        <- runnable now
+E1 Full GPU   | GPU_SINGLE_NODE | 1 rule  | PASSED 2026-09-12
 E2 MIG        | GPU_SINGLE_NODE | 1 rule  | no calibration        <- runnable now
 E3 throughput | GPU_SINGLE_NODE | 2 rules | 1 threshold pending
 E4 staleness  | GPU_SINGLE_NODE | 2 rules | 2 thresholds pending
@@ -115,7 +118,8 @@ E1/E2 have no calibration-required thresholds and can produce a verdict immediat
 
 # Instructions for the GPU test machine
 
-This machine has **no GPU**, so the checks below could not be run here. Run them on the NVIDIA host.
+The development machine has **no GPU**; E1 was executed on the NVIDIA host. Use the steps below for
+the final integrated-commit rerun and later hardware scenarios.
 
 ## What to run
 
@@ -186,7 +190,7 @@ Rules for pushing results:
 - Pull the `test/*` branch, read `handoff/**/NOTES.md` + `report.json`, reproduce the failure logic
   in CPU/Mock/process tests where possible, fix, and push code back for a re-run.
 - Never weaken identity, safe-point, generation, receipt or readback checks merely to force a smoke pass.
-- Keep `gpu_stack_integrated: false` until accepted real E1 evidence exists.
+- Keep `gpu_stack_integrated: true` scoped to E1 only; do not use it to claim E2–E8.
 
 ## Test-machine run log
 
@@ -194,13 +198,14 @@ Append one row per run so both sides share history.
 
 | Date | Commit | Experiment | Result | Evidence path | Notes |
 |---|---|---|---|---|---|
-| (pending) | | E1 | not run | | GPU machine has not run yet |
+| 2026-09-12 | `d033566` | E1 | PASSED | `.cache/tgsrl/gpu-smoke/e1-full-gpu/report.json` on GPU host; committed summary in `docs/validation/e1-full-gpu-2026-09-12.md` | 8/8 executions; exact UUID; real CUDA; cleanup clean |
 
 ---
 
 ## Work still requiring target-environment evidence
 
-- Full GPU Kubernetes/Kueue/DRA/CDI E1; MIG DeviceClass/parent-UUID/rebind E2.
+- Preserve the accepted E1 evidence fingerprint. Re-run E1 only if a later change touches the E1
+  execution path; otherwise proceed to MIG DeviceClass/parent-UUID/rebind E2.
 - MPS server PID visibility, share mutation and readback.
 - Complete model-training callbacks and distributed veRL/Ray behavior.
 - E3-E8 workload/action/fault hooks and nine calibrated thresholds.

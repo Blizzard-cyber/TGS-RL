@@ -160,7 +160,8 @@ Operator backend 决定 workload 对象的落点：
 - **process**：在宿主机启动真实 bootstrap 与子进程，通过 worker registry 回读状态；用于
   CPU full-stack Gate，不创建容器或 Kubernetes 对象。
 - **kubernetes**：使用 kubeconfig 或集群内 ServiceAccount 连接 API Server，管理
-  `JobRunBundle`、Kueue `Workload`、Kubernetes `Job` 和可选 `ResourceClaim`；仅在显式
+  `JobRunBundle`、Kueue `Workload`、Kubernetes `Job` 和可选 `ResourceClaimTemplate`；
+  Kubernetes 根据 Pod 模板生成 ResourceClaim；仅在显式
   启用 `runtimeClassCreate` 时创建 `RuntimeClass`。
 
 Kubernetes wire contract 通过 discovery 选择 Kueue `v1beta2`/`v1beta1` 和 DRA
@@ -170,7 +171,7 @@ Scheduler、Job Controller、Runtime、Kueue 以及所选 GPU/DRA 控制器，�
 Operator 从最新 ResourceSlice 维护 UUID 对应的 type、driver、pool/device、profile 和 parent UUID；
 `kubernetes-dra` profile 为 Full GPU 选择 `gpu.nvidia.com` DeviceClass，为 MIG 选择
 `mig.nvidia.com` DeviceClass，并将 UUID 编译为 NVIDIA DRA `uuid` CEL selector。Operator 只有在
-ResourceClaim allocation 可通过最新 ResourceSlice 反查到完全相同的 UUID 集合后，才发布
+Pod 生成的 ResourceClaim allocation 可通过最新 ResourceSlice 反查到完全相同的 UUID 集合后，才发布
 `BOUND`/`RUNNING`。Device Plugin 与 HAMi 只表达数量，不宣称精确 UUID 一致。随附部署工件
 不会安装这些依赖。由于当前 Binding 语义始终包含具体设备身份，不能执行该身份约束的
 Device Plugin/HAMi profile 会在 Operator capability preflight/compile 阶段 fail closed；它们

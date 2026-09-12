@@ -75,11 +75,14 @@ action/fault ID；response 必须使用 `tgsrl.io/hardware-driver-response/v1alp
 - `provision` 通过 Gateway 创建并准入 Job；`bind` 通过 Start 触发 Scheduler，不直接创建
   Kubernetes workload；
 - `launch` 必须同时观察到 Runtime `RUNNING`、目标 Pod `Ready` 和 managed-worker identity；
-- `verify_device_identity` 对账 Scheduler Binding、ResourceClaim allocation + 最新 ResourceSlice
+- `verify_device_identity` 从 Pod status 定位生成的 ResourceClaim，再对账 Scheduler Binding、
+  claim allocation + 最新 ResourceSlice
   以及 Pod 内 `nvidia-smi -L`，Full GPU/MIG 分别要求正确 DeviceClass；
 - `measure` 执行配置中的容器内只读 trace 导出命令，只接收身份匹配的真实 worker NDJSON；
 - `stop` 通过 Gateway lifecycle API；`cleanup` 仅删除该 run 的 JobRunBundle 及其精确命名的
-  Job、Workload、ResourceClaim，不使用 label-wide 或 namespace-wide 删除；
+  Job、Workload、ResourceClaimTemplate，不使用 label-wide 或 namespace-wide 删除；Pod 生成的
+  ResourceClaim 由 owner 生命周期回收；逐一完成身份校验和子资源删除后，driver 移除本次
+  JobRunBundle 的保护 finalizer 并幂等删除 marker，避免外置 Operator 重启使 cleanup 挂起；
 - `rebind`、`set_share`、`set_priority` 等自适应动作必须配置环境 hook。hook 只负责向已有
   Runtime/Scheduler observation 入口提交信号并返回 authority receipt，driver 随后等待新的成功
   Scheduler decision；没有 hook 时 fail closed，绝不 patch ResourceClaim 或 Binding；
