@@ -7,6 +7,8 @@ import re
 import subprocess
 from pathlib import Path
 
+import pytest
+
 ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = ROOT / "scripts" / "patch-kueue-config.py"
 SPEC = importlib.util.spec_from_file_location("tgsrl_patch_kueue_config", SCRIPT)
@@ -48,13 +50,21 @@ def test_kueue_patch_preserves_existing_resources() -> None:
     assert "    - name: tgsrl.io/gpu" in lines
 
 
-def test_gpu_job_template_uses_current_canonical_contract_id() -> None:
+@pytest.mark.parametrize(
+    "template",
+    [
+        "verl-job.example.json",
+        "hami-job.example.json",
+        "hami-concurrency-job.example.json",
+    ],
+)
+def test_gpu_job_template_uses_current_canonical_contract_id(template: str) -> None:
     from google.protobuf import json_format
     from tgsrl.v1 import execution_pb2
 
     from adapters.contracts import canonical_contract_id, validate_execution_contract
 
-    job = json.loads((ROOT / "configs/hardware/verl-job.example.json").read_text(encoding="utf-8"))
+    job = json.loads((ROOT / "configs" / "hardware" / template).read_text(encoding="utf-8"))
     contract = execution_pb2.ExecutionContract()
     json_format.ParseDict(job["executionContract"], contract)
 

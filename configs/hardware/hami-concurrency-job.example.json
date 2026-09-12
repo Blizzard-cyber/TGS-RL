@@ -18,7 +18,7 @@
     "args": ["/opt/tgsrl/scripts/gpu-smoke-workload.py", "--iterations", "100", "--iteration-delay-seconds", "0.05"]
   },
   "executionContract": {
-    "contractId": "contract-sha256-458e88c9ff47c7a413b06ea1e631a49c4084be136cda8fe44d78db783ad8641b",
+    "contractId": "contract-sha256-b458749b8b33257e7e17ebf8b88777f9eca12e425ad90eb55d7e916483ee81d8",
     "version": "1.0.0",
     "phaseGraph": {
       "phases": [{"phaseId": "decode", "displayName": "GPU Smoke", "kind": "PHASE_KIND_DECODE", "parallelism": 1, "maxAttempts": 1}],
