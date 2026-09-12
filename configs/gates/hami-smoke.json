@@ -1,0 +1,29 @@
+{
+  "schema_version": "tgsrl.io/gate-campaign/v1alpha1",
+  "campaign_id": "tgsrl-hami-smoke",
+  "campaign_revision": 1,
+  "description": "Independent HAMi fractional GPU realization smoke. It does not replace E1-E8.",
+  "experiments": [
+    {
+      "experiment_id": "H1",
+      "title": "HAMi fractional GPU exact-device execution",
+      "gate_manifest": "configs/gates/gate-e1-e8-hardware.json",
+      "scenario_manifest": "configs/scenarios/h1-hami-vgpu.yaml",
+      "output_directory": "h1-hami-vgpu",
+      "minimum_evidence": "GPU_SINGLE_NODE",
+      "requirements": {
+        "minimum_nodes": 1,
+        "minimum_accelerators": 1,
+        "gpu_profiles": ["full-gpu"],
+        "execution_modes": ["hami-vgpu"],
+        "exact_device_identity": true,
+        "required_actions": ["bind"],
+        "required_events": ["worker_registered", "device_identity_verified", "workload_completed"],
+        "required_faults": []
+      },
+      "rules": [
+        {"rule_id": "h1-actions-succeed", "metric": "action_success_rate", "comparison": "variant", "operator": ">=", "threshold": 1}
+      ]
+    }
+  ]
+}

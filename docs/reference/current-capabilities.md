@@ -24,7 +24,7 @@
 | CPU Mock Provider | **支持** | 能力匹配、逻辑资源绑定、L1–L4 逻辑模拟动作、故障注入、generation fence 和逐动作 rollback | Adaptive Planner 会在满足观测、能力与安全条件时生成 L1–L4 动作；这些结果只验证控制逻辑，不代表真实硬件行为或性能 |
 | NVIDIA Provider（默认） | **有条件（Conditional）** | `LocalDriver` 可通过 `nvidia-smi` 形成设备快照 | 需要 NVIDIA 驱动和 `nvidia-smi`；默认不声明资源动作 |
 | NVIDIA Driver v2 | **Full GPU E1 已验证** | `auto` 按设备发布 Full GPU 或已有 MIG 子设备；显式 MPS/MIG；binding/runtime/MIG helper、Scheduler worker registry 和 workload bootstrap 的 generation fence、scoped registration、幂等 durable receipt、原子落盘、进程监管、PID 信号控制和 managed-worker lifecycle | E1 已在单节点 NVIDIA A10 上验证 Full GPU/DRA/CDI、真实 CUDA、注册、Trace 和清理；`auto` 与异构卡能力模型有 CPU 合同测试，MIG、MPS、offload/reload、完整训练与多节点仍待验证 |
-| HAMi vGPU | **已实现，待硬件验证** | 从 `hami.io/node-nvidia-register` 建立物理 UUID inventory；把单卡分数份额投影为 `nvidia.com/gpu`、`gpucores`、`gpumem-percentage` 与 `use-gpuuuid`；从 Pod allocation annotation 回读 UUID | 当前只支持一个 Binding/一张物理 NVIDIA GPU、`hami-core`、同一份额同时约束 core/memory；要求 managed-worker bootstrap。尚无真实 HAMi/CUDA 隔离与共享证据 |
+| HAMi vGPU | **已实现，H1 待执行** | 从 `hami.io/node-nvidia-register` 建立物理 UUID inventory；把单卡分数份额投影为 `nvidia.com/gpu`、`gpucores`、`gpumem-percentage`、显式 `hami-scheduler` 与 `use-gpuuuid`；从 Pod allocation annotation 回读 UUID、显存 MiB 和 core 百分比 | 当前只支持一个 Binding/一张物理 NVIDIA GPU、`hami-core`、同一份额同时约束 core/memory；要求 managed-worker bootstrap。仓库有锁定 HAMi 2.10.0 的可逆 Minikube H1 smoke，但在生成真实 H1 报告前仍无 HAMi/CUDA 份额兑现证据；双 workload 隔离仍是后续实验 |
 | 外部 Runtime Adapter | **已实现，待硬件验证** | veRL 已有第一方 lifecycle/observation bridge，以及面向 veRL 0.9 trainer/worker-group/checkpoint-manager 公共接口的 callback adapter；支持显式 safe-point hook、checkpoint、rollout abort/sleep/wake、actor/critic offload/reload、policy update、durable receipt 与 typed TraceEvent | 训练包由不可变 workload 镜像承载，Runtime 控制面不要求导入 `verl/ray/torch/vllm`；只有带 workload OCI artifact 的 Python 命令才由 bootstrap 在启动前验证声明的包；真实依赖组合、distributed collective 和显存释放仍待目标环境验证；SGLang 与 OpenRLHF 仍只有通用 adapter 边界 |
 | Kubernetes Operator | **有条件支持** | 编译和调和 `JobRunBundle`、Kueue `Workload`、Kubernetes `Job`、可选 `ResourceClaimTemplate`/`RuntimeClass`；按每个 Binding 从有序 profile 中选择 DRA 或 HAMi；分别从 ResourceClaim/ResourceSlice 或 Pod HAMi annotation 回读实际 UUID；bootstrap 自动注册 PID/control endpoint，并用 Pod readiness 阻止提前发布 RUNNING；全栈 Helm chart 部署六个控制面服务 | DRA 支持整数个 Full GPU/MIG；HAMi 当前支持单物理卡 `(0,1]` 份额。两者均要求 exact UUID 与 managed worker；ResourceClaimTemplate/Job/Workload/JobRunBundle 为 namespaced 管理权限，生成的 ResourceClaim 只读；HAMi/MIG/MPS 仍需目标环境验证；Kueue 和 GPU 管理组件由平台侧提供 |
 | 其他加速器厂商 | **不支持（接口已预留）** | 通用 Proto 已有 `NPU`、`TPU`、`CUSTOM`，Scheduler 使用厂商中立 `Device`、`CompleteResourceProvider`、`CapabilitySet` 与工厂注册表 | 当前没有昇腾或其他厂商的 Provider、Operator realization adapter、worker identity verifier、依赖锁、假实现或硬件证据 |
@@ -82,7 +82,8 @@ artifact 时，Operator 才把对应模块清单注入 bootstrap 并在启动前
   `hami.io/node-nvidia-register`；admission/scheduler/device plugin 必须能处理
   `nvidia.com/gpu`、`nvidia.com/gpucores`、`nvidia.com/gpumem-percentage` 和
   `nvidia.com/use-gpuuuid`；
-- 所选 GPU profile 所需的 Device Plugin、DRA 或 HAMi 组件；这些集群级依赖不由 TGS-RL 安装；
+- 所选 GPU profile 所需的 Device Plugin、DRA 或 HAMi 组件；Operator 不会安装这些集群级
+  依赖。仓库仅为专用单节点 Minikube H1 验证提供显式、可逆的 HAMi 安装脚本；
 - 可从 Operator 访问的 Scheduler、Job Controller 和 Runtime；可由 `deploy/helm/tgsrl`
   一并部署，也可使用 `deploy/helm/operator` 接入已有服务；
 - Operator cursor 目录的持久卷。
@@ -146,8 +147,9 @@ Operator 的 `-gpu-profile` 支持逗号分隔的有序候选，例如
   Scheduler 选择的 UUID 而 profile 无法证明 exact placement 时不会被选中。
 
 HAMi 编译器将份额向上取整为 `1..100` 的 core/memory 百分比，请求一张物理 GPU，并写入
-`nvidia.com/use-gpuuuid` 与 `nvidia.com/vgpu-mode=hami-core`。Operator 观察 Pod 的
-`hami.io/vgpu-devices-allocated`；只有实际 UUID 与 Binding 完全一致才视为已分配。
+`nvidia.com/use-gpuuuid`、`nvidia.com/vgpu-mode=hami-core`、显式 `hami-scheduler` 和
+编译期预期份额 metadata。Operator 观察 Pod 的 `hami.io/vgpu-devices-allocated`；只有实际
+UUID、memory MiB、core 百分比与 Binding/请求完全一致才视为已分配。
 bootstrap 还会从容器内再次核对可见设备。部署和故障定位见
 [HAMi vGPU 接入指南](../guides/hami.md)。
 
@@ -185,6 +187,12 @@ gate-tools/campaign/gate/scenario/executor/driver digest，拒绝旧 commit、�
 [E1 单节点 Full GPU 验证记录](../validation/e1-full-gpu-2026-09-12.md)。部署者需要从
 `configs/hardware/environment.example.json` 创建本地配置，并提供真实 workload 模板、trace
 导出命令与必要的 observation/fault hook；未配置的自适应动作会直接拒绝。
+
+HAMi 使用独立 `configs/gates/hami-smoke.json` / H1，不修改正式 E1–E8 顺序。
+`make gpu-prepare-hami` 在专用 Minikube 上安装锁定 chart，`make gpu-hami-smoke` 要求
+Scheduler/Node/Pod/worker UUID 与请求/实际份额同时一致，证据写入
+`.cache/tgsrl/hami-smoke/`。H1 通过也只证明单 workload 分数 GPU 兑现，不等于共享干扰或
+训练收益成立。
 
 Console 的链路追踪读取 Runtime 的真实 `TraceEvent`，支持 Trainer、Request、Executor、Worker
 四类轨道、统一时间标尺、长耗时与空泡提示，以及基于 `request_id` 的跨轨关联。veRL adapter

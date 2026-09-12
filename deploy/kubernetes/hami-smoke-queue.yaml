@@ -1,0 +1,34 @@
+apiVersion: kueue.x-k8s.io/v1beta2
+kind: ResourceFlavor
+metadata:
+  name: tgsrl-hami
+---
+apiVersion: kueue.x-k8s.io/v1beta2
+kind: ClusterQueue
+metadata:
+  name: tgsrl-hami
+spec:
+  namespaceSelector: {}
+  resourceGroups:
+    - coveredResources:
+        - cpu
+        - memory
+        - nvidia.com/gpu
+        - nvidia.com/gpucores
+        - nvidia.com/gpumem-percentage
+      flavors:
+        - name: tgsrl-hami
+          resources:
+            - {name: cpu, nominalQuota: 64}
+            - {name: memory, nominalQuota: 256Gi}
+            - {name: nvidia.com/gpu, nominalQuota: 10}
+            - {name: nvidia.com/gpucores, nominalQuota: 1000}
+            - {name: nvidia.com/gpumem-percentage, nominalQuota: 1000}
+---
+apiVersion: kueue.x-k8s.io/v1beta2
+kind: LocalQueue
+metadata:
+  name: hami
+  namespace: tgsrl-system
+spec:
+  clusterQueue: tgsrl-hami

@@ -164,6 +164,8 @@ def test_gpu_network_profiles_keep_integrity_checks_and_are_explicit() -> None:
     assert "start_args+=(--force)" in create
     assert "preload_kubernetes_binaries" in create
     assert "component in kubeadm kubelet kubectl" in create
+    assert "$HOME/.cache/tgsrl/registry-forward.pid" in create
+    assert "$HOME/.cache/tgsrl/registry-forward.log" in create
     assert "TGSRL_K8S_OCI_REGISTRY" in prepare
     assert "TGSRL_K8S_IMAGE_REGISTRY" in prepare
     assert "image.repository=${K8S_IMAGE_REGISTRY}/nfd/node-feature-discovery" in prepare
@@ -234,6 +236,31 @@ def test_gpu_network_profiles_keep_integrity_checks_and_are_explicit() -> None:
     assert "TGSRL_PYPI_INDEX_URL" in gpu_dockerfile
 
 
+def test_hami_smoke_installer_is_pinned_reversible_and_fail_closed() -> None:
+    source = (ROOT / "scripts" / "gpu-prepare-hami.sh").read_text(encoding="utf-8")
+    bom = (ROOT / "compatibility" / "bom" / "runtime.yaml").read_text(encoding="utf-8")
+    queue = (ROOT / "deploy" / "kubernetes" / "hami-smoke-queue.yaml").read_text(encoding="utf-8")
+
+    assert "HAMI_VERSION=${TGSRL_HAMI_VERSION:-2.10.0}" in source
+    assert "github.com/Project-HAMi/HAMi/releases/download/" in source
+    assert "e1d8429b2270da1a5c26343d6d6fd2a0099ba7b944cf0f52eb20d6b9f14e5099" in source
+    assert "require_context" in source and "require_idle_namespace" in source
+    assert "minikube addons disable nvidia-device-plugin" in source
+    assert "minikube addons enable nvidia-device-plugin" in source
+    assert "rollback_failed_install" in source
+    assert "scheduler.kubeScheduler.image.registry" in source
+    assert "scheduler.kubeScheduler.image.repository" in source
+    assert "deploy/kubernetes/hami-smoke-queue.yaml" in source
+    assert 'hami_chart_version: "2.10.0"' in bom
+    assert "hami_chart_sha256:" in bom
+    for resource in (
+        "nvidia.com/gpu",
+        "nvidia.com/gpucores",
+        "nvidia.com/gpumem-percentage",
+    ):
+        assert resource in queue
+
+
 def test_bootstrap_mount_does_not_shadow_gpu_workload() -> None:
     source = (ROOT / "operator-go" / "compiler" / "materialize.go").read_text(encoding="utf-8")
 
@@ -255,4 +282,14 @@ def test_gpu_smoke_requires_e1_to_pass() -> None:
 
     assert "--experiment E1" in target
     assert 'select(.experiment_id == "E1")' in target
+    assert '.status == "PASSED"' in target
+
+
+def test_hami_smoke_requires_h1_to_pass() -> None:
+    makefile = (ROOT / "Makefile").read_text(encoding="utf-8")
+    target = makefile.split("gpu-hami-smoke:", 1)[1].split("\ngpu-restore-dra:", 1)[0]
+
+    assert "--campaign configs/gates/hami-smoke.json" in target
+    assert "--experiment H1" in target
+    assert 'select(.experiment_id == "H1")' in target
     assert '.status == "PASSED"' in target

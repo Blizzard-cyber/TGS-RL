@@ -420,18 +420,26 @@ func observeHAMIAllocation(bundle *api.Bundle, payload []byte) (bool, []string, 
 	if len(expected) != 1 {
 		return false, nil, fmt.Errorf("HAMi allocation requires exactly one expected physical GPU UUID")
 	}
-	observedSets := make(map[string][]string)
+	expectedCore, err := positiveAnnotationInt(bundle.Job.Spec.Template.ObjectMeta.Annotations, compiler.HAMIExpectedCoreAnnotation)
+	if err != nil {
+		return false, nil, err
+	}
+	expectedMemory, err := positiveAnnotationInt(bundle.Job.Spec.Template.ObjectMeta.Annotations, compiler.HAMIExpectedMemoryAnnotation)
+	if err != nil {
+		return false, nil, err
+	}
+	observedSets := make(map[string][]hamiAllocation)
 	for _, pod := range list.Items {
 		raw := strings.TrimSpace(pod.Metadata.Annotations[compiler.HAMINVIDIAAllocatedAnnotation])
 		if raw == "" {
 			continue
 		}
-		deviceIDs, err := parseHAMIAllocatedDeviceIDs(raw)
+		allocations, err := parseHAMIAllocations(raw)
 		if err != nil {
 			return false, nil, err
 		}
-		key := strings.Join(deviceIDs, ",")
-		observedSets[key] = deviceIDs
+		key := hamiAllocationKey(allocations)
+		observedSets[key] = allocations
 	}
 	if len(observedSets) == 0 {
 		return false, nil, nil
@@ -439,7 +447,21 @@ func observeHAMIAllocation(bundle *api.Bundle, payload []byte) (bool, []string, 
 	if len(observedSets) != 1 {
 		return false, nil, fmt.Errorf("workload pods report conflicting HAMi device allocations")
 	}
-	for _, actual := range observedSets {
+	for _, allocations := range observedSets {
+		actual := make([]string, 0, len(allocations))
+		for _, allocation := range allocations {
+			actual = append(actual, allocation.UUID)
+			if allocation.MemoryMiB != expectedMemory || allocation.CorePercent != expectedCore {
+				return false, nil, fmt.Errorf(
+					"HAMi allocated GPU UUID %q with memory/core %d/%d, want %d/%d",
+					allocation.UUID,
+					allocation.MemoryMiB,
+					allocation.CorePercent,
+					expectedMemory,
+					expectedCore,
+				)
+			}
+		}
 		if !equalStrings(actual, expected) {
 			return false, nil, fmt.Errorf("HAMi allocated device UUIDs %v, want binding device_ids %v", actual, expected)
 		}
@@ -448,9 +470,15 @@ func observeHAMIAllocation(bundle *api.Bundle, payload []byte) (bool, []string, 
 	return false, nil, nil
 }
 
-func parseHAMIAllocatedDeviceIDs(payload string) ([]string, error) {
+type hamiAllocation struct {
+	UUID        string
+	MemoryMiB   int64
+	CorePercent int64
+}
+
+func parseHAMIAllocations(payload string) ([]hamiAllocation, error) {
 	seen := make(map[string]struct{})
-	var result []string
+	var result []hamiAllocation
 	for _, container := range strings.Split(payload, ";") {
 		for _, device := range strings.Split(container, ":") {
 			device = strings.TrimSpace(device)
@@ -465,18 +493,39 @@ func parseHAMIAllocatedDeviceIDs(payload string) ([]string, error) {
 			if !strings.HasPrefix(uuid, "GPU-") {
 				return nil, fmt.Errorf("HAMi allocated device entry %q is not a physical GPU UUID", device)
 			}
+			memoryMiB, memoryErr := strconv.ParseInt(strings.TrimSpace(fields[2]), 10, 64)
+			corePercent, coreErr := strconv.ParseInt(strings.TrimSpace(fields[3]), 10, 64)
+			if memoryErr != nil || coreErr != nil || memoryMiB <= 0 || corePercent <= 0 || corePercent > 100 {
+				return nil, fmt.Errorf("HAMi allocated device entry %q has invalid memory or core allocation", device)
+			}
 			if _, duplicate := seen[uuid]; duplicate {
-				continue
+				return nil, fmt.Errorf("HAMi allocated device UUID %q is duplicated", uuid)
 			}
 			seen[uuid] = struct{}{}
-			result = append(result, uuid)
+			result = append(result, hamiAllocation{UUID: uuid, MemoryMiB: memoryMiB, CorePercent: corePercent})
 		}
 	}
 	if len(result) == 0 {
 		return nil, fmt.Errorf("HAMi allocated device annotation contains no UUIDs")
 	}
-	sort.Strings(result)
+	sort.Slice(result, func(i, j int) bool { return result[i].UUID < result[j].UUID })
 	return result, nil
+}
+
+func hamiAllocationKey(values []hamiAllocation) string {
+	parts := make([]string, 0, len(values))
+	for _, value := range values {
+		parts = append(parts, fmt.Sprintf("%s,%d,%d", value.UUID, value.MemoryMiB, value.CorePercent))
+	}
+	return strings.Join(parts, ":")
+}
+
+func positiveAnnotationInt(annotations map[string]string, key string) (int64, error) {
+	value, err := strconv.ParseInt(strings.TrimSpace(annotations[key]), 10, 64)
+	if err != nil || value <= 0 {
+		return 0, fmt.Errorf("HAMi expected allocation annotation %q is missing or invalid", key)
+	}
+	return value, nil
 }
 
 func bundleUsesWorkerBootstrap(bundle *api.Bundle) bool {

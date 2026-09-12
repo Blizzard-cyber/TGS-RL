@@ -11,8 +11,9 @@ release, this file and the `handoff/` directory should be deleted.
 
 ## Current local development batch
 
-This macOS checkout is completing the heterogeneous-GPU and Console batch locally. No ECS command,
-GPU image pull or hardware test is part of this batch.
+This macOS checkout has completed the H1 HAMi preparation code and local contract validation. The
+next step is to commit this batch, let the NVIDIA A10 test host pull that exact clean revision, and
+run the real H1 fractional-GPU smoke.
 
 - Scheduler NVIDIA Driver v2 now defaults to capability-aware `auto`: non-MIG GPUs remain Full GPU
   resources, while MIG-enabled GPUs publish existing MIG children only. A physical card is never
@@ -21,8 +22,15 @@ GPU image pull or hardware test is part of this batch.
   `-gpu-profile=kubernetes-dra,hami-vgpu`, every concrete Binding independently selects the first
   profile that can enforce its UUIDs and share.
 - `hami-vgpu` now uses HAMi's public NVIDIA resource/annotation protocol: typed Node inventory,
-  `use-gpuuuid`, core/memory percentages, Pod allocation UUID readback and mandatory bootstrap
-  device verification.
+  `use-gpuuuid`, explicit `hami-scheduler`, core/memory percentages, Pod allocation
+  UUID/memory/core readback and mandatory bootstrap device verification.
+- H1 is an independent hardware campaign (`configs/gates/hami-smoke.json`), not a new E1–E8
+  release experiment. It locks a 0.4 share, checks requested versus allocated core/memory, runs the
+  real CUDA smoke workload and requires Scheduler/Node/Pod/worker UUID equality.
+- `scripts/gpu-prepare-hami.sh` pins HAMi chart 2.10.0 and its SHA-256, switches the dedicated
+  Minikube node from the NVIDIA Device Plugin to HAMi, creates an isolated Kueue queue and records
+  enough state to restore the previous plugin. It refuses active TGS-RL workloads and rolls back a
+  failed install.
 - The Gateway exposes `GET /v1/resources`; the Chinese Console now has a ninth “算力资源”
   workspace with device capabilities, allocations and responsive desktop/mobile layout.
 - HAMi/HAMi-WebUI were used only as Apache-2.0 protocol and information-architecture references.
@@ -43,7 +51,15 @@ Local validation completed during this batch:
 - Console browser tests: 17 passed, including all nine routes and
   1366/1180/1024/820/390 px responsive checks.
 
-These results prove code contracts only. HAMi vGPU, MPS and MIG hardware behavior remains unverified.
+H1-local validation for this implementation batch:
+
+- `go test ./operator-go/... ./cmd/operator -count=1` passes;
+- 72 focused governance/GPU setup tests pass;
+- Python compilation, shell syntax, Go formatting, `git diff --check`, H1 campaign plan and pinned
+  HAMi Helm rendering pass.
+
+These results prove code contracts only. Until `.cache/tgsrl/hami-smoke/h1-hami-vgpu/report.json`
+exists and says `PASSED`, HAMi vGPU remains hardware-unverified. MPS and MIG also remain unverified.
 
 ## Machine roles
 
@@ -126,7 +142,7 @@ closed; the remaining gap is real hardware evidence, not code structure.
 | CPU Mock + process E2E | Verified (real subprocess, bootstrap, Unix socket, service restart) |
 | Console (9 workspaces) | Closed locally (9 Chinese pages, resource inventory + Trace, responsive layout) |
 | NVIDIA Provider/helper | Full GPU E1 verified; capability-aware Full/MIG code verified locally; MIG/MPS hardware pending |
-| Kubernetes / DRA / HAMi | DRA E1 verified; HAMi typed inventory/projection/readback implemented, hardware pending |
+| Kubernetes / DRA / HAMi | DRA E1 verified; H1 HAMi installer/campaign/UUID+share readback ready locally, hardware run pending |
 | veRL adapter | Implemented, real veRL/Ray/PyTorch/vLLM combination pending |
 | Hardware Campaign E1-E8 | E1 PASSED; E2–E8 not run, E3–E8 have 9 thresholds to calibrate |
 | Production release | Not admitted (MIG/MPS/full training/E2–E8 evidence missing) |
@@ -187,8 +203,19 @@ hardware scenario. Summary:
    ```
    `make gpu-smoke` exits non-zero on any E1 failure/invalid-evidence/rule failure. A pass only means
    E1; it is not E2-E8 and not release admission.
-4. On the current A10 host, verify the HAMi single-GPU fractional path described in
-   `docs/guides/hami.md`; do not block it on MIG support.
+4. On the current A10 host, switch the dedicated Minikube environment and execute H1:
+   ```bash
+   make gpu-down
+   make gpu-prepare-hami
+   make gpu-hami-status
+   export TGSRL_OPERATOR_GPU_PROFILES=hami-vgpu
+   make gpu-up
+   make gpu-hami-smoke
+   make gpu-down
+   make gpu-restore-dra
+   ```
+   H1 evidence lives in `.cache/tgsrl/hami-smoke/h1-hami-vgpu/`. Do not block H1 on MIG support,
+   and do not treat H1 as E2–E8 release admission.
 5. Run E2 only after moving to a GPU model with actual MIG support. Once hooks/thresholds are ready,
    continue E3-E8 via `make gate-campaign-run` (see `docs/design/gate-e1-e8.md`).
 
@@ -206,6 +233,11 @@ handoff/
     campaign-report.json # copy of .cache/tgsrl/gpu-smoke/campaign-report.json
     NOTES.md             # pass/fail, exact error text, environment (driver, CUDA, K8s, Kueue, DRA versions)
     logs/                # relevant, redacted service/worker logs and raw trace NDJSON
+  H1-hami-vgpu/
+    report.json
+    campaign-report.json
+    NOTES.md             # include HAMi chart/image versions and requested/allocated share
+    logs/
 ```
 
 Then:
@@ -242,6 +274,7 @@ Append one row per run so both sides share history.
 | Date | Commit | Experiment | Result | Evidence path | Notes |
 |---|---|---|---|---|---|
 | 2026-09-12 | `d033566` | E1 | PASSED | `.cache/tgsrl/gpu-smoke/e1-full-gpu/report.json` on GPU host; committed summary in `docs/validation/e1-full-gpu-2026-09-12.md` | 8/8 executions; exact UUID; real CUDA; cleanup clean |
+| 2026-09-12 | H1 implementation batch | H1 | NOT_RUN | `.cache/tgsrl/hami-smoke/h1-hami-vgpu/report.json` | Local code/tests ready; real HAMi environment not run yet |
 
 ---
 

@@ -9,6 +9,7 @@ import json
 import math
 import os
 import platform
+import re
 import shlex
 import shutil
 import socket
@@ -50,6 +51,7 @@ EVIDENCE_RANK = {
 CAMPAIGN_EVIDENCE_REQUIREMENTS = {
     "scheduler-binding",
     "dra-allocation",
+    "hami-allocation",
     "worker-device-identity",
     "mig-device-class",
     "parent-uuid",
@@ -1278,10 +1280,22 @@ def load_campaign(path: Path) -> dict[str, Any]:
     if campaign.get("schema_version") != "tgsrl.io/gate-campaign/v1alpha1":
         raise GateToolError("campaign schema_version must be tgsrl.io/gate-campaign/v1alpha1")
     experiments = campaign.get("experiments")
-    if not isinstance(experiments, list):
-        raise GateToolError("campaign experiments must be a list")
+    if not isinstance(experiments, list) or not experiments:
+        raise GateToolError("campaign experiments must be a non-empty list")
     experiment_ids = [item.get("experiment_id") for item in experiments if isinstance(item, dict)]
-    if experiment_ids != [f"E{index}" for index in range(1, 9)]:
+    if (
+        len(experiment_ids) != len(experiments)
+        or any(
+            not isinstance(experiment_id, str)
+            or re.fullmatch(r"[A-Z][A-Z0-9_-]*", experiment_id) is None
+            for experiment_id in experiment_ids
+        )
+        or len(set(experiment_ids)) != len(experiment_ids)
+    ):
+        raise GateToolError("campaign experiment IDs must be unique uppercase identifiers")
+    if campaign.get("campaign_id") == "tgsrl-e1-e8" and experiment_ids != [
+        f"E{index}" for index in range(1, 9)
+    ]:
         raise GateToolError("campaign experiments must define E1 through E8 in order")
     output_directories: set[str] = set()
     for experiment in experiments:
@@ -1586,10 +1600,15 @@ def _validate_campaign_requirements(
         if fault not in injected_faults or fault not in recovered_faults:
             errors.append(f"required fault {fault} lacks injected and recovered evidence")
     if requirements.get("exact_device_identity") is True:
-        expected_device_class = {
-            "full-gpu": "gpu.nvidia.com",
-            "mig": "mig.nvidia.com",
-        }.get(str(fingerprint.get("gpu_profile", "")))
+        execution_mode = str(fingerprint.get("execution_mode", ""))
+        expected_device_class = (
+            {
+                "full-gpu": "gpu.nvidia.com",
+                "mig": "mig.nvidia.com",
+            }.get(str(fingerprint.get("gpu_profile", "")))
+            if execution_mode == "kubernetes-dra"
+            else None
+        )
         for label, events in (("baseline", baseline_events), ("variant", variant_events)):
             identities = [
                 event
@@ -1625,6 +1644,13 @@ def _validate_campaign_requirements(
                     errors.append(
                         f"{label} device class does not match the environment GPU profile"
                     )
+                    break
+                if execution_mode == "hami-vgpu" and (
+                    event.get("allocation_mode") != "hami-vgpu"
+                    or event.get("requested_core_percent") != event.get("allocated_core_percent")
+                    or event.get("requested_memory_mib") != event.get("allocated_memory_mib")
+                ):
+                    errors.append(f"{label} HAMi allocation does not match the requested share")
                     break
             if int(requirements.get("minimum_nodes", 0)) > 1:
                 for iteration in sorted({int(event.get("iteration", 0)) for event in events}):
@@ -1728,6 +1754,16 @@ def _validate_named_campaign_evidence(
                 event.get("event_type") == "device_identity_verified"
                 and event.get("source") == "worker"
                 and bool(event.get("allocated_device_ids"))
+            )
+        ),
+        "hami-allocation": both_sides(
+            lambda event: (
+                event.get("event_type") == "device_identity_verified"
+                and event.get("source") == "worker"
+                and event.get("allocation_mode") == "hami-vgpu"
+                and bool(event.get("allocated_device_ids"))
+                and event.get("requested_core_percent") == event.get("allocated_core_percent")
+                and event.get("requested_memory_mib") == event.get("allocated_memory_mib")
             )
         ),
         "worker-device-identity": both_sides(
@@ -2636,12 +2672,12 @@ def build_parser() -> argparse.ArgumentParser:
     )
     fingerprint.set_defaults(func=cmd_fingerprint)
     campaign_plan = subparsers.add_parser(
-        "campaign-plan", help="Validate and print the E1-E8 campaign contract"
+        "campaign-plan", help="Validate and print a hardware campaign contract"
     )
     campaign_plan.add_argument("--campaign", default=str(DEFAULT_CAMPAIGN))
     campaign_plan.set_defaults(func=cmd_campaign_plan)
     campaign_evaluate = subparsers.add_parser(
-        "campaign-evaluate", help="Evaluate E1-E8 evidence reports"
+        "campaign-evaluate", help="Evaluate hardware campaign evidence reports"
     )
     campaign_evaluate.add_argument("--campaign", default=str(DEFAULT_CAMPAIGN))
     campaign_evaluate.add_argument("--reports-dir", default=str(DEFAULT_CAMPAIGN_REPORTS))
@@ -2649,7 +2685,7 @@ def build_parser() -> argparse.ArgumentParser:
     campaign_evaluate.add_argument("--require-pass", action="store_true")
     campaign_evaluate.set_defaults(func=cmd_campaign_evaluate)
     campaign_run = subparsers.add_parser(
-        "campaign-run", help="Execute E1-E8 through the repository orchestrator"
+        "campaign-run", help="Execute a hardware campaign through the repository orchestrator"
     )
     campaign_run.add_argument("--campaign", default=str(DEFAULT_CAMPAIGN))
     campaign_run.add_argument("--reports-dir", default=str(DEFAULT_CAMPAIGN_REPORTS))
@@ -2658,9 +2694,7 @@ def build_parser() -> argparse.ArgumentParser:
         default=os.environ.get("TGSRL_CAMPAIGN_DRIVER", ""),
         help="target-environment atomic operation driver",
     )
-    campaign_run.add_argument(
-        "--experiment", action="append", choices=[f"E{index}" for index in range(1, 9)]
-    )
+    campaign_run.add_argument("--experiment", action="append")
     campaign_run.add_argument("--timeout-seconds", type=float, default=7200.0)
     campaign_run.add_argument("--require-pass", action="store_true")
     campaign_run.set_defaults(func=cmd_campaign_run)
@@ -2673,9 +2707,9 @@ def build_parser() -> argparse.ArgumentParser:
     campaign_calibrate.add_argument("--output", default="-")
     campaign_calibrate.set_defaults(func=cmd_campaign_calibrate)
     campaign_ingest = subparsers.add_parser(
-        "campaign-ingest", help="Validate and store one E1-E8 evidence report"
+        "campaign-ingest", help="Validate and store one hardware campaign evidence report"
     )
-    campaign_ingest.add_argument("experiment", choices=[f"E{index}" for index in range(1, 9)])
+    campaign_ingest.add_argument("experiment")
     campaign_ingest.add_argument("--campaign", default=str(DEFAULT_CAMPAIGN))
     campaign_ingest.add_argument("--reports-dir", default=str(DEFAULT_CAMPAIGN_REPORTS))
     campaign_ingest.add_argument("--report", required=True)

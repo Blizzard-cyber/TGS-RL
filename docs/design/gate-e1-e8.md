@@ -40,6 +40,19 @@ make gate-campaign-run \
 `.cache/tgsrl/gpu-smoke/e1-full-gpu/report.json` 查看 E1 证据；根目录的
 `campaign-report.json` 同时列出未运行实验，因此总体状态不会是 `PASSED`。
 
+HAMi 分数 GPU 使用独立的 `configs/gates/hami-smoke.json` 和实验 ID `H1`，不插入或重排
+正式 E1–E8。H1 复用同一 executor/evidence schema，但 execution mode 固定为 `hami-vgpu`，
+并额外要求请求/实际 core 百分比和显存 MiB 一致。执行入口为：
+
+```bash
+make gpu-prepare-hami
+TGSRL_OPERATOR_GPU_PROFILES=hami-vgpu make gpu-up
+make gpu-hami-smoke
+```
+
+H1 结果写入 `.cache/tgsrl/hami-smoke/h1-hami-vgpu/`。它是 realization smoke，不进入
+E1–E8 release evaluation，也不替代 E5 共置干扰或 E6 生命周期实验。
+
 仓库提供 `scripts/tgsrl-hardware-environment-driver`。目标环境从
 `configs/hardware/environment.example.json` 派生本地配置，至少指定 Gateway URL、固定
 Kubernetes context/namespace、workload Job 模板和容器内 trace 导出命令。driver 的私有状态按
@@ -75,9 +88,10 @@ action/fault ID；response 必须使用 `tgsrl.io/hardware-driver-response/v1alp
 - `provision` 通过 Gateway 创建并准入 Job；`bind` 通过 Start 触发 Scheduler，不直接创建
   Kubernetes workload；
 - `launch` 必须同时观察到 Runtime `RUNNING`、目标 Pod `Ready` 和 managed-worker identity；
-- `verify_device_identity` 从 Pod status 定位生成的 ResourceClaim，再对账 Scheduler Binding、
-  claim allocation + 最新 ResourceSlice
-  以及 Pod 内 `nvidia-smi -L`，Full GPU/MIG 分别要求正确 DeviceClass；
+- `verify_device_identity` 在 DRA 模式下从 Pod status 定位生成的 ResourceClaim，再对账
+  Scheduler Binding、claim allocation + 最新 ResourceSlice 与 Pod 内 `nvidia-smi -L`，
+  Full GPU/MIG 分别要求正确 DeviceClass；在 HAMi 模式下对账 Node registration、Pod
+  `use-gpuuuid`、实际 allocation UUID/memory/core 与 worker 可见 UUID；
 - `measure` 执行配置中的容器内只读 trace 导出命令，只接收身份匹配的真实 worker NDJSON；
 - `stop` 通过 Gateway lifecycle API；`cleanup` 仅删除该 run 的 JobRunBundle 及其精确命名的
   Job、Workload、ResourceClaimTemplate，不使用 label-wide 或 namespace-wide 删除；Pod 生成的

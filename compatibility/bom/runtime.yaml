@@ -344,7 +344,11 @@ external_integration_targets:
   sglang: "0.5.18"
   nvidia_device_plugin: "0.20.0"
   nvidia_dra_driver_gpu: "0.5.0"
-  # Protocol reference only: TGS-RL does not vendor or install HAMi.
+  # H1 uses this immutable chart archive; TGS-RL still does not vendor HAMi.
+  hami_chart_version: "2.10.0"
+  hami_chart_sha256: "e1d8429b2270da1a5c26343d6d6fd2a0099ba7b944cf0f52eb20d6b9f14e5099"
+  hami_source_commit: "4707fb02c91c545bc7343ce26dba4c32919f9a3e"
+  # Later upstream protocol reference used when reviewing annotation compatibility.
   hami_protocol_commit: "88b118e565a9effaa27f81669da291c5508fc5e4"
 
 claims:

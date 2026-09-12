@@ -423,6 +423,21 @@ NVIDIA DRA、HAMi 或其他受支持资源后端，以及可访问的镜像仓�
 或修改这些集群级依赖。没有 MIG 的 GPU 不需要退出资源池；可继续使用整卡 DRA，或在
 安装并验证 HAMi/MPS 后使用共享路径。
 
+仓库为专用单节点 Minikube 测试环境提供独立 H1 HAMi smoke，不改变正式 E1–E8：
+
+```bash
+make gpu-down
+make gpu-prepare-hami
+TGSRL_OPERATOR_GPU_PROFILES=hami-vgpu make gpu-up
+make gpu-hami-smoke
+make gpu-down
+make gpu-restore-dra
+```
+
+该流程锁定 HAMi chart `2.10.0` 及其 SHA-256，并验证 Scheduler UUID、HAMi Node/Pod
+allocation、请求/实际 core 与显存份额、worker 可见 UUID 和真实 CUDA Trace。成功只代表
+单 workload 分数 GPU 兑现链路通过，不代表双 workload 隔离或性能收益成立。
+
 正式 GPU 验证按 E1–E8 campaign 推进：
 
 ```text

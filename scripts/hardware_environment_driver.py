@@ -1,9 +1,9 @@
-"""Kubernetes/DRA adapter for the E1-E8 hardware validation campaign.
+"""Kubernetes accelerator adapter for repository hardware validation campaigns.
 
 The campaign executor owns experiment ordering and evidence validation. This
 module performs one requested environment operation and reports facts read
-from TGS-RL, Kubernetes, DRA, or the managed workload. It never selects a
-device and never mutates a ResourceClaim.
+from TGS-RL, Kubernetes, the selected realization backend, or the managed
+workload. It never selects a device and never mutates an allocation.
 """
 
 from __future__ import annotations
@@ -38,6 +38,18 @@ STATE_SCHEMA = "tgsrl.io/hardware-driver-state/v1alpha1"
 NVIDIA_DRIVER = "gpu.nvidia.com"
 PROFILE_CLASS = {"full-gpu": "gpu.nvidia.com", "mig": "mig.nvidia.com"}
 PROFILE_TYPE = {"full-gpu": "gpu", "mig": "mig"}
+EXECUTION_MODES = frozenset({"kubernetes-dra", "hami-vgpu"})
+HAMI_PROFILE = "hami-vgpu"
+HAMI_SCHEDULER = "hami-scheduler"
+HAMI_REGISTER_ANNOTATION = "hami.io/node-nvidia-register"
+HAMI_ALLOCATED_ANNOTATION = "hami.io/vgpu-devices-allocated"
+HAMI_USE_UUID_ANNOTATION = "nvidia.com/use-gpuuuid"
+HAMI_MODE_ANNOTATION = "nvidia.com/vgpu-mode"
+HAMI_CORE_RESOURCE = "nvidia.com/gpucores"
+HAMI_MEMORY_PERCENT_RESOURCE = "nvidia.com/gpumem-percentage"
+HAMI_GPU_RESOURCE = "nvidia.com/gpu"
+HAMI_EXPECTED_CORE_ANNOTATION = "tgsrl.io/hami-core-percent"
+HAMI_EXPECTED_MEMORY_ANNOTATION = "tgsrl.io/hami-memory-mib"
 RUN_OPERATIONS = frozenset(
     {
         "provision",
@@ -99,6 +111,7 @@ TARGET_FIELDS = frozenset(
         "kubectl",
         "job_template",
         "gpu_profile",
+        "execution_mode",
         "trace_command",
         "action_hooks",
         "fault_hooks",
@@ -248,6 +261,7 @@ class TargetConfig:
     kubectl: str
     job_template: Path
     gpu_profile: str
+    execution_mode: str
     trace_command: tuple[str, ...]
     action_hooks: Mapping[str, tuple[str, ...]]
     fault_hooks: Mapping[str, Mapping[str, tuple[str, ...]]]
@@ -345,6 +359,14 @@ def load_config(path: Path) -> DriverConfig:
         )
         if gpu_profile not in PROFILE_CLASS:
             raise DriverError(f"targets.{experiment_id}.gpu_profile is unsupported")
+        execution_mode = _string(
+            values.get("execution_mode", "kubernetes-dra"),
+            label=f"targets.{experiment_id}.execution_mode",
+        )
+        if execution_mode not in EXECUTION_MODES:
+            raise DriverError(f"targets.{experiment_id}.execution_mode is unsupported")
+        if execution_mode == HAMI_PROFILE and gpu_profile != "full-gpu":
+            raise DriverError("hami-vgpu execution requires the full-gpu physical profile")
         trace_command = tuple(
             _string(item, label=f"targets.{experiment_id}.trace_command argv")
             for item in _list(
@@ -376,6 +398,7 @@ def load_config(path: Path) -> DriverConfig:
                 label=f"targets.{experiment_id}.job_template",
             ),
             gpu_profile=gpu_profile,
+            execution_mode=execution_mode,
             trace_command=trace_command,
             action_hooks=_hook_map(
                 values.get("action_hooks", {}),
@@ -734,6 +757,151 @@ def _dra_inventory(payload: JsonObject) -> list[JsonObject]:
     return sorted(inventory, key=lambda item: str(item["uuid"]))
 
 
+def _positive_integer_quantity(value: object) -> int:
+    raw = str(value or "").strip()
+    if re.fullmatch(r"[1-9][0-9]*", raw) is None:
+        return 0
+    return int(raw)
+
+
+def _hami_node_devices(node_name: str, payload: str) -> list[JsonObject]:
+    node_name = _string(node_name, label="HAMi node name")
+    raw = payload.strip()
+    if not raw:
+        return []
+    records: list[JsonObject] = []
+    if raw.startswith("["):
+        try:
+            decoded = json.loads(raw)
+        except json.JSONDecodeError as exc:
+            raise DriverError("HAMi node registration is invalid JSON") from exc
+        if not isinstance(decoded, list) or any(not isinstance(item, dict) for item in decoded):
+            raise DriverError("HAMi node registration must contain a list of devices")
+        for item in decoded:
+            records.append(
+                {
+                    "uuid": str(item.get("id", "")).strip(),
+                    "split_count": item.get("count"),
+                    "memory_mib": item.get("devmem"),
+                    "core_percent": item.get("devcore"),
+                    "model": str(item.get("type", "")).strip(),
+                    "healthy": item.get("health"),
+                    "mode": str(item.get("mode") or "hami-core").strip(),
+                    "node_id": node_name,
+                }
+            )
+    else:
+        for segment in raw.split(":"):
+            fields = [field.strip() for field in segment.strip().split(",")]
+            if len(fields) == 1 and not fields[0]:
+                continue
+            if len(fields) not in {7, 9}:
+                raise DriverError(
+                    f"HAMi node registration segment has {len(fields)} fields, want 7 or 9"
+                )
+            try:
+                split_count = int(fields[1])
+                memory_mib = int(fields[2])
+                core_percent = int(fields[3])
+            except ValueError as exc:
+                raise DriverError("HAMi node registration contains invalid capacity") from exc
+            records.append(
+                {
+                    "uuid": fields[0],
+                    "split_count": split_count,
+                    "memory_mib": memory_mib,
+                    "core_percent": core_percent,
+                    "model": fields[4],
+                    "healthy": fields[6].lower() == "true",
+                    "mode": fields[8] if len(fields) == 9 and fields[8] else "hami-core",
+                    "node_id": node_name,
+                }
+            )
+    for item in records:
+        if (
+            not str(item["uuid"]).startswith("GPU-")
+            or not str(item["model"])
+            or not isinstance(item["split_count"], int)
+            or isinstance(item["split_count"], bool)
+            or int(item["split_count"]) <= 0
+            or not isinstance(item["memory_mib"], int)
+            or isinstance(item["memory_mib"], bool)
+            or int(item["memory_mib"]) <= 0
+            or not isinstance(item["core_percent"], int)
+            or isinstance(item["core_percent"], bool)
+            or not 0 < int(item["core_percent"]) <= 100
+            or item["healthy"] is not True
+            or item["mode"] != "hami-core"
+        ):
+            raise DriverError(
+                f"HAMi node registration for UUID {item['uuid']!r} is incomplete or unusable"
+            )
+    return records
+
+
+def _hami_inventory(payload: JsonObject) -> list[JsonObject]:
+    inventory: list[JsonObject] = []
+    owners: dict[str, str] = {}
+    for node in _items(payload, "items"):
+        metadata = _mapping(node.get("metadata"), label="Node metadata")
+        status = _mapping(node.get("status"), label="Node status")
+        allocatable = _mapping(status.get("allocatable", {}), label="Node allocatable")
+        if _positive_integer_quantity(allocatable.get(HAMI_GPU_RESOURCE)) == 0:
+            continue
+        annotations = _mapping(metadata.get("annotations", {}), label="Node annotations")
+        registration = str(annotations.get(HAMI_REGISTER_ANNOTATION, "")).strip()
+        if not registration:
+            continue
+        node_name = _string(metadata.get("name"), label="Node name")
+        for item in _hami_node_devices(node_name, registration):
+            uuid = str(item["uuid"])
+            if uuid in owners:
+                raise DriverError(
+                    f"HAMi NVIDIA UUID {uuid!r} is published by nodes "
+                    f"{owners[uuid]!r} and {node_name!r}"
+                )
+            owners[uuid] = node_name
+            inventory.append(item)
+    return sorted(inventory, key=lambda item: str(item["uuid"]))
+
+
+def _hami_allocations(payload: str) -> list[JsonObject]:
+    allocations: list[JsonObject] = []
+    seen: set[str] = set()
+    for container in payload.split(";"):
+        for raw_device in container.split(":"):
+            if not raw_device.strip():
+                continue
+            fields = [field.strip() for field in raw_device.split(",")]
+            if len(fields) < 4:
+                raise DriverError("HAMi allocation entry has fewer than four fields")
+            uuid, device_type = fields[:2]
+            try:
+                memory_mib, core_percent = int(fields[2]), int(fields[3])
+            except ValueError as exc:
+                raise DriverError("HAMi allocation contains invalid memory or core values") from exc
+            if (
+                not uuid.startswith("GPU-")
+                or not device_type
+                or memory_mib <= 0
+                or not 0 < core_percent <= 100
+                or uuid in seen
+            ):
+                raise DriverError("HAMi allocation contains an invalid or duplicate device entry")
+            seen.add(uuid)
+            allocations.append(
+                {
+                    "uuid": uuid,
+                    "type": device_type,
+                    "memory_mib": memory_mib,
+                    "core_percent": core_percent,
+                }
+            )
+    if not allocations:
+        raise DriverError("HAMi allocation annotation contains no devices")
+    return sorted(allocations, key=lambda item: str(item["uuid"]))
+
+
 def _visible_device_ids(output: str, profile: str) -> list[str]:
     prefix = "MIG-" if profile == "mig" else "GPU-"
     return sorted({item for item in UUID_PATTERN.findall(output) if item.startswith(prefix)})
@@ -914,18 +1082,22 @@ class HardwareEnvironmentDriver:
             current = kube.run(["config", "current-context"], namespaced=False).strip()
             if current != target.kube_context:
                 raise DriverError("kubectl current context does not match the configured context")
-        device_class = PROFILE_CLASS[target.gpu_profile]
-        kube.json(["get", "deviceclasses.resource.k8s.io", device_class], namespaced=False)
-        slices = kube.json(["get", "resourceslices.resource.k8s.io"], namespaced=False)
-        inventory = [
-            item
-            for item in _dra_inventory(slices)
-            if item["type"] == PROFILE_TYPE[target.gpu_profile]
-        ]
+        if target.execution_mode == "kubernetes-dra":
+            device_class = PROFILE_CLASS[target.gpu_profile]
+            kube.json(["get", "deviceclasses.resource.k8s.io", device_class], namespaced=False)
+            slices = kube.json(["get", "resourceslices.resource.k8s.io"], namespaced=False)
+            inventory = [
+                item
+                for item in _dra_inventory(slices)
+                if item["type"] == PROFILE_TYPE[target.gpu_profile]
+            ]
+        else:
+            inventory = _hami_inventory(kube.json(["get", "nodes"], namespaced=False))
         minimum = int(topology.get("minimum_accelerators", 1))
         if len(inventory) < minimum:
             raise DriverError(
-                f"DRA inventory has {len(inventory)} {target.gpu_profile} devices; need {minimum}"
+                f"{target.execution_mode} inventory has {len(inventory)} "
+                f"{target.gpu_profile} devices; need {minimum}"
             )
         minimum_nodes = int(topology.get("minimum_nodes", 1))
         if len({str(item["node_id"]) for item in inventory}) < minimum_nodes:
@@ -939,7 +1111,7 @@ class HardwareEnvironmentDriver:
             "python_version": platform.python_version(),
             "git_commit": commit,
             "git_dirty": False,
-            "execution_mode": "kubernetes-dra",
+            "execution_mode": target.execution_mode,
             "gpu_profile": target.gpu_profile,
             "accelerator_count": len(inventory),
             "accelerator_inventory_digest": _canonical_digest(inventory),
@@ -1193,7 +1365,8 @@ class HardwareEnvironmentDriver:
             worker_ids = sorted(cast(list[str], item["worker_device_ids"]))
             if scheduler_ids != allocation_ids or scheduler_ids != worker_ids:
                 raise DriverError(
-                    "device identity differs across Scheduler, DRA allocation, and worker"
+                    "device identity differs across Scheduler, infrastructure "
+                    "allocation, and worker"
                 )
             event = self._target_event(run, item) | {
                 "event_type": "device_identity_verified",
@@ -1204,6 +1377,15 @@ class HardwareEnvironmentDriver:
                 "device_class": item["device_class"],
                 "parent_uuid": item.get("parent_uuid", ""),
             }
+            for key in (
+                "allocation_mode",
+                "requested_core_percent",
+                "allocated_core_percent",
+                "requested_memory_mib",
+                "allocated_memory_mib",
+            ):
+                if key in item:
+                    event[key] = item[key]
             events.append(event)
             evidence.append(
                 {
@@ -1216,7 +1398,13 @@ class HardwareEnvironmentDriver:
                         "worker_device_ids",
                         "device_class",
                         "parent_uuid",
+                        "allocation_mode",
+                        "requested_core_percent",
+                        "allocated_core_percent",
+                        "requested_memory_mib",
+                        "allocated_memory_mib",
                     )
+                    if key in event
                 }
             )
         self._write_artifact(response_path, "device-identity.json", {"targets": evidence})
@@ -1577,10 +1765,12 @@ class HardwareEnvironmentDriver:
         require_ready: bool,
     ) -> list[JsonObject]:
         kube = Kubernetes(target)
-        inventory = _dra_inventory(
-            kube.json(["get", "resourceslices.resource.k8s.io"], namespaced=False)
-        )
-        by_tuple = {(str(item["pool"]), str(item["device"])): item for item in inventory}
+        by_tuple: dict[tuple[str, str], JsonObject] = {}
+        if target.execution_mode == "kubernetes-dra":
+            inventory = _dra_inventory(
+                kube.json(["get", "resourceslices.resource.k8s.io"], namespaced=False)
+            )
+            by_tuple = {(str(item["pool"]), str(item["device"])): item for item in inventory}
         pods_payload = kube.json(["get", "pods"])
         pods = []
         for item in _items(pods_payload, "items"):
@@ -1633,42 +1823,13 @@ class HardwareEnvironmentDriver:
             pod_metadata = _mapping(pod.get("metadata"), label="Pod metadata")
             if require_ready and not self._pod_ready(pod):
                 raise DriverError(f"Pod {pod_metadata.get('name')} is not Ready")
-            claim_name = self._pod_generated_claim_name(pod)
-            live_claim = kube.json(["get", "resourceclaims.resource.k8s.io", claim_name])
-            status = _mapping(live_claim.get("status"), label="ResourceClaim status")
-            allocation = _mapping(status.get("allocation"), label="ResourceClaim allocation")
-            allocation_results = _items(
-                _mapping(allocation.get("devices"), label="ResourceClaim allocation devices"),
-                "results",
-            )
-            if len(allocation_results) != len(scheduler_ids):
-                raise DriverError(
-                    "ResourceClaim allocation count does not match the Scheduler binding"
+            if target.execution_mode == "kubernetes-dra":
+                allocated_ids, expected_class, parent_ids, allocation_evidence = (
+                    self._dra_target_allocation(kube, pod, scheduler_ids, target, by_tuple)
                 )
-            allocated: list[JsonObject] = []
-            for allocation_result in allocation_results:
-                if allocation_result.get("driver") != NVIDIA_DRIVER:
-                    raise DriverError(
-                        "ResourceClaim allocation is not owned by the NVIDIA DRA driver"
-                    )
-                key = (
-                    str(allocation_result.get("pool", "")),
-                    str(allocation_result.get("device", "")),
-                )
-                if key not in by_tuple:
-                    raise DriverError(
-                        f"allocated DRA device {key[0]}/{key[1]} is absent from the latest "
-                        "ResourceSlice generation"
-                    )
-                allocated.append(by_tuple[key])
-            allocated_ids = sorted(str(item["uuid"]) for item in allocated)
-            expected_class = PROFILE_CLASS[target.gpu_profile]
-            claim_class = self._claim_class(live_claim)
-            if claim_class != expected_class or any(
-                item["device_class"] != expected_class for item in allocated
-            ):
-                raise DriverError(
-                    "ResourceClaim DeviceClass does not match the configured GPU profile"
+            else:
+                allocated_ids, expected_class, parent_ids, allocation_evidence = (
+                    self._hami_target_allocation(bundle, pod, scheduler_ids)
                 )
             output = kube.run(
                 [
@@ -1682,9 +1843,6 @@ class HardwareEnvironmentDriver:
                 ]
             )
             worker_ids = _visible_device_ids(output, target.gpu_profile)
-            parent_ids = {
-                str(item.get("parent_uuid", "")) for item in allocated if item.get("parent_uuid")
-            }
             if target.gpu_profile == "mig" and len(parent_ids) != 1:
                 raise DriverError("MIG allocation does not identify one parent UUID")
             results.append(
@@ -1712,9 +1870,131 @@ class HardwareEnvironmentDriver:
                     "worker_device_ids": worker_ids,
                     "device_class": expected_class,
                     "parent_uuid": next(iter(parent_ids), ""),
+                    **allocation_evidence,
                 }
             )
         return results
+
+    def _dra_target_allocation(
+        self,
+        kube: Kubernetes,
+        pod: JsonObject,
+        scheduler_ids: list[str],
+        target: TargetConfig,
+        by_tuple: Mapping[tuple[str, str], JsonObject],
+    ) -> tuple[list[str], str, set[str], JsonObject]:
+        claim_name = self._pod_generated_claim_name(pod)
+        live_claim = kube.json(["get", "resourceclaims.resource.k8s.io", claim_name])
+        status = _mapping(live_claim.get("status"), label="ResourceClaim status")
+        allocation = _mapping(status.get("allocation"), label="ResourceClaim allocation")
+        allocation_results = _items(
+            _mapping(allocation.get("devices"), label="ResourceClaim allocation devices"),
+            "results",
+        )
+        if len(allocation_results) != len(scheduler_ids):
+            raise DriverError("ResourceClaim allocation count does not match the Scheduler binding")
+        allocated: list[JsonObject] = []
+        for allocation_result in allocation_results:
+            if allocation_result.get("driver") != NVIDIA_DRIVER:
+                raise DriverError("ResourceClaim allocation is not owned by the NVIDIA DRA driver")
+            key = (
+                str(allocation_result.get("pool", "")),
+                str(allocation_result.get("device", "")),
+            )
+            if key not in by_tuple:
+                raise DriverError(
+                    f"allocated DRA device {key[0]}/{key[1]} is absent from the latest "
+                    "ResourceSlice generation"
+                )
+            allocated.append(by_tuple[key])
+        allocated_ids = sorted(str(item["uuid"]) for item in allocated)
+        expected_class = PROFILE_CLASS[target.gpu_profile]
+        claim_class = self._claim_class(live_claim)
+        if claim_class != expected_class or any(
+            item["device_class"] != expected_class for item in allocated
+        ):
+            raise DriverError("ResourceClaim DeviceClass does not match the configured GPU profile")
+        parent_ids = {
+            str(item.get("parent_uuid", "")) for item in allocated if item.get("parent_uuid")
+        }
+        return allocated_ids, expected_class, parent_ids, {"allocation_mode": "kubernetes-dra"}
+
+    @staticmethod
+    def _hami_target_allocation(
+        bundle: JsonObject, pod: JsonObject, scheduler_ids: list[str]
+    ) -> tuple[list[str], str, set[str], JsonObject]:
+        if len(scheduler_ids) != 1:
+            raise DriverError("HAMi workload requires exactly one Scheduler device UUID")
+        if bundle.get("gpuProfile") != HAMI_PROFILE:
+            raise DriverError("JobRunBundle did not select the hami-vgpu realization profile")
+        job = _mapping(bundle.get("job"), label="bundle Job")
+        template = _mapping(
+            _mapping(job.get("spec"), label="bundle Job spec").get("template"),
+            label="bundle Job template",
+        )
+        metadata = _mapping(template.get("metadata"), label="bundle Pod metadata")
+        annotations = _mapping(metadata.get("annotations", {}), label="bundle Pod annotations")
+        pod_spec = _mapping(template.get("spec"), label="bundle Pod spec")
+        if pod_spec.get("schedulerName") != HAMI_SCHEDULER:
+            raise DriverError("HAMi workload does not use the hami-scheduler")
+        if (
+            annotations.get(HAMI_USE_UUID_ANNOTATION) != scheduler_ids[0]
+            or annotations.get(HAMI_MODE_ANNOTATION) != "hami-core"
+        ):
+            raise DriverError("HAMi workload annotations do not match the Scheduler binding")
+        requested_core = _positive_integer_quantity(annotations.get(HAMI_EXPECTED_CORE_ANNOTATION))
+        requested_memory = _positive_integer_quantity(
+            annotations.get(HAMI_EXPECTED_MEMORY_ANNOTATION)
+        )
+        if requested_core == 0 or requested_memory == 0:
+            raise DriverError("HAMi workload expected allocation annotations are missing")
+        containers = _items(pod_spec, "containers")
+        if len(containers) != 1:
+            raise DriverError("HAMi workload must contain exactly one main container")
+        limits = _mapping(
+            _mapping(containers[0].get("resources"), label="HAMi container resources").get(
+                "limits"
+            ),
+            label="HAMi container resource limits",
+        )
+        if (
+            str(limits.get(HAMI_GPU_RESOURCE, "")) != "1"
+            or _positive_integer_quantity(limits.get(HAMI_CORE_RESOURCE)) != requested_core
+            or _positive_integer_quantity(limits.get(HAMI_MEMORY_PERCENT_RESOURCE))
+            != requested_core
+        ):
+            raise DriverError("HAMi workload resources do not match the expected share")
+        pod_metadata = _mapping(pod.get("metadata"), label="Pod metadata")
+        live_annotations = _mapping(pod_metadata.get("annotations", {}), label="Pod annotations")
+        allocations = _hami_allocations(
+            _string(
+                live_annotations.get(HAMI_ALLOCATED_ANNOTATION),
+                label="HAMi allocation annotation",
+            )
+        )
+        if len(allocations) != 1:
+            raise DriverError("HAMi workload must report exactly one allocated physical GPU")
+        allocation = allocations[0]
+        allocated_ids = [str(allocation["uuid"])]
+        if allocated_ids != scheduler_ids:
+            raise DriverError("HAMi allocation does not match the Scheduler binding")
+        if (
+            int(allocation["memory_mib"]) != requested_memory
+            or int(allocation["core_percent"]) != requested_core
+        ):
+            raise DriverError("HAMi allocation does not match the requested memory/core share")
+        return (
+            allocated_ids,
+            "",
+            set(),
+            {
+                "allocation_mode": HAMI_PROFILE,
+                "requested_core_percent": requested_core,
+                "allocated_core_percent": int(allocation["core_percent"]),
+                "requested_memory_mib": requested_memory,
+                "allocated_memory_mib": int(allocation["memory_mib"]),
+            },
+        )
 
     @staticmethod
     def _pod_generated_claim_name(pod: Mapping[str, Any]) -> str:
@@ -1904,10 +2184,13 @@ class HardwareEnvironmentDriver:
         if job.get("dataKind") != "DATA_KIND_LIVE":
             raise DriverError("hardware campaign job template must use DATA_KIND_LIVE")
         resources = _mapping(job.get("resourcesPerUnit"), label="job.resourcesPerUnit")
-        if float(resources.get("acceleratorUnits", 0)) != 1:
+        accelerator_units = float(resources.get("acceleratorUnits", 0))
+        if target.execution_mode == "kubernetes-dra" and accelerator_units != 1:
             raise DriverError(
                 "Kubernetes DRA hardware jobs require one whole GPU or MIG device per unit"
             )
+        if target.execution_mode == HAMI_PROFILE and not 0 < accelerator_units <= 1:
+            raise DriverError("HAMi hardware jobs require acceleratorUnits within (0,1]")
         minimum_nodes = int(
             _mapping(scenario.get("topology"), label="scenario.topology").get("minimum_nodes", 1)
         )

@@ -8,6 +8,7 @@ import sys
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any, cast
 
 import pytest
@@ -243,6 +244,30 @@ elif args[:2] == ["get", "namespace"]:
     emit({"metadata": {"name": "tgsrl-workloads"}})
 elif args[:2] == ["get", "deviceclasses.resource.k8s.io"]:
     emit({"metadata": {"name": args[2]}})
+elif args == ["get", "nodes"]:
+    emit({"items": [{
+        "metadata": {
+            "name": "gpu-node-a",
+            "annotations": {
+                "hami.io/node-nvidia-register": json.dumps([{
+                    "id": "GPU-full",
+                    "count": 10,
+                    "devmem": 23028,
+                    "devcore": 100,
+                    "type": "NVIDIA A10",
+                    "health": True,
+                    "mode": "hami-core",
+                }]),
+            },
+        },
+        "status": {
+            "allocatable": {
+                "nvidia.com/gpu": "10",
+                "nvidia.com/gpucores": "1000",
+                "nvidia.com/gpumem-percentage": "1000",
+            },
+        },
+    }]})
 elif args == ["get", "resourceslices.resource.k8s.io"]:
     devices = [{
         "name": "gpu-1",
@@ -562,7 +587,7 @@ def driver_environment(
                     "kubectl": str(kubectl),
                     "job_template": str(template),
                     "trace_command": ["export-gate-trace"],
-                    "operation_timeout_seconds": 2,
+                    "operation_timeout_seconds": 10,
                     "poll_interval_seconds": 0.01,
                 },
                 "targets": {
@@ -578,6 +603,10 @@ def driver_environment(
                                 "${RESPONSE_PATH}",
                             ]
                         },
+                    },
+                    "H1": {
+                        "gpu_profile": "full-gpu",
+                        "execution_mode": "hami-vgpu",
                     },
                 },
             }
@@ -712,6 +741,204 @@ def test_driver_preflight_accepts_full_gpu_inventory(
     fingerprint = response["environment_fingerprint"]
     assert fingerprint["gpu_profile"] == "full-gpu"
     assert fingerprint["accelerator_count"] == 1
+
+
+def test_driver_preflight_accepts_hami_inventory(
+    driver_environment: tuple[Any, _GatewayState, Path],
+) -> None:
+    driver, _state, root = driver_environment
+    request = _request("preflight", 0)
+    request["experiment_id"] = "H1"
+    request["scenario"] = json.loads(
+        (ROOT / "configs/scenarios/h1-hami-vgpu.yaml").read_text(encoding="utf-8")
+    )
+    for field in ("label", "phase", "iteration", "run_key", "step_index"):
+        request.pop(field)
+
+    response = _execute(driver, root, request)
+
+    assert response["status"] == "SUCCEEDED"
+    fingerprint = response["environment_fingerprint"]
+    assert fingerprint["execution_mode"] == "hami-vgpu"
+    assert fingerprint["gpu_profile"] == "full-gpu"
+    assert fingerprint["accelerator_count"] == 1
+    preflight = json.loads(
+        (root / request["request_id"] / "preflight.json").read_text(encoding="utf-8")
+    )
+    assert preflight["inventory"][0]["uuid"] == "GPU-full"
+    assert preflight["inventory"][0]["memory_mib"] == 23028
+
+
+def test_hami_inventory_and_allocation_parsers_preserve_share_identity() -> None:
+    registration = json.dumps(
+        [
+            {
+                "id": "GPU-a10",
+                "count": 10,
+                "devmem": 23028,
+                "devcore": 100,
+                "type": "NVIDIA A10",
+                "health": True,
+                "mode": "hami-core",
+            }
+        ]
+    )
+    inventory = DRIVER._hami_inventory(
+        {
+            "items": [
+                {
+                    "metadata": {
+                        "name": "gpu-node-a",
+                        "annotations": {DRIVER.HAMI_REGISTER_ANNOTATION: registration},
+                    },
+                    "status": {"allocatable": {DRIVER.HAMI_GPU_RESOURCE: "10"}},
+                }
+            ]
+        }
+    )
+    assert inventory == [
+        {
+            "uuid": "GPU-a10",
+            "split_count": 10,
+            "memory_mib": 23028,
+            "core_percent": 100,
+            "model": "NVIDIA A10",
+            "healthy": True,
+            "mode": "hami-core",
+            "node_id": "gpu-node-a",
+        }
+    ]
+    assert DRIVER._hami_allocations("GPU-a10,NVIDIA A10,9211,40:;") == [
+        {
+            "uuid": "GPU-a10",
+            "type": "NVIDIA A10",
+            "memory_mib": 9211,
+            "core_percent": 40,
+        }
+    ]
+
+
+def _hami_bundle_and_pod(*, allocated_core: int = 40) -> tuple[JsonObject, JsonObject]:
+    annotations = {
+        DRIVER.HAMI_USE_UUID_ANNOTATION: "GPU-a10",
+        DRIVER.HAMI_MODE_ANNOTATION: "hami-core",
+        DRIVER.HAMI_EXPECTED_CORE_ANNOTATION: "40",
+        DRIVER.HAMI_EXPECTED_MEMORY_ANNOTATION: "9211",
+    }
+    bundle = {
+        "gpuProfile": DRIVER.HAMI_PROFILE,
+        "job": {
+            "spec": {
+                "template": {
+                    "metadata": {"annotations": annotations},
+                    "spec": {
+                        "schedulerName": DRIVER.HAMI_SCHEDULER,
+                        "containers": [
+                            {
+                                "resources": {
+                                    "limits": {
+                                        DRIVER.HAMI_GPU_RESOURCE: "1",
+                                        DRIVER.HAMI_CORE_RESOURCE: "40",
+                                        DRIVER.HAMI_MEMORY_PERCENT_RESOURCE: "40",
+                                    }
+                                }
+                            }
+                        ],
+                    },
+                }
+            }
+        },
+    }
+    pod = {
+        "metadata": {
+            "annotations": {
+                DRIVER.HAMI_ALLOCATED_ANNOTATION: (f"GPU-a10,NVIDIA A10,9211,{allocated_core}:;")
+            }
+        }
+    }
+    return cast(JsonObject, bundle), cast(JsonObject, pod)
+
+
+def test_hami_target_allocation_matches_scheduler_uuid_and_requested_share() -> None:
+    bundle, pod = _hami_bundle_and_pod()
+
+    allocated, device_class, parents, evidence = (
+        DRIVER.HardwareEnvironmentDriver._hami_target_allocation(bundle, pod, ["GPU-a10"])
+    )
+
+    assert allocated == ["GPU-a10"]
+    assert device_class == ""
+    assert parents == set()
+    assert evidence == {
+        "allocation_mode": "hami-vgpu",
+        "requested_core_percent": 40,
+        "allocated_core_percent": 40,
+        "requested_memory_mib": 9211,
+        "allocated_memory_mib": 9211,
+    }
+
+
+def test_hami_target_allocation_rejects_actual_share_mismatch() -> None:
+    bundle, pod = _hami_bundle_and_pod(allocated_core=39)
+
+    with pytest.raises(DRIVER.DriverError, match="requested memory/core share"):
+        DRIVER.HardwareEnvironmentDriver._hami_target_allocation(bundle, pod, ["GPU-a10"])
+
+
+def test_hami_target_allocation_rejects_multiple_scheduler_devices() -> None:
+    bundle, pod = _hami_bundle_and_pod()
+
+    with pytest.raises(DRIVER.DriverError, match="exactly one Scheduler device UUID"):
+        DRIVER.HardwareEnvironmentDriver._hami_target_allocation(bundle, pod, ["GPU-a10", "GPU-b"])
+
+
+def test_hami_identity_event_includes_allocation_share_evidence(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    driver = object.__new__(DRIVER.HardwareEnvironmentDriver)
+    target = SimpleNamespace(
+        gateway_url="http://127.0.0.1:1",
+        timeout=1,
+        poll_interval=0.01,
+    )
+    allocation = {
+        "node_id": "gpu-node-a",
+        "runtime_unit_id": "unit-a",
+        "worker_id": "unit-a",
+        "scheduler_device_ids": ["GPU-a10"],
+        "allocated_device_ids": ["GPU-a10"],
+        "worker_device_ids": ["GPU-a10"],
+        "device_class": "",
+        "parent_uuid": "",
+        "allocation_mode": "hami-vgpu",
+        "requested_core_percent": 40,
+        "allocated_core_percent": 40,
+        "requested_memory_mib": 9211,
+        "allocated_memory_mib": 9211,
+    }
+    monkeypatch.setattr(
+        DRIVER,
+        "Gateway",
+        lambda *_args: SimpleNamespace(get=lambda _path: {"sandboxes": []}),
+    )
+    monkeypatch.setattr(
+        driver,
+        "_kubernetes_targets",
+        lambda *_args, **_kwargs: [allocation],
+    )
+
+    events = driver._verify_device_identity(
+        {},
+        target,
+        {"job_id": "job-a", "run_id": "run-a"},
+        tmp_path / "response.json",
+    )
+
+    assert events[0]["allocation_mode"] == "hami-vgpu"
+    assert events[0]["requested_core_percent"] == 40
+    assert events[0]["allocated_memory_mib"] == 9211
+    artifact = json.loads((tmp_path / "device-identity.json").read_text(encoding="utf-8"))
+    assert artifact["targets"][0]["allocated_core_percent"] == 40
 
 
 def test_driver_fails_closed_when_rebind_hook_is_missing(

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Execute one repository-defined E1-E8 scenario through an atomic environment driver."""
+"""Execute one repository-defined hardware scenario through an atomic environment driver."""
 
 from __future__ import annotations
 
@@ -323,7 +323,10 @@ def _validate_driver_response(
     fault_id: str = "",
     minimum_nodes: int = 1,
     gpu_profile: str = "",
+    execution_mode: str = "",
 ) -> list[dict[str, Any]]:
+    if not execution_mode and gpu_profile:
+        execution_mode = "kubernetes-dra"
     if _contains_sensitive_field(response):
         raise ExecutionError("hardware driver response contains credential-like fields")
     allowed_fields = {
@@ -390,7 +393,13 @@ def _validate_driver_response(
         if len(nodes) < minimum_nodes:
             raise ExecutionError("hardware driver device identity returned too few node identities")
         seen_devices: set[str] = set()
-        expected_device_class = "mig.nvidia.com" if gpu_profile == "mig" else "gpu.nvidia.com"
+        expected_device_class = (
+            "mig.nvidia.com"
+            if execution_mode == "kubernetes-dra" and gpu_profile == "mig"
+            else "gpu.nvidia.com"
+            if execution_mode == "kubernetes-dra"
+            else ""
+        )
         for event in identities:
             scheduler_ids = {str(value) for value in event.get("scheduler_device_ids", [])}
             allocated_ids = {str(value) for value in event.get("allocated_device_ids", [])}
@@ -403,9 +412,17 @@ def _validate_driver_response(
             if seen_devices & worker_ids:
                 raise ExecutionError("hardware driver device identity overlaps across nodes")
             seen_devices.update(worker_ids)
-            if event.get("device_class") != expected_device_class:
+            if expected_device_class and event.get("device_class") != expected_device_class:
                 raise ExecutionError(
                     "hardware driver device class does not match the preflight GPU profile"
+                )
+            if execution_mode == "hami-vgpu" and (
+                event.get("allocation_mode") != "hami-vgpu"
+                or event.get("requested_core_percent") != event.get("allocated_core_percent")
+                or event.get("requested_memory_mib") != event.get("allocated_memory_mib")
+            ):
+                raise ExecutionError(
+                    "hardware driver HAMi allocation does not match the requested share"
                 )
             if gpu_profile == "mig" and not str(event.get("parent_uuid", "")).strip():
                 raise ExecutionError("hardware driver MIG identity omitted parent UUID")
@@ -623,6 +640,7 @@ def _run_iteration(
     plan: list[dict[str, Any]],
     timeout: float,
     gpu_profile: str,
+    execution_mode: str,
 ) -> tuple[list[dict[str, Any]], dict[str, Any], list[dict[str, Any]]]:
     run_key = f"{experiment['experiment_id'].lower()}-{label}-{phase}-{iteration}"
     operations_root = output_root / "artifacts" / "services" / "hardware-driver" / run_key
@@ -665,6 +683,7 @@ def _run_iteration(
                 fault_id=str(step.get("fault_id", "")),
                 minimum_nodes=int(experiment["requirements"]["minimum_nodes"]),
                 gpu_profile=gpu_profile,
+                execution_mode=execution_mode,
             )
             for event in operation_events:
                 events.append(
@@ -835,6 +854,7 @@ def execute(args: argparse.Namespace) -> int:
                         plan=plan[label],
                         timeout=args.timeout_seconds,
                         gpu_profile=str(fingerprint["gpu_profile"]),
+                        execution_mode=str(fingerprint["execution_mode"]),
                     )
                     events.extend(run_events)
                     service_runs = {str(event.get("service_run_id", "")) for event in run_events}

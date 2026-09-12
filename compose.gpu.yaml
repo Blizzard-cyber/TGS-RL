@@ -83,7 +83,7 @@ services:
       - -namespace
       - ${TGSRL_WORKLOAD_NAMESPACE:-tgsrl-system}
       - -gpu-profile
-      - kubernetes-dra
+      - ${TGSRL_OPERATOR_GPU_PROFILES:-kubernetes-dra}
       - -worker-bootstrap
       - -worker-bootstrap-image
       - ${TGSRL_BOOTSTRAP_IMAGE:?set TGSRL_BOOTSTRAP_IMAGE}

@@ -14,6 +14,10 @@ func TestObserveHAMIAllocationMatchesSchedulerUUID(t *testing.T) {
 	bundle := &api.Bundle{
 		GPUProfile:     compiler.GPUProfileHAMIVGPU,
 		RuntimeTargets: []api.RuntimeTarget{{DeviceIDs: []string{"GPU-a10"}}},
+		Job: api.Job{Spec: api.JobSpec{Template: api.PodTemplateSpec{ObjectMeta: api.ObjectMeta{Annotations: map[string]string{
+			compiler.HAMIExpectedMemoryAnnotation: "9211",
+			compiler.HAMIExpectedCoreAnnotation:   "40",
+		}}}}},
 	}
 	allocated, deviceIDs, err := observeHAMIAllocation(
 		bundle,
@@ -31,6 +35,10 @@ func TestObserveHAMIAllocationRejectsUUIDMismatch(t *testing.T) {
 	bundle := &api.Bundle{
 		GPUProfile:     compiler.GPUProfileHAMIVGPU,
 		RuntimeTargets: []api.RuntimeTarget{{DeviceIDs: []string{"GPU-expected"}}},
+		Job: api.Job{Spec: api.JobSpec{Template: api.PodTemplateSpec{ObjectMeta: api.ObjectMeta{Annotations: map[string]string{
+			compiler.HAMIExpectedMemoryAnnotation: "9211",
+			compiler.HAMIExpectedCoreAnnotation:   "40",
+		}}}}},
 	}
 	_, _, err := observeHAMIAllocation(
 		bundle,
@@ -45,6 +53,10 @@ func TestObserveHAMIAllocationRejectsMIGIdentity(t *testing.T) {
 	bundle := &api.Bundle{
 		GPUProfile:     compiler.GPUProfileHAMIVGPU,
 		RuntimeTargets: []api.RuntimeTarget{{DeviceIDs: []string{"GPU-expected"}}},
+		Job: api.Job{Spec: api.JobSpec{Template: api.PodTemplateSpec{ObjectMeta: api.ObjectMeta{Annotations: map[string]string{
+			compiler.HAMIExpectedMemoryAnnotation: "9211",
+			compiler.HAMIExpectedCoreAnnotation:   "40",
+		}}}}},
 	}
 	_, _, err := observeHAMIAllocation(
 		bundle,
@@ -52,6 +64,24 @@ func TestObserveHAMIAllocationRejectsMIGIdentity(t *testing.T) {
 	)
 	if err == nil || !strings.Contains(err.Error(), "not a physical GPU UUID") {
 		t.Fatalf("HAMi MIG identity error = %v", err)
+	}
+}
+
+func TestObserveHAMIAllocationRejectsShareMismatch(t *testing.T) {
+	bundle := &api.Bundle{
+		GPUProfile:     compiler.GPUProfileHAMIVGPU,
+		RuntimeTargets: []api.RuntimeTarget{{DeviceIDs: []string{"GPU-a10"}}},
+		Job: api.Job{Spec: api.JobSpec{Template: api.PodTemplateSpec{ObjectMeta: api.ObjectMeta{Annotations: map[string]string{
+			compiler.HAMIExpectedMemoryAnnotation: "9211",
+			compiler.HAMIExpectedCoreAnnotation:   "40",
+		}}}}},
+	}
+	_, _, err := observeHAMIAllocation(
+		bundle,
+		[]byte(`{"items":[{"metadata":{"annotations":{"hami.io/vgpu-devices-allocated":"GPU-a10,NVIDIA,9211,39:;"}}}]}`),
+	)
+	if err == nil || !strings.Contains(err.Error(), "want 9211/40") {
+		t.Fatalf("HAMi share mismatch error = %v", err)
 	}
 }
 

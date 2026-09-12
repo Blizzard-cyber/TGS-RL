@@ -48,7 +48,17 @@ payload = {
         "operation_timeout_seconds": 1800,
         "poll_interval_seconds": 2
     },
-    "targets": {"E1": {"gpu_profile": "full-gpu"}}
+    "targets": {
+        "E1": {
+            "gpu_profile": "full-gpu",
+            "execution_mode": "kubernetes-dra",
+        },
+        "H1": {
+            "gpu_profile": "full-gpu",
+            "execution_mode": "hami-vgpu",
+            "job_template": str(Path("configs/hardware/hami-job.example.json").resolve()),
+        },
+    }
 }
 Path(output).write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
 env_path = Path(__import__("os").environ.get("TGSRL_GPU_RUNTIME_ENV", ".cache/tgsrl/gpu-runtime.env"))

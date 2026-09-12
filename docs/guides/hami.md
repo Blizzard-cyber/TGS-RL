@@ -4,12 +4,14 @@
 [HAMi](https://github.com/Project-HAMi/HAMi) 兑现。当前接入复用 HAMi 的公开 Kubernetes
 资源与注解协议，不复制 HAMi 源码，也不让 HAMi 取代 TGS-RL 的任务、运行时或决策权威。
 
-> **当前验证边界**：本仓库已完成 HAMi 协议投影、typed inventory、UUID 回读和 CPU 合同测试；
-> 尚未在真实 HAMi 集群执行 GPU workload。因此本页描述的是可测试接入方式，不是硬件通过证据。
+> **当前验证边界**：本仓库已完成 HAMi 协议投影、typed inventory、UUID/份额回读、独立
+> H1 campaign 和 CPU 合同测试；H1 真实 GPU 结果以 `docs/validation/` 中是否存在对应记录
+> 为准。没有报告时不得把 Pod Running 或本地测试写成硬件通过证据。
 
 ## 解决什么问题
 
-MIG 是部分 NVIDIA 设备提供的硬件切片能力，不是统一调度的前置条件。不支持或未启用\n+MIG 的设备仍应正常进入资源池：
+MIG 是部分 NVIDIA 设备提供的硬件切片能力，不是统一调度的前置条件。不支持或未启用
+MIG 的设备仍应正常进入资源池：
 
 | 需求 | 推荐资源方式 | 隔离与动态能力 |
 |---|---|---|
@@ -51,7 +53,8 @@ TGS-RL 的 `hami-vgpu` profile 当前只接受：
 - HAMi `hami-core` 模式；
 - 节点 `hami.io/node-nvidia-register` 中存在完整、健康且唯一的 UUID 记录；
 - managed-worker bootstrap 已启用；
-- Pod 启动后存在 `hami.io/vgpu-devices-allocated`，且回读 UUID 与 Binding 完全一致。
+- Pod 启动后存在 `hami.io/vgpu-devices-allocated`，且回读 UUID、显存 MiB 和 core
+  百分比与 Binding/编译期请求完全一致。
 
 份额向上取整为整数百分比。例如 `accelerator_units: 0.4` 会编译为：
 
@@ -60,7 +63,10 @@ metadata:
   annotations:
     nvidia.com/use-gpuuuid: GPU-xxxxxxxx
     nvidia.com/vgpu-mode: hami-core
+    tgsrl.io/hami-core-percent: "40"
+    tgsrl.io/hami-memory-mib: "9211" # 以 23028 MiB 的卡为例
 spec:
+  schedulerName: hami-scheduler
   nodeSelector:
     kubernetes.io/hostname: gpu-node-01
   containers:
@@ -80,9 +86,10 @@ spec:
 
 ## 集群前置条件
 
-TGS-RL 不自动安装 HAMi。目标集群应由管理员按
-[HAMi 官方安装文档](https://project-hami.io/docs/get-started/deploy-with-helm/) 安装并锁定版本，
-至少确认：
+生产集群应由管理员按
+[HAMi 官方安装文档](https://project-hami.io/docs/get-started/deploy-with-helm/) 安装并锁定版本。
+仓库只为专用单节点 Minikube 验证环境提供可逆的 H1 安装辅助脚本，不会由 Operator 在运行时
+隐式安装 HAMi。无论采用哪种方式，至少确认：
 
 1. NVIDIA 驱动、容器运行时和 NVIDIA Container Toolkit 正常；
 2. HAMi scheduler、admission webhook 与 device plugin 均为 Ready；
@@ -91,7 +98,7 @@ TGS-RL 不自动安装 HAMi。目标集群应由管理员按
 5. `nvidia.com/gpu`、`nvidia.com/gpucores` 和
    `nvidia.com/gpumem-percentage` 能被集群识别；
 6. Kueue 的 ResourceFlavor/ClusterQueue 已包含上述资源配额；
-7. HAMi admission webhook 能为相关 Pod 设置正确的 scheduler；
+7. workload Pod 显式使用 `schedulerName: hami-scheduler`，admission webhook 正常；
 8. TGS-RL Operator ServiceAccount 可以 `list` Node，并可 `get/list/watch` workload Pod。
 
 先做只读检查：
@@ -186,7 +193,8 @@ kubectl get pods -n <namespace> -l job-name=<job-name> -o jsonpath=\
 ```
 
 Operator 只有在注解中解析到唯一且匹配的 UUID 后，才把资源分配视为已完成。多个 Pod
-报告不同集合、注解格式损坏或 UUID 不一致都会返回错误，阻止 `BOUND/RUNNING`。
+报告不同集合、注解格式损坏、UUID 不一致或实际 memory/core 份额不等于编译期请求都会返回
+错误，阻止 `BOUND/RUNNING`。
 
 ## 本地验证
 
@@ -208,15 +216,61 @@ npm --prefix console run test:browser
 这些测试覆盖 typed inventory、profile fallback、非 MIG 物理卡分数投影、Pod allocation UUID 回读、
 异构资源页面和响应式布局，但不能证明真实 CUDA 隔离或共享有效。
 
-## 首次硬件验证建议
+## H1 单卡分数 GPU 验证
 
-不要用 MIG 测试阻塞不具备该能力的设备。建议分开归档：
+H1 是独立于正式 E1–E8 发布矩阵的 realization smoke。它只回答：一张物理 NVIDIA GPU 上，
+Scheduler 选定的 UUID 和 `0.4` 份额能否被 HAMi 精确兑现，并被真实 CUDA worker 与 Trace
+确认。它不证明双 workload 共置隔离、性能收益或模型收敛。
 
-1. **Full GPU**：在当前未启用 MIG 的设备上继续复跑已验证的 E1 DRA 路径；
-2. **HAMi 共享**：两个 workload 绑定同一物理 UUID，请求互补份额，核对 Pod annotation、
-   `nvidia-smi` 可见性、显存与 core 限制、Trace 和 cleanup；
-3. **MPS**：单独验证 server PID、active-thread percentage 写入/readback 和显存释放边界；
-4. **MIG**：获得支持型号后再执行 E2，验证 DeviceClass、parent UUID 和 rebind。
+在 E1 已通过、namespace 无运行中 TGS-RL workload 且 GPU 控制面已停止后执行：
+
+```bash
+make gpu-down
+make gpu-prepare-hami
+make gpu-hami-status
+
+export TGSRL_OPERATOR_GPU_PROFILES=hami-vgpu
+make gpu-up
+make gpu-hami-smoke
+```
+
+`gpu-prepare-hami` 从 HAMi 官方 GitHub Release 获取并锁定 chart `2.10.0` 及其 SHA-256；
+启用 `TGSRL_NETWORK_PROFILE=cn` 时只替换下载传输地址，仍校验同一摘要。脚本停用 Minikube 自带 NVIDIA
+Device Plugin，安装 HAMi、标记测试节点并创建独立 Kueue `hami` queue。脚本拒绝在
+namespace 仍有 JobRunBundle、Workload、Job 或 Pod 时切换；安装失败会尝试恢复原插件状态。
+
+H1 必须同时满足：
+
+```text
+Scheduler Binding UUID
+= HAMi Node registration UUID
+= Pod use-gpuuuid
+= Pod allocated UUID
+= worker-visible UUID
+
+requested core/memory == HAMi allocated core/memory
+```
+
+结果写入：
+
+```text
+.cache/tgsrl/hami-smoke/h1-hami-vgpu/report.json
+.cache/tgsrl/hami-smoke/h1-hami-vgpu/baseline-trace.json
+.cache/tgsrl/hami-smoke/h1-hami-vgpu/variant-trace.json
+```
+
+测试完成后先停止控制面，再恢复 DRA 所需的原 NVIDIA Device Plugin：
+
+```bash
+make gpu-down
+make gpu-restore-dra
+```
+
+不要用 MIG 测试阻塞不具备该能力的设备。后续分开验证：
+
+1. **双 workload 共享**：绑定同一物理 UUID、请求互补份额，验证并发隔离和干扰；
+2. **MPS**：单独验证 server PID、active-thread percentage 写入/readback 和显存释放边界；
+3. **MIG**：获得支持型号后再执行 E2，验证 DeviceClass、parent UUID 和 rebind。
 
 HAMi smoke 的原始输出仍应写入 `.cache/tgsrl/`，只将脱敏报告和必要日志放入 `handoff/`
 供开发机复核。测试未运行时保持 `NOT_RUN`，失败时保留原始错误，不把 HAMi Pod 成功调度
@@ -237,7 +291,7 @@ HAMi smoke 的原始输出仍应写入 `.cache/tgsrl/`，只将脱敏报告和�
 
 ## 尚未支持
 
-- TGS-RL 自动安装、升级或配置 HAMi；
+- Operator 或生产部署自动安装、升级或配置 HAMi；仓库脚本只服务于专用 H1 Minikube；
 - 在一个 Binding 中通过 HAMi 分配多张物理 GPU；
 - 分别配置 core percentage 与 memory percentage；
 - 由 TGS-RL 操作 HAMi dynamic MIG；

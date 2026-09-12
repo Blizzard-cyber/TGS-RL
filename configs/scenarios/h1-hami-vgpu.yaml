@@ -1,0 +1,13 @@
+{
+  "schema_version": "tgsrl.io/hardware-scenario/v1alpha1",
+  "experiment_id": "H1",
+  "title": "HAMi fractional GPU exact-device execution",
+  "topology": {"minimum_nodes": 1, "minimum_accelerators": 1, "gpu_profiles": ["full-gpu"]},
+  "workload": {"framework": "verl", "execution_backend": "ray", "trainer": "pytorch", "rollout_engine": "vllm"},
+  "execution_plan": {
+    "baseline": [{"operation": "provision"}, {"operation": "apply_action", "action": "bind"}, {"operation": "launch"}, {"operation": "verify_device_identity"}, {"operation": "measure"}, {"operation": "stop"}, {"operation": "cleanup"}],
+    "variant": [{"operation": "provision"}, {"operation": "apply_action", "action": "bind"}, {"operation": "launch"}, {"operation": "verify_device_identity"}, {"operation": "measure"}, {"operation": "stop"}, {"operation": "cleanup"}]
+  },
+  "faults": [],
+  "required_evidence": ["scheduler-binding", "hami-allocation", "worker-device-identity", "throughput", "gpu-active-time"]
+}

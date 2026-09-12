@@ -17,6 +17,7 @@ MANIFEST = ROOT / "configs" / "gates" / "gate-gi.json"
 FULL_STACK_MANIFEST = ROOT / "configs" / "gates" / "gate-gi-process.json"
 HARDWARE_MANIFEST = ROOT / "configs" / "gates" / "gate-e1-e8-hardware.json"
 CAMPAIGN = ROOT / "configs" / "gates" / "e1-e8.json"
+HAMI_CAMPAIGN = ROOT / "configs" / "gates" / "hami-smoke.json"
 SPEC = importlib.util.spec_from_file_location("tgsrl_gate_tools", SCRIPT)
 assert SPEC is not None and SPEC.loader is not None
 GATE_TOOLS = importlib.util.module_from_spec(SPEC)
@@ -527,6 +528,50 @@ def test_campaign_defines_e1_through_e8_and_missing_evidence_is_not_run(
     result = json.loads(evaluated.stdout)
     assert result["status"] == "NOT_RUN"
     assert {item["status"] for item in result["experiments"]} == {"NOT_RUN"}
+
+
+def test_hami_campaign_is_independent_and_requires_fractional_allocation_evidence() -> None:
+    campaign = GATE_TOOLS.load_campaign(HAMI_CAMPAIGN)
+
+    assert campaign["campaign_id"] == "tgsrl-hami-smoke"
+    assert [item["experiment_id"] for item in campaign["experiments"]] == ["H1"]
+    experiment = campaign["experiments"][0]
+    assert experiment["requirements"]["execution_modes"] == ["hami-vgpu"]
+    scenario = json.loads((ROOT / experiment["scenario_manifest"]).read_text(encoding="utf-8"))
+    assert "hami-allocation" in scenario["required_evidence"]
+
+
+def test_hami_driver_response_rejects_share_mismatch() -> None:
+    response = {
+        "schema_version": HARDWARE_TOOLS.DRIVER_RESPONSE_SCHEMA,
+        "request_id": "request-h1",
+        "status": "SUCCEEDED",
+        "events": [
+            {
+                "event_type": "device_identity_verified",
+                "source": "worker",
+                "node_id": "gpu-node-1",
+                "scheduler_device_ids": ["GPU-a10"],
+                "allocated_device_ids": ["GPU-a10"],
+                "worker_device_ids": ["GPU-a10"],
+                "device_class": "",
+                "allocation_mode": "hami-vgpu",
+                "requested_core_percent": 40,
+                "allocated_core_percent": 39,
+                "requested_memory_mib": 9211,
+                "allocated_memory_mib": 9211,
+            }
+        ],
+    }
+
+    with pytest.raises(HARDWARE_TOOLS.ExecutionError, match="HAMi allocation"):
+        HARDWARE_TOOLS._validate_driver_response(
+            response,
+            request_id="request-h1",
+            operation="verify_device_identity",
+            gpu_profile="full-gpu",
+            execution_mode="hami-vgpu",
+        )
 
 
 def test_campaign_does_not_promote_cpu_evidence_to_gpu_pass(tmp_path: Path) -> None:

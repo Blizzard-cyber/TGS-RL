@@ -120,6 +120,7 @@ type Probe struct {
 }
 
 type PodSpec struct {
+	SchedulerName    string              `json:"schedulerName,omitempty"`
 	RuntimeClassName string              `json:"runtimeClassName,omitempty"`
 	HostNetwork      bool                `json:"hostNetwork,omitempty"`
 	DNSPolicy        string              `json:"dnsPolicy,omitempty"`

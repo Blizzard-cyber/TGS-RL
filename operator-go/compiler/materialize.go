@@ -31,6 +31,7 @@ func buildBundle(input *normalizedInput) (*api.Bundle, error) {
 			Annotations: podAnnotations,
 		},
 		Spec: api.PodSpec{
+			SchedulerName:    schedulerNameForProfile(input.GPUProfile),
 			RuntimeClassName: input.Runtime.RuntimeClass.Name,
 			NodeSelector:     buildNodeSelector(input),
 			Containers: []api.Container{
@@ -200,6 +201,13 @@ func buildBundle(input *normalizedInput) (*api.Bundle, error) {
 			Reason:   statusReason(input.Run),
 		},
 	}, nil
+}
+
+func schedulerNameForProfile(profile string) string {
+	if IsHAMIGPUProfile(profile) {
+		return HAMISchedulerName
+	}
+	return ""
 }
 
 func configureWorkerBootstrap(template *api.PodTemplateSpec, input *normalizedInput) error {
@@ -400,6 +408,9 @@ func validateHAMIProjection(bundle *api.Bundle) error {
 	if annotations[HAMINVIDIAUseUUIDAnnotation] != deviceIDs[0] || annotations[HAMINVIDIAModeAnnotation] != "hami-core" {
 		return fmt.Errorf("HAMi vGPU annotations do not match the concrete binding")
 	}
+	if bundle.Job.Spec.Template.Spec.SchedulerName != HAMISchedulerName {
+		return fmt.Errorf("HAMi vGPU pod must use scheduler %q", HAMISchedulerName)
+	}
 	resources := bundle.Job.Spec.Template.Spec.Containers[0].Resources
 	for _, name := range []string{HAMINVIDIAResource, HAMINVIDIACoreResource, HAMINVIDIAMemoryPercent} {
 		if resources.Requests[name] == "" || resources.Limits[name] != resources.Requests[name] {
@@ -408,6 +419,10 @@ func validateHAMIProjection(bundle *api.Bundle) error {
 	}
 	if resources.Requests[HAMINVIDIAResource] != "1" {
 		return fmt.Errorf("HAMi vGPU must request exactly one physical GPU")
+	}
+	if annotations[HAMIExpectedCoreAnnotation] != resources.Requests[HAMINVIDIACoreResource] ||
+		annotations[HAMIExpectedMemoryAnnotation] == "" {
+		return fmt.Errorf("HAMi vGPU expected allocation metadata is incomplete")
 	}
 	return nil
 }

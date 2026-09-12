@@ -114,6 +114,14 @@ func TestCompileSelectsFirstCompatibleGPUProfile(t *testing.T) {
 	if bundle.GPUProfile != GPUProfileHAMIVGPU {
 		t.Fatalf("GPU profile = %q, want %q", bundle.GPUProfile, GPUProfileHAMIVGPU)
 	}
+	if bundle.Job.Spec.Template.Spec.SchedulerName != HAMISchedulerName ||
+		bundle.Workload.Spec.PodSets[0].Template.Spec.SchedulerName != HAMISchedulerName {
+		t.Fatalf("HAMi scheduler names = job %q workload %q, want %q",
+			bundle.Job.Spec.Template.Spec.SchedulerName,
+			bundle.Workload.Spec.PodSets[0].Template.Spec.SchedulerName,
+			HAMISchedulerName,
+		)
+	}
 	if got := bundle.Job.Spec.Template.ObjectMeta.Annotations[HAMINVIDIAUseUUIDAnnotation]; got != "GPU-aaaa" {
 		t.Fatalf("HAMi UUID annotation = %q", got)
 	}

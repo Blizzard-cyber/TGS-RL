@@ -5,6 +5,7 @@ import (
 	"math"
 	"math/big"
 	"sort"
+	"strconv"
 	"strings"
 
 	tgsrlv1 "github.com/Blizzard-cyber/TGS-RL/gen/go/tgsrl/v1"
@@ -93,8 +94,11 @@ func buildAnnotations(input *normalizedInput) map[string]string {
 		annotations["tgsrl.io/manifest-"+sanitizeLabelKey(key)] = input.Manifest.GetAnnotations()[key]
 	}
 	if IsHAMIGPUProfile(input.GPUProfile) {
+		percentage := int64(math.Ceil(input.resourcesPerUnit.GetAcceleratorUnits() * 100))
 		annotations[HAMINVIDIAUseUUIDAnnotation] = input.hamiDevices[0].UUID
 		annotations[HAMINVIDIAModeAnnotation] = "hami-core"
+		annotations[HAMIExpectedCoreAnnotation] = strconv.FormatInt(percentage, 10)
+		annotations[HAMIExpectedMemoryAnnotation] = strconv.FormatUint((input.hamiDevices[0].MemoryBytes>>20)*uint64(percentage)/100, 10)
 	}
 	return annotations
 }

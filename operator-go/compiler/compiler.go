@@ -26,6 +26,9 @@ const (
 	HAMINVIDIAModeAnnotation      = "nvidia.com/vgpu-mode"
 	HAMINVIDIAAllocatedAnnotation = "hami.io/vgpu-devices-allocated"
 	HAMINVIDIARegisterAnnotation  = "hami.io/node-nvidia-register"
+	HAMISchedulerName             = "hami-scheduler"
+	HAMIExpectedCoreAnnotation    = "tgsrl.io/hami-core-percent"
+	HAMIExpectedMemoryAnnotation  = "tgsrl.io/hami-memory-mib"
 )
 
 type Compiler struct {
