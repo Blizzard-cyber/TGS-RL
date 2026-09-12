@@ -4,10 +4,11 @@
 [HAMi](https://github.com/Project-HAMi/HAMi) 兑现。当前接入复用 HAMi 的公开 Kubernetes
 资源与注解协议，不复制 HAMi 源码，也不让 HAMi 取代 TGS-RL 的任务、运行时或决策权威。
 
-> **当前验证边界**：NVIDIA A10 上的单 workload H1 已通过，证明 `0.4` 请求能兑现为
-> `40%` core 和 `9211 MiB`，且 Scheduler、HAMi、worker UUID 一致。详见
-> [H1 验证记录](../validation/h1-hami-vgpu-2026-09-12.md)。该证据不覆盖双 workload
-> 并发隔离、动态改份额或训练收益。
+> **当前验证边界**：NVIDIA A10 上的 H1 单 worker 与 H2 双 worker 已通过。H2 中两个
+> worker 各获得 `40%` core 和 `9211 MiB`，共享同一物理 UUID，并在三轮 measurement
+> 中产生真实执行重叠。详见 [H1 验证记录](../validation/h1-hami-vgpu-2026-09-12.md)和
+> [H2 验证记录](../validation/h2-hami-concurrency-2026-09-13.md)。这些证据仍不覆盖
+> OOM 隔离、公平性、动态改份额或训练收益。
 
 ## 解决什么问题
 
@@ -89,7 +90,7 @@ spec:
 
 生产集群应由管理员按
 [HAMi 官方安装文档](https://project-hami.io/docs/get-started/deploy-with-helm/) 安装并锁定版本。
-仓库只为专用单节点 Minikube 验证环境提供可逆的 H1 安装辅助脚本，不会由 Operator 在运行时
+仓库只为专用单节点 Minikube 验证环境提供可逆的 H1/H2 安装辅助脚本，不会由 Operator 在运行时
 隐式安装 HAMi。无论采用哪种方式，至少确认：
 
 1. NVIDIA 驱动、容器运行时和 NVIDIA Container Toolkit 正常；
@@ -230,8 +231,9 @@ make gpu-down
 make gpu-prepare-hami
 make gpu-hami-status
 
-export TGSRL_OPERATOR_GPU_PROFILES=hami-vgpu
-make gpu-up
+TGSRL_OPERATOR_GPU_PROFILES=hami-vgpu \
+TGSRL_GPU_MANIFEST=compatibility/manifests/hami-smoke-verl.yaml \
+  make gpu-up
 make gpu-hami-smoke
 ```
 
@@ -258,9 +260,54 @@ requested core/memory == HAMi allocated core/memory
 
 ```text
 .cache/tgsrl/hami-smoke/h1-hami-vgpu/report.json
-.cache/tgsrl/hami-smoke/h1-hami-vgpu/baseline-trace.json
-.cache/tgsrl/hami-smoke/h1-hami-vgpu/variant-trace.json
+.cache/tgsrl/hami-smoke/h1-hami-vgpu/artifacts/traces/baseline-trace.json
+.cache/tgsrl/hami-smoke/h1-hami-vgpu/artifacts/traces/variant-trace.json
 ```
+
+## H2 双 worker 同卡并发验证
+
+H2 复用同一 HAMi 集群，但把一个逻辑 RuntimeUnit 展开为两个独立 pending unit、Binding、
+sandbox 和 managed worker。每个 worker 请求 `0.4`，总份额为 `0.8`。`gpu-hami-up`
+会原子选择：
+
+```text
+Operator profile = hami-vgpu
+Scheduler/Runtime manifest = hami-concurrency-verl
+```
+
+不要只手工切换其中一项，否则控制面配置与 Job 的 compatibility profile 会不一致。
+
+```bash
+make gpu-down
+make gpu-prepare-hami
+make gpu-hami-status
+make gpu-hami-up
+make gpu-hami-concurrency-smoke
+```
+
+H2 必须同时满足：
+
+```text
+两个 worker 的 sandbox_id / binding_id / pending_unit_id 互不相同
+两个 worker 的 logical runtime_unit_id 相同
+两个 worker 的 Scheduler / HAMi / 可见 GPU UUID 相同
+每个 worker requested/allocated core == 40/40
+每个 worker requested/allocated memory == 9211/9211 MiB
+aggregate allocated core == 80%
+每轮 measurement 的两个执行区间 overlap > 0
+```
+
+结果写入：
+
+```text
+.cache/tgsrl/hami-concurrency-smoke/h2-hami-concurrency/report.json
+.cache/tgsrl/hami-concurrency-smoke/h2-hami-concurrency/artifacts/traces/baseline-trace.json
+.cache/tgsrl/hami-concurrency-smoke/h2-hami-concurrency/artifacts/traces/variant-trace.json
+```
+
+H2 是并发共置 smoke，不是隔离或性能实验。它证明两个真实 CUDA worker 可以同时消费同一
+物理 GPU 的两个 HAMi 份额，并能被 TGS-RL 按独立 sandbox/binding 观测；它没有故意触发
+OOM，也没有为公平性、干扰率或吞吐收益设置统计门槛。
 
 测试完成后先停止控制面，再恢复 DRA 所需的原 NVIDIA Device Plugin：
 
@@ -271,9 +318,10 @@ make gpu-restore-dra
 
 不要用 MIG 测试阻塞不具备该能力的设备。后续分开验证：
 
-1. **双 workload 共享**：绑定同一物理 UUID、请求互补份额，验证并发隔离和干扰；
-2. **MPS**：单独验证 server PID、active-thread percentage 写入/readback 和显存释放边界；
-3. **MIG**：获得支持型号后再执行 E2，验证 DeviceClass、parent UUID 和 rebind。
+1. **HAMi 干扰与故障边界**：在 H2 同卡并发基础上测量公平性、干扰、OOM 与单 worker 失败；
+2. **HAMi 动态份额**：验证运行中修改 core/memory 份额及 readback；
+3. **MPS**：单独验证 server PID、active-thread percentage 写入/readback 和显存释放边界；
+4. **MIG**：获得支持型号后再执行 E2，验证 DeviceClass、parent UUID 和 rebind。
 
 HAMi smoke 的原始输出仍应写入 `.cache/tgsrl/`，只将脱敏报告和必要日志放入 `handoff/`
 供开发机复核。测试未运行时保持 `NOT_RUN`，失败时保留原始错误，不把 HAMi Pod 成功调度
@@ -294,7 +342,7 @@ HAMi smoke 的原始输出仍应写入 `.cache/tgsrl/`，只将脱敏报告和�
 
 ## 尚未支持
 
-- Operator 或生产部署自动安装、升级或配置 HAMi；仓库脚本只服务于专用 H1 Minikube；
+- Operator 或生产部署自动安装、升级或配置 HAMi；仓库脚本只服务于专用 H1/H2 Minikube；
 - 在一个 Binding 中通过 HAMi 分配多张物理 GPU；
 - 分别配置 core percentage 与 memory percentage；
 - 由 TGS-RL 操作 HAMi dynamic MIG；

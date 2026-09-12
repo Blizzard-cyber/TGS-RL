@@ -134,7 +134,9 @@ ingestion。
 `to("cpu")`，以及 checkpoint manager 的 `abort_replicas`、`sleep_replicas`、
 `wake_up_replicas`、`resume_generation_replicas` 和 `update_weights`。任一必需对象或方法缺失时
 动作明确失败；checkpoint 路径固定为 `global_step_<trainer.global_steps>`。CPU contract test
-使用结构相同的对象替身验证调用顺序，但尚未加载真实 veRL/Ray/PyTorch/vLLM 运行时。
+使用结构相同的对象替身验证调用顺序；E1/H1/H2 的不可变 workload 镜像已加载锁定的
+veRL/Ray/PyTorch/vLLM 依赖，并用最小 `SmokeTrainer` 验证真实 CUDA、bridge 与 Trace。
+这仍不等同于完整 veRL trainer、distributed collective 或 checkpoint/offload/reload 训练验证。
 `scripts/verl-reference-workload.py` 使用同一 bridge 执行无 GPU 的进程级 conformance workload；
 它只证明协议和执行链，不代表真实 veRL 训练或 GPU 性能。
 

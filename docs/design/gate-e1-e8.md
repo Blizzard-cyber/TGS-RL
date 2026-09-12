@@ -40,18 +40,24 @@ make gate-campaign-run \
 `.cache/tgsrl/gpu-smoke/e1-full-gpu/report.json` 查看 E1 证据；根目录的
 `campaign-report.json` 同时列出未运行实验，因此总体状态不会是 `PASSED`。
 
-HAMi 分数 GPU 使用独立的 `configs/gates/hami-smoke.json` 和实验 ID `H1`，不插入或重排
-正式 E1–E8。H1 复用同一 executor/evidence schema，但 execution mode 固定为 `hami-vgpu`，
-并额外要求请求/实际 core 百分比和显存 MiB 一致。执行入口为：
+HAMi 分数 GPU 使用独立的 H1/H2 campaign，不插入或重排正式 E1–E8。H1 验证单 worker
+份额兑现；H2 验证两个 worker 共享同一物理 UUID、总 core 份额为 `80%` 且执行区间真实重叠。
+两者复用同一 executor/evidence schema，execution mode 固定为 `hami-vgpu`。执行入口为：
 
 ```bash
 make gpu-prepare-hami
-TGSRL_OPERATOR_GPU_PROFILES=hami-vgpu make gpu-up
+TGSRL_OPERATOR_GPU_PROFILES=hami-vgpu \
+TGSRL_GPU_MANIFEST=compatibility/manifests/hami-smoke-verl.yaml \
+  make gpu-up
 make gpu-hami-smoke
+make gpu-down
+make gpu-hami-up
+make gpu-hami-concurrency-smoke
 ```
 
-H1 结果写入 `.cache/tgsrl/hami-smoke/h1-hami-vgpu/`。它是 realization smoke，不进入
-E1–E8 release evaluation，也不替代 E5 共置干扰或 E6 生命周期实验。
+H1 结果写入 `.cache/tgsrl/hami-smoke/h1-hami-vgpu/`，H2 结果写入
+`.cache/tgsrl/hami-concurrency-smoke/h2-hami-concurrency/`。两者都是 realization smoke，
+不进入 E1–E8 release evaluation；H2 也不替代 E5 共置干扰、OOM/公平性或 E6 生命周期实验。
 
 仓库提供 `scripts/tgsrl-hardware-environment-driver`。目标环境从
 `configs/hardware/environment.example.json` 派生本地配置，至少指定 Gateway URL、固定

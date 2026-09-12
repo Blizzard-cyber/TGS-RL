@@ -1,6 +1,6 @@
 # TGS-RL handoff and status
 
-Updated: 2026-09-12
+Updated: 2026-09-13
 
 This file is a shared handoff record between the development machine and the GPU test machine.
 It is committed on purpose so both sides can pull it and stay in sync. It is temporary
@@ -11,9 +11,9 @@ release, this file and the `handoff/` directory should be deleted.
 
 ## Current local development batch
 
-This macOS checkout completed the H1 HAMi implementation and local contract validation. The NVIDIA
-A10 test host then pulled the clean implementation, ran H1 twice to validate rerun behavior, restored
-the original NVIDIA Device Plugin, and passed E1 again on the final code revision.
+This macOS checkout completed the H1/H2 HAMi implementation and local contract validation. The
+NVIDIA A10 test host pulled the clean implementation, passed H1 and H2, restored the original
+NVIDIA Device Plugin, and passed E1 again on the H2 evidence revision.
 
 - Scheduler NVIDIA Driver v2 now defaults to capability-aware `auto`: non-MIG GPUs remain Full GPU
   resources, while MIG-enabled GPUs publish existing MIG children only. A physical card is never
@@ -27,6 +27,10 @@ the original NVIDIA Device Plugin, and passed E1 again on the final code revisio
 - H1 is an independent hardware campaign (`configs/gates/hami-smoke.json`), not a new E1–E8
   release experiment. It locks a 0.4 share, checks requested versus allocated core/memory, runs the
   real CUDA smoke workload and requires Scheduler/Node/Pod/worker UUID equality.
+- H2 is a second independent campaign (`configs/gates/hami-concurrency-smoke.json`). One logical
+  RuntimeUnit expands into two pending units/Bindings/workers, each requests `0.4`, and Gate requires
+  two distinct worker/sandbox identities, one shared physical UUID, aggregate core share `0.8` and a
+  positive real execution overlap.
 - `scripts/gpu-prepare-hami.sh` pins HAMi chart 2.10.0 and its SHA-256, switches the dedicated
   Minikube node from the NVIDIA Device Plugin to HAMi, creates an isolated Kueue queue and records
   the previous labels, HAMi annotations and GPU capacity before switching. It refuses active TGS-RL
@@ -51,15 +55,16 @@ Local validation completed during this batch:
 - Console browser tests: 17 passed, including all nine routes and
   1366/1180/1024/820/390 px responsive checks.
 
-H1-local validation for this implementation batch:
+H1/H2 local validation for this implementation batch:
 
-- `go test ./operator-go/... ./cmd/operator -count=1` passes;
-- 72 focused governance/GPU setup tests pass;
-- Python compilation, shell syntax, Go formatting, `git diff --check`, H1 campaign plan and pinned
+- `go test ./cmd/tgsrl-worker-bootstrap ./operator-go/... ./scheduler-go/...` passes;
+- 176 focused Runtime/Gate/hardware-driver/GPU setup tests pass;
+- Python compilation, shell syntax, Go formatting, `git diff --check`, H1/H2 campaign plans and pinned
   HAMi Helm rendering pass.
 
 These local results prove code contracts only. The separate GPU-host evidence below establishes the
-single-workload H1 result; MPS, MIG and concurrent HAMi isolation remain unverified.
+H1 single-worker and H2 two-worker concurrency results; MPS, MIG, HAMi OOM/fairness/dynamic-share
+behavior and full-model training remain unverified.
 
 ## Machine roles
 
@@ -76,9 +81,9 @@ Communication happens through this GitHub repo: dev pushes code, test pushes evi
 - Development integration branch: `main`; the clean E1 integration series landed at `8f7494d`.
   GPU validation was performed on the temporary `test/e1-build-fixes` branch and its fixes were
   rewritten into three clean commits.
-- The original E1 evidence is bound to source revision `d033566`; the latest E1 regression and H1
-  evidence are both bound to `9c65d46`. Later commits in this batch only document those results.
-  Re-run E1/H1 before release only if a later change alters their execution paths.
+- The original E1 evidence is bound to source revision `d033566`; H1 is bound to `9c65d46`.
+  H2 and the post-H2 E1 regression are both bound to `a45a432`. Later commits in this batch only
+  document those results. Re-run a hardware gate only if a later change alters its execution path.
 - Important GPU-host fixes are preserved as small Conventional Commits: DRA ClaimTemplate, bundle
   TypeMeta, prebuilt Workload defaults, admission-suspend semantics, canonical CPU quantities and
   deterministic hardware-driver cleanup.
@@ -108,6 +113,13 @@ UUID equality, requested and allocated `40%` core plus `9211 MiB`, real CUDA eve
 resource teardown. After uninstalling HAMi, the original NVIDIA Device Plugin returned to `1/1`,
 the Node returned to `nvidia.com/gpu=1`, all `hami.io/*` annotations were removed, and E1 passed
 again. See `docs/validation/h1-hami-vgpu-2026-09-12.md`.
+
+The same host completed H2 on `a45a432`: 8/8 workload executions, two distinct managed workers per
+execution, the same physical A10 UUID for both workers, `40%` core and `9211 MiB` per worker,
+aggregate share `0.8`, and positive overlap in all six measurement runs. The largest observed
+overlap was `5855.929 ms`. H2 closed bugs in canonical contract IDs, multi-replica Trace identity,
+failed-run cleanup and bounded driver receipts. After teardown, E1 passed again on the same commit.
+See `docs/validation/h2-hami-concurrency-2026-09-13.md`.
 
 ## GPU test host and E1 result (2026-09-12)
 
@@ -148,8 +160,8 @@ closed; the remaining gap is real hardware evidence, not code structure.
 | CPU Mock + process E2E | Verified (real subprocess, bootstrap, Unix socket, service restart) |
 | Console (9 workspaces) | Closed locally (9 Chinese pages, resource inventory + Trace, responsive layout) |
 | NVIDIA Provider/helper | Full GPU E1 verified; capability-aware Full/MIG code verified locally; MIG/MPS hardware pending |
-| Kubernetes / DRA / HAMi | DRA E1 verified; HAMi H1 verified for one 0.4-share workload, including UUID/core/memory readback and DRA restoration |
-| veRL adapter | Implemented, real veRL/Ray/PyTorch/vLLM combination pending |
+| Kubernetes / DRA / HAMi | DRA E1 verified; HAMi H1 single worker and H2 two-worker same-card concurrency verified, including UUID/core/memory readback and DRA restoration |
+| veRL adapter | Locked veRL/Ray/PyTorch/vLLM packages and minimal adapter workload verified on GPU; full trainer/collective/checkpoint lifecycle pending |
 | Hardware Campaign E1-E8 | E1 PASSED; E2–E8 not run, E3–E8 have 9 thresholds to calibrate |
 | Production release | Not admitted (MIG/MPS/full training/E2–E8 evidence missing) |
 
@@ -209,19 +221,25 @@ hardware scenario. Summary:
    ```
    `make gpu-smoke` exits non-zero on any E1 failure/invalid-evidence/rule failure. A pass only means
    E1; it is not E2-E8 and not release admission.
-4. On the current A10 host, switch the dedicated Minikube environment and execute H1:
+4. On the current A10 host, switch the dedicated Minikube environment and execute H1/H2:
    ```bash
    make gpu-down
    make gpu-prepare-hami
    make gpu-hami-status
-   export TGSRL_OPERATOR_GPU_PROFILES=hami-vgpu
-   make gpu-up
+   TGSRL_OPERATOR_GPU_PROFILES=hami-vgpu \
+   TGSRL_GPU_MANIFEST=compatibility/manifests/hami-smoke-verl.yaml \
+     make gpu-up
    make gpu-hami-smoke
+   make gpu-down
+   make gpu-hami-up
+   make gpu-hami-concurrency-smoke
    make gpu-down
    make gpu-restore-dra
    ```
    H1 evidence lives in `.cache/tgsrl/hami-smoke/h1-hami-vgpu/`. Do not block H1 on MIG support,
    and do not treat H1 as E2–E8 release admission.
+   H2 evidence lives in `.cache/tgsrl/hami-concurrency-smoke/h2-hami-concurrency/`; it proves
+   concurrent same-card execution, not OOM isolation, fairness, dynamic shares or performance gain.
 5. Run E2 only after moving to a GPU model with actual MIG support. Once hooks/thresholds are ready,
    continue E3-E8 via `make gate-campaign-run` (see `docs/design/gate-e1-e8.md`).
 
@@ -243,6 +261,11 @@ handoff/
     report.json
     campaign-report.json
     NOTES.md             # include HAMi chart/image versions and requested/allocated share
+    logs/
+  H2-hami-concurrency/
+    report.json
+    campaign-report.json
+    NOTES.md             # include both worker IDs, shared UUID, aggregate share and overlap
     logs/
 ```
 
@@ -282,6 +305,8 @@ Append one row per run so both sides share history.
 | 2026-09-12 | `d033566` | E1 | PASSED | `.cache/tgsrl/gpu-smoke/e1-full-gpu/report.json` on GPU host; committed summary in `docs/validation/e1-full-gpu-2026-09-12.md` | 8/8 executions; exact UUID; real CUDA; cleanup clean |
 | 2026-09-12 | `9c65d46` | H1 | PASSED | `.cache/tgsrl/hami-smoke/h1-hami-vgpu/report.json`; committed summary in `docs/validation/h1-hami-vgpu-2026-09-12.md` | 8/8 executions; 40% core and 9211 MiB readback; exact UUID; real CUDA; cleanup clean |
 | 2026-09-12 | `9c65d46` | E1 regression | PASSED | `.cache/tgsrl/gpu-smoke/e1-full-gpu/report.json` | Re-run after HAMi teardown; DRA exact UUID and cleanup remain healthy |
+| 2026-09-13 | `a45a432` | H2 | PASSED | `.cache/tgsrl/hami-concurrency-smoke/h2-hami-concurrency/report.json`; committed summary in `docs/validation/h2-hami-concurrency-2026-09-13.md` | 8/8 executions; two workers share one UUID; 40% + 40%; all measurement overlaps positive |
+| 2026-09-13 | `a45a432` | E1 regression | PASSED | `.cache/tgsrl/gpu-smoke/e1-full-gpu/report.json` | Re-run after H2 HAMi teardown; Device Plugin 1/1, `nvidia.com/gpu=1`, no HAMi annotations or workload residue |
 
 ---
 
@@ -289,8 +314,8 @@ Append one row per run so both sides share history.
 
 - Preserve the accepted E1 evidence fingerprint. Re-run E1 only if a later change touches the E1
   execution path.
-- Extend the proven H1 single-workload path to two concurrent workloads on one physical UUID and
-  measure isolation, OOM behavior and interference.
+- Extend the proven H2 same-card concurrency path with controlled interference, OOM, fairness and
+  dynamic-share experiments; do not infer these properties from overlap alone.
 - Run MIG DeviceClass/parent-UUID/rebind E2 only on hardware that actually supports and enables MIG.
 - MPS server PID visibility, share mutation and readback.
 - Complete model-training callbacks and distributed veRL/Ray behavior.

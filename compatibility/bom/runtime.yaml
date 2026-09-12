@@ -357,6 +357,7 @@ claims:
   development_container_images_pinned: true
   release_container_images_pinned: false
   # E1 proves single-node Full GPU DRA/bootstrap/trace. Independent H1 proves one
-  # HAMi fractional workload. MIG, MPS, HAMi concurrency, multi-node and E2-E8
-  # remain separate evidence requirements.
+  # HAMi fractional worker, and H2 proves two workers can concurrently share the
+  # same physical UUID. MIG, MPS, dynamic shares, interference bounds,
+  # multi-node and E2-E8 remain separate evidence requirements.
   gpu_stack_integrated: true

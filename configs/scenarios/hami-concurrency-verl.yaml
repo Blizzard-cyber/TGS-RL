@@ -1,7 +1,7 @@
 schema_version: "tgsrl.io/synthetic-scenario/v1alpha1"
 scenario_id: "hami-concurrency-verl-v1"
 scenario_revision: 1
-status: "hardware-verification-pending"
+status: "hardware-verified-single-node"
 runtime_loader: false
 data_kind: "live"
 seed: 20260912

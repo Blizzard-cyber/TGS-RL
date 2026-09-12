@@ -39,6 +39,8 @@ Docker Compose 启动单机栈，再根据需要选择 Console、CLI、Python SD
   managed worker、CUDA、Trace 与 cleanup 的脱敏验收摘要。
 - [H1 单节点 HAMi 分数 GPU 验证记录](validation/h1-hami-vgpu-2026-09-12.md)：真实 A10、
   40% core/显存份额、UUID 对账、重复执行与 DRA 恢复的验收摘要。
+- [H2 单节点 HAMi 双 worker 并发验证记录](validation/h2-hami-concurrency-2026-09-13.md)：
+  两个真实 CUDA worker 共享同一 A10 UUID、各自 40% 份额和执行重叠的验收摘要。
 - [Managed-worker bootstrap](design/managed-worker-bootstrap.md)：Pod 内进程监管、身份、注册、
   生命周期控制、安全边界与真实环境验证要求。
 - [源码导读与维护边界](maintainers/code-walkthrough.md)：按真实调用链理解状态、事务、

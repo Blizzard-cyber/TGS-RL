@@ -344,7 +344,9 @@ CPU 证据、身份不一致或故障未恢复都不能通过；`calibration_req
 | Scheduler UUID 只进入 RuntimeTarget，且 MIG class 无法区分 | 调度账本与训练进程可能分别使用 GPU-A/GPU-B，MIG claim 可能永远无法满足 | typed DRA inventory 区分 Full GPU/MIG class；claim 使用 UUID selector；allocation 回读不一致时 fail closed | Operator Compiler、Kube client、BundleAdapter 与 StatusWatch 测试 |
 | 单一 NVIDIA partition mode 无法描述不同分区能力的 GPU 共存 | 无 MIG 的卡被排除，或父卡与切片被重复计量 | Scheduler CLI 默认 `auto`，逐卡发布 Full/MIG，并按设备过滤 MIG capability/action | NVIDIA Driver v2 混合 inventory 测试 |
 | Operator GPU profile 是全局单选 | 一个计划中的不同 Binding 无法分别选择 DRA/HAMi | 把配置改为有序候选，按 UUID inventory 和份额逐 Binding 选择 | Operator Compiler fallback/异构计划测试 |
-| HAMi 旧 profile 只申请数量 | Scheduler 选中 UUID 与 Pod 实际设备可能分叉 | 新增 `hami-vgpu` typed inventory、UUID 注解、allocation readback 和 bootstrap 核验 | Operator Compiler、Kube client、BundleAdapter 与 Worker 测试 |
+| HAMi 旧 profile 只申请数量 | Scheduler 选中 UUID 与 Pod 实际设备可能分叉 | 新增 `hami-vgpu` typed inventory、UUID 注解、allocation readback 和 bootstrap 核验 | Operator Compiler、Kube client、BundleAdapter、Worker 测试与 H1/H2 实机证据 |
+| RuntimeUnit 的代表性 sandbox 被当作唯一 sandbox | 同一逻辑单元的第二个 replica Trace 被错误拒绝 | Trace ingestion 改为按具体 sandbox/binding/generation/device 校验，同时保留 logical runtime identity | Runtime supervisor 多副本测试与 H2 实机证据 |
+| hardware driver 永久保存完整测量响应 | 多轮双 worker Trace 让 state 超过通用 JSON 上限，stop/cleanup 无法继续 | 独立 state 迁移上限；完成 cleanup 后仅保留最小 attempt/identity 和 cleanup receipt | hardware-driver state 迁移/幂等测试与 H2 实机证据 |
 | Kubernetes Job 直接执行用户命令，无 PID/control 注册与退出回报 | Scheduler 动作没有真实进程对象可控，Pod active 可能被误报为 Runtime running | 增加 workload bootstrap、scoped registry、PID/Pod UID/process token fence、readiness gate 与 exit observation；manifest 成为执行输入权威 | bootstrap、runtimehelper、Scheduler registry、Operator compiler/statuswatch 测试 |
 | bootstrap emptyDir 挂载到 workload 的 `/opt/tgsrl` | 注入 bootstrap 时遮住镜像自身代码，Pod 启动后找不到 workload | 将 bootstrap 安装目录隔离到 `/var/run/tgsrl-bootstrap` 并保持原 working directory | Operator compiler 与 StatusWatch 测试 |
 | Full GPU v2 复用 MPS 默认与 capability 名称 | 普通整卡 smoke 会启动无关 MPS，或因重复 capability 被 Scheduler 拒绝 | 增加无分区 mutation 的 `full` backend；CLI 后续升级为逐卡 `auto`，并去重 capability | NVIDIA Driver v2 与 Scheduler CLI 测试 |
@@ -408,16 +410,18 @@ make check-public-content
 
 ## 13. 当前仍需真实环境完成的验证
 
-E1 已证明单节点 Full GPU 的 NVIDIA CUDA、DRA/CDI、bootstrap、Trace 和 cleanup 主链。
+E1 已证明单节点 Full GPU 的 NVIDIA CUDA、DRA/CDI、bootstrap、Trace 和 cleanup 主链；
+独立 H1/H2 已证明 HAMi 单 worker 份额兑现与双 worker 同卡并发。
 代码和本地门禁仍不能替代以下证据：
 
 - NVIDIA MPS share 写入、读回与显存释放；
-- HAMi 单物理 GPU 分数分配、core/memory 限制与 UUID 回读；
+- HAMi 动态份额、OOM 隔离、公平性、干扰上界与单 worker 故障恢复；
 - 真实 MIG 实例 rebind/recreate 与故障恢复；
 - 真实 veRL/Ray/PyTorch/vLLM/SGLang 训练进程；
 - bootstrap registry/control endpoint 的 Pod restart 与 NetworkPolicy 行为；
 - Kubernetes、Kueue、DRA 与 GPU 控制器在 MIG 和多节点目标集群上的联调；
 - 单节点和多节点吞吐、延迟、恢复时间与训练质量。
 
-在这些验证完成前，对外只能声明“E1 单节点 Full GPU 集成已验证”；不能写成 MIG/MPS、
-完整训练、生产可用或真实性能收益已证明。
+在这些验证完成前，对外只能声明“E1 单节点 Full GPU、H1 单 worker 份额兑现和 H2 双
+worker 同卡并发已验证”；不能写成 MIG/MPS、HAMi 强隔离、完整训练、生产可用或真实性能
+收益已证明。

@@ -60,3 +60,4 @@ evidence:
   status: "gpu-single-node"
   hardware_smoke:
     - "docs/validation/h1-hami-vgpu-2026-09-12.md"
+    - "docs/validation/h2-hami-concurrency-2026-09-13.md"

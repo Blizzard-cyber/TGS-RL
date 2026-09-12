@@ -48,9 +48,9 @@ declared_matrix:
     - "partially_async"
   data_kinds:
     - "live"
-  evidence_status: "not-run"
+  evidence_status: "gpu-single-node"
   evidence:
-    - "docs/guides/hami.md"
+    - "docs/validation/h2-hami-concurrency-2026-09-13.md"
 
 verification_commands:
   preflight: "make gpu-hami-status"

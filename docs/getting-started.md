@@ -81,10 +81,10 @@ scripts/deploy-full-stack.sh install ./values.production.yaml
 
 默认 tag 只用于本地镜像验证。真实环境必须为六个服务和 bootstrap 配置已推送的不可变
 digest，并预先安装 Kueue 与所选 DRA/HAMi GPU 控制器。单节点 A10 的 Full GPU
-DRA/bootstrap/CUDA E1 已有真实验证记录。仓库另提供锁定 HAMi 2.10.0 的专用 Minikube H1
-切换与 smoke 命令，真实 A10 单 workload H1 也已通过，详见
-[HAMi vGPU 接入](guides/hami.md)。HAMi 并发隔离、MIG、MPS、多节点和完整模型训练仍待各自
-目标环境证据，不能由 Helm render、本机测试或单 workload H1 替代。
+DRA/bootstrap/CUDA E1 已有真实验证记录。仓库另提供锁定 HAMi 2.10.0 的专用 Minikube
+H1/H2 切换与 smoke 命令，真实 A10 单 worker 兑现和双 worker 同卡并发均已通过，详见
+[HAMi vGPU 接入](guides/hami.md)。HAMi OOM/公平性/动态份额、MIG、MPS、多节点和完整模型
+训练仍待各自目标环境证据，不能由 Helm render 或本机测试替代。
 Scheduler 与 Runtime 默认读取镜像内的锁定配置图；如需环境配置，可用
 `config.existingConfigMap` 和 `config.items` 将经审查的 ConfigMap 挂载到两者的同一
 `config.mountPath`。Secret 不通过全局环境变量广播；worker registry key 只挂载到

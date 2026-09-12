@@ -71,5 +71,6 @@ Scheduler 仍持有 Binding、reservation、generation 和 Decision。HAMi 负�
   readback 与 worker observation 为准。
 
 代价是 Operator 需要维护 DRA ResourceSlice 和 HAMi Node/Pod 两套 identity adapter，
-部署方也必须自行安装并验证相应集群组件。当前 HAMi 路径已通过 CPU 合同测试，但仍需
-真实 GPU/HAMi 环境验证；这项 ADR 不改变已通过的 E1 Full GPU DRA 证据边界。
+部署方也必须自行安装并验证相应集群组件。当前 HAMi 路径已在 NVIDIA A10 上通过 H1
+单 worker 份额兑现与 H2 双 worker 同卡并发验证；OOM 隔离、公平性、动态份额和性能收益
+仍需独立实验。这项 ADR 不改变 E1 Full GPU DRA 与正式 E1–E8 的证据边界。

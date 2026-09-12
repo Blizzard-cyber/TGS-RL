@@ -56,8 +56,8 @@ TGS-RL 的定位不是新的训练框架，也不是 Kubernetes 的替代品。�
   Kubernetes 与 veRL 接入代码。
 
 > **验证边界**：CPU/Mock、Replay 和 Synthetic Trace 用于验证控制行为，不代表 GPU 吞吐、
-> CUDA 行为、Kubernetes 可用性或模型收敛质量。当前已有 Full GPU E1 与 HAMi 单 workload
-> H1 证据；MIG、MPS、并发共享和完整训练仍需各自的目标环境证据，详见
+> CUDA 行为、Kubernetes 可用性或模型收敛质量。当前已有 Full GPU E1、HAMi 单 worker H1
+> 与同卡双 worker H2 证据；MIG、MPS、动态份额、共享干扰上界和完整训练仍需各自的目标环境证据，详见
 > [支持范围与限制](docs/reference/current-capabilities.md)。
 
 ## 三步运行完整系统
@@ -210,7 +210,7 @@ flowchart LR
 | 设备与需求 | 可用路径 | 当前代码状态 |
 |---|---|---|
 | 当前未启用 MIG 的物理卡，独占需求 | Full GPU + NVIDIA DRA | 已实现；已有单节点 E1 证据 |
-| 当前未启用 MIG 的物理卡，单卡分数需求 | HAMi vGPU 或显式 MPS | HAMi 单 workload H1 已验证；MPS 与双 workload 并发隔离待验证 |
+| 当前未启用 MIG 的物理卡，单卡分数需求 | HAMi vGPU 或显式 MPS | HAMi H1 单 worker 与 H2 双 worker 同卡并发已验证；MPS、OOM/公平性和动态份额待验证 |
 | 当前已启用 MIG 且已有实例的物理卡 | MIG 子设备 + NVIDIA DRA | 已实现，待 MIG 硬件验证 |
 | 混合集群 | 每个 Binding 分别选择 DRA/HAMi；每张卡分别发布 Full 或 MIG 容量 | CPU 合同测试已覆盖 |
 
@@ -297,8 +297,8 @@ Operator  ───────────────────── apply 
 | 可观测性 | 多轨 Trace、Decision evidence、Replay、Experiment、Prometheus | CPU full-stack Gate |
 | 进程执行 | worker bootstrap、PID/control endpoint 注册、信号转发、退出清理 | CPU 真实子进程 |
 | Kubernetes | 六服务 Helm、JobRunBundle、Kueue Workload、Job、ResourceClaimTemplate 与生成的 ResourceClaim | E1 单节点 Full GPU 已验证 |
-| NVIDIA | 能力感知 Full/MIG inventory、DRA 精确分配、HAMi vGPU、MPS/MIG/runtime helpers | Full GPU E1 与 HAMi 单 workload H1 已验证；MIG/MPS 和 HAMi 并发隔离待验证 |
-| veRL | lifecycle/observation bridge 与 callback adapter | 对象替身，待真实 veRL/Ray/GPU |
+| NVIDIA | 能力感知 Full/MIG inventory、DRA 精确分配、HAMi vGPU、MPS/MIG/runtime helpers | Full GPU E1、HAMi H1 单 worker 及 H2 双 worker 同卡并发已验证；MIG/MPS、动态份额和干扰边界待验证 |
+| veRL | lifecycle/observation bridge 与 callback adapter | 锁定依赖的最小 adapter workload 已在真实 GPU 上验证；完整 trainer/collective/checkpoint 流程待验证 |
 
 详细状态以[支持范围与限制](docs/reference/current-capabilities.md)为准。
 
@@ -424,20 +424,26 @@ NVIDIA DRA、HAMi 或其他受支持资源后端，以及可访问的镜像仓�
 或修改这些集群级依赖。没有 MIG 的 GPU 不需要退出资源池；可继续使用整卡 DRA，或在
 安装并验证 HAMi/MPS 后使用共享路径。
 
-仓库为专用单节点 Minikube 测试环境提供独立 H1 HAMi smoke，不改变正式 E1–E8：
+仓库为专用单节点 Minikube 测试环境提供独立 H1/H2 HAMi smoke，不改变正式 E1–E8：
 
 ```bash
 make gpu-down
 make gpu-prepare-hami
-TGSRL_OPERATOR_GPU_PROFILES=hami-vgpu make gpu-up
+TGSRL_OPERATOR_GPU_PROFILES=hami-vgpu \
+TGSRL_GPU_MANIFEST=compatibility/manifests/hami-smoke-verl.yaml \
+  make gpu-up
 make gpu-hami-smoke
+make gpu-down
+make gpu-hami-up
+make gpu-hami-concurrency-smoke
 make gpu-down
 make gpu-restore-dra
 ```
 
 该流程锁定 HAMi chart `2.10.0` 及其 SHA-256，并验证 Scheduler UUID、HAMi Node/Pod
 allocation、请求/实际 core 与显存份额、worker 可见 UUID 和真实 CUDA Trace。成功只代表
-单 workload 分数 GPU 兑现链路通过，不代表双 workload 隔离或性能收益成立。
+H1 单 worker 兑现与 H2 双 worker 同卡并发链路通过，不代表 OOM 隔离、公平性、动态份额或
+性能收益成立。
 
 正式 GPU 验证按 E1–E8 campaign 推进：
 
@@ -459,6 +465,11 @@ E1 Full GPU identity → E2 MIG identity → E3–E6 性能与动作代价
 `9211 MiB`，Scheduler、HAMi allocation 与 worker UUID 一致，且恢复原 Device Plugin 后
 E1 再次通过。详见
 [H1 单节点 HAMi 分数 GPU 验证记录](docs/validation/h1-hami-vgpu-2026-09-12.md)。
+
+随后在同一 A10 上完成独立 H2 HAMi 双 worker 并发 smoke：两个 worker 各请求并实际获得
+`40%` core 和 `9211 MiB`，共享同一物理 UUID，三轮 measurement 均观察到正的执行重叠，
+且所有 4 条 H2 规则通过。详见
+[H2 单节点 HAMi 双 worker 并发验证记录](docs/validation/h2-hami-concurrency-2026-09-13.md)。
 
 ## 仓库内容边界
 
