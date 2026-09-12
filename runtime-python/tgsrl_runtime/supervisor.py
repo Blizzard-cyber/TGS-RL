@@ -465,7 +465,6 @@ class RuntimeSupervisor:
         sandbox = self.sandboxes.get(batch.run_id, request.sandbox_id)
         if (
             batch.execution_id != unit.execution_id
-            or unit.sandbox_id != request.sandbox_id
             or unit.generation != request.generation
             or sandbox.generation != request.generation
             or sandbox.binding.binding_id != request.binding_id

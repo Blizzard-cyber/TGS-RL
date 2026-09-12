@@ -472,6 +472,56 @@ async def test_managed_worker_trace_updates_scheduler_intent_and_is_idempotent()
 
 
 @pytest.mark.asyncio
+async def test_managed_worker_trace_accepts_replica_sandbox_for_one_runtime_unit() -> None:
+    signing_key = b"m" * 32
+    scheduler = _DeduplicatingScheduler()
+    supervisor, unit, request = await _trace_ready_supervisor(
+        scheduler=scheduler, signing_key=signing_key
+    )
+    replica = _make_sandbox_event(
+        runtime_unit=unit,
+        event_id="trace-bound-replica",
+        event_type=runtime_pb2.SANDBOX_EVENT_TYPE_BOUND,
+        state=runtime_pb2.RUNTIME_STATE_BOUND,
+        binding_id="binding-replica",
+        sandbox_id="sandbox-z",
+    )
+    replica.binding.runtime_unit_id = unit.runtime_unit_id
+    replica.binding.pending_unit_id = "pending-replica"
+    replica.binding.device_ids.append("mock-cpu-0")
+    supervisor.publish_sandbox_event(runtime_pb2.PublishSandboxEventRequest(event=replica))
+
+    replica_request = runtime_pb2.PublishTraceBatchRequest()
+    replica_request.CopyFrom(request)
+    replica_batch = trace_pb2.TraceEventBatch.FromString(replica_request.batch_payload)
+    replica_batch.events[0].event_id = "worker-observation-replica"
+    replica_batch.events[0].sandbox_id = "sandbox-z"
+    replica_batch.events[0].attributes["binding_id"] = "binding-replica"
+    replica_request.batch_payload = replica_batch.SerializeToString(deterministic=True)
+    replica_request.sandbox_id = "sandbox-z"
+    replica_request.binding_id = "binding-replica"
+    replica_request.idempotency_key = (
+        "trace-sha256-" + hashlib.sha256(replica_request.batch_payload).hexdigest()
+    )
+    replica_request.authentication_tag = sign_trace_request(signing_key, replica_request)
+
+    accepted = await supervisor.publish_trace_batch(replica_request)
+
+    assert accepted.accepted_event_count == 1
+    assert any(
+        event.event_id == "worker-observation-replica"
+        for event in supervisor.trace_ingestor.list("run-1")
+    )
+
+    mismatched = runtime_pb2.PublishTraceBatchRequest()
+    mismatched.CopyFrom(replica_request)
+    mismatched.binding_id = "binding-other"
+    mismatched.authentication_tag = sign_trace_request(signing_key, mismatched)
+    with pytest.raises(RuntimeLifecycleError, match="identity"):
+        await supervisor.publish_trace_batch(mismatched)
+
+
+@pytest.mark.asyncio
 async def test_managed_worker_trace_recovers_after_receipt_crash_and_restart(
     tmp_path: Path,
 ) -> None:
