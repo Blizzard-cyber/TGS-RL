@@ -50,6 +50,7 @@ gpu_management_profile:
     - "none"
     - "nvidia-device-plugin"
     - "kubernetes-dra"
+    - "hami-vgpu"
     - "volcano-hami"
   mutually_exclusive: true
   maximum_active_profiles: 1

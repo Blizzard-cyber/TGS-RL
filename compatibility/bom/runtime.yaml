@@ -344,6 +344,8 @@ external_integration_targets:
   sglang: "0.5.18"
   nvidia_device_plugin: "0.20.0"
   nvidia_dra_driver_gpu: "0.5.0"
+  # Protocol reference only: TGS-RL does not vendor or install HAMi.
+  hami_protocol_commit: "88b118e565a9effaa27f81669da291c5508fc5e4"
 
 claims:
   lockfiles_audited: true

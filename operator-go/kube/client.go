@@ -275,7 +275,7 @@ func (c *Client) discoverCapabilitiesByProbe(ctx context.Context) (compiler.Capa
 	}
 	capabilities.RuntimeClasses = runtimeClasses
 
-	gpuProfiles, draClasses, err := c.discoverGPUProfilesByProbe(ctx, apiVersions)
+	gpuProfiles, draClasses, hamiDevices, err := c.discoverGPUProfilesByProbe(ctx, apiVersions)
 	if err != nil {
 		return compiler.CapabilitySet{}, err
 	}
@@ -298,6 +298,13 @@ func (c *Client) discoverCapabilitiesByProbe(ctx context.Context) (compiler.Capa
 			capabilities.DRADevices = devices
 			capabilities.ExactDevicePlacement = map[string]bool{compiler.GPUProfileKubernetesDRA: true}
 		}
+	}
+	if len(hamiDevices) > 0 {
+		capabilities.HAMIDevices = hamiDevices
+		if capabilities.ExactDevicePlacement == nil {
+			capabilities.ExactDevicePlacement = make(map[string]bool)
+		}
+		capabilities.ExactDevicePlacement[compiler.GPUProfileHAMIVGPU] = true
 	}
 
 	return capabilities, nil
@@ -409,16 +416,21 @@ func (c *Client) discoverRuntimeClassesByProbe(ctx context.Context) (map[string]
 	return values, nil
 }
 
-func (c *Client) discoverGPUProfilesByProbe(ctx context.Context, apiVersions compiler.KubernetesAPIVersions) (map[string]bool, map[string]bool, error) {
+func (c *Client) discoverGPUProfilesByProbe(ctx context.Context, apiVersions compiler.KubernetesAPIVersions) (map[string]bool, map[string]bool, map[string]compiler.HAMIDevice, error) {
 	profiles := make(map[string]bool)
+	hamiDevices := make(map[string]compiler.HAMIDevice)
 
 	body, statusCode, err := c.getURL(ctx, c.host+"/api/v1/nodes")
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 	if statusCode != http.StatusNotFound {
 		var list struct {
 			Items []struct {
+				Metadata struct {
+					Name        string            `json:"name"`
+					Annotations map[string]string `json:"annotations"`
+				} `json:"metadata"`
 				Status struct {
 					Allocatable map[string]string `json:"allocatable"`
 					Capacity    map[string]string `json:"capacity"`
@@ -426,29 +438,113 @@ func (c *Client) discoverGPUProfilesByProbe(ctx context.Context, apiVersions com
 			} `json:"items"`
 		}
 		if err := json.Unmarshal(body, &list); err != nil {
-			return nil, nil, fmt.Errorf("decode nodes: %w", err)
+			return nil, nil, nil, fmt.Errorf("decode nodes: %w", err)
 		}
 		for _, item := range list.Items {
-			if positiveResourceQuantity(item.Status.Allocatable["nvidia.com/gpu"]) || positiveResourceQuantity(item.Status.Capacity["nvidia.com/gpu"]) {
+			hasAllocatableNVIDIAResources := positiveResourceQuantity(item.Status.Allocatable["nvidia.com/gpu"])
+			hasNVIDIAResources := hasAllocatableNVIDIAResources ||
+				positiveResourceQuantity(item.Status.Capacity["nvidia.com/gpu"])
+			if hasNVIDIAResources {
 				profiles[compiler.GPUProfileNVIDIADevicePlugin] = true
 			}
 			if positiveResourceQuantity(item.Status.Allocatable["volcano.sh/gpu"]) || positiveResourceQuantity(item.Status.Capacity["volcano.sh/gpu"]) {
 				profiles[compiler.GPUProfileVolcanoHAMI] = true
 			}
+			if raw := strings.TrimSpace(item.Metadata.Annotations[compiler.HAMINVIDIARegisterAnnotation]); raw != "" && hasAllocatableNVIDIAResources {
+				devices, parseErr := parseHAMINVIDIADevices(item.Metadata.Name, raw)
+				if parseErr != nil {
+					return nil, nil, nil, fmt.Errorf("decode HAMi inventory on node %q: %w", item.Metadata.Name, parseErr)
+				}
+				for uuid, device := range devices {
+					if existing, exists := hamiDevices[uuid]; exists {
+						return nil, nil, nil, fmt.Errorf("HAMi NVIDIA UUID %q is published more than once (nodes %q and %q)", uuid, existing.Node, device.Node)
+					}
+					hamiDevices[uuid] = device
+				}
+			}
 		}
+	}
+	if len(hamiDevices) > 0 {
+		profiles[compiler.GPUProfileHAMIVGPU] = true
 	}
 
 	draClasses, err := c.discoverNVIDIADRAClasses(ctx, apiVersions.DRAResourceClaim)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 	if len(draClasses) > 0 {
 		profiles[compiler.GPUProfileKubernetesDRA] = true
 	}
 	if len(profiles) == 0 {
-		return nil, draClasses, nil
+		return nil, draClasses, hamiDevices, nil
 	}
-	return profiles, draClasses, nil
+	return profiles, draClasses, hamiDevices, nil
+}
+
+func parseHAMINVIDIADevices(nodeName, payload string) (map[string]compiler.HAMIDevice, error) {
+	nodeName = strings.TrimSpace(nodeName)
+	if nodeName == "" {
+		return nil, fmt.Errorf("node name is empty")
+	}
+	type registration struct {
+		ID      string `json:"id"`
+		Count   int32  `json:"count"`
+		Devmem  int64  `json:"devmem"`
+		Devcore int32  `json:"devcore"`
+		Type    string `json:"type"`
+		Health  bool   `json:"health"`
+		Mode    string `json:"mode"`
+	}
+	var registrations []registration
+	if strings.HasPrefix(strings.TrimSpace(payload), "[") {
+		if err := json.Unmarshal([]byte(payload), &registrations); err != nil {
+			return nil, err
+		}
+	} else {
+		for _, segment := range strings.Split(payload, ":") {
+			fields := strings.Split(strings.TrimSpace(segment), ",")
+			if len(fields) == 1 && fields[0] == "" {
+				continue
+			}
+			if len(fields) != 7 && len(fields) != 9 {
+				return nil, fmt.Errorf("registration segment has %d fields, want 7 or 9", len(fields))
+			}
+			count, countErr := strconv.ParseInt(strings.TrimSpace(fields[1]), 10, 32)
+			memoryMB, memoryErr := strconv.ParseInt(strings.TrimSpace(fields[2]), 10, 64)
+			corePercent, coreErr := strconv.ParseInt(strings.TrimSpace(fields[3]), 10, 32)
+			healthy, healthErr := strconv.ParseBool(strings.TrimSpace(fields[6]))
+			if countErr != nil || memoryErr != nil || coreErr != nil || healthErr != nil {
+				return nil, fmt.Errorf("registration segment contains invalid numeric or health fields")
+			}
+			mode := "hami-core"
+			if len(fields) == 9 && strings.TrimSpace(fields[8]) != "" {
+				mode = strings.TrimSpace(fields[8])
+			}
+			registrations = append(registrations, registration{
+				ID: strings.TrimSpace(fields[0]), Count: int32(count), Devmem: memoryMB,
+				Devcore: int32(corePercent), Type: strings.TrimSpace(fields[4]), Health: healthy, Mode: mode,
+			})
+		}
+	}
+	devices := make(map[string]compiler.HAMIDevice, len(registrations))
+	for _, item := range registrations {
+		item.ID, item.Type, item.Mode = strings.TrimSpace(item.ID), strings.TrimSpace(item.Type), strings.TrimSpace(item.Mode)
+		if item.Mode == "" {
+			item.Mode = "hami-core"
+		}
+		if !strings.HasPrefix(item.ID, "GPU-") || item.Count <= 0 || item.Devmem <= 0 || item.Devmem > int64(^uint64(0)>>20) || item.Devcore <= 0 || item.Devcore > 100 {
+			return nil, fmt.Errorf("registration for UUID %q has incomplete identity or capacity", item.ID)
+		}
+		if _, duplicate := devices[item.ID]; duplicate {
+			return nil, fmt.Errorf("registration duplicates UUID %q", item.ID)
+		}
+		devices[item.ID] = compiler.HAMIDevice{
+			UUID: item.ID, Node: nodeName, Model: item.Type, Mode: item.Mode,
+			MemoryBytes: uint64(item.Devmem) << 20, CorePercent: item.Devcore,
+			SplitCount: item.Count, Healthy: item.Health,
+		}
+	}
+	return devices, nil
 }
 
 func (c *Client) discoverNVIDIADRAClasses(ctx context.Context, apiVersion string) (map[string]bool, error) {

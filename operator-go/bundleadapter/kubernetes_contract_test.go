@@ -2,12 +2,58 @@ package bundleadapter
 
 import (
 	"encoding/json"
+	"slices"
 	"strings"
 	"testing"
 
 	"github.com/Blizzard-cyber/TGS-RL/operator-go/api"
 	"github.com/Blizzard-cyber/TGS-RL/operator-go/compiler"
 )
+
+func TestObserveHAMIAllocationMatchesSchedulerUUID(t *testing.T) {
+	bundle := &api.Bundle{
+		GPUProfile:     compiler.GPUProfileHAMIVGPU,
+		RuntimeTargets: []api.RuntimeTarget{{DeviceIDs: []string{"GPU-a10"}}},
+	}
+	allocated, deviceIDs, err := observeHAMIAllocation(
+		bundle,
+		[]byte(`{"items":[{"metadata":{"annotations":{"hami.io/vgpu-devices-allocated":"GPU-a10,NVIDIA,9211,40:;"}}}]}`),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !allocated || !slices.Equal(deviceIDs, []string{"GPU-a10"}) {
+		t.Fatalf("allocated=%v deviceIDs=%v", allocated, deviceIDs)
+	}
+}
+
+func TestObserveHAMIAllocationRejectsUUIDMismatch(t *testing.T) {
+	bundle := &api.Bundle{
+		GPUProfile:     compiler.GPUProfileHAMIVGPU,
+		RuntimeTargets: []api.RuntimeTarget{{DeviceIDs: []string{"GPU-expected"}}},
+	}
+	_, _, err := observeHAMIAllocation(
+		bundle,
+		[]byte(`{"items":[{"metadata":{"annotations":{"hami.io/vgpu-devices-allocated":"GPU-other,NVIDIA,9211,40:;"}}}]}`),
+	)
+	if err == nil || !strings.Contains(err.Error(), "want binding device_ids") {
+		t.Fatalf("HAMi mismatch error = %v", err)
+	}
+}
+
+func TestObserveHAMIAllocationRejectsMIGIdentity(t *testing.T) {
+	bundle := &api.Bundle{
+		GPUProfile:     compiler.GPUProfileHAMIVGPU,
+		RuntimeTargets: []api.RuntimeTarget{{DeviceIDs: []string{"GPU-expected"}}},
+	}
+	_, _, err := observeHAMIAllocation(
+		bundle,
+		[]byte(`{"items":[{"metadata":{"annotations":{"hami.io/vgpu-devices-allocated":"MIG-a100/1/0,NVIDIA,9211,40:;"}}}]}`),
+	)
+	if err == nil || !strings.Contains(err.Error(), "not a physical GPU UUID") {
+		t.Fatalf("HAMi MIG identity error = %v", err)
+	}
+}
 
 func TestMaterializeSanitizesKubernetesDesiredObjects(t *testing.T) {
 	bundle := &api.Bundle{

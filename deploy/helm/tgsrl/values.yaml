@@ -114,6 +114,8 @@ operator:
     controlAddress: tgsrl-job-controller:50061
     runtimeAddress: tgsrl-runtime:50071
     listenHost: 0.0.0.0
+    # Ordered comma-separated realization profiles. Example:
+    # "kubernetes-dra,hami-vgpu".
     gpuProfile: none
     runtimeClassName: ""
     runtimeClassHandler: ""

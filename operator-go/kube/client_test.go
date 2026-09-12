@@ -685,6 +685,134 @@ func TestClientDiscoverCapabilitiesDoesNotClaimExactPlacementForCountOnlyGPUAPIs
 	}
 }
 
+func TestClientDiscoverCapabilitiesUsesHAMINVIDIAInventoryForExactPlacement(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/apis/kueue.x-k8s.io":
+			_ = json.NewEncoder(w).Encode(apiGroupDiscovery("v1beta2", "v1beta2"))
+		case "/apis/resource.k8s.io", "/apis/node.k8s.io/v1/runtimeclasses":
+			http.NotFound(w, r)
+		case "/api/v1/nodes":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"items": []any{map[string]any{
+					"metadata": map[string]any{
+						"name": "a10-node",
+						"annotations": map[string]any{
+							compiler.HAMINVIDIARegisterAnnotation: `[{"id":"GPU-a10","count":10,"devmem":23028,"devcore":100,"type":"NVIDIA-A10","numa":0,"health":true,"index":0,"mode":"hami-core"}]`,
+						},
+					},
+					"status": map[string]any{"allocatable": map[string]any{"nvidia.com/gpu": "10"}},
+				}},
+			})
+		default:
+			t.Fatalf("unexpected request %s", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+	client, err := NewClient(&Config{Host: server.URL, Namespace: "test", HTTPClient: server.Client()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	capabilities, err := client.DiscoverCapabilities(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !capabilities.GPUProfiles[compiler.GPUProfileHAMIVGPU] || !capabilities.ExactDevicePlacement[compiler.GPUProfileHAMIVGPU] {
+		t.Fatalf("HAMi capabilities = %+v", capabilities)
+	}
+	device := capabilities.HAMIDevices["GPU-a10"]
+	if device.Node != "a10-node" || device.Model != "NVIDIA-A10" || device.Mode != "hami-core" || device.SplitCount != 10 || device.CorePercent != 100 || device.MemoryBytes != 23028<<20 || !device.Healthy {
+		t.Fatalf("HAMi device = %+v", device)
+	}
+}
+
+func TestParseHAMINVIDIADevicesRejectsDuplicateAndInvalidRows(t *testing.T) {
+	if _, err := parseHAMINVIDIADevices("node-a", "GPU-a,10,23028,100,NVIDIA-A10,0,true:GPU-a,10,23028,100,NVIDIA-A10,0,true:"); err == nil || !strings.Contains(err.Error(), "duplicates UUID") {
+		t.Fatalf("duplicate error = %v", err)
+	}
+	if _, err := parseHAMINVIDIADevices("node-a", "GPU-a,0,23028,100,NVIDIA-A10,0,true:"); err == nil || !strings.Contains(err.Error(), "incomplete") {
+		t.Fatalf("invalid capacity error = %v", err)
+	}
+	if _, err := parseHAMINVIDIADevices("node-a", "MIG-a,10,23028,100,NVIDIA-A10,0,true:"); err == nil || !strings.Contains(err.Error(), "incomplete") {
+		t.Fatalf("non-physical UUID error = %v", err)
+	}
+	if _, err := parseHAMINVIDIADevices("node-a", "GPU-a,10,23028,101,NVIDIA-A10,0,true:"); err == nil || !strings.Contains(err.Error(), "incomplete") {
+		t.Fatalf("invalid core limit error = %v", err)
+	}
+}
+
+func TestClientIgnoresStaleHAMINVIDIAInventoryWithoutAllocatableResource(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/apis/kueue.x-k8s.io":
+			_ = json.NewEncoder(w).Encode(apiGroupDiscovery("v1beta2", "v1beta2"))
+		case "/apis/resource.k8s.io", "/apis/node.k8s.io/v1/runtimeclasses":
+			http.NotFound(w, r)
+		case "/api/v1/nodes":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"items": []any{map[string]any{
+					"metadata": map[string]any{
+						"name": "stale-node",
+						"annotations": map[string]any{
+							compiler.HAMINVIDIARegisterAnnotation: `[{"id":"GPU-stale","count":10,"devmem":23028,"devcore":100,"type":"NVIDIA-A10","health":true,"mode":"hami-core"}]`,
+						},
+					},
+					"status": map[string]any{"allocatable": map[string]any{"nvidia.com/gpu": "0"}},
+				}},
+			})
+		default:
+			t.Fatalf("unexpected request %s", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+	client, err := NewClient(&Config{Host: server.URL, Namespace: "test", HTTPClient: server.Client()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	capabilities, err := client.DiscoverCapabilities(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if capabilities.GPUProfiles[compiler.GPUProfileHAMIVGPU] || len(capabilities.HAMIDevices) != 0 {
+		t.Fatalf("stale HAMi inventory was advertised: %+v", capabilities)
+	}
+}
+
+func TestClientRejectsHAMINVIDIAUUIDPublishedByMultipleNodes(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/apis/kueue.x-k8s.io":
+			_ = json.NewEncoder(w).Encode(apiGroupDiscovery("v1beta2", "v1beta2"))
+		case "/apis/resource.k8s.io", "/apis/node.k8s.io/v1/runtimeclasses":
+			http.NotFound(w, r)
+		case "/api/v1/nodes":
+			registration := `[{"id":"GPU-shared","count":10,"devmem":23028,"devcore":100,"type":"NVIDIA-A10","health":true,"mode":"hami-core"}]`
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"items": []any{
+					map[string]any{
+						"metadata": map[string]any{"name": "node-a", "annotations": map[string]any{compiler.HAMINVIDIARegisterAnnotation: registration}},
+						"status":   map[string]any{"allocatable": map[string]any{"nvidia.com/gpu": "10"}},
+					},
+					map[string]any{
+						"metadata": map[string]any{"name": "node-b", "annotations": map[string]any{compiler.HAMINVIDIARegisterAnnotation: registration}},
+						"status":   map[string]any{"allocatable": map[string]any{"nvidia.com/gpu": "10"}},
+					},
+				},
+			})
+		default:
+			t.Fatalf("unexpected request %s", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+	client, err := NewClient(&Config{Host: server.URL, Namespace: "test", HTTPClient: server.Client()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := client.DiscoverCapabilities(context.Background()); err == nil || !strings.Contains(err.Error(), "published more than once") {
+		t.Fatalf("duplicate HAMi UUID error = %v", err)
+	}
+}
+
 func TestClientDiscoverCapabilitiesProbesNodeAndRuntimeClassSurfaces(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {

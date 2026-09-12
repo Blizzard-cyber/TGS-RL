@@ -76,7 +76,7 @@ func run() error {
 	namespace := flag.String("namespace", "default", "target namespace for compiled objects")
 	cursorDir := flag.String("cursor-dir", filepath.Join(os.TempDir(), "tgsrl-operator"), "directory for durable operator cursors")
 	kubeconfig := flag.String("kubeconfig", "", "optional kubeconfig path; defaults to KUBECONFIG or in-cluster config")
-	gpuProfile := flag.String("gpu-profile", compiler.GPUProfileNone, "gpu profile: none, nvidia-device-plugin, kubernetes-dra, or volcano-hami")
+	gpuProfile := flag.String("gpu-profile", compiler.GPUProfileNone, "ordered GPU profiles: comma-separated none, kubernetes-dra, hami-vgpu, nvidia-device-plugin, or legacy volcano-hami")
 	runtimeClassName := flag.String("runtime-class-name", "", "optional preconfigured RuntimeClass name")
 	runtimeClassHandler := flag.String("runtime-class-handler", "", "RuntimeClass handler to create when runtime-class-create is enabled")
 	runtimeClassCreate := flag.Bool("runtime-class-create", false, "create the configured RuntimeClass instead of referencing a preconfigured one")
@@ -104,7 +104,11 @@ func run() error {
 	if backendMode == "process" && strings.TrimSpace(installerImage) == "" {
 		installerImage = "local.invalid/tgsrl-worker-bootstrap@sha256:" + strings.Repeat("0", 64)
 	}
-	runtimeConfig, err := validateStartupRuntimeConfig(*gpuProfile, compiler.RuntimeConfig{
+	gpuProfiles, err := parseGPUProfiles(*gpuProfile)
+	if err != nil {
+		return err
+	}
+	runtimeConfig, err := validateStartupRuntimeConfig(gpuProfiles, compiler.RuntimeConfig{
 		RuntimeClass: compiler.RuntimeClassConfig{
 			Name:    *runtimeClassName,
 			Handler: *runtimeClassHandler,
@@ -136,7 +140,7 @@ func run() error {
 		return err
 	}
 	if backendName == "kubernetes" {
-		if err := preflightBackend(context.Background(), selectedBackend, *gpuProfile); err != nil {
+		if err := preflightBackend(context.Background(), selectedBackend, gpuProfiles); err != nil {
 			return fmt.Errorf("backend preflight: %w", err)
 		}
 	}
@@ -212,7 +216,7 @@ func run() error {
 			Deliveries:  deliveryRepo,
 			Bundles:     selectedBackend,
 			Namespace:   *namespace,
-			GPUProfiles: []string{*gpuProfile},
+			GPUProfiles: gpuProfiles,
 		})
 		if err != nil {
 			return err
@@ -234,7 +238,7 @@ func run() error {
 	return nil
 }
 
-func preflightBackend(ctx context.Context, selectedBackend backend.Backend, gpuProfile string) error {
+func preflightBackend(ctx context.Context, selectedBackend backend.Backend, gpuProfiles []string) error {
 	discoverer, ok := selectedBackend.(interface {
 		DiscoverCapabilities(context.Context) (compiler.CapabilitySet, error)
 	})
@@ -245,21 +249,28 @@ func preflightBackend(ctx context.Context, selectedBackend backend.Backend, gpuP
 	if err != nil {
 		return fmt.Errorf("discover capabilities: %w", err)
 	}
-	profile := strings.TrimSpace(gpuProfile)
-	if !capabilities.GPUProfiles[profile] {
-		return fmt.Errorf("GPU profile %q is not available", profile)
-	}
-	if profile != compiler.GPUProfileNone && !capabilities.ExactDevicePlacement[profile] {
-		return fmt.Errorf("GPU profile %q cannot enforce scheduler-selected device identities", profile)
-	}
 	if capabilities.KubernetesAPIs.KueueWorkload == "" {
 		return fmt.Errorf("kueue Workload API is not available")
 	}
-	if profile == compiler.GPUProfileKubernetesDRA && len(capabilities.DRADevices) == 0 {
-		return fmt.Errorf("NVIDIA DRA device UUID inventory is not available")
+	available := false
+	for _, profile := range gpuProfiles {
+		if !capabilities.GPUProfiles[profile] || profile != compiler.GPUProfileNone && !capabilities.ExactDevicePlacement[profile] {
+			continue
+		}
+		if profile == compiler.GPUProfileKubernetesDRA && len(capabilities.DRADevices) == 0 {
+			continue
+		}
+		if compiler.IsHAMIGPUProfile(profile) && !compiler.HasUsableHAMIVGPUDevice(capabilities.HAMIDevices) {
+			continue
+		}
+		available = true
+		break
+	}
+	if !available {
+		return fmt.Errorf("none of the requested GPU profiles %q can enforce scheduler-selected device identities", strings.Join(gpuProfiles, ","))
 	}
 	slog.Info("backend capability preflight passed",
-		"gpu_profile", profile,
+		"gpu_profiles", strings.Join(gpuProfiles, ","),
 		"kueue_api", capabilities.KubernetesAPIs.KueueWorkload,
 		"dra_api", capabilities.KubernetesAPIs.DRAResourceClaim,
 	)
@@ -342,19 +353,48 @@ func isBenignServerClose(err error) bool {
 
 func validateGPUProfile(profile string) error {
 	switch strings.TrimSpace(profile) {
-	case compiler.GPUProfileNone, compiler.GPUProfileNVIDIADevicePlugin, compiler.GPUProfileKubernetesDRA, compiler.GPUProfileVolcanoHAMI:
+	case compiler.GPUProfileNone, compiler.GPUProfileNVIDIADevicePlugin, compiler.GPUProfileKubernetesDRA, compiler.GPUProfileHAMIVGPU, compiler.GPUProfileVolcanoHAMI:
 		return nil
 	default:
 		return fmt.Errorf("unsupported gpu profile %q", profile)
 	}
 }
 
-func validateStartupRuntimeConfig(profile string, config compiler.RuntimeConfig) (compiler.RuntimeConfig, error) {
-	if err := validateGPUProfile(profile); err != nil {
-		return compiler.RuntimeConfig{}, err
+func parseGPUProfiles(value string) ([]string, error) {
+	var profiles []string
+	seen := make(map[string]struct{})
+	for _, profile := range strings.Split(value, ",") {
+		profile = strings.TrimSpace(profile)
+		if profile == "" {
+			continue
+		}
+		if err := validateGPUProfile(profile); err != nil {
+			return nil, err
+		}
+		if _, duplicate := seen[profile]; duplicate {
+			continue
+		}
+		seen[profile] = struct{}{}
+		profiles = append(profiles, profile)
 	}
-	if strings.TrimSpace(profile) == compiler.GPUProfileKubernetesDRA && !config.Bootstrap.Enabled {
-		return compiler.RuntimeConfig{}, fmt.Errorf("kubernetes-dra requires managed-worker bootstrap")
+	if len(profiles) == 0 {
+		return []string{compiler.GPUProfileNone}, nil
+	}
+	return profiles, nil
+}
+
+func validateStartupRuntimeConfig(profiles []string, config compiler.RuntimeConfig) (compiler.RuntimeConfig, error) {
+	for _, profile := range profiles {
+		if err := validateGPUProfile(profile); err != nil {
+			return compiler.RuntimeConfig{}, err
+		}
+	}
+	if !config.Bootstrap.Enabled {
+		for _, profile := range profiles {
+			if profile == compiler.GPUProfileKubernetesDRA || compiler.IsHAMIGPUProfile(profile) {
+				return compiler.RuntimeConfig{}, fmt.Errorf("GPU profile %q requires managed-worker bootstrap", profile)
+			}
+		}
 	}
 	validated, err := compiler.ValidateRuntimeConfig(config)
 	if err != nil {

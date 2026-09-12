@@ -12,10 +12,20 @@ const (
 	GPUProfileNone               = "none"
 	GPUProfileNVIDIADevicePlugin = "nvidia-device-plugin"
 	GPUProfileKubernetesDRA      = "kubernetes-dra"
-	GPUProfileVolcanoHAMI        = "volcano-hami"
-	NVIDIADRAFullGPUDeviceClass  = "gpu.nvidia.com"
-	NVIDIADRAMIGDeviceClass      = "mig.nvidia.com"
-	NVIDIADRADriver              = "gpu.nvidia.com"
+	GPUProfileHAMIVGPU           = "hami-vgpu"
+	// GPUProfileVolcanoHAMI is retained as a compatibility alias for manifests
+	// written before TGS-RL adopted HAMi's canonical NVIDIA resource contract.
+	GPUProfileVolcanoHAMI         = "volcano-hami"
+	NVIDIADRAFullGPUDeviceClass   = "gpu.nvidia.com"
+	NVIDIADRAMIGDeviceClass       = "mig.nvidia.com"
+	NVIDIADRADriver               = "gpu.nvidia.com"
+	HAMINVIDIAResource            = "nvidia.com/gpu"
+	HAMINVIDIACoreResource        = "nvidia.com/gpucores"
+	HAMINVIDIAMemoryPercent       = "nvidia.com/gpumem-percentage"
+	HAMINVIDIAUseUUIDAnnotation   = "nvidia.com/use-gpuuuid"
+	HAMINVIDIAModeAnnotation      = "nvidia.com/vgpu-mode"
+	HAMINVIDIAAllocatedAnnotation = "hami.io/vgpu-devices-allocated"
+	HAMINVIDIARegisterAnnotation  = "hami.io/node-nvidia-register"
 )
 
 type Compiler struct {
@@ -46,7 +56,11 @@ func (c *Compiler) compileBinding(input CompileInput) (*api.Bundle, error) {
 	if _, err := validateGPUProfiles(input.GPUProfiles); err != nil {
 		return nil, err
 	}
-	selected, err := SelectCapabilityProfile(c.runtimeConfig, input.GPUProfiles, c.capabilities)
+	binding, err := workloadBinding(input.PlacementPlan)
+	if err != nil {
+		return nil, err
+	}
+	selected, err := SelectCapabilityProfileForDevices(c.runtimeConfig, input.GPUProfiles, binding.GetDeviceIds(), binding.GetResources().GetAcceleratorUnits(), c.capabilities)
 	if err != nil {
 		return nil, err
 	}
@@ -62,6 +76,13 @@ func (c *Compiler) compileBinding(input CompileInput) (*api.Bundle, error) {
 			return nil, fmt.Errorf("binding %q: %w", normalized.binding.GetBindingId(), err)
 		}
 		normalized.draDevices = devices
+	}
+	if IsHAMIGPUProfile(normalized.GPUProfile) {
+		devices, err := selectedHAMIDevices(normalized.binding.GetDeviceIds(), selected.HAMIDevices)
+		if err != nil {
+			return nil, fmt.Errorf("binding %q: %w", normalized.binding.GetBindingId(), err)
+		}
+		normalized.hamiDevices = devices
 	}
 	bundle, err := buildBundle(normalized)
 	if err != nil {

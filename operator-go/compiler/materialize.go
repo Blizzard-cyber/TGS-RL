@@ -160,6 +160,9 @@ func buildBundle(input *normalizedInput) (*api.Bundle, error) {
 		}
 		workload.Spec.PodSets[0].Template = job.Spec.Template
 	}
+	if IsHAMIGPUProfile(input.GPUProfile) {
+		workload.Spec.PodSets[0].Template = job.Spec.Template
+	}
 
 	return &api.Bundle{
 		Key:                   bundleKey(input),
@@ -236,7 +239,7 @@ func configureWorkerBootstrap(template *api.PodTemplateSpec, input *normalizedIn
 	if workingDirectory != "" {
 		main.Env = append(main.Env, api.EnvVar{Name: "TGSRL_WORKING_DIRECTORY", Value: workingDirectory})
 	}
-	if bootstrap.VerifyDeviceIDs || len(main.Resources.Claims) > 0 {
+	if bootstrap.VerifyDeviceIDs || len(main.Resources.Claims) > 0 || IsHAMIGPUProfile(input.GPUProfile) {
 		main.Env = append(main.Env, api.EnvVar{Name: "TGSRL_VERIFY_DEVICE_IDENTITIES", Value: "true"})
 	}
 	sort.Slice(main.Env, func(i, j int) bool { return main.Env[i].Name < main.Env[j].Name })
@@ -333,6 +336,10 @@ func validateBundle(bundle *api.Bundle) error {
 		if err := validateDRAResourceClaim(bundle); err != nil {
 			return err
 		}
+	} else if IsHAMIGPUProfile(bundle.GPUProfile) {
+		if err := validateHAMIProjection(bundle); err != nil {
+			return err
+		}
 	} else if bundle.ResourceClaim != nil || bundle.ResourceClaimTemplate != nil {
 		return fmt.Errorf("resource claim or template requires kubernetes-dra GPU profile")
 	}
@@ -374,6 +381,33 @@ runtimeClassValidated:
 	}
 	if len(bundle.Job.ObjectMeta.OwnerReferences) != 0 || bundle.ResourceClaim != nil && len(bundle.ResourceClaim.ObjectMeta.OwnerReferences) != 0 || bundle.ResourceClaimTemplate != nil && len(bundle.ResourceClaimTemplate.ObjectMeta.OwnerReferences) != 0 {
 		return fmt.Errorf("materialized objects must not contain unresolved owner references")
+	}
+	return nil
+}
+
+func validateHAMIProjection(bundle *api.Bundle) error {
+	if bundle == nil || len(bundle.RuntimeTargets) != 1 || len(bundle.Job.Spec.Template.Spec.Containers) != 1 {
+		return fmt.Errorf("HAMi vGPU bundle requires one runtime target and one workload container")
+	}
+	deviceIDs, err := concreteDeviceIDs(bundle.RuntimeTargets[0].DeviceIDs)
+	if err != nil {
+		return err
+	}
+	if len(deviceIDs) != 1 {
+		return fmt.Errorf("HAMi vGPU bundle requires exactly one physical GPU UUID")
+	}
+	annotations := bundle.Job.Spec.Template.ObjectMeta.Annotations
+	if annotations[HAMINVIDIAUseUUIDAnnotation] != deviceIDs[0] || annotations[HAMINVIDIAModeAnnotation] != "hami-core" {
+		return fmt.Errorf("HAMi vGPU annotations do not match the concrete binding")
+	}
+	resources := bundle.Job.Spec.Template.Spec.Containers[0].Resources
+	for _, name := range []string{HAMINVIDIAResource, HAMINVIDIACoreResource, HAMINVIDIAMemoryPercent} {
+		if resources.Requests[name] == "" || resources.Limits[name] != resources.Requests[name] {
+			return fmt.Errorf("HAMi vGPU resource %q is missing or inconsistent", name)
+		}
+	}
+	if resources.Requests[HAMINVIDIAResource] != "1" {
+		return fmt.Errorf("HAMi vGPU must request exactly one physical GPU")
 	}
 	return nil
 }

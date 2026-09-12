@@ -93,14 +93,182 @@ func TestCompileKeepsBundleIdentityAndVersionsObjectsAcrossGenerations(t *testin
 	}
 }
 
-func TestCompileRejectsMutuallyExclusiveGPUProfiles(t *testing.T) {
+func TestCompileSelectsFirstCompatibleGPUProfile(t *testing.T) {
 	c := New()
-	c.SetCapabilities(discoveredGPUCapabilities(GPUProfileKubernetesDRA, GPUProfileVolcanoHAMI))
+	capabilities := discoveredGPUCapabilities(GPUProfileKubernetesDRA, GPUProfileHAMIVGPU)
+	capabilities.HAMIDevices = map[string]HAMIDevice{
+		"GPU-aaaa": {UUID: "GPU-aaaa", Node: "node-a", Model: "NVIDIA-A10", Mode: "hami-core", MemoryBytes: 24 << 30, CorePercent: 100, SplitCount: 10, Healthy: true},
+	}
+	capabilities.NodeSelectors = map[string]map[string]string{
+		GPUProfileHAMIVGPU: {"accelerator.vendor": "nvidia"},
+	}
+	c.SetCapabilities(capabilities)
 	input := testCompileInput()
-	input.GPUProfiles = []string{GPUProfileKubernetesDRA, GPUProfileVolcanoHAMI}
+	input.GPUProfiles = []string{GPUProfileHAMIVGPU, GPUProfileKubernetesDRA}
+	input.PlacementPlan.Bindings[0].Resources.AcceleratorUnits = 0.4
 
-	if _, err := c.Compile(input); err == nil {
-		t.Fatalf("expected mutually exclusive gpu profile error")
+	bundle, err := c.compileBinding(singleBindingInput(input, 0))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bundle.GPUProfile != GPUProfileHAMIVGPU {
+		t.Fatalf("GPU profile = %q, want %q", bundle.GPUProfile, GPUProfileHAMIVGPU)
+	}
+	if got := bundle.Job.Spec.Template.ObjectMeta.Annotations[HAMINVIDIAUseUUIDAnnotation]; got != "GPU-aaaa" {
+		t.Fatalf("HAMi UUID annotation = %q", got)
+	}
+	if got := bundle.Job.Spec.Template.Spec.NodeSelector["kubernetes.io/hostname"]; got != "node-a" {
+		t.Fatalf("HAMi node selector = %q", got)
+	}
+	if got := bundle.Job.Spec.Template.Spec.NodeSelector["accelerator.vendor"]; got != "nvidia" {
+		t.Fatalf("HAMi profile selector = %q", got)
+	}
+	resources := bundle.Job.Spec.Template.Spec.Containers[0].Resources
+	if resources.Limits[HAMINVIDIAResource] != "1" || resources.Limits[HAMINVIDIACoreResource] != "40" || resources.Limits[HAMINVIDIAMemoryPercent] != "40" {
+		t.Fatalf("HAMi resources = %+v", resources.Limits)
+	}
+}
+
+func TestCompileFallsBackFromDRAInventoryToHAMIDevice(t *testing.T) {
+	c := New()
+	c.SetCapabilities(CapabilitySet{
+		GPUProfiles: map[string]bool{
+			GPUProfileKubernetesDRA: true,
+			GPUProfileHAMIVGPU:      true,
+		},
+		ExactDevicePlacement: map[string]bool{
+			GPUProfileKubernetesDRA: true,
+			GPUProfileHAMIVGPU:      true,
+		},
+		DRADevices: map[string]DRADevice{
+			"GPU-dra": {UUID: "GPU-dra", Type: "gpu", DeviceClass: NVIDIADRAFullGPUDeviceClass, Driver: NVIDIADRADriver, Pool: "node-dra", Device: "gpu-0"},
+		},
+		HAMIDevices: map[string]HAMIDevice{
+			"GPU-a10": {UUID: "GPU-a10", Node: "node-a10", Model: "NVIDIA-A10", Mode: "hami-core", MemoryBytes: 24 << 30, CorePercent: 100, SplitCount: 10, Healthy: true},
+		},
+		KubernetesAPIs: DefaultCapabilitySet().KubernetesAPIs,
+	})
+	input := testCompileInput()
+	input.GPUProfiles = []string{GPUProfileKubernetesDRA, GPUProfileHAMIVGPU}
+	input.PlacementPlan.Bindings[0].DeviceIds = []string{"GPU-a10"}
+	input.PlacementPlan.Bindings[0].Resources.AcceleratorUnits = 0.25
+
+	bundle, err := c.compileBinding(singleBindingInput(input, 0))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bundle.GPUProfile != GPUProfileHAMIVGPU || bundle.ResourceClaimTemplate != nil {
+		t.Fatalf("bundle profile=%q claim=%+v, want HAMi fallback", bundle.GPUProfile, bundle.ResourceClaimTemplate)
+	}
+	if got := bundle.Job.Spec.Template.Spec.Containers[0].Resources.Limits[HAMINVIDIACoreResource]; got != "25" {
+		t.Fatalf("HAMi core percentage = %q, want 25", got)
+	}
+}
+
+func TestCompileSelectsProfilePerBindingInHeterogeneousPlan(t *testing.T) {
+	c := New()
+	c.SetCapabilities(CapabilitySet{
+		GPUProfiles: map[string]bool{
+			GPUProfileKubernetesDRA: true,
+			GPUProfileHAMIVGPU:      true,
+		},
+		ExactDevicePlacement: map[string]bool{
+			GPUProfileKubernetesDRA: true,
+			GPUProfileHAMIVGPU:      true,
+		},
+		DRADevices: map[string]DRADevice{
+			"GPU-a100": {UUID: "GPU-a100", Type: "gpu", DeviceClass: NVIDIADRAFullGPUDeviceClass, Driver: NVIDIADRADriver, Pool: "node-a100", Device: "gpu-0"},
+		},
+		HAMIDevices: map[string]HAMIDevice{
+			"GPU-a10": {UUID: "GPU-a10", Node: "node-a10", Model: "NVIDIA-A10", Mode: "hami-core", MemoryBytes: 24 << 30, CorePercent: 100, SplitCount: 10, Healthy: true},
+		},
+		KubernetesAPIs: DefaultCapabilitySet().KubernetesAPIs,
+	})
+	input := testCompileInput()
+	input.GPUProfiles = []string{GPUProfileKubernetesDRA, GPUProfileHAMIVGPU}
+	input.PlacementPlan.Bindings = []*tgsrlv1.Binding{
+		{
+			BindingId: "binding-a100", PendingUnitId: "unit-a100", RuntimeUnitId: "unit-a100",
+			DeviceIds: []string{"GPU-a100"}, Resources: &tgsrlv1.ResourceVector{AcceleratorUnits: 1}, Generation: 1,
+		},
+		{
+			BindingId: "binding-a10", PendingUnitId: "unit-a10", RuntimeUnitId: "unit-a10",
+			DeviceIds: []string{"GPU-a10"}, Resources: &tgsrlv1.ResourceVector{AcceleratorUnits: 0.4}, Generation: 1,
+		},
+	}
+
+	bundles, err := c.Compile(input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(bundles) != 2 {
+		t.Fatalf("bundles = %d, want 2", len(bundles))
+	}
+	if bundles[0].GPUProfile != GPUProfileKubernetesDRA || bundles[0].ResourceClaimTemplate == nil {
+		t.Fatalf("A100 bundle = %+v, want DRA", bundles[0])
+	}
+	if bundles[1].GPUProfile != GPUProfileHAMIVGPU || bundles[1].ResourceClaimTemplate != nil {
+		t.Fatalf("A10 bundle = %+v, want HAMi", bundles[1])
+	}
+}
+
+func TestCompileSkipsHAMIForMultiGPURequest(t *testing.T) {
+	c := New()
+	capabilities := discoveredGPUCapabilities(GPUProfileHAMIVGPU, GPUProfileKubernetesDRA)
+	capabilities.HAMIDevices = map[string]HAMIDevice{
+		"GPU-aaaa": {UUID: "GPU-aaaa", Node: "node-a", Model: "NVIDIA-A10", Mode: "hami-core", MemoryBytes: 24 << 30, CorePercent: 100, SplitCount: 10, Healthy: true},
+		"GPU-bbbb": {UUID: "GPU-bbbb", Node: "node-a", Model: "NVIDIA-A10", Mode: "hami-core", MemoryBytes: 24 << 30, CorePercent: 100, SplitCount: 10, Healthy: true},
+	}
+	capabilities.DRADevices["GPU-bbbb"] = DRADevice{
+		UUID: "GPU-bbbb", Type: "gpu", DeviceClass: NVIDIADRAFullGPUDeviceClass,
+		Driver: NVIDIADRADriver, Pool: "node-a", Device: "gpu-1",
+	}
+	c.SetCapabilities(capabilities)
+	input := testCompileInput()
+	input.GPUProfiles = []string{GPUProfileHAMIVGPU, GPUProfileKubernetesDRA}
+	input.PlacementPlan.Bindings[0].DeviceIds = []string{"GPU-aaaa", "GPU-bbbb"}
+	input.PlacementPlan.Bindings[0].Resources.AcceleratorUnits = 2
+
+	bundle, err := c.compileBinding(singleBindingInput(input, 0))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bundle.GPUProfile != GPUProfileKubernetesDRA {
+		t.Fatalf("GPU profile = %q, want %q", bundle.GPUProfile, GPUProfileKubernetesDRA)
+	}
+}
+
+func TestCompileHAMIVGPURejectsUnavailableOrAmbiguousDevices(t *testing.T) {
+	c := New()
+	c.SetCapabilities(CapabilitySet{
+		GPUProfiles:          map[string]bool{GPUProfileHAMIVGPU: true},
+		ExactDevicePlacement: map[string]bool{GPUProfileHAMIVGPU: true},
+		HAMIDevices: map[string]HAMIDevice{
+			"GPU-a10": {UUID: "GPU-a10", Node: "node-a10", Model: "NVIDIA-A10", Mode: "hami-core", MemoryBytes: 24 << 30, CorePercent: 100, SplitCount: 10, Healthy: true},
+		},
+		KubernetesAPIs: DefaultCapabilitySet().KubernetesAPIs,
+	})
+	for name, mutate := range map[string]func(*CompileInput){
+		"unknown UUID": func(input *CompileInput) {
+			input.PlacementPlan.Bindings[0].DeviceIds = []string{"GPU-unknown"}
+		},
+		"multiple physical GPUs": func(input *CompileInput) {
+			input.PlacementPlan.Bindings[0].DeviceIds = []string{"GPU-a10", "GPU-other"}
+		},
+		"share above one": func(input *CompileInput) {
+			input.PlacementPlan.Bindings[0].Resources.AcceleratorUnits = 1.1
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			input := testCompileInput()
+			input.GPUProfiles = []string{GPUProfileHAMIVGPU}
+			input.PlacementPlan.Bindings[0].DeviceIds = []string{"GPU-a10"}
+			input.PlacementPlan.Bindings[0].Resources.AcceleratorUnits = 0.5
+			mutate(&input)
+			if _, err := c.compileBinding(singleBindingInput(input, 0)); err == nil {
+				t.Fatal("expected HAMi validation failure")
+			}
+		})
 	}
 }
 
@@ -598,8 +766,23 @@ func TestCompileSelectsOnlyDiscoveredGPUCapability(t *testing.T) {
 	input := testCompileInput()
 	input.GPUProfiles = []string{GPUProfileNVIDIADevicePlugin, GPUProfileKubernetesDRA}
 
-	if _, err := c.Compile(input); err == nil {
-		t.Fatalf("expected mutually exclusive input validation before capability selection")
+	bundle, err := c.compileBinding(singleBindingInput(input, 0))
+	if err != nil {
+		t.Fatalf("preferred profile selection failed: %v", err)
+	}
+	if bundle.GPUProfile != GPUProfileKubernetesDRA || bundle.ResourceClaimTemplate == nil {
+		t.Fatalf("bundle = %+v, want DRA fallback after unavailable device-plugin profile", bundle)
+	}
+
+	capabilities := discoveredGPUCapabilities(GPUProfileNVIDIADevicePlugin, GPUProfileKubernetesDRA)
+	capabilities.ExactDevicePlacement[GPUProfileNVIDIADevicePlugin] = false
+	c.SetCapabilities(capabilities)
+	bundle, err = c.compileBinding(singleBindingInput(input, 0))
+	if err != nil {
+		t.Fatalf("exact profile fallback failed: %v", err)
+	}
+	if bundle.GPUProfile != GPUProfileKubernetesDRA {
+		t.Fatalf("bundle profile = %q, want exact DRA fallback", bundle.GPUProfile)
 	}
 
 	input.GPUProfiles = []string{GPUProfileNVIDIADevicePlugin}
@@ -608,7 +791,7 @@ func TestCompileSelectsOnlyDiscoveredGPUCapability(t *testing.T) {
 	}
 
 	input.GPUProfiles = []string{GPUProfileKubernetesDRA}
-	bundle, err := c.compileBinding(singleBindingInput(input, 0))
+	bundle, err = c.compileBinding(singleBindingInput(input, 0))
 	if err != nil {
 		t.Fatalf("compile failed: %v", err)
 	}

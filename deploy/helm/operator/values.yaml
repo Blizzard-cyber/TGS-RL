@@ -35,6 +35,9 @@ controller:
   controlAddress: tgsrl-job-controller:50061
   runtimeAddress: tgsrl-runtime:50071
   listenHost: 0.0.0.0
+  # Ordered comma-separated realization profiles. Each concrete Binding uses
+  # the first profile that can enforce its selected UUIDs and accelerator share.
+  # Example for a mixed DRA/HAMi cluster: "kubernetes-dra,hami-vgpu".
   gpuProfile: none
   runtimeClassName: ""
   runtimeClassHandler: ""

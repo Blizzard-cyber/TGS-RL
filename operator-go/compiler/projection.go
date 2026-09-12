@@ -92,6 +92,10 @@ func buildAnnotations(input *normalizedInput) map[string]string {
 	for _, key := range sortedProtoLabelKeys(input.Manifest.GetAnnotations()) {
 		annotations["tgsrl.io/manifest-"+sanitizeLabelKey(key)] = input.Manifest.GetAnnotations()[key]
 	}
+	if IsHAMIGPUProfile(input.GPUProfile) {
+		annotations[HAMINVIDIAUseUUIDAnnotation] = input.hamiDevices[0].UUID
+		annotations[HAMINVIDIAModeAnnotation] = "hami-core"
+	}
 	return annotations
 }
 
@@ -218,6 +222,15 @@ func buildResources(input *normalizedInput) api.ResourceRequirements {
 		switch input.GPUProfile {
 		case GPUProfileNVIDIADevicePlugin:
 			key = "nvidia.com/gpu"
+		case GPUProfileHAMIVGPU:
+			requests[HAMINVIDIAResource] = "1"
+			limits[HAMINVIDIAResource] = "1"
+			percentage := formatHAMIPercentage(acceleratorUnits)
+			requests[HAMINVIDIACoreResource] = percentage
+			limits[HAMINVIDIACoreResource] = percentage
+			requests[HAMINVIDIAMemoryPercent] = percentage
+			limits[HAMINVIDIAMemoryPercent] = percentage
+			return api.ResourceRequirements{Requests: requests, Limits: limits}
 		case GPUProfileVolcanoHAMI:
 			key = "volcano.sh/gpu"
 		case GPUProfileKubernetesDRA:
@@ -228,6 +241,17 @@ func buildResources(input *normalizedInput) api.ResourceRequirements {
 		limits[key] = value
 	}
 	return api.ResourceRequirements{Requests: requests, Limits: limits}
+}
+
+func formatHAMIPercentage(share float64) string {
+	percentage := int(math.Ceil(share * 100))
+	if percentage < 1 {
+		percentage = 1
+	}
+	if percentage > 100 {
+		percentage = 100
+	}
+	return fmt.Sprintf("%d", percentage)
 }
 
 func buildNodeSelector(input *normalizedInput) map[string]string {

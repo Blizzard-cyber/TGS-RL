@@ -92,6 +92,18 @@ func normalize(input CompileInput, runtimeConfig RuntimeConfig) (*normalizedInpu
 			return nil, fmt.Errorf("binding %q: DRA device identity count %d does not match accelerator count %d", binding.GetBindingId(), len(deviceIDs), int(accelerators))
 		}
 	}
+	if IsHAMIGPUProfile(profile) {
+		if accelerators > 1 || accelerators <= 0 {
+			return nil, fmt.Errorf("binding %q: HAMi vGPU requires accelerator_units within (0,1]", binding.GetBindingId())
+		}
+		deviceIDs, err := concreteDeviceIDs(binding.GetDeviceIds())
+		if err != nil {
+			return nil, fmt.Errorf("binding %q: %w", binding.GetBindingId(), err)
+		}
+		if len(deviceIDs) != 1 {
+			return nil, fmt.Errorf("binding %q: HAMi vGPU requires exactly one physical GPU UUID", binding.GetBindingId())
+		}
+	}
 	if runtimeConfig.Bootstrap.Enabled && len(input.RuntimeManifest.GetCommand()) == 0 {
 		return nil, fmt.Errorf("worker bootstrap requires a non-empty manifest workload command")
 	}
@@ -115,17 +127,17 @@ func normalize(input CompileInput, runtimeConfig RuntimeConfig) (*normalizedInpu
 
 func concreteDeviceIDs(values []string) ([]string, error) {
 	if len(values) == 0 {
-		return nil, fmt.Errorf("DRA binding requires concrete device_ids")
+		return nil, fmt.Errorf("accelerator binding requires concrete device_ids")
 	}
 	seen := make(map[string]struct{}, len(values))
 	result := make([]string, 0, len(values))
 	for _, value := range values {
 		value = strings.TrimSpace(value)
 		if value == "" {
-			return nil, fmt.Errorf("DRA binding device_ids must not contain empty values")
+			return nil, fmt.Errorf("accelerator binding device_ids must not contain empty values")
 		}
 		if _, duplicate := seen[value]; duplicate {
-			return nil, fmt.Errorf("DRA binding device_ids contains duplicate %q", value)
+			return nil, fmt.Errorf("accelerator binding device_ids contains duplicate %q", value)
 		}
 		seen[value] = struct{}{}
 		result = append(result, value)
@@ -153,10 +165,6 @@ func validateGPUProfiles(profiles []string) (string, error) {
 	}
 	if len(normalized) == 0 {
 		return GPUProfileNone, nil
-	}
-	if len(normalized) > 1 {
-		sort.Strings(normalized)
-		return "", fmt.Errorf("gpu profiles are mutually exclusive: %s", strings.Join(normalized, ", "))
 	}
 	return normalized[0], nil
 }

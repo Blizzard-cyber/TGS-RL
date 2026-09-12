@@ -137,6 +137,7 @@ func (c *MemoryClient) DiscoverCapabilities(_ context.Context) (compiler.Capabil
 		GPUProfiles:          cloneBoolMap(c.capabilities.GPUProfiles),
 		ExactDevicePlacement: cloneBoolMap(c.capabilities.ExactDevicePlacement),
 		DRADevices:           cloneDRADevices(c.capabilities.DRADevices),
+		HAMIDevices:          cloneHAMIDevices(c.capabilities.HAMIDevices),
 		RuntimeClasses:       cloneStringMap(c.capabilities.RuntimeClasses),
 		NodeSelectors:        cloneNestedStringMap(c.capabilities.NodeSelectors),
 		DefaultNodeSelector:  cloneStringMap(c.capabilities.DefaultNodeSelector),
@@ -160,6 +161,7 @@ func (c *MemoryClient) SetCapabilities(values compiler.CapabilitySet) {
 		GPUProfiles:          cloneBoolMap(values.GPUProfiles),
 		ExactDevicePlacement: cloneBoolMap(values.ExactDevicePlacement),
 		DRADevices:           cloneDRADevices(values.DRADevices),
+		HAMIDevices:          cloneHAMIDevices(values.HAMIDevices),
 		RuntimeClasses:       cloneStringMap(values.RuntimeClasses),
 		NodeSelectors:        cloneNestedStringMap(values.NodeSelectors),
 		DefaultNodeSelector:  cloneStringMap(values.DefaultNodeSelector),
@@ -172,6 +174,17 @@ func cloneDRADevices(src map[string]compiler.DRADevice) map[string]compiler.DRAD
 		return nil
 	}
 	dst := make(map[string]compiler.DRADevice, len(src))
+	for key, value := range src {
+		dst[key] = value
+	}
+	return dst
+}
+
+func cloneHAMIDevices(src map[string]compiler.HAMIDevice) map[string]compiler.HAMIDevice {
+	if len(src) == 0 {
+		return nil
+	}
+	dst := make(map[string]compiler.HAMIDevice, len(src))
 	for key, value := range src {
 		dst[key] = value
 	}

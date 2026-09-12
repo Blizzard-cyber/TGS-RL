@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -131,6 +132,7 @@ func TestValidateGPUProfile(t *testing.T) {
 		compiler.GPUProfileNone,
 		compiler.GPUProfileNVIDIADevicePlugin,
 		compiler.GPUProfileKubernetesDRA,
+		compiler.GPUProfileHAMIVGPU,
 		compiler.GPUProfileVolcanoHAMI,
 	} {
 		if err := validateGPUProfile(profile); err != nil {
@@ -150,10 +152,10 @@ func TestPreflightBackendValidatesSelectedProfileAndKueue(t *testing.T) {
 			KueueWorkload: compiler.KueueWorkloadV1Beta2,
 		},
 	})
-	if err := preflightBackend(context.Background(), fakeBackend, compiler.GPUProfileNone); err != nil {
+	if err := preflightBackend(context.Background(), fakeBackend, []string{compiler.GPUProfileNone}); err != nil {
 		t.Fatalf("preflightBackend() error = %v", err)
 	}
-	if err := preflightBackend(context.Background(), fakeBackend, compiler.GPUProfileKubernetesDRA); err == nil || !strings.Contains(err.Error(), "not available") {
+	if err := preflightBackend(context.Background(), fakeBackend, []string{compiler.GPUProfileKubernetesDRA}); err == nil || !strings.Contains(err.Error(), "none of the requested") {
 		t.Fatalf("preflightBackend() error = %v, want unavailable GPU profile", err)
 	}
 
@@ -163,7 +165,7 @@ func TestPreflightBackendValidatesSelectedProfileAndKueue(t *testing.T) {
 			GPUProfiles: map[string]bool{compiler.GPUProfileNone: true},
 		},
 	}
-	if err := preflightBackend(context.Background(), missingKueue, compiler.GPUProfileNone); err == nil || !strings.Contains(err.Error(), "kueue Workload API") {
+	if err := preflightBackend(context.Background(), missingKueue, []string{compiler.GPUProfileNone}); err == nil || !strings.Contains(err.Error(), "kueue Workload API") {
 		t.Fatalf("preflightBackend() error = %v, want missing Kueue API", err)
 	}
 
@@ -178,13 +180,55 @@ func TestPreflightBackendValidatesSelectedProfileAndKueue(t *testing.T) {
 			},
 		},
 	}
-	if err := preflightBackend(context.Background(), draWithoutInventory, compiler.GPUProfileKubernetesDRA); err == nil || !strings.Contains(err.Error(), "UUID inventory") {
-		t.Fatalf("preflightBackend() error = %v, want missing DRA UUID inventory", err)
+	if err := preflightBackend(context.Background(), draWithoutInventory, []string{compiler.GPUProfileKubernetesDRA}); err == nil || !strings.Contains(err.Error(), "none of the requested") {
+		t.Fatalf("preflightBackend() error = %v, want unavailable exact profile", err)
 	}
 
 	countOnly := capabilityBackend{Backend: backend.NewFake(), capabilities: compiler.CapabilitySet{GPUProfiles: map[string]bool{compiler.GPUProfileNVIDIADevicePlugin: true}, KubernetesAPIs: compiler.KubernetesAPIVersions{KueueWorkload: compiler.KueueWorkloadV1Beta2}}}
-	if err := preflightBackend(context.Background(), countOnly, compiler.GPUProfileNVIDIADevicePlugin); err == nil || !strings.Contains(err.Error(), "cannot enforce") {
+	if err := preflightBackend(context.Background(), countOnly, []string{compiler.GPUProfileNVIDIADevicePlugin}); err == nil || !strings.Contains(err.Error(), "none of the requested") {
 		t.Fatalf("preflightBackend() error = %v, want exact-placement failure", err)
+	}
+}
+
+func TestPreflightBackendAcceptsLaterExactProfilePreference(t *testing.T) {
+	fakeBackend := backend.NewFake()
+	fakeBackend.SetCapabilities(compiler.CapabilitySet{
+		GPUProfiles: map[string]bool{
+			compiler.GPUProfileKubernetesDRA: true,
+			compiler.GPUProfileHAMIVGPU:      true,
+		},
+		ExactDevicePlacement: map[string]bool{
+			compiler.GPUProfileKubernetesDRA: true,
+			compiler.GPUProfileHAMIVGPU:      true,
+		},
+		DRADevices: map[string]compiler.DRADevice{
+			"GPU-dra": {UUID: "GPU-dra", Type: "gpu", DeviceClass: compiler.NVIDIADRAFullGPUDeviceClass, Driver: compiler.NVIDIADRADriver, Pool: "node-dra", Device: "gpu-0"},
+		},
+		HAMIDevices: map[string]compiler.HAMIDevice{
+			"GPU-a10": {UUID: "GPU-a10", Node: "node-a10", Model: "NVIDIA-A10", Mode: "hami-core", MemoryBytes: 24 << 30, CorePercent: 100, SplitCount: 10, Healthy: true},
+		},
+		KubernetesAPIs: compiler.KubernetesAPIVersions{KueueWorkload: compiler.KueueWorkloadV1Beta2, DRAResourceClaim: compiler.DRAResourceClaimV1},
+	})
+	if err := preflightBackend(context.Background(), fakeBackend, []string{compiler.GPUProfileNVIDIADevicePlugin, compiler.GPUProfileHAMIVGPU, compiler.GPUProfileKubernetesDRA}); err != nil {
+		t.Fatalf("preflightBackend() error = %v", err)
+	}
+}
+
+func TestPreflightBackendRejectsHAMIWithoutUsableDevice(t *testing.T) {
+	fakeBackend := backend.NewFake()
+	fakeBackend.SetCapabilities(compiler.CapabilitySet{
+		GPUProfiles:          map[string]bool{compiler.GPUProfileHAMIVGPU: true},
+		ExactDevicePlacement: map[string]bool{compiler.GPUProfileHAMIVGPU: true},
+		HAMIDevices: map[string]compiler.HAMIDevice{
+			"GPU-a10": {
+				UUID: "GPU-a10", Node: "node-a10", Model: "NVIDIA-A10", Mode: "hami-core",
+				MemoryBytes: 24 << 30, CorePercent: 100, SplitCount: 10, Healthy: false,
+			},
+		},
+		KubernetesAPIs: compiler.KubernetesAPIVersions{KueueWorkload: compiler.KueueWorkloadV1Beta2},
+	})
+	if err := preflightBackend(context.Background(), fakeBackend, []string{compiler.GPUProfileHAMIVGPU}); err == nil || !strings.Contains(err.Error(), "none of the requested") {
+		t.Fatalf("preflightBackend() error = %v, want unusable HAMi inventory failure", err)
 	}
 }
 
@@ -219,7 +263,7 @@ func TestValidateStartupRuntimeConfigFailsClosed(t *testing.T) {
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			_, err := validateStartupRuntimeConfig(test.profile, compiler.RuntimeConfig{RuntimeClass: test.runtime})
+			_, err := validateStartupRuntimeConfig([]string{test.profile}, compiler.RuntimeConfig{RuntimeClass: test.runtime})
 			if test.wantErr == "" {
 				if err != nil {
 					t.Fatalf("validateStartupRuntimeConfig() error = %v", err)
@@ -234,8 +278,19 @@ func TestValidateStartupRuntimeConfigFailsClosed(t *testing.T) {
 }
 
 func TestValidateStartupRuntimeConfigRequiresBootstrapForDRA(t *testing.T) {
-	if _, err := validateStartupRuntimeConfig(compiler.GPUProfileKubernetesDRA, compiler.RuntimeConfig{}); err == nil || !strings.Contains(err.Error(), "managed-worker bootstrap") {
+	if _, err := validateStartupRuntimeConfig([]string{compiler.GPUProfileKubernetesDRA}, compiler.RuntimeConfig{}); err == nil || !strings.Contains(err.Error(), "managed-worker bootstrap") {
 		t.Fatalf("DRA bootstrap error = %v", err)
+	}
+}
+
+func TestParseGPUProfilesPreservesPreferenceOrder(t *testing.T) {
+	profiles, err := parseGPUProfiles("kubernetes-dra,hami-vgpu,nvidia-device-plugin,hami-vgpu")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{compiler.GPUProfileKubernetesDRA, compiler.GPUProfileHAMIVGPU, compiler.GPUProfileNVIDIADevicePlugin}
+	if !slices.Equal(profiles, want) {
+		t.Fatalf("profiles = %v, want %v", profiles, want)
 	}
 }
 

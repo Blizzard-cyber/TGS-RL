@@ -15,6 +15,11 @@
     "controller": {
       "type": "object",
       "properties": {
+        "gpuProfile": {
+          "type": "string",
+          "pattern": "^(none|kubernetes-dra|hami-vgpu|nvidia-device-plugin|volcano-hami)(,(none|kubernetes-dra|hami-vgpu|nvidia-device-plugin|volcano-hami))*$",
+          "description": "Ordered comma-separated workload realization profiles. Each Binding selects the first compatible exact-identity profile."
+        },
         "workerBootstrap": {
           "type": "object",
           "required": ["enabled", "installerImage", "registryURL", "registrySigningKeySecret", "registrySigningKeyKey", "verifyDeviceIdentities", "hostNetwork"],

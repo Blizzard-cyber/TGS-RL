@@ -10,6 +10,7 @@ import (
 	tgsrlv1 "github.com/Blizzard-cyber/TGS-RL/gen/go/tgsrl/v1"
 	"github.com/Blizzard-cyber/TGS-RL/internal/protocolmeta"
 	"github.com/Blizzard-cyber/TGS-RL/operator-go/api"
+	"github.com/Blizzard-cyber/TGS-RL/operator-go/compiler"
 	runtimepub "github.com/Blizzard-cyber/TGS-RL/operator-go/runtime"
 	"github.com/Blizzard-cyber/TGS-RL/operator-go/statuswatch"
 	"google.golang.org/protobuf/proto"
@@ -476,7 +477,12 @@ func (m *ObservationManager) publishSnapshot(ctx context.Context, registration *
 	if snapshot == nil || snapshot.ObservedGeneration < decisionGeneration(registration.Decision) {
 		return false, nil
 	}
-	projection := statuswatch.Project(snapshot, registration.Bundle.ResourceClaim != nil || registration.Bundle.ResourceClaimTemplate != nil)
+	projection := statuswatch.Project(
+		snapshot,
+		registration.Bundle.ResourceClaim != nil ||
+			registration.Bundle.ResourceClaimTemplate != nil ||
+			compiler.IsHAMIGPUProfile(registration.Bundle.GPUProfile),
+	)
 	if !projection.Ready || !shouldPublishTransition(registration.LastState, registration.PendingState, projection.State) {
 		return false, nil
 	}

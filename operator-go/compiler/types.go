@@ -15,6 +15,7 @@ var (
 		GPUProfileNone:               {},
 		GPUProfileNVIDIADevicePlugin: {},
 		GPUProfileKubernetesDRA:      {},
+		GPUProfileHAMIVGPU:           {},
 		GPUProfileVolcanoHAMI:        {},
 	}
 )
@@ -52,6 +53,7 @@ type WorkerBootstrapConfig struct {
 type CapabilityProfile struct {
 	GPUProfile     string
 	DRADevices     map[string]DRADevice
+	HAMIDevices    map[string]HAMIDevice
 	RuntimeClass   RuntimeClassConfig
 	NodeSelector   map[string]string
 	Bootstrap      WorkerBootstrapConfig
@@ -72,6 +74,7 @@ type normalizedInput struct {
 	workloadUnitID   string
 	binding          *tgsrlv1.Binding
 	draDevices       []DRADevice
+	hamiDevices      []HAMIDevice
 }
 
 func (in CompileInput) ManifestHasNoImageDigests() bool {

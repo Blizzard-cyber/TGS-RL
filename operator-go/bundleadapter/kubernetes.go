@@ -334,7 +334,7 @@ func (a *KubernetesAdapter) observeOnce(ctx context.Context, reader Reader, bund
 	snapshot.JobFailed = job.Status.Failed
 	snapshot.JobPaused = job.Spec.Suspend
 	var podsBody []byte
-	if snapshot.WorkerRegistrationRequired || bundle.ResourceClaimTemplate != nil {
+	if snapshot.WorkerRegistrationRequired || bundle.ResourceClaimTemplate != nil || compiler.IsHAMIGPUProfile(bundle.GPUProfile) {
 		podsPath := "/api/v1/namespaces/" + url.PathEscape(bundle.Namespace) + "/pods?labelSelector=" + url.QueryEscape("job-name="+bundle.Job.ObjectMeta.Name)
 		podsBody, err = reader.GetPath(ctx, podsPath)
 		if err != nil {
@@ -369,7 +369,14 @@ func (a *KubernetesAdapter) observeOnce(ctx context.Context, reader Reader, bund
 			return nil, false, err
 		}
 	}
-	if bundle.ResourceClaim == nil && bundle.ResourceClaimTemplate == nil {
+	if compiler.IsHAMIGPUProfile(bundle.GPUProfile) {
+		allocated, deviceIDs, err := observeHAMIAllocation(bundle, podsBody)
+		if err != nil {
+			return nil, false, err
+		}
+		snapshot.ResourceClaimsAllocated = allocated
+		snapshot.AllocatedDeviceIDs = deviceIDs
+	} else if bundle.ResourceClaim == nil && bundle.ResourceClaimTemplate == nil {
 		snapshot.ResourceClaimsAllocated = true
 	} else if len(claimBody) == 0 {
 		snapshot.ResourceClaimsAllocated = false
@@ -396,6 +403,80 @@ func (a *KubernetesAdapter) observeOnce(ctx context.Context, reader Reader, bund
 
 	terminal := snapshot.JobSucceeded > 0 || snapshot.JobFailed > 0
 	return snapshot, terminal, nil
+}
+
+func observeHAMIAllocation(bundle *api.Bundle, payload []byte) (bool, []string, error) {
+	var list struct {
+		Items []struct {
+			Metadata struct {
+				Annotations map[string]string `json:"annotations"`
+			} `json:"metadata"`
+		} `json:"items"`
+	}
+	if err := json.Unmarshal(payload, &list); err != nil {
+		return false, nil, fmt.Errorf("decode workload pods for HAMi allocation: %w", err)
+	}
+	expected := expectedDRADeviceIDs(bundle)
+	if len(expected) != 1 {
+		return false, nil, fmt.Errorf("HAMi allocation requires exactly one expected physical GPU UUID")
+	}
+	observedSets := make(map[string][]string)
+	for _, pod := range list.Items {
+		raw := strings.TrimSpace(pod.Metadata.Annotations[compiler.HAMINVIDIAAllocatedAnnotation])
+		if raw == "" {
+			continue
+		}
+		deviceIDs, err := parseHAMIAllocatedDeviceIDs(raw)
+		if err != nil {
+			return false, nil, err
+		}
+		key := strings.Join(deviceIDs, ",")
+		observedSets[key] = deviceIDs
+	}
+	if len(observedSets) == 0 {
+		return false, nil, nil
+	}
+	if len(observedSets) != 1 {
+		return false, nil, fmt.Errorf("workload pods report conflicting HAMi device allocations")
+	}
+	for _, actual := range observedSets {
+		if !equalStrings(actual, expected) {
+			return false, nil, fmt.Errorf("HAMi allocated device UUIDs %v, want binding device_ids %v", actual, expected)
+		}
+		return true, actual, nil
+	}
+	return false, nil, nil
+}
+
+func parseHAMIAllocatedDeviceIDs(payload string) ([]string, error) {
+	seen := make(map[string]struct{})
+	var result []string
+	for _, container := range strings.Split(payload, ";") {
+		for _, device := range strings.Split(container, ":") {
+			device = strings.TrimSpace(device)
+			if device == "" {
+				continue
+			}
+			fields := strings.Split(device, ",")
+			if len(fields) < 4 {
+				return nil, fmt.Errorf("HAMi allocated device entry %q has fewer than four fields", device)
+			}
+			uuid := strings.TrimSpace(fields[0])
+			if !strings.HasPrefix(uuid, "GPU-") {
+				return nil, fmt.Errorf("HAMi allocated device entry %q is not a physical GPU UUID", device)
+			}
+			if _, duplicate := seen[uuid]; duplicate {
+				continue
+			}
+			seen[uuid] = struct{}{}
+			result = append(result, uuid)
+		}
+	}
+	if len(result) == 0 {
+		return nil, fmt.Errorf("HAMi allocated device annotation contains no UUIDs")
+	}
+	sort.Strings(result)
+	return result, nil
 }
 
 func bundleUsesWorkerBootstrap(bundle *api.Bundle) bool {
