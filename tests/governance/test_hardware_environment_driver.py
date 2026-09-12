@@ -832,6 +832,31 @@ def test_cleanup_rejects_unmaterialized_error_when_bundle_exists(
         )
 
 
+def test_cleanup_accepts_already_terminal_run(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    driver = object.__new__(DRIVER.HardwareEnvironmentDriver)
+    target = SimpleNamespace()
+    monkeypatch.setattr(driver, "_bundles", lambda *_args, **_kwargs: [])
+
+    def already_failed(*_args: object, **_kwargs: object) -> None:
+        raise DRIVER.DriverError(
+            "cannot terminate run in state JOB_RUN_STATE_FAILED"
+        )
+
+    monkeypatch.setattr(driver, "_command", already_failed)
+
+    assert (
+        driver._cleanup(
+            {},
+            target,
+            {"job_id": "job-a", "run_id": "run-a"},
+            Path("/tmp/unused-response.json"),
+        )
+        == []
+    )
+
+
 def test_driver_preflight_accepts_full_gpu_inventory(
     driver_environment: tuple[Any, _GatewayState, Path],
 ) -> None:

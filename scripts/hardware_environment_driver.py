@@ -1600,7 +1600,12 @@ class HardwareEnvironmentDriver:
                 )
                 if not no_materialized_sandboxes and not any(
                     marker in normalized
-                    for marker in ("invalid transition", "not found", "http 404")
+                    for marker in (
+                        "invalid transition",
+                        "cannot terminate run in state",
+                        "not found",
+                        "http 404",
+                    )
                 ):
                     raise
         for bundle in bundles:
