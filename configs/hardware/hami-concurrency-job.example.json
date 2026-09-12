@@ -1,5 +1,5 @@
 {
-  "displayName": "tgsrl-hami-smoke",
+  "displayName": "tgsrl-hami-concurrency-smoke",
   "protocolVersion": "v0.3",
   "algorithm": "grpo",
   "runtime": {
@@ -15,7 +15,7 @@
     "artifactUri": "${WORKLOAD_IMAGE}",
     "compatibilityProfile": "hami-smoke-verl-v1",
     "command": ["python3.12"],
-    "args": ["/opt/tgsrl/scripts/gpu-smoke-workload.py", "--iterations", "20"]
+    "args": ["/opt/tgsrl/scripts/gpu-smoke-workload.py", "--iterations", "100", "--iteration-delay-seconds", "0.05"]
   },
   "executionContract": {
     "contractId": "contract-sha256-458e88c9ff47c7a413b06ea1e631a49c4084be136cda8fe44d78db783ad8641b",
@@ -41,14 +41,14 @@
         "revision": "1"
       }
     ],
-    "commitPolicy": {"mode": "COMMIT_MODE_ALL_OR_NOTHING", "minimumSuccessfulUnits": 1, "maxRetries": 1, "commitTimeout": "60s"},
+    "commitPolicy": {"mode": "COMMIT_MODE_ALL_OR_NOTHING", "minimumSuccessfulUnits": 2, "maxRetries": 1, "commitTimeout": "60s"},
     "backpressurePolicy": {"mode": "BACKPRESSURE_MODE_BLOCK_PRODUCER", "lowWatermark": "1", "highWatermark": "2", "maximumBufferLevel": "4", "stallTimeout": "60s"},
     "safePointPolicy": {"enabled": true, "trigger": "SAFE_POINT_TRIGGER_EXPLICIT", "maximumWait": "30s", "requiredPhaseIds": ["decode"]},
     "capabilities": {"checkpointRestore": true, "policyHotSwap": true}
   },
   "resourcesPerUnit": {"cpuMillis": "2000", "memoryBytes": "8589934592", "acceleratorUnits": 0.4},
   "requiredCapabilities": {"names": ["nvidia-gpu"], "algorithms": ["grpo"], "rolloutModes": ["partially_async"], "supportedActions": ["bind"]},
-  "desiredUnits": 1,
+  "desiredUnits": 2,
   "priority": 1,
   "queue": "hami",
   "rolloutMode": "ROLLOUT_MODE_PARTIALLY_ASYNC",

@@ -59,6 +59,63 @@ func TestRunWorkerRegistersRealProcessAndReportsExit(t *testing.T) {
 	}
 }
 
+func TestRegistrationReadyMarkerIsIdentityScopedAndCleaned(t *testing.T) {
+	t.Setenv("TGSRL_SANDBOX_ID", "sandbox-a")
+	t.Setenv("TGSRL_GENERATION", "4")
+	t.Setenv("TGSRL_POD_UID", "pod-a")
+	path := filepath.Join(t.TempDir(), "registered.json")
+	worker := runtimehelper.Worker{
+		SandboxID:  "sandbox-a",
+		Generation: 4,
+		InstanceID: "pod-a",
+	}
+
+	if _, err := prepareRegistrationReady(path); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeRegistrationReady(path, worker); err != nil {
+		t.Fatal(err)
+	}
+	if err := ready([]string{"--file", path}); err != nil {
+		t.Fatalf("ready() error = %v", err)
+	}
+	t.Setenv("TGSRL_GENERATION", "5")
+	if err := ready([]string{"--file", path}); err == nil ||
+		!strings.Contains(err.Error(), "does not match") {
+		t.Fatalf("stale ready marker error = %v", err)
+	}
+	t.Setenv("TGSRL_GENERATION", "4")
+	cleanupRegistrationReady(path, runtimehelper.Worker{
+		SandboxID:  worker.SandboxID,
+		Generation: worker.Generation + 1,
+		InstanceID: worker.InstanceID,
+	})
+	if _, err := os.Stat(path); err != nil {
+		t.Fatalf("stale cleanup removed current marker: %v", err)
+	}
+	cleanupRegistrationReady(path, worker)
+	if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("registration marker still exists: %v", err)
+	}
+}
+
+func TestPrepareRegistrationReadyRemovesStaleMarker(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "registered.json")
+	if err := os.WriteFile(path, []byte(`{"sandbox_id":"old"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	clean, err := prepareRegistrationReady(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if clean != path {
+		t.Fatalf("registration marker path = %q, want %q", clean, path)
+	}
+	if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("stale registration marker still exists: %v", err)
+	}
+}
+
 func TestSupervisorTraceProxyUsesDedicatedTokenAndRegistryCredential(t *testing.T) {
 	var registryToken string
 	var forwarded runtimehelper.WorkerTraceRequest

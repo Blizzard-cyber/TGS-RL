@@ -14,6 +14,7 @@ import (
 const (
 	WorkerBootstrapMountPath  = "/var/run/tgsrl-bootstrap"
 	WorkerBootstrapBinaryPath = WorkerBootstrapMountPath + "/tgsrl-worker-bootstrap"
+	WorkerBootstrapReadyPath  = "/tmp/tgsrl/bootstrap-ready"
 )
 
 func buildBundle(input *normalizedInput) (*api.Bundle, error) {
@@ -232,12 +233,11 @@ func configureWorkerBootstrap(template *api.PodTemplateSpec, input *normalizedIn
 	workload := append([]string(nil), main.Command...)
 	workload = append(workload, main.Args...)
 	main.Command = []string{WorkerBootstrapBinaryPath}
-	main.Args = []string{"--listen", "0.0.0.0:50092", "--"}
+	main.Args = []string{"--listen", "0.0.0.0:0", "--registration-ready-file", WorkerBootstrapReadyPath, "--"}
 	main.Args = append(main.Args, workload...)
 	main.WorkingDir = ""
 	main.VolumeMounts = append(main.VolumeMounts, api.VolumeMount{Name: volumeName, MountPath: WorkerBootstrapMountPath, ReadOnly: true})
-	main.Ports = append(main.Ports, api.ContainerPort{Name: "tgsrl-control", ContainerPort: 50092, Protocol: "TCP"})
-	main.ReadinessProbe = &api.Probe{HTTPGet: &api.HTTPGetAction{Path: "/readyz", Port: 50092, Scheme: "HTTP"}, PeriodSeconds: 2, TimeoutSeconds: 1, FailureThreshold: 3, SuccessThreshold: 1}
+	main.ReadinessProbe = &api.Probe{Exec: &api.ExecAction{Command: []string{WorkerBootstrapBinaryPath, "ready", "--file", WorkerBootstrapReadyPath}}, PeriodSeconds: 2, TimeoutSeconds: 1, FailureThreshold: 3, SuccessThreshold: 1}
 	main.Env = append(main.Env,
 		api.EnvVar{Name: "TGSRL_WORKER_REGISTRY_URL", Value: bootstrap.RegistryURL},
 		api.EnvVar{Name: "TGSRL_WORKER_REGISTRY_TOKEN", Value: registrationToken},

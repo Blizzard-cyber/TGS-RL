@@ -639,9 +639,14 @@ func validateCandidatePlan(candidate *tgsrlv1.PlacementCandidate, unitID, device
 }
 
 func defaultCandidateFactory(input CandidateInput) *tgsrlv1.PlacementCandidate {
+	runtimeUnitID := ""
+	if input.Unit.Pending != nil {
+		runtimeUnitID = input.Unit.Pending.GetRuntimeUnitId()
+	}
 	return &tgsrlv1.PlacementCandidate{
 		Plan: &tgsrlv1.PlacementPlan{Bindings: []*tgsrlv1.Binding{{
 			PendingUnitId: input.Unit.ID,
+			RuntimeUnitId: runtimeUnitID,
 			DeviceIds:     []string{input.Device.GetDeviceId()},
 			Resources:     cloneResources(input.RequestedResources),
 		}}},

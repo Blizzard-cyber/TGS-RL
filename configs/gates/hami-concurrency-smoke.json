@@ -1,0 +1,35 @@
+{
+  "schema_version": "tgsrl.io/gate-campaign/v1alpha1",
+  "campaign_id": "tgsrl-hami-concurrency-smoke",
+  "campaign_revision": 1,
+  "description": "Independent two-worker HAMi shared-GPU concurrency smoke.",
+  "experiments": [
+    {
+      "experiment_id": "H2",
+      "title": "HAMi two-worker shared-GPU concurrency",
+      "gate_manifest": "configs/gates/gate-hami-hardware.json",
+      "scenario_manifest": "configs/scenarios/h2-hami-concurrency.yaml",
+      "output_directory": "h2-hami-concurrency",
+      "minimum_evidence": "GPU_SINGLE_NODE",
+      "requirements": {
+        "minimum_nodes": 1,
+        "minimum_accelerators": 1,
+        "minimum_workers": 2,
+        "expected_total_core_percent": 80,
+        "gpu_profiles": ["full-gpu"],
+        "execution_modes": ["hami-vgpu"],
+        "exact_device_identity": true,
+        "shared_device_identity": true,
+        "required_actions": ["bind"],
+        "required_events": ["worker_registered", "device_identity_verified", "worker_concurrency_verified", "workload_completed"],
+        "required_faults": []
+      },
+      "rules": [
+        {"rule_id": "h2-actions-succeed", "metric": "action_success_rate", "comparison": "variant", "operator": ">=", "threshold": 1},
+        {"rule_id": "h2-workers-concurrent", "metric": "concurrent_worker_count", "comparison": "variant", "operator": ">=", "threshold": 2},
+        {"rule_id": "h2-execution-overlap", "metric": "worker_overlap_ms", "comparison": "variant", "operator": ">=", "threshold": 1},
+        {"rule_id": "h2-shared-core-budget", "metric": "aggregate_accelerator_share", "comparison": "variant", "operator": ">=", "threshold": 0.8}
+      ]
+    }
+  ]
+}

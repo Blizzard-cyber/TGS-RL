@@ -24,6 +24,7 @@ import tempfile
 import time
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 from typing import Any, cast
 from urllib import error, parse, request
@@ -906,6 +907,56 @@ def _hami_allocations(payload: str) -> list[JsonObject]:
     return sorted(allocations, key=lambda item: str(item["uuid"]))
 
 
+def _worker_concurrency_overlap_ms(
+    events: Sequence[Mapping[str, Any]], *, required_workers: int
+) -> tuple[float, list[str]]:
+    intervals: dict[str, tuple[datetime, datetime]] = {}
+    starts: dict[str, datetime] = {}
+    completions: dict[str, datetime] = {}
+    for event in events:
+        sandbox_id = str(event.get("sandbox_id", "")).strip()
+        occurred_at = str(event.get("occurred_at", "")).strip()
+        if not sandbox_id or not occurred_at:
+            continue
+        try:
+            observed = datetime.fromisoformat(occurred_at.replace("Z", "+00:00"))
+        except ValueError as exc:
+            raise DriverError("managed-worker trace contains an invalid occurred_at") from exc
+        if observed.tzinfo is None:
+            raise DriverError("managed-worker trace occurred_at must include a timezone")
+        if event.get("event_type") == "sample_consumed":
+            duration_ms = float(event.get("duration_ms", 0.0))
+            if not math.isfinite(duration_ms) or duration_ms <= 0:
+                raise DriverError("managed-worker sample duration must be positive and finite")
+            started = observed.timestamp() - duration_ms / 1000
+            sample_start = datetime.fromtimestamp(started, tz=observed.tzinfo)
+            starts[sandbox_id] = min(starts.get(sandbox_id, sample_start), sample_start)
+        elif event.get("event_type") == "workload_completed":
+            completions[sandbox_id] = max(completions.get(sandbox_id, observed), observed)
+    for sandbox_id in sorted(set(starts) & set(completions)):
+        if completions[sandbox_id] <= starts[sandbox_id]:
+            raise DriverError(
+                f"managed worker {sandbox_id} has a non-positive execution interval"
+            )
+        intervals[sandbox_id] = (starts[sandbox_id], completions[sandbox_id])
+    if len(intervals) != required_workers:
+        raise DriverError(
+            f"managed-worker trace has {len(intervals)} complete execution intervals; "
+            f"need exactly {required_workers}"
+        )
+    maximum = 0.0
+    ordered = sorted(intervals)
+    for index, left_id in enumerate(ordered):
+        left = intervals[left_id]
+        for right_id in ordered[index + 1 :]:
+            right = intervals[right_id]
+            overlap = (min(left[1], right[1]) - max(left[0], right[0])).total_seconds() * 1000
+            maximum = max(maximum, overlap)
+    if maximum <= 0:
+        raise DriverError("managed-worker execution intervals do not overlap")
+    return maximum, ordered
+
+
 def _visible_device_ids(output: str, profile: str) -> list[str]:
     prefix = "MIG-" if profile == "mig" else "GPU-"
     return sorted({item for item in UUID_PATTERN.findall(output) if item.startswith(prefix)})
@@ -1324,12 +1375,26 @@ class HardwareEnvironmentDriver:
     def _launch(
         self, request_value: JsonObject, target: TargetConfig, run: JsonObject, response_path: Path
     ) -> list[JsonObject]:
-        del request_value, response_path
+        del response_path
         gateway = Gateway(target.gateway_url, target.timeout)
         if run.get("start_operation_id"):
             self._wait_operation(gateway, str(run["start_operation_id"]), target)
-        topology = self._wait_running_topology(gateway, run, target)
-        targets = self._kubernetes_targets(target, run, topology, require_ready=True)
+        required_workers = self._required_workers(request_value)
+
+        def read_targets() -> list[JsonObject] | None:
+            topology = self._wait_running_topology(gateway, run, target)
+            targets = self._kubernetes_targets(target, run, topology, require_ready=True)
+            return targets if len(targets) == required_workers else None
+
+        targets = cast(
+            list[JsonObject],
+            _wait(
+                f"{required_workers} managed workers to register",
+                read_targets,
+                timeout=target.timeout,
+                interval=target.poll_interval,
+            ),
+        )
         run["targets"] = targets
         return [
             self._target_event(run, item) | {"event_type": "worker_registered", "source": "worker"}
@@ -1339,8 +1404,8 @@ class HardwareEnvironmentDriver:
     def _verify_device_identity(
         self, request_value: JsonObject, target: TargetConfig, run: JsonObject, response_path: Path
     ) -> list[JsonObject]:
-        del request_value
         gateway = Gateway(target.gateway_url, target.timeout)
+        required_workers = self._required_workers(request_value)
 
         def read_targets() -> list[JsonObject] | None:
             topology = gateway.get(
@@ -1348,7 +1413,7 @@ class HardwareEnvironmentDriver:
                 f"?run_id={parse.quote(str(run['run_id']), safe='')}"
             )
             targets = self._kubernetes_targets(target, run, topology, require_ready=True)
-            return targets or None
+            return targets if len(targets) == required_workers else None
 
         targets = cast(
             list[JsonObject],
@@ -1416,9 +1481,9 @@ class HardwareEnvironmentDriver:
     def _measure(
         self, request_value: JsonObject, target: TargetConfig, run: JsonObject, response_path: Path
     ) -> list[JsonObject]:
-        del request_value
         targets = cast(list[JsonObject], run.get("targets", []))
-        if not targets:
+        required_workers = self._required_workers(request_value)
+        if len(targets) != required_workers:
             raise DriverError("measure requires verified worker targets")
         kube = Kubernetes(target)
 
@@ -1456,6 +1521,36 @@ class HardwareEnvironmentDriver:
         )
         if len(events) > MAX_EVENTS:
             raise DriverError("managed-worker trace contains too many events")
+        if self._requires_worker_concurrency(request_value):
+            overlap_ms, sandbox_ids = _worker_concurrency_overlap_ms(
+                events, required_workers=required_workers
+            )
+            physical_ids = sorted(
+                {
+                    str(device_id)
+                    for item in targets
+                    for device_id in cast(list[str], item["worker_device_ids"])
+                }
+            )
+            requested_core_total = sum(
+                int(item.get("requested_core_percent", 0)) for item in targets
+            )
+            allocated_core_total = sum(
+                int(item.get("allocated_core_percent", 0)) for item in targets
+            )
+            events.append(
+                self._common_event(run)
+                | {
+                    "event_type": "worker_concurrency_verified",
+                    "source": "operator",
+                    "worker_count": required_workers,
+                    "sandbox_ids": sandbox_ids,
+                    "shared_device_ids": physical_ids,
+                    "requested_core_percent_total": requested_core_total,
+                    "allocated_core_percent_total": allocated_core_total,
+                    "overlap_ms": overlap_ms,
+                }
+            )
         self._write_artifact(response_path, "worker-measurement.json", {"events": events})
         return events
 
@@ -1857,10 +1952,9 @@ class HardwareEnvironmentDriver:
                         or binding.get("pendingUnitId")
                         or runtime_target.get("runtimeUnitId", "")
                     ),
-                    "worker_id": str(
-                        binding.get("runtimeUnitId")
-                        or binding.get("pendingUnitId")
-                        or runtime_target.get("runtimeUnitId", "")
+                    "worker_id": _string(
+                        binding.get("pendingUnitId"),
+                        label="binding pending unit ID",
                     ),
                     "node_id": _string(
                         _mapping(pod.get("spec"), label="Pod spec").get("nodeName"),
@@ -2193,11 +2287,14 @@ class HardwareEnvironmentDriver:
             )
         if target.execution_mode == HAMI_PROFILE and not 0 < accelerator_units <= 1:
             raise DriverError("HAMi hardware jobs require acceleratorUnits within (0,1]")
-        minimum_nodes = int(
-            _mapping(scenario.get("topology"), label="scenario.topology").get("minimum_nodes", 1)
-        )
-        if int(job.get("desiredUnits", 0)) < minimum_nodes:
-            raise DriverError("job template desiredUnits is below the scenario node requirement")
+        required_workers = self._required_workers(request_value)
+        if int(job.get("desiredUnits", 0)) != required_workers:
+            raise DriverError("job template desiredUnits is below the scenario worker requirement")
+        version_lock = _mapping(lock.get("version_lock"), label="workload_lock.version_lock")
+        if runtime.get("compatibilityProfile") != version_lock.get("compatibility_profile"):
+            raise DriverError(
+                "job template compatibilityProfile does not match workload_lock"
+            )
         capabilities = _mapping(job.get("requiredCapabilities"), label="job.requiredCapabilities")
         names = capabilities.get("names", [])
         if not isinstance(names, list) or "nvidia-gpu" not in names:
@@ -2221,6 +2318,23 @@ class HardwareEnvironmentDriver:
             raise DriverError("MIG job template must require the nvidia-mig capability")
 
     @staticmethod
+    def _required_workers(request_value: Mapping[str, Any]) -> int:
+        scenario = _mapping(request_value.get("scenario"), label="request.scenario")
+        topology = _mapping(scenario.get("topology"), label="scenario.topology")
+        value = topology.get("minimum_workers", topology.get("minimum_nodes", 1))
+        if not isinstance(value, int) or isinstance(value, bool) or value <= 0:
+            raise DriverError("scenario.topology.minimum_workers must be a positive integer")
+        return value
+
+    @staticmethod
+    def _requires_worker_concurrency(request_value: Mapping[str, Any]) -> bool:
+        scenario = _mapping(request_value.get("scenario"), label="request.scenario")
+        required = scenario.get("required_evidence", [])
+        if not isinstance(required, list):
+            raise DriverError("scenario.required_evidence must be a list")
+        return "worker-concurrency" in required
+
+    @staticmethod
     def _common_event(run: Mapping[str, Any]) -> JsonObject:
         return {
             "service_job_id": run["job_id"],
@@ -2234,6 +2348,9 @@ class HardwareEnvironmentDriver:
             "node_id": target["node_id"],
             "runtime_unit_id": target["runtime_unit_id"],
             "worker_id": target["worker_id"],
+            "sandbox_id": target["sandbox_id"],
+            "binding_id": target["binding_id"],
+            "generation": target["generation"],
         }
 
     @staticmethod

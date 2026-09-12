@@ -52,6 +52,7 @@ CAMPAIGN_EVIDENCE_REQUIREMENTS = {
     "scheduler-binding",
     "dra-allocation",
     "hami-allocation",
+    "worker-concurrency",
     "worker-device-identity",
     "mig-device-class",
     "parent-uuid",
@@ -588,6 +589,35 @@ def _metrics_from_events(events: list[dict[str, Any]]) -> dict[str, float]:
             float(event.get("recovery_time_ms", 0.0)) for event in actions
         )
         + sum(float(event.get("recovery_time_ms", 0.0)) for event in recoveries),
+        "concurrent_worker_count": float(
+            max(
+                (
+                    int(event.get("worker_count", 0))
+                    for event in measured
+                    if event.get("event_type") == "worker_concurrency_verified"
+                ),
+                default=0,
+            )
+        ),
+        "worker_overlap_ms": max(
+            (
+                float(event.get("overlap_ms", 0.0))
+                for event in measured
+                if event.get("event_type") == "worker_concurrency_verified"
+            ),
+            default=0.0,
+        ),
+        "aggregate_accelerator_share": (
+            max(
+                (
+                    float(event.get("allocated_core_percent_total", 0.0))
+                    for event in measured
+                    if event.get("event_type") == "worker_concurrency_verified"
+                ),
+                default=0.0,
+            )
+            / 100.0
+        ),
     }
     if any(not _is_finite_number(value) for value in metrics.values()):
         raise GateToolError("measurement trace produced a non-finite metric")
@@ -1347,12 +1377,32 @@ def load_campaign(path: Path) -> dict[str, Any]:
                 raise GateToolError(
                     f"campaign {experiment_id} requirements.{field} must contain strings"
                 )
-        for field in ("minimum_nodes", "minimum_accelerators"):
+        for field in ("minimum_nodes", "minimum_accelerators", "minimum_workers"):
             value = requirements.get(field, 0)
             if not isinstance(value, int) or isinstance(value, bool) or value < 0:
                 raise GateToolError(
                     f"campaign {experiment_id} requirements.{field} must be non-negative"
                 )
+        for field in ("exact_device_identity", "shared_device_identity"):
+            if field in requirements and not isinstance(requirements[field], bool):
+                raise GateToolError(
+                    f"campaign {experiment_id} requirements.{field} must be boolean"
+                )
+        total_core = requirements.get("expected_total_core_percent", 0)
+        if (
+            not isinstance(total_core, int)
+            or isinstance(total_core, bool)
+            or total_core < 0
+            or total_core > 100
+        ):
+            raise GateToolError(
+                f"campaign {experiment_id} requirements.expected_total_core_percent "
+                "must be an integer from 0 through 100"
+            )
+        if requirements.get("minimum_workers", 1) <= 0:
+            raise GateToolError(
+                f"campaign {experiment_id} requirements.minimum_workers must be positive"
+            )
         topology = scenario.get("topology")
         if not isinstance(topology, dict):
             raise GateToolError(f"campaign {experiment_id} scenario topology must be an object")
@@ -1362,6 +1412,23 @@ def load_campaign(path: Path) -> dict[str, Any]:
                     f"campaign {experiment_id} scenario topology.{field} "
                     "does not match requirements"
                 )
+        if topology.get("minimum_workers", topology.get("minimum_nodes", 1)) != max(
+            requirements.get("minimum_workers", 1),
+            requirements.get("minimum_nodes", 1),
+        ):
+            raise GateToolError(
+                f"campaign {experiment_id} scenario topology.minimum_workers "
+                "does not match requirements"
+            )
+        if requirements.get("shared_device_identity") is True and (
+            requirements.get("minimum_workers", 0) < 2
+            or requirements.get("execution_modes") != ["hami-vgpu"]
+            or total_core <= 0
+        ):
+            raise GateToolError(
+                f"campaign {experiment_id} shared device identity requires "
+                "HAMi, at least two workers, and an expected total core percentage"
+            )
         faults = scenario.get("faults")
         if not isinstance(faults, list) or any(not isinstance(fault, dict) for fault in faults):
             raise GateToolError(f"campaign {experiment_id} scenario faults must be objects")
@@ -1570,6 +1637,7 @@ def _validate_campaign_requirements(
         "fault_recovered": "operator",
         "interference_observed": "worker",
         "sample_consumed": "worker",
+        "worker_concurrency_verified": "operator",
         "worker_registered": "worker",
         "workload_completed": "worker",
     }
@@ -1647,11 +1715,91 @@ def _validate_campaign_requirements(
                     break
                 if execution_mode == "hami-vgpu" and (
                     event.get("allocation_mode") != "hami-vgpu"
-                    or event.get("requested_core_percent") != event.get("allocated_core_percent")
-                    or event.get("requested_memory_mib") != event.get("allocated_memory_mib")
+                    or event.get("requested_core_percent")
+                    != event.get("allocated_core_percent")
+                    or event.get("requested_memory_mib")
+                    != event.get("allocated_memory_mib")
                 ):
                     errors.append(f"{label} HAMi allocation does not match the requested share")
                     break
+            minimum_workers = max(
+                int(requirements.get("minimum_workers", 1)),
+                int(requirements.get("minimum_nodes", 1)),
+            )
+            for iteration in sorted(identity_iterations):
+                iteration_identities = [
+                    event
+                    for event in identities
+                    if int(event.get("iteration", 0)) == iteration
+                ]
+                sandboxes = {
+                    str(event.get("sandbox_id", ""))
+                    for event in iteration_identities
+                    if event.get("sandbox_id")
+                }
+                workers = {
+                    str(event.get("worker_id", ""))
+                    for event in iteration_identities
+                    if event.get("worker_id")
+                }
+                if (
+                    len(iteration_identities) != minimum_workers
+                    or len(sandboxes) != minimum_workers
+                    or len(workers) != minimum_workers
+                ):
+                    errors.append(
+                        f"{label} exact device identity has the wrong worker count "
+                        f"in iteration {iteration}"
+                    )
+                    break
+                if requirements.get("shared_device_identity") is True:
+                    shared_ids = {
+                        str(value)
+                        for event in iteration_identities
+                        for value in event.get("worker_device_ids", [])
+                    }
+                    requested_total = sum(
+                        int(event.get("requested_core_percent", 0))
+                        for event in iteration_identities
+                    )
+                    allocated_total = sum(
+                        int(event.get("allocated_core_percent", 0))
+                        for event in iteration_identities
+                    )
+                    expected_total = int(
+                        requirements.get("expected_total_core_percent", 0)
+                    )
+                    if len(shared_ids) != 1:
+                        errors.append(
+                            f"{label} shared device identity does not converge on one GPU"
+                        )
+                        break
+                    if (
+                        requested_total != allocated_total
+                        or requested_total != expected_total
+                        or requested_total > 100
+                    ):
+                        errors.append(
+                            f"{label} shared device aggregate share is invalid"
+                        )
+                        break
+            if requirements.get("shared_device_identity") is True:
+                concurrency = [
+                    event
+                    for event in events
+                    if event.get("event_type") == "worker_concurrency_verified"
+                    and event.get("source") == "operator"
+                ]
+                concurrency_iterations = {
+                    int(event.get("iteration", 0)) for event in concurrency
+                }
+                if concurrency_iterations != iterations or any(
+                    int(event.get("worker_count", 0)) != minimum_workers
+                    or not _is_finite_number(event.get("overlap_ms"))
+                    or float(event["overlap_ms"]) <= 0
+                    for event in concurrency
+                ):
+                    errors.append(f"{label} worker concurrency evidence is incomplete")
             if int(requirements.get("minimum_nodes", 0)) > 1:
                 for iteration in sorted({int(event.get("iteration", 0)) for event in events}):
                     by_node: dict[str, set[str]] = {}
@@ -1764,6 +1912,17 @@ def _validate_named_campaign_evidence(
                 and bool(event.get("allocated_device_ids"))
                 and event.get("requested_core_percent") == event.get("allocated_core_percent")
                 and event.get("requested_memory_mib") == event.get("allocated_memory_mib")
+            )
+        ),
+        "worker-concurrency": both_sides(
+            lambda event: (
+                event.get("event_type") == "worker_concurrency_verified"
+                and event.get("source") == "operator"
+                and _is_finite_number(event.get("overlap_ms"))
+                and float(event["overlap_ms"]) > 0
+                and isinstance(event.get("worker_count"), int)
+                and not isinstance(event.get("worker_count"), bool)
+                and int(event["worker_count"]) >= 2
             )
         ),
         "worker-device-identity": both_sides(

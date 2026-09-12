@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import importlib.metadata
+import math
 import time
 
 import torch
@@ -58,10 +59,16 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--iterations", type=int, default=20)
     parser.add_argument("--matrix-size", type=int, default=512)
+    parser.add_argument("--iteration-delay-seconds", type=float, default=0.0)
     parser.add_argument("--checkpoint-root", default="/tmp/tgsrl/checkpoints")
     args = parser.parse_args()
     if args.iterations <= 0 or args.matrix_size <= 0:
         raise SystemExit("iterations and matrix-size must be positive")
+    if (
+        not math.isfinite(args.iteration_delay_seconds)
+        or args.iteration_delay_seconds < 0
+    ):
+        raise SystemExit("iteration-delay-seconds must be finite and non-negative")
     if not torch.cuda.is_available():
         raise SystemExit("CUDA is unavailable in the managed workload")
     expected_versions = {
@@ -110,6 +117,8 @@ def main() -> int:
                 expected_samples=1,
             )
             del left, right, result
+            if args.iteration_delay_seconds > 0:
+                time.sleep(args.iteration_delay_seconds)
             if hook.should_stop():
                 break
         hook.bridge.record_workload_completed(

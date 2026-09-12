@@ -7,7 +7,7 @@
     {
       "experiment_id": "H1",
       "title": "HAMi fractional GPU exact-device execution",
-      "gate_manifest": "configs/gates/gate-e1-e8-hardware.json",
+      "gate_manifest": "configs/gates/gate-hami-hardware.json",
       "scenario_manifest": "configs/scenarios/h1-hami-vgpu.yaml",
       "output_directory": "h1-hami-vgpu",
       "minimum_evidence": "GPU_SINGLE_NODE",

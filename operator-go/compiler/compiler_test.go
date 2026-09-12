@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"reflect"
 	"slices"
+	"sort"
 	"strings"
 	"testing"
 
@@ -385,7 +386,12 @@ func TestCompileWrapsWorkloadWithManagedWorkerBootstrap(t *testing.T) {
 	if main.ImagePullPolicy != "IfNotPresent" || main.TerminationMessagePath != "/dev/termination-log" || main.TerminationMessagePolicy != "File" {
 		t.Fatalf("main container Kubernetes defaults = %+v", main)
 	}
-	if main.ReadinessProbe == nil || main.ReadinessProbe.HTTPGet == nil || main.ReadinessProbe.HTTPGet.Scheme != "HTTP" {
+	if main.ReadinessProbe == nil ||
+		main.ReadinessProbe.HTTPGet != nil ||
+		main.ReadinessProbe.Exec == nil ||
+		!slices.Equal(main.ReadinessProbe.Exec.Command, []string{
+			WorkerBootstrapBinaryPath, "ready", "--file", WorkerBootstrapReadyPath,
+		}) {
 		t.Fatalf("readiness probe defaults = %+v", main.ReadinessProbe)
 	}
 	initContainer := pod.InitContainers[0]
@@ -398,7 +404,7 @@ func TestCompileWrapsWorkloadWithManagedWorkerBootstrap(t *testing.T) {
 	if len(main.VolumeMounts) != 1 || main.VolumeMounts[0].MountPath != WorkerBootstrapMountPath {
 		t.Fatalf("bootstrap mount must not shadow the workload image: %+v", main.VolumeMounts)
 	}
-	wantArgs := []string{"--listen", "0.0.0.0:50092", "--", "python", "train.py", "--steps", "10"}
+	wantArgs := []string{"--listen", "0.0.0.0:0", "--registration-ready-file", WorkerBootstrapReadyPath, "--", "python", "train.py", "--steps", "10"}
 	if !slices.Equal(main.Args, wantArgs) {
 		t.Fatalf("bootstrap args = %+v, want %+v", main.Args, wantArgs)
 	}
@@ -442,8 +448,8 @@ func TestCompileWrapsWorkloadWithManagedWorkerBootstrap(t *testing.T) {
 	if environment["TGSRL_VERIFY_DEVICE_IDENTITIES"].Value != "true" {
 		t.Fatalf("DRA workload must verify visible device identities: %+v", environment)
 	}
-	if len(main.Ports) != 1 || main.Ports[0].ContainerPort != 50092 {
-		t.Fatalf("bootstrap control port = %+v", main.Ports)
+	if len(main.Ports) != 0 {
+		t.Fatalf("dynamic bootstrap control endpoint must not declare a fixed port: %+v", main.Ports)
 	}
 	registrationToken := environment["TGSRL_WORKER_REGISTRY_TOKEN"]
 	if registrationToken.ValueFrom != nil || !bootstrapauth.Verify(signingKey, bootstrapauth.Claims{RunID: input.JobRun.GetRunId(), JobID: input.JobRun.GetJobId(), RuntimeUnitID: "unit-1", SandboxID: "sandbox-1", BindingID: input.PlacementPlan.Bindings[0].GetBindingId(), Generation: 7, DeviceIDs: []string{"GPU-aaaa"}}, registrationToken.Value) {
@@ -634,12 +640,39 @@ func TestQuantityCPUUsesCanonicalKubernetesForm(t *testing.T) {
 }
 
 func TestCompileUsesPendingUnitIdentityForReplicasOfOneRuntimeUnit(t *testing.T) {
-	c := New()
-	c.SetCapabilities(discoveredGPUCapabilities(GPUProfileNVIDIADevicePlugin))
+	signingKey := []byte(strings.Repeat("registry-signing-key-", 2))
+	c, err := NewWithRuntimeConfig(RuntimeConfig{Bootstrap: WorkerBootstrapConfig{
+		Enabled:            true,
+		InstallerImage:     "registry.example.test/tgsrl/bootstrap@sha256:" + strings.Repeat("1", 64),
+		RegistryURL:        "https://scheduler.example.test:50091",
+		RegistrySigningKey: signingKey,
+		VerifyDeviceIDs:    true,
+		HostNetwork:        true,
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	capabilities := discoveredGPUCapabilities(GPUProfileHAMIVGPU)
+	capabilities.HAMIDevices = map[string]HAMIDevice{
+		"GPU-aaaa": {
+			UUID: "GPU-aaaa", Node: "node-a", Model: "NVIDIA", Mode: "hami-core",
+			MemoryBytes: 24 << 30, CorePercent: 100, SplitCount: 10, Healthy: true,
+		},
+	}
+	c.SetCapabilities(capabilities)
 	input := testCompileInput()
-	for _, binding := range input.PlacementPlan.Bindings {
+	input.GPUProfiles = []string{GPUProfileHAMIVGPU}
+	for index, binding := range input.PlacementPlan.Bindings {
 		binding.RuntimeUnitId = "run-1:actor"
+		binding.SandboxId = "sandbox-" + binding.GetPendingUnitId()
 		binding.Generation = 3
+		binding.DeviceIds = []string{"GPU-aaaa"}
+		binding.Resources.AcceleratorUnits = 0.4
+		if index == 0 {
+			binding.BindingId = "binding-replica-a"
+		} else {
+			binding.BindingId = "binding-replica-b"
+		}
 	}
 
 	bundles, err := c.Compile(input)
@@ -651,6 +684,28 @@ func TestCompileUsesPendingUnitIdentityForReplicasOfOneRuntimeUnit(t *testing.T)
 	}
 	if bundles[0].RuntimeTargets[0].RuntimeUnitID != "run-1:actor" || bundles[1].RuntimeTargets[0].RuntimeUnitID != "run-1:actor" {
 		t.Fatalf("logical runtime identity was not preserved: %+v %+v", bundles[0].RuntimeTargets, bundles[1].RuntimeTargets)
+	}
+	workerIDs := make([]string, 0, len(bundles))
+	for _, bundle := range bundles {
+		environment := make(map[string]string)
+		for _, value := range bundle.Job.Spec.Template.Spec.Containers[0].Env {
+			environment[value.Name] = value.Value
+		}
+		workerIDs = append(workerIDs, environment["TGSRL_WORKER_ID"])
+		if environment["TGSRL_RUNTIME_UNIT_ID"] != "run-1:actor" {
+			t.Fatalf("logical runtime identity = %q", environment["TGSRL_RUNTIME_UNIT_ID"])
+		}
+		if !bundle.Job.Spec.Template.Spec.HostNetwork {
+			t.Fatal("replica bootstrap must preserve configured host networking")
+		}
+		args := bundle.Job.Spec.Template.Spec.Containers[0].Args
+		if len(args) < 4 || args[1] != "0.0.0.0:0" {
+			t.Fatalf("replica bootstrap does not use a dynamic control port: %v", args)
+		}
+	}
+	sort.Strings(workerIDs)
+	if !slices.Equal(workerIDs, []string{"unit-1", "unit-2"}) {
+		t.Fatalf("replica worker identities = %v", workerIDs)
 	}
 }
 

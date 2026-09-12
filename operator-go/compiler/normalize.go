@@ -251,6 +251,13 @@ func bindingRuntimeUnitID(binding *tgsrlv1.Binding) string {
 	return binding.GetPendingUnitId()
 }
 
+func bindingWorkerID(binding *tgsrlv1.Binding) string {
+	if binding.GetPendingUnitId() != "" {
+		return binding.GetPendingUnitId()
+	}
+	return bindingRuntimeUnitID(binding)
+}
+
 func derivePriority(run *tgsrlv1.JobRun, plan *tgsrlv1.PlacementPlan) int32 {
 	for _, operation := range run.GetOperations() {
 		if operation.GetAnnotations()["priority"] != "" {

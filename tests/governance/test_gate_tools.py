@@ -18,6 +18,7 @@ FULL_STACK_MANIFEST = ROOT / "configs" / "gates" / "gate-gi-process.json"
 HARDWARE_MANIFEST = ROOT / "configs" / "gates" / "gate-e1-e8-hardware.json"
 CAMPAIGN = ROOT / "configs" / "gates" / "e1-e8.json"
 HAMI_CAMPAIGN = ROOT / "configs" / "gates" / "hami-smoke.json"
+HAMI_CONCURRENCY_CAMPAIGN = ROOT / "configs" / "gates" / "hami-concurrency-smoke.json"
 SPEC = importlib.util.spec_from_file_location("tgsrl_gate_tools", SCRIPT)
 assert SPEC is not None and SPEC.loader is not None
 GATE_TOOLS = importlib.util.module_from_spec(SPEC)
@@ -118,6 +119,7 @@ def _write_full_stack_gpu_report(
                             "source": "worker",
                             "runtime_unit_id": "unit-1",
                             "worker_id": "worker-1",
+                            "sandbox_id": "sandbox-1",
                             "duration_ms": 1.0,
                             "gpu_active_ms": 2.0,
                             "useful_gpu_time_ms": 1.5,
@@ -133,6 +135,7 @@ def _write_full_stack_gpu_report(
                             "source": "worker",
                             "runtime_unit_id": "unit-1",
                             "worker_id": "worker-1",
+                            "sandbox_id": "sandbox-1",
                             "elapsed_ms": 10.0,
                             "item_count": 1,
                             "convergence_quality": 1.0,
@@ -157,6 +160,7 @@ def _write_full_stack_gpu_report(
                             "source": "worker",
                             "runtime_unit_id": "unit-1",
                             "worker_id": "worker-1",
+                            "sandbox_id": "sandbox-1",
                         },
                         common
                         | {
@@ -164,6 +168,7 @@ def _write_full_stack_gpu_report(
                             "source": "worker",
                             "runtime_unit_id": "unit-1",
                             "worker_id": "worker-1",
+                            "sandbox_id": "sandbox-1",
                             "scheduler_device_ids": [device_id],
                             "allocated_device_ids": [device_id],
                             "worker_device_ids": [device_id],
@@ -183,6 +188,7 @@ def _write_full_stack_gpu_report(
                             "source": "worker",
                             "runtime_unit_id": f"unit-{node_index}",
                             "worker_id": f"worker-{node_index}",
+                            "sandbox_id": f"sandbox-{node_index}",
                             "node_id": node_id,
                             "scheduler_device_ids": [extra_device_id],
                             "allocated_device_ids": [extra_device_id],
@@ -390,13 +396,22 @@ common = {{
     "node_id": "gpu-node-1",
     "runtime_unit_id": "unit-1",
     "worker_id": "worker-1",
+    "sandbox_id": "sandbox-1",
 }}
 if request["experiment_id"] == "E8":
     nodes = ["gpu-node-1", "gpu-node-2"]
 else:
     nodes = ["gpu-node-1"]
 def for_nodes(event):
-    return [event | {{"node_id": node}} for node in nodes]
+    return [
+        event | {{
+            "node_id": node,
+            "runtime_unit_id": f"unit-{{index}}",
+            "worker_id": f"worker-{{index}}",
+            "sandbox_id": f"sandbox-{{index}}",
+        }}
+        for index, node in enumerate(nodes, start=1)
+    ]
 if operation == "launch":
     events.extend(for_nodes(common | {{"event_type": "worker_registered", "source": "worker"}}))
 elif operation == "verify_device_identity":
@@ -406,6 +421,9 @@ elif operation == "verify_device_identity":
         events.append(common | {{
             "event_type": "device_identity_verified", "source": "worker",
             "node_id": node,
+            "runtime_unit_id": f"unit-{{node_index}}",
+            "worker_id": f"worker-{{node_index}}",
+            "sandbox_id": f"sandbox-{{node_index}}",
             "scheduler_device_ids": [device], "allocated_device_ids": [device],
             "worker_device_ids": [device],
             "device_class": "mig.nvidia.com" if profile == "mig" else "gpu.nvidia.com",
@@ -444,10 +462,14 @@ elif operation == "recover_fault":
     }})
 elif operation == "measure":
     for node in nodes:
+        node_index = nodes.index(node) + 1
         events.extend([
         common | {{
             "event_type": "sample_consumed", "source": "worker",
             "node_id": node,
+            "runtime_unit_id": f"unit-{{node_index}}",
+            "worker_id": f"worker-{{node_index}}",
+            "sandbox_id": f"sandbox-{{node_index}}",
             "duration_ms": 1.0, "gpu_active_ms": 2.0, "useful_gpu_time_ms": 1.5,
             "contract_observation": {{
                 "policy_lag": 0, "sample_stale": False,
@@ -457,6 +479,9 @@ elif operation == "measure":
         common | {{
             "event_type": "workload_completed", "source": "worker",
             "node_id": node, "elapsed_ms": 10.0, "item_count": 1,
+            "runtime_unit_id": f"unit-{{node_index}}",
+            "worker_id": f"worker-{{node_index}}",
+            "sandbox_id": f"sandbox-{{node_index}}",
             "convergence_quality": 1.0,
         }},
         ])
@@ -541,6 +566,35 @@ def test_hami_campaign_is_independent_and_requires_fractional_allocation_evidenc
     assert "hami-allocation" in scenario["required_evidence"]
 
 
+def test_hami_concurrency_campaign_requires_two_workers_on_one_physical_gpu() -> None:
+    campaign = GATE_TOOLS.load_campaign(HAMI_CONCURRENCY_CAMPAIGN)
+
+    assert campaign["campaign_id"] == "tgsrl-hami-concurrency-smoke"
+    assert [item["experiment_id"] for item in campaign["experiments"]] == ["H2"]
+    experiment = campaign["experiments"][0]
+    assert experiment["requirements"] == {
+        "minimum_nodes": 1,
+        "minimum_accelerators": 1,
+        "minimum_workers": 2,
+        "expected_total_core_percent": 80,
+        "gpu_profiles": ["full-gpu"],
+        "execution_modes": ["hami-vgpu"],
+        "exact_device_identity": True,
+        "shared_device_identity": True,
+        "required_actions": ["bind"],
+        "required_events": [
+            "worker_registered",
+            "device_identity_verified",
+            "worker_concurrency_verified",
+            "workload_completed",
+        ],
+        "required_faults": [],
+    }
+    scenario = json.loads((ROOT / experiment["scenario_manifest"]).read_text(encoding="utf-8"))
+    assert scenario["topology"]["minimum_workers"] == 2
+    assert "worker-concurrency" in scenario["required_evidence"]
+
+
 def test_hami_driver_response_rejects_share_mismatch() -> None:
     response = {
         "schema_version": HARDWARE_TOOLS.DRIVER_RESPONSE_SCHEMA,
@@ -554,6 +608,8 @@ def test_hami_driver_response_rejects_share_mismatch() -> None:
                 "scheduler_device_ids": ["GPU-a10"],
                 "allocated_device_ids": ["GPU-a10"],
                 "worker_device_ids": ["GPU-a10"],
+                "sandbox_id": "sandbox-a",
+                "worker_id": "worker-a",
                 "device_class": "",
                 "allocation_mode": "hami-vgpu",
                 "requested_core_percent": 40,
@@ -1224,6 +1280,8 @@ def test_repository_hardware_executor_rejects_device_class_mismatch() -> None:
                 "scheduler_device_ids": ["MIG-1/1/0"],
                 "allocated_device_ids": ["MIG-1/1/0"],
                 "worker_device_ids": ["MIG-1/1/0"],
+                "sandbox_id": "sandbox-1",
+                "worker_id": "worker-1",
                 "device_class": "gpu.nvidia.com",
                 "parent_uuid": "GPU-parent",
             }

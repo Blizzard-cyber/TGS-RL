@@ -126,6 +126,30 @@ def _contains_sensitive_field(value: object) -> bool:
     return False
 
 
+def event_int(event: dict[str, Any], field: str) -> int:
+    value = event.get(field)
+    if not isinstance(value, int) or isinstance(value, bool):
+        return 0
+    return value
+
+
+def event_string_set(event: dict[str, Any], field: str) -> set[str]:
+    value = event.get(field)
+    if not isinstance(value, list):
+        return set()
+    return {str(item).strip() for item in value if str(item).strip()}
+
+
+def event_positive_number(event: dict[str, Any], field: str) -> bool:
+    value = event.get(field)
+    return (
+        isinstance(value, int | float)
+        and not isinstance(value, bool)
+        and math.isfinite(float(value))
+        and float(value) > 0
+    )
+
+
 def _redact_sensitive_environment_values(payload: bytes) -> bytes:
     result = payload
     for key, value in os.environ.items():
@@ -322,9 +346,13 @@ def _validate_driver_response(
     action: str = "",
     fault_id: str = "",
     minimum_nodes: int = 1,
+    minimum_workers: int = 1,
     gpu_profile: str = "",
     execution_mode: str = "",
+    shared_device_identity: bool = False,
+    expected_total_core_percent: int = 0,
 ) -> list[dict[str, Any]]:
+    minimum_workers = max(minimum_workers, minimum_nodes)
     if not execution_mode and gpu_profile:
         execution_mode = "kubernetes-dra"
     if _contains_sensitive_field(response):
@@ -364,6 +392,18 @@ def _validate_driver_response(
     }.get(operation)
     if expected_event and not any(event.get("event_type") == expected_event for event in events):
         raise ExecutionError(f"hardware driver {operation} omitted {expected_event} evidence")
+    if operation == "launch":
+        registered_workers = {
+            str(event.get("sandbox_id", ""))
+            for event in events
+            if event.get("event_type") == "worker_registered"
+            and event.get("source") == "worker"
+            and event.get("sandbox_id")
+        }
+        if len(registered_workers) != minimum_workers:
+            raise ExecutionError(
+                "hardware driver launch returned the wrong number of worker identities"
+            )
     if operation == "measure" and not any(
         event.get("event_type") == "workload_completed" for event in events
     ):
@@ -385,6 +425,55 @@ def _validate_driver_response(
             or sample_nodes != completed_nodes
         ):
             raise ExecutionError("hardware driver measure returned too few node identities")
+        sample_workers = {
+            str(event.get("sandbox_id", ""))
+            for event in events
+            if event.get("event_type") == "sample_consumed" and event.get("sandbox_id")
+        }
+        completed_workers = {
+            str(event.get("sandbox_id", ""))
+            for event in events
+            if event.get("event_type") == "workload_completed" and event.get("sandbox_id")
+        }
+        if (
+            len(sample_workers) < minimum_workers
+            or len(completed_workers) < minimum_workers
+            or sample_workers != completed_workers
+        ):
+            raise ExecutionError("hardware driver measure returned too few worker identities")
+        if shared_device_identity:
+            concurrency = [
+                event
+                for event in events
+                if event.get("event_type") == "worker_concurrency_verified"
+                and event.get("source") == "operator"
+            ]
+            if len(concurrency) != 1:
+                raise ExecutionError(
+                    "hardware driver measure omitted one concurrency verification event"
+                )
+            evidence = concurrency[0]
+            if (
+                event_int(evidence, "worker_count") != minimum_workers
+                or len(event_string_set(evidence, "sandbox_ids")) != minimum_workers
+                or len(event_string_set(evidence, "shared_device_ids")) != 1
+                or not event_positive_number(evidence, "overlap_ms")
+            ):
+                raise ExecutionError("hardware driver concurrency evidence is incomplete")
+            requested_total = event_int(evidence, "requested_core_percent_total")
+            allocated_total = event_int(evidence, "allocated_core_percent_total")
+            if (
+                requested_total <= 0
+                or requested_total != allocated_total
+                or requested_total > 100
+                or (
+                    expected_total_core_percent > 0
+                    and requested_total != expected_total_core_percent
+                )
+            ):
+                raise ExecutionError(
+                    "hardware driver shared HAMi allocation has an invalid aggregate share"
+                )
     if operation == "verify_device_identity":
         identities = [
             event for event in events if event.get("event_type") == "device_identity_verified"
@@ -393,6 +482,8 @@ def _validate_driver_response(
         if len(nodes) < minimum_nodes:
             raise ExecutionError("hardware driver device identity returned too few node identities")
         seen_devices: set[str] = set()
+        seen_sandboxes: set[str] = set()
+        seen_workers: set[str] = set()
         expected_device_class = (
             "mig.nvidia.com"
             if execution_mode == "kubernetes-dra" and gpu_profile == "mig"
@@ -409,7 +500,19 @@ def _validate_driver_response(
                     "hardware driver device identity disagrees across scheduler, "
                     "allocation, and worker"
                 )
-            if seen_devices & worker_ids:
+            sandbox_id = str(event.get("sandbox_id", "")).strip()
+            worker_id = str(event.get("worker_id", "")).strip()
+            if not sandbox_id or sandbox_id in seen_sandboxes:
+                raise ExecutionError(
+                    "hardware driver device identity has duplicate sandbox identity"
+                )
+            if not worker_id or worker_id in seen_workers:
+                raise ExecutionError(
+                    "hardware driver device identity has duplicate worker identity"
+                )
+            seen_sandboxes.add(sandbox_id)
+            seen_workers.add(worker_id)
+            if not shared_device_identity and seen_devices & worker_ids:
                 raise ExecutionError("hardware driver device identity overlaps across nodes")
             seen_devices.update(worker_ids)
             if expected_device_class and event.get("device_class") != expected_device_class:
@@ -426,6 +529,33 @@ def _validate_driver_response(
                 )
             if gpu_profile == "mig" and not str(event.get("parent_uuid", "")).strip():
                 raise ExecutionError("hardware driver MIG identity omitted parent UUID")
+        if len(seen_sandboxes) != minimum_workers:
+            raise ExecutionError("hardware driver device identity returned the wrong worker count")
+        if shared_device_identity and (
+            execution_mode != "hami-vgpu" or len(seen_devices) != 1
+        ):
+            raise ExecutionError(
+                "shared device identity requires one HAMi physical GPU across all workers"
+            )
+        if shared_device_identity:
+            requested_total = sum(
+                event_int(event, "requested_core_percent") for event in identities
+            )
+            allocated_total = sum(
+                event_int(event, "allocated_core_percent") for event in identities
+            )
+            if (
+                requested_total <= 0
+                or requested_total != allocated_total
+                or requested_total > 100
+                or (
+                    expected_total_core_percent > 0
+                    and requested_total != expected_total_core_percent
+                )
+            ):
+                raise ExecutionError(
+                    "hardware driver shared HAMi identity has an invalid aggregate share"
+                )
     expected_action_source = "scheduler" if action == "bind" else "operator"
     if operation == "apply_action" and not any(
         event.get("event_type") in {"decision_applied", "control_completed"}
@@ -641,6 +771,9 @@ def _run_iteration(
     timeout: float,
     gpu_profile: str,
     execution_mode: str,
+    minimum_workers: int,
+    shared_device_identity: bool,
+    expected_total_core_percent: int,
 ) -> tuple[list[dict[str, Any]], dict[str, Any], list[dict[str, Any]]]:
     run_key = f"{experiment['experiment_id'].lower()}-{label}-{phase}-{iteration}"
     operations_root = output_root / "artifacts" / "services" / "hardware-driver" / run_key
@@ -682,8 +815,11 @@ def _run_iteration(
                 action=str(step.get("action", "")),
                 fault_id=str(step.get("fault_id", "")),
                 minimum_nodes=int(experiment["requirements"]["minimum_nodes"]),
+                minimum_workers=minimum_workers,
                 gpu_profile=gpu_profile,
                 execution_mode=execution_mode,
+                shared_device_identity=shared_device_identity,
+                expected_total_core_percent=expected_total_core_percent,
             )
             for event in operation_events:
                 events.append(
@@ -855,6 +991,18 @@ def execute(args: argparse.Namespace) -> int:
                         timeout=args.timeout_seconds,
                         gpu_profile=str(fingerprint["gpu_profile"]),
                         execution_mode=str(fingerprint["execution_mode"]),
+                        minimum_workers=max(
+                            int(experiment["requirements"].get("minimum_workers", 1)),
+                            int(experiment["requirements"]["minimum_nodes"]),
+                        ),
+                        shared_device_identity=bool(
+                            experiment["requirements"].get("shared_device_identity", False)
+                        ),
+                        expected_total_core_percent=int(
+                            experiment["requirements"].get(
+                                "expected_total_core_percent", 0
+                            )
+                        ),
                     )
                     events.extend(run_events)
                     service_runs = {str(event.get("service_run_id", "")) for event in run_events}

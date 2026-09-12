@@ -58,6 +58,11 @@ payload = {
             "execution_mode": "hami-vgpu",
             "job_template": str(Path("configs/hardware/hami-job.example.json").resolve()),
         },
+        "H2": {
+            "gpu_profile": "full-gpu",
+            "execution_mode": "hami-vgpu",
+            "job_template": str(Path("configs/hardware/hami-concurrency-job.example.json").resolve()),
+        },
     }
 }
 Path(output).write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")

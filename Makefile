@@ -35,7 +35,7 @@ GATEWAY_LISTEN ?= 127.0.0.1:8080
 OPERATOR_LISTEN ?= 127.0.0.1:50081
 SCHEDULER_FALLBACK ?= noop
 
-.PHONY: help doctor doctor-dev doctor-kubernetes gpu-install-host gpu-create-cluster gpu-prepare-cluster gpu-configure-access gpu-configure-registry gpu-preflight gpu-build-images gpu-render-config gpu-up gpu-status gpu-smoke gpu-down gpu-prepare-hami gpu-hami-status gpu-hami-smoke gpu-restore-dra local-up local-status local-stop local-down local-reset proto check-generated check-openapi proto-roundtrip check-migrations check-compose compose-smoke compose-smoke-host check-repository check-deploy render-kubernetes check-docs check-public-content sbom check-governance gate-campaign gate-campaign-run gate-campaign-calibrate test-go test-performance test-python test-api test-console test-console-browser lint staticcheck test race build-nvidia-binding build-nvidia-runtime build-nvidia-mig build-worker-bootstrap demo product-e2e gate-cpu-integration run-scheduler run-controller run-runtime run-gateway run-operator run-console
+.PHONY: help doctor doctor-dev doctor-kubernetes gpu-install-host gpu-create-cluster gpu-prepare-cluster gpu-configure-access gpu-configure-registry gpu-preflight gpu-build-images gpu-render-config gpu-up gpu-status gpu-smoke gpu-down gpu-prepare-hami gpu-hami-up gpu-hami-status gpu-hami-smoke gpu-hami-concurrency-smoke gpu-restore-dra local-up local-status local-stop local-down local-reset proto check-generated check-openapi proto-roundtrip check-migrations check-compose compose-smoke compose-smoke-host check-repository check-deploy render-kubernetes check-docs check-public-content sbom check-governance gate-campaign gate-campaign-run gate-campaign-calibrate test-go test-performance test-python test-api test-console test-console-browser lint staticcheck test race build-nvidia-binding build-nvidia-runtime build-nvidia-mig build-worker-bootstrap demo product-e2e gate-cpu-integration run-scheduler run-controller run-runtime run-gateway run-operator run-console
 
 help:
 	@printf '%s\n' \
@@ -55,8 +55,10 @@ help:
 	  '  make gpu-status       show the GPU control plane and Kubernetes objects' \
 	  '  make gpu-smoke        execute E1 Full GPU end-to-end smoke' \
 	  '  make gpu-prepare-hami install pinned HAMi and switch the test node to vGPU' \
+	  '  make gpu-hami-up      start the H2 HAMi two-worker control plane' \
 	  '  make gpu-hami-status  show HAMi components and published node inventory' \
 	  '  make gpu-hami-smoke   execute H1 HAMi fractional-GPU end-to-end smoke' \
+	  '  make gpu-hami-concurrency-smoke execute H2 two-worker shared-GPU smoke' \
 	  '  make gpu-restore-dra  uninstall HAMi and restore the Minikube NVIDIA plugin' \
 	  '  make gpu-down         stop the GPU control plane without deleting evidence' \
 	  '  make local-up         build and start the six local services' \
@@ -157,6 +159,11 @@ gpu-smoke:
 gpu-prepare-hami:
 	./scripts/gpu-prepare-hami.sh up
 
+gpu-hami-up:
+	TGSRL_OPERATOR_GPU_PROFILES=hami-vgpu \
+	TGSRL_GPU_MANIFEST=compatibility/manifests/hami-concurrency-verl.yaml \
+		./scripts/gpu-stack.sh up
+
 gpu-hami-status:
 	./scripts/gpu-prepare-hami.sh status
 
@@ -168,6 +175,15 @@ gpu-hami-smoke:
 		--driver "$(GATE_CAMPAIGN_DRIVER)" --experiment H1
 	jq -e '.experiments[] | select(.experiment_id == "H1") | .status == "PASSED"' \
 		.cache/tgsrl/hami-smoke/campaign-report.json >/dev/null
+
+gpu-hami-concurrency-smoke:
+	TGSRL_HARDWARE_DRIVER_CONFIG=$${TGSRL_HARDWARE_DRIVER_CONFIG:-configs/hardware/environment.json} \
+		uv run --frozen python scripts/gate-tools.py campaign-run \
+		--campaign configs/gates/hami-concurrency-smoke.json \
+		--reports-dir .cache/tgsrl/hami-concurrency-smoke \
+		--driver "$(GATE_CAMPAIGN_DRIVER)" --experiment H2
+	jq -e '.experiments[] | select(.experiment_id == "H2") | .status == "PASSED"' \
+		.cache/tgsrl/hami-concurrency-smoke/campaign-report.json >/dev/null
 
 gpu-restore-dra:
 	./scripts/gpu-prepare-hami.sh down

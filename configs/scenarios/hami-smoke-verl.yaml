@@ -1,0 +1,31 @@
+schema_version: "tgsrl.io/synthetic-scenario/v1alpha1"
+scenario_id: "hami-smoke-verl-v1"
+scenario_revision: 1
+status: "hardware-verified-single-node"
+runtime_loader: false
+data_kind: "live"
+seed: 20260912
+references:
+  compatibility_manifest: "compatibility/manifests/hami-smoke-verl.yaml"
+  resource_profile: "compatibility/profiles/hami-smoke-verl-v1.yaml"
+  capabilities: "configs/capabilities/nvidia-gpu-smoke.yaml"
+  policy: "configs/policies/static.yaml"
+clock:
+  kind: "wall"
+  start_utc: "2026-09-12T00:00:00Z"
+workload:
+  algorithm: "grpo"
+  rollout_mode: "partially_async"
+  execution_id: "hami-smoke"
+  stage_id: "decode"
+  unit_count: 1
+topology:
+  provider_source: "nvidia"
+  logical_devices: []
+timeline: []
+faults: []
+expected:
+  source_remains_immutable: true
+  deterministic_replay: false
+  live_hardware_claim: true
+  performance_claim: false

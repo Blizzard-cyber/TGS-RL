@@ -4,7 +4,7 @@ services:
   scheduler:
     network_mode: host
     environment:
-      TGSRL_MANIFEST_PATH: compatibility/manifests/gpu-smoke-verl.yaml
+      TGSRL_MANIFEST_PATH: ${TGSRL_GPU_MANIFEST:-compatibility/manifests/gpu-smoke-verl.yaml}
       TGSRL_WORKER_REGISTRY_SIGNING_KEY: "${TGSRL_WORKER_REGISTRY_SIGNING_KEY:?set TGSRL_WORKER_REGISTRY_SIGNING_KEY}"
       NVIDIA_DRIVER_CAPABILITIES: compute,utility
     command:
@@ -17,7 +17,7 @@ services:
         exec go run ./scheduler-go/cmd/scheduler \
           -listen 127.0.0.1:50051 \
           -config-root /workspace \
-          -manifest compatibility/manifests/gpu-smoke-verl.yaml \
+          -manifest "${TGSRL_GPU_MANIFEST:-compatibility/manifests/gpu-smoke-verl.yaml}" \
           -state-dir /state \
           -metrics-listen 127.0.0.1:9090 \
           -nvidia-driver-v2 \
@@ -48,7 +48,7 @@ services:
           --job-control-target 127.0.0.1:50061 \
           --state-db /state/runtime.db \
           --config-root /workspace \
-          --manifest compatibility/manifests/gpu-smoke-verl.yaml
+          --manifest "${TGSRL_GPU_MANIFEST:-compatibility/manifests/gpu-smoke-verl.yaml}"
     ports: !override []
     volumes: !override
       - ${TGSRL_REPO_ROOT:?set TGSRL_REPO_ROOT}:/workspace:ro

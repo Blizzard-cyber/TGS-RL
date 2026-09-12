@@ -41,6 +41,7 @@ type config struct {
 	controlSocket    string
 	safePointFile    string
 	readinessFile    string
+	registrationFile string
 	mpsPIDDirectory  string
 	verifyDevices    bool
 	deviceCommand    string
@@ -95,11 +96,55 @@ func run(argv []string) error {
 	if len(argv) > 0 && argv[0] == "install" {
 		return install(argv[1:])
 	}
+	if len(argv) > 0 && argv[0] == "ready" {
+		return ready(argv[1:])
+	}
 	cfg, err := parseConfig(argv)
 	if err != nil {
 		return err
 	}
 	return runWorker(cfg)
+}
+
+type registrationReadyRecord struct {
+	SandboxID  string `json:"sandbox_id"`
+	Generation uint64 `json:"generation"`
+	InstanceID string `json:"instance_id"`
+}
+
+func ready(argv []string) error {
+	fs := flag.NewFlagSet("ready", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	path := fs.String("file", "", "registration-ready marker path")
+	if err := fs.Parse(argv); err != nil {
+		return err
+	}
+	if fs.NArg() != 0 {
+		return errors.New("ready accepts no positional arguments")
+	}
+	clean, err := validateRegistrationReadyPath(*path)
+	if err != nil {
+		return err
+	}
+	data, err := os.ReadFile(clean)
+	if err != nil {
+		return err
+	}
+	var record registrationReadyRecord
+	if err := json.Unmarshal(data, &record); err != nil {
+		return err
+	}
+	generation, err := strconv.ParseUint(env("TGSRL_GENERATION"), 10, 64)
+	if err != nil || generation == 0 {
+		return errors.New("TGSRL_GENERATION must be positive")
+	}
+	if record.SandboxID != env("TGSRL_SANDBOX_ID") ||
+		record.Generation != generation ||
+		record.InstanceID == "" ||
+		record.InstanceID != env("TGSRL_POD_UID") {
+		return errors.New("registration-ready marker identity does not match this workload")
+	}
+	return nil
 }
 
 func install(argv []string) error {
@@ -178,6 +223,7 @@ func parseConfig(argv []string) (config, error) {
 	fs.StringVar(&cfg.controlSocket, "control-socket", firstNonEmpty(env("TGSRL_WORKER_CONTROL_SOCKET"), env("TGSRL_VERL_CONTROL_SOCKET")), "cooperative worker Unix socket")
 	fs.StringVar(&cfg.safePointFile, "safe-point-file", env("TGSRL_WORKER_SAFE_POINT_FILE"), "signal-mode safe-point marker")
 	fs.StringVar(&cfg.readinessFile, "readiness-file", env("TGSRL_WORKER_READINESS_FILE"), "signal-mode readiness marker")
+	fs.StringVar(&cfg.registrationFile, "registration-ready-file", env("TGSRL_WORKER_REGISTRATION_READY_FILE"), "atomic marker created after worker registration")
 	fs.StringVar(&cfg.mpsPIDDirectory, "mps-pid-dir", env("TGSRL_NVIDIA_MPS_PID_DIR"), "optional directory for generation-fenced MPS server PID publication")
 	fs.BoolVar(&cfg.verifyDevices, "verify-device-identities", envBool("TGSRL_VERIFY_DEVICE_IDENTITIES"), "verify allocated UUIDs with nvidia-smi")
 	fs.StringVar(&cfg.deviceCommand, "device-command", firstNonEmpty(env("TGSRL_DEVICE_IDENTITY_COMMAND"), "nvidia-smi"), "device identity executable")
@@ -204,6 +250,11 @@ func runWorker(cfg config) error {
 	if cfg.controlTimeout <= 0 {
 		cfg.controlTimeout = 30 * time.Second
 	}
+	registrationFile, err := prepareRegistrationReady(cfg.registrationFile)
+	if err != nil {
+		return err
+	}
+	cfg.registrationFile = registrationFile
 	worker, err := workerFromEnvironment()
 	if err != nil {
 		return err
@@ -317,6 +368,14 @@ func runWorker(cfg config) error {
 	supervisor.mu.Lock()
 	supervisor.registered = true
 	supervisor.mu.Unlock()
+	if cfg.registrationFile != "" {
+		if err := writeRegistrationReady(cfg.registrationFile, worker); err != nil {
+			_ = server.Close()
+			terminateProcess(waiter, worker.PID, syscall.SIGKILL, cfg.shutdownWait)
+			return err
+		}
+		defer cleanupRegistrationReady(cfg.registrationFile, worker)
+	}
 
 	signals := cfg.signals
 	var ownedSignals chan os.Signal
@@ -922,6 +981,98 @@ func writeMPSPID(directory, sandboxID string, generation uint64, pid uint32, pro
 	}
 	ok = true
 	return nil
+}
+
+func writeRegistrationReady(path string, worker runtimehelper.Worker) error {
+	clean, err := validateRegistrationReadyPath(path)
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(clean), 0o700); err != nil {
+		return err
+	}
+	temp, err := os.CreateTemp(filepath.Dir(clean), ".registration-ready-*")
+	if err != nil {
+		return err
+	}
+	tempPath := temp.Name()
+	ok := false
+	defer func() {
+		if !ok {
+			_ = os.Remove(tempPath)
+		}
+	}()
+	payload, err := json.Marshal(registrationReadyRecord{
+		SandboxID:  worker.SandboxID,
+		Generation: worker.Generation,
+		InstanceID: worker.InstanceID,
+	})
+	if err != nil {
+		_ = temp.Close()
+		return err
+	}
+	if err := temp.Chmod(0o600); err != nil {
+		_ = temp.Close()
+		return err
+	}
+	if _, err := temp.Write(append(payload, '\n')); err != nil {
+		_ = temp.Close()
+		return err
+	}
+	if err := temp.Sync(); err != nil {
+		_ = temp.Close()
+		return err
+	}
+	if err := temp.Close(); err != nil {
+		return err
+	}
+	if err := os.Rename(tempPath, clean); err != nil {
+		return err
+	}
+	ok = true
+	return nil
+}
+
+func prepareRegistrationReady(path string) (string, error) {
+	raw := strings.TrimSpace(path)
+	if raw == "" {
+		return "", nil
+	}
+	clean, err := validateRegistrationReadyPath(raw)
+	if err != nil {
+		return "", err
+	}
+	if err := os.Remove(clean); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return "", err
+	}
+	return clean, nil
+}
+
+func validateRegistrationReadyPath(path string) (string, error) {
+	clean := filepath.Clean(strings.TrimSpace(path))
+	if !filepath.IsAbs(clean) || clean == string(filepath.Separator) {
+		return "", errors.New("registration-ready-file must be an absolute file path")
+	}
+	return clean, nil
+}
+
+func cleanupRegistrationReady(path string, worker runtimehelper.Worker) {
+	if strings.TrimSpace(path) == "" {
+		return
+	}
+	clean := filepath.Clean(strings.TrimSpace(path))
+	data, err := os.ReadFile(clean)
+	if err != nil {
+		return
+	}
+	var record registrationReadyRecord
+	if json.Unmarshal(data, &record) != nil ||
+		record.SandboxID != worker.SandboxID ||
+		record.Generation != worker.Generation ||
+		record.InstanceID != worker.InstanceID {
+		return
+	}
+	_ = os.Remove(clean)
 }
 
 func cleanupMPSPID(directory, sandboxID string, generation uint64, pid uint32, processToken string) error {

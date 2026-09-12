@@ -1,0 +1,62 @@
+schema_version: "tgsrl.io/compatibility-profile/v1alpha1"
+profile_id: "hami-smoke-verl-v1"
+revision: 1
+status: "implemented-hardware-verification-pending"
+description: >-
+  Single-node HAMi fractional-GPU smoke through managed veRL adapter workloads;
+  not a full model-training or multi-node claim.
+
+provider:
+  kind: "nvidia"
+  source: "nvidia"
+  live_hardware: true
+  authoritative_for: "local-nvidia-device-identity-and-fractional-share"
+
+runtime_scope:
+  required_host_resources:
+    - "cpu"
+    - "memory"
+    - "nvidia-gpu"
+    - "kubernetes"
+    - "hami"
+  data_kinds:
+    - "live"
+  algorithms:
+    - "grpo"
+  rollout_modes:
+    - "partially_async"
+  lifecycle_actions:
+    - "bind"
+    - "release"
+
+gpu_management_profile:
+  selected: "hami-vgpu"
+  allowed_values:
+    - "none"
+    - "nvidia-device-plugin"
+    - "kubernetes-dra"
+    - "hami-vgpu"
+    - "volcano-hami"
+  mutually_exclusive: true
+  maximum_active_profiles: 1
+  admission_rejects_multiple_profiles: true
+  enabled_profiles:
+    - "hami-vgpu"
+
+unsupported_scope:
+  - "MPS sharing"
+  - "MIG reconfiguration"
+  - "multi-node execution"
+  - "full model training"
+  - "convergence claims"
+
+admission:
+  require_explicit_capability: true
+  unknown_capability_supported: false
+  reject_live_data: false
+  reject_physical_device_claims: false
+
+evidence:
+  status: "gpu-single-node"
+  hardware_smoke:
+    - "docs/validation/h1-hami-vgpu-2026-09-12.md"

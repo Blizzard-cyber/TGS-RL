@@ -125,6 +125,65 @@ func TestEvaluateBuildsCompleteDeterministicDecision(t *testing.T) {
 	}
 }
 
+func TestEvaluatePlacesFractionalReplicasOnOnePhysicalGPU(t *testing.T) {
+	snapshot, intent := validFixture()
+	intent.UnitCount = 2
+	intent.ResourcesPerUnit = &tgsrlv1.ResourceVector{
+		CpuMillis:        100,
+		MemoryBytes:      100,
+		AcceleratorUnits: 0.4,
+	}
+	snapshot.PendingUnits = []*tgsrlv1.PendingUnit{
+		{
+			PendingUnitId: "replica-a", RuntimeUnitId: "run-1:decode",
+			ExecutionId: intent.GetExecutionId(), StageId: intent.GetStageId(),
+			IntentVersion: intent.GetVersion(), JobId: intent.GetJobId(),
+			RequestedResources:   proto.Clone(intent.GetResourcesPerUnit()).(*tgsrlv1.ResourceVector),
+			RequiredCapabilities: proto.Clone(intent.GetRequiredCapabilities()).(*tgsrlv1.CapabilitySet),
+		},
+		{
+			PendingUnitId: "replica-b", RuntimeUnitId: "run-1:decode",
+			ExecutionId: intent.GetExecutionId(), StageId: intent.GetStageId(),
+			IntentVersion: intent.GetVersion(), JobId: intent.GetJobId(),
+			RequestedResources:   proto.Clone(intent.GetResourcesPerUnit()).(*tgsrlv1.ResourceVector),
+			RequiredCapabilities: proto.Clone(intent.GetRequiredCapabilities()).(*tgsrlv1.CapabilitySet),
+		},
+	}
+	device := proto.Clone(snapshot.GetDevices()[0]).(*tgsrlv1.Device)
+	device.DeviceId = "GPU-shared"
+	device.Capacity = &tgsrlv1.ResourceVector{
+		CpuMillis:        1000,
+		MemoryBytes:      1000,
+		AcceleratorUnits: 1,
+	}
+	device.Allocatable = proto.Clone(device.Capacity).(*tgsrlv1.ResourceVector)
+	snapshot.Devices = []*tgsrlv1.Device{device}
+
+	plan, decision, err := testScheduler(t, FallbackNoOp).Evaluate(snapshot, intent)
+	if err != nil || decision.GetFallback() {
+		t.Fatalf("Evaluate() plan=%v decision=%v error=%v", plan, decision, err)
+	}
+	if len(plan.GetBindings()) != 2 {
+		t.Fatalf("bindings = %d, want 2", len(plan.GetBindings()))
+	}
+	seenPending := map[string]bool{}
+	for _, binding := range plan.GetBindings() {
+		if got := binding.GetDeviceIds(); len(got) != 1 || got[0] != "GPU-shared" {
+			t.Fatalf("binding device IDs = %v, want shared physical GPU", got)
+		}
+		if binding.GetResources().GetAcceleratorUnits() != 0.4 {
+			t.Fatalf("binding share = %v, want 0.4", binding.GetResources().GetAcceleratorUnits())
+		}
+		if binding.GetRuntimeUnitId() != "run-1:decode" {
+			t.Fatalf("runtime unit ID = %q, want one logical unit", binding.GetRuntimeUnitId())
+		}
+		seenPending[binding.GetPendingUnitId()] = true
+	}
+	if !seenPending["replica-a"] || !seenPending["replica-b"] {
+		t.Fatalf("replica pending units = %v", seenPending)
+	}
+}
+
 func TestEvaluateReturnsNoChangeWhenIntentIsAlreadySatisfied(t *testing.T) {
 	snapshot, intent := validFixture()
 	snapshot.PendingUnits = nil

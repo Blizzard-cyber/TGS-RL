@@ -509,7 +509,7 @@ def _job_template(path: Path) -> None:
                     "rolloutEngineVersion": "1.0.0",
                     "imageDigest": "sha256:" + "1" * 64,
                     "artifactUri": "registry.example.test/verl@sha256:" + "1" * 64,
-                    "compatibilityProfile": "verl-ray-pytorch-vllm-nvidia",
+                    "compatibilityProfile": "gpu-smoke-verl-v1",
                     "command": ["python", "-m", "hardware_workload"],
                     "args": ["--seed", "${SEED}"],
                 },
@@ -578,6 +578,11 @@ def _request(operation: str, step: int, *, action: str = "") -> JsonObject:
             "algorithm": "grpo",
             "rollout_mode": "partially_async",
             "seed": 20260829,
+            "version_lock": {
+                "policy": "static",
+                "scenario_revision": 1,
+                "compatibility_profile": "gpu-smoke-verl-v1",
+            },
         },
         "scenario": _scenario(),
     }
@@ -950,6 +955,70 @@ def test_hami_target_allocation_rejects_multiple_scheduler_devices() -> None:
         DRIVER.HardwareEnvironmentDriver._hami_target_allocation(bundle, pod, ["GPU-a10", "GPU-b"])
 
 
+def test_worker_concurrency_requires_overlapping_complete_intervals() -> None:
+    events = [
+        {
+            "event_type": "sample_consumed",
+            "sandbox_id": "sandbox-a",
+            "occurred_at": "2026-09-12T10:00:01Z",
+            "duration_ms": 1000.0,
+        },
+        {
+            "event_type": "workload_completed",
+            "sandbox_id": "sandbox-a",
+            "occurred_at": "2026-09-12T10:00:05Z",
+        },
+        {
+            "event_type": "sample_consumed",
+            "sandbox_id": "sandbox-b",
+            "occurred_at": "2026-09-12T10:00:03Z",
+            "duration_ms": 1000.0,
+        },
+        {
+            "event_type": "workload_completed",
+            "sandbox_id": "sandbox-b",
+            "occurred_at": "2026-09-12T10:00:06Z",
+        },
+    ]
+
+    overlap_ms, sandboxes = DRIVER._worker_concurrency_overlap_ms(
+        events, required_workers=2
+    )
+
+    assert overlap_ms == 3000.0
+    assert sandboxes == ["sandbox-a", "sandbox-b"]
+
+
+def test_worker_concurrency_rejects_sequential_workers() -> None:
+    events = [
+        {
+            "event_type": "sample_consumed",
+            "sandbox_id": "sandbox-a",
+            "occurred_at": "2026-09-12T10:00:01Z",
+            "duration_ms": 1000.0,
+        },
+        {
+            "event_type": "workload_completed",
+            "sandbox_id": "sandbox-a",
+            "occurred_at": "2026-09-12T10:00:02Z",
+        },
+        {
+            "event_type": "sample_consumed",
+            "sandbox_id": "sandbox-b",
+            "occurred_at": "2026-09-12T10:00:04Z",
+            "duration_ms": 1000.0,
+        },
+        {
+            "event_type": "workload_completed",
+            "sandbox_id": "sandbox-b",
+            "occurred_at": "2026-09-12T10:00:05Z",
+        },
+    ]
+
+    with pytest.raises(DRIVER.DriverError, match="do not overlap"):
+        DRIVER._worker_concurrency_overlap_ms(events, required_workers=2)
+
+
 def test_hami_identity_event_includes_allocation_share_evidence(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -960,6 +1029,9 @@ def test_hami_identity_event_includes_allocation_share_evidence(
         poll_interval=0.01,
     )
     allocation = {
+        "sandbox_id": "sandbox-a",
+        "binding_id": "binding-a",
+        "generation": 1,
         "node_id": "gpu-node-a",
         "runtime_unit_id": "unit-a",
         "worker_id": "unit-a",
@@ -986,7 +1058,7 @@ def test_hami_identity_event_includes_allocation_share_evidence(
     )
 
     events = driver._verify_device_identity(
-        {},
+        {"scenario": {"topology": {"minimum_nodes": 1}}},
         target,
         {"job_id": "job-a", "run_id": "run-a"},
         tmp_path / "response.json",
