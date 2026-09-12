@@ -258,13 +258,13 @@ func TestParseArgsReadsConfigFlags(t *testing.T) {
 	}
 }
 
-func TestParseArgsDefaultsToFullGPUWithoutStartingMPS(t *testing.T) {
+func TestParseArgsDefaultsToCapabilityAwareModeWithoutStartingMPS(t *testing.T) {
 	args, err := parseArgs([]string{"-nvidia-driver-v2"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if args.NVIDIAPartitionMode != string(nvidiaprovider.PartitionModeFull) {
-		t.Fatalf("NVIDIAPartitionMode = %q, want full", args.NVIDIAPartitionMode)
+	if args.NVIDIAPartitionMode != string(nvidiaprovider.PartitionModeAuto) {
+		t.Fatalf("NVIDIAPartitionMode = %q, want auto", args.NVIDIAPartitionMode)
 	}
 }
 
@@ -290,6 +290,9 @@ func TestParseArgsRejectsIncompleteNVIDIADriverV2Configuration(t *testing.T) {
 	}
 	if _, err := parseArgs([]string{"-nvidia-driver-v2", "-nvidia-partition-mode=mig", "-nvidia-mig-helper="}); err == nil || !strings.Contains(err.Error(), "MIG helper") {
 		t.Fatalf("empty MIG helper error = %v", err)
+	}
+	if _, err := parseArgs([]string{"-nvidia-driver-v2", "-nvidia-partition-mode=auto", "-nvidia-mig-helper="}); err == nil || !strings.Contains(err.Error(), "MIG helper") {
+		t.Fatalf("empty auto-mode MIG helper error = %v", err)
 	}
 }
 

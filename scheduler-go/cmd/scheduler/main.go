@@ -249,7 +249,7 @@ func parseArgs(argv []string) (*cliArgs, error) {
 	stateDirectory := fs.String("state-dir", ".tmp/scheduler-state", "durable scheduler state directory")
 	metricsAddress := fs.String("metrics-listen", "127.0.0.1:9090", "Prometheus metrics listen address; empty disables")
 	nvidiaDriverV2 := fs.Bool("nvidia-driver-v2", false, "use the NVIDIA Driver v2 backend")
-	nvidiaPartitionMode := fs.String("nvidia-partition-mode", string(nvidiaprovider.PartitionModeFull), "NVIDIA Driver v2 partition mode: full, mps, or mig")
+	nvidiaPartitionMode := fs.String("nvidia-partition-mode", string(nvidiaprovider.PartitionModeAuto), "NVIDIA Driver v2 partition mode: auto, full, mps, or mig")
 	nvidiaDryRun := fs.Bool("nvidia-dry-run", false, "plan NVIDIA Driver v2 mutations without applying them")
 	nvidiaCommandTimeout := fs.Duration("nvidia-command-timeout", 15*time.Second, "NVIDIA Driver v2 command timeout")
 	nvidiaBindingHelper := fs.String("nvidia-binding-helper", "tgsrl-nvidia-binding", "NVIDIA binding helper executable")
@@ -267,7 +267,7 @@ func parseArgs(argv []string) (*cliArgs, error) {
 	}
 	if *nvidiaDriverV2 {
 		mode := nvidiaprovider.PartitionMode(*nvidiaPartitionMode)
-		if mode != nvidiaprovider.PartitionModeFull && mode != nvidiaprovider.PartitionModeMPS && mode != nvidiaprovider.PartitionModeMIG {
+		if mode != nvidiaprovider.PartitionModeAuto && mode != nvidiaprovider.PartitionModeFull && mode != nvidiaprovider.PartitionModeMPS && mode != nvidiaprovider.PartitionModeMIG {
 			return nil, fmt.Errorf("unsupported NVIDIA partition mode %q", *nvidiaPartitionMode)
 		}
 		if *nvidiaCommandTimeout <= 0 {
@@ -279,7 +279,7 @@ func parseArgs(argv []string) (*cliArgs, error) {
 		if strings.TrimSpace(*nvidiaRuntimeHelper) == "" {
 			return nil, fmt.Errorf("NVIDIA runtime helper must not be empty")
 		}
-		if mode == nvidiaprovider.PartitionModeMIG && strings.TrimSpace(*nvidiaMIGHelper) == "" {
+		if (mode == nvidiaprovider.PartitionModeAuto || mode == nvidiaprovider.PartitionModeMIG) && strings.TrimSpace(*nvidiaMIGHelper) == "" {
 			return nil, fmt.Errorf("NVIDIA MIG helper must not be empty")
 		}
 	}
@@ -385,8 +385,8 @@ func buildProvider(cfg *runtimeConfig) (provider.CompleteResourceProvider, error
 	if cfg == nil || cfg.StartupConfig == nil {
 		return nil, fmt.Errorf("startup config is required")
 	}
-	switch normalizeToken(cfg.StartupConfig.ProviderKind) {
-	case "mock", "mockresourceprovider":
+	registry := provider.NewRegistry()
+	mockFactory := func() (provider.CompleteResourceProvider, error) {
 		options := []provider.MockOption{
 			provider.WithProviderIdentity("mock", cfg.StartupConfig.ProviderSource),
 		}
@@ -397,9 +397,9 @@ func buildProvider(cfg *runtimeConfig) (provider.CompleteResourceProvider, error
 		if err != nil {
 			return nil, fmt.Errorf("create mock provider: %w", err)
 		}
-		cfg.Provider = instance
 		return instance, nil
-	case nvidiaprovider.ProviderID:
+	}
+	nvidiaFactory := func() (provider.CompleteResourceProvider, error) {
 		options := []nvidiaprovider.Option{}
 		if cfg.NVIDIADriverV2 {
 			options = append(options, nvidiaprovider.WithDriverV2(nvidiaprovider.LocalDriverV2Options{
@@ -418,11 +418,29 @@ func buildProvider(cfg *runtimeConfig) (provider.CompleteResourceProvider, error
 		if err != nil {
 			return nil, fmt.Errorf("create nvidia provider: %w", err)
 		}
-		cfg.Provider = instance
 		return instance, nil
-	default:
+	}
+	for _, registration := range []struct {
+		kind    string
+		factory provider.Factory
+	}{
+		{kind: "mock", factory: mockFactory},
+		{kind: "mockresourceprovider", factory: mockFactory},
+		{kind: nvidiaprovider.ProviderID, factory: nvidiaFactory},
+	} {
+		if err := registry.Register(registration.kind, registration.factory); err != nil {
+			return nil, fmt.Errorf("register provider kind %q: %w", registration.kind, err)
+		}
+	}
+	instance, err := registry.Build(normalizeToken(cfg.StartupConfig.ProviderKind))
+	if errors.Is(err, provider.ErrUnsupported) {
 		return nil, fmt.Errorf("unsupported provider kind %q", cfg.StartupConfig.ProviderKind)
 	}
+	if err != nil {
+		return nil, err
+	}
+	cfg.Provider = instance
+	return instance, nil
 }
 
 func cloneCapabilitySet(capabilities *tgsrlv1.CapabilitySet) *tgsrlv1.CapabilitySet {

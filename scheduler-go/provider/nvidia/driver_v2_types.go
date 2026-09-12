@@ -30,6 +30,7 @@ type backendHandshake struct {
 type PartitionMode string
 
 const (
+	PartitionModeAuto PartitionMode = "auto"
 	PartitionModeFull PartitionMode = "full"
 	PartitionModeMPS  PartitionMode = "mps"
 	PartitionModeMIG  PartitionMode = "mig"
@@ -459,7 +460,7 @@ func v2ActionError(action *tgsrlv1.Action, code, message string, cause error) er
 
 func validatePartitionMode(mode PartitionMode) error {
 	switch mode {
-	case PartitionModeFull, PartitionModeMPS, PartitionModeMIG:
+	case PartitionModeAuto, PartitionModeFull, PartitionModeMPS, PartitionModeMIG:
 		return nil
 	default:
 		return fmt.Errorf("%w: unsupported nvidia partition mode %q", base.ErrInvalidArgument, mode)

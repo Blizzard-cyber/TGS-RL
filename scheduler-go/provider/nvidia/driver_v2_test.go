@@ -548,6 +548,150 @@ func TestFullGPUModeDiscoversWholeDevicesWithoutStartingMPS(t *testing.T) {
 	}
 }
 
+func TestFullGPUModeExcludesDevicesWithMIGEnabled(t *testing.T) {
+	observedAt := time.Date(2026, time.September, 12, 8, 0, 0, 0, time.UTC)
+	backend := &fullGPUPartitionBackend{now: func() time.Time { return observedAt }}
+	snapshot, err := backend.Discover(context.Background(), &InventorySnapshot{
+		ObservedAt: observedAt,
+		Devices: []InventoryDevice{
+			{UUID: "GPU-full", Name: "same-model", MemoryBytes: 24 << 30},
+			{UUID: "GPU-partitioned", Name: "same-model", MemoryBytes: 80 << 30, MIGEnabled: true},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !snapshot.Available || len(snapshot.Partitions) != 1 || snapshot.Partitions[0].ID != "GPU-full" {
+		t.Fatalf("full GPU partitions = %+v, want only the device without MIG enabled", snapshot)
+	}
+	if !strings.Contains(snapshot.Reason, "excluded") {
+		t.Fatalf("full GPU reason = %q, want excluded MIG explanation", snapshot.Reason)
+	}
+
+	snapshot, err = backend.Discover(context.Background(), &InventorySnapshot{
+		ObservedAt: observedAt,
+		Devices:    []InventoryDevice{{UUID: "GPU-partitioned", Name: "same-model", MemoryBytes: 80 << 30, MIGEnabled: true}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if snapshot.Available || len(snapshot.Partitions) != 0 || !strings.Contains(snapshot.Reason, "unavailable") {
+		t.Fatalf("all-MIG full GPU snapshot = %+v, want unavailable", snapshot)
+	}
+}
+
+func TestAutoModePublishesByObservedCapabilityNotModelName(t *testing.T) {
+	observedAt := time.Date(2026, time.September, 12, 8, 0, 0, 0, time.UTC)
+	executor := NewFakeCommandExecutor(
+		FakeCommandResponse{Result: CommandResult{Stdout: []byte("GPU 0: same-model (UUID: GPU-partitioned)\n  MIG 1g.10gb Device 0: (UUID: MIG-child/1/0)\n")}},
+		FakeCommandResponse{Result: CommandResult{Stdout: []byte("MIG-child/1/0,1g.10gb,10240,GPU-partitioned\n")}},
+		FakeCommandResponse{Result: CommandResult{Stdout: []byte("tgsrl-nvidia-mig,1,rebind,recreate,durable_receipts,generation_fence,idempotency,safe_point,checkpoint,stop,restore,readiness")}},
+	)
+	driver, err := NewLocalDriverV2(LocalDriverV2Options{
+		Executor: executor,
+		Inventory: &FakeInventoryBackend{Snapshots: []*InventorySnapshot{{
+			ObservedAt:    observedAt,
+			DriverVersion: "580.178.04",
+			Devices: []InventoryDevice{
+				{UUID: "GPU-full", Index: "0", Name: "same-model", MemoryBytes: 24 << 30, DriverVersion: "580.178.04", MIGEnabled: false},
+				{UUID: "GPU-partitioned", Index: "1", Name: "same-model", MemoryBytes: 80 << 30, DriverVersion: "580.178.04", MIGEnabled: true},
+			},
+		}}},
+		PartitionMode: PartitionModeAuto,
+		Runtime:       NewUnavailableRuntimeBackend("runtime control unavailable"),
+		Binding:       noOpBindingBackend{},
+		Now:           func() time.Time { return observedAt },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	probe, err := driver.Probe(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !probe.Available || len(probe.Devices) != 2 {
+		t.Fatalf("auto probe = %+v", probe)
+	}
+	byID := map[string]*tgsrlv1.Device{}
+	for _, device := range probe.Devices {
+		byID[device.GetDeviceId()] = device
+	}
+	if byID["GPU-full"] == nil || byID["MIG-child/1/0"] == nil || byID["GPU-partitioned"] != nil {
+		t.Fatalf("auto devices = %+v, want one full GPU and one MIG child", byID)
+	}
+	if byID["GPU-full"].GetLabels()["partition_mode"] != "full" || byID["MIG-child/1/0"].GetLabels()["partition_mode"] != "mig" {
+		t.Fatalf("auto device labels = %+v / %+v", byID["GPU-full"].GetLabels(), byID["MIG-child/1/0"].GetLabels())
+	}
+	if slices.Contains(byID["GPU-full"].GetCapabilities().GetNames(), CapabilityMIG) {
+		t.Fatalf("full GPU capabilities incorrectly advertise MIG: %+v", byID["GPU-full"].GetCapabilities())
+	}
+	if got := byID["GPU-full"].GetCapabilities().GetAttributes()["partition_mode"]; got != "full" {
+		t.Fatalf("full GPU partition capability = %q, want full", got)
+	}
+	if count := countStringValue(byID["GPU-full"].GetCapabilities().GetNames(), CapabilityName); count != 1 {
+		t.Fatalf("full GPU capability names contain %d %q entries: %+v", count, CapabilityName, byID["GPU-full"].GetCapabilities())
+	}
+	for _, action := range []string{"rebind", "recreate"} {
+		if slices.Contains(byID["GPU-full"].GetCapabilities().GetSupportedActions(), action) {
+			t.Fatalf("full GPU capabilities incorrectly advertise MIG action %q: %+v", action, byID["GPU-full"].GetCapabilities())
+		}
+	}
+	if !slices.Contains(byID["MIG-child/1/0"].GetCapabilities().GetNames(), CapabilityMIG) {
+		t.Fatalf("MIG child capabilities = %+v", byID["MIG-child/1/0"].GetCapabilities())
+	}
+	if !slices.Contains(byID["MIG-child/1/0"].GetCapabilities().GetNames(), CapabilityName) {
+		t.Fatalf("MIG child is missing generic NVIDIA capability: %+v", byID["MIG-child/1/0"].GetCapabilities())
+	}
+	if got := byID["MIG-child/1/0"].GetCapabilities().GetAttributes()["partition_mode"]; got != "mig" {
+		t.Fatalf("MIG partition capability = %q, want mig", got)
+	}
+	for _, action := range []string{"rebind", "recreate"} {
+		if !slices.Contains(byID["MIG-child/1/0"].GetCapabilities().GetSupportedActions(), action) {
+			t.Fatalf("MIG child is missing action %q: %+v", action, byID["MIG-child/1/0"].GetCapabilities())
+		}
+	}
+}
+
+func TestAutoModeKeepsFullGPUWhenMIGDiscoveryFails(t *testing.T) {
+	observedAt := time.Date(2026, time.September, 12, 8, 0, 0, 0, time.UTC)
+	executor := NewFakeCommandExecutor(
+		FakeCommandResponse{
+			Err:    &CommandError{Kind: CommandFailureUnavailable, ExitCode: -1, Cause: exec.ErrNotFound},
+			Result: CommandResult{Stderr: []byte("nvidia-smi unavailable")},
+		},
+	)
+	driver, err := NewLocalDriverV2(LocalDriverV2Options{
+		Executor: executor,
+		Inventory: &FakeInventoryBackend{Snapshots: []*InventorySnapshot{{
+			ObservedAt:    observedAt,
+			DriverVersion: "580.178.04",
+			Devices: []InventoryDevice{
+				{UUID: "GPU-full", Index: "0", Name: "same-model", MemoryBytes: 24 << 30, DriverVersion: "580.178.04"},
+				{UUID: "GPU-partitioned", Index: "1", Name: "same-model", MemoryBytes: 80 << 30, DriverVersion: "580.178.04", MIGEnabled: true},
+			},
+		}}},
+		PartitionMode: PartitionModeAuto,
+		Runtime:       NewUnavailableRuntimeBackend("runtime control unavailable"),
+		Binding:       noOpBindingBackend{},
+		Now:           func() time.Time { return observedAt },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	probe, err := driver.Probe(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !probe.Available || len(probe.Devices) != 1 || probe.Devices[0].GetDeviceId() != "GPU-full" {
+		t.Fatalf("auto probe = %+v, want degraded full-GPU-only inventory", probe)
+	}
+	if !strings.Contains(probe.Reason, "MIG devices unavailable") {
+		t.Fatalf("auto probe reason = %q, want MIG degradation", probe.Reason)
+	}
+}
+
 func TestMIGBackendUsesDiscoveredParentProfileAndRediscoveryResult(t *testing.T) {
 	executor := NewFakeCommandExecutor(
 		FakeCommandResponse{Result: CommandResult{Stdout: []byte("GPU-aaaa,MIG-new/2/0,1g.10gb,2\n")}},
@@ -1430,6 +1574,16 @@ func containsStringValue(values []string, expected string) bool {
 		}
 	}
 	return false
+}
+
+func countStringValue(values []string, expected string) int {
+	count := 0
+	for _, value := range values {
+		if value == expected {
+			count++
+		}
+	}
+	return count
 }
 
 func flagValue(values []string, flag string) string {

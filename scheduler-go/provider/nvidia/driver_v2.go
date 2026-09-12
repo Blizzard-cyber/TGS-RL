@@ -98,6 +98,11 @@ type noOpBindingBackend struct{}
 
 type fullGPUPartitionBackend struct{ now func() time.Time }
 
+type capabilityAwarePartitionBackend struct {
+	full *fullGPUPartitionBackend
+	mig  *MIGBackend
+}
+
 func (*fullGPUPartitionBackend) Mode() PartitionMode { return PartitionModeFull }
 
 func (b *fullGPUPartitionBackend) Discover(_ context.Context, inventory *InventorySnapshot) (*PartitionSnapshot, error) {
@@ -105,18 +110,133 @@ func (b *fullGPUPartitionBackend) Discover(_ context.Context, inventory *Invento
 		return &PartitionSnapshot{Mode: PartitionModeFull, Reason: "physical GPU inventory is empty"}, nil
 	}
 	partitions := make([]Partition, 0, len(inventory.Devices))
+	skippedMIG := 0
 	for _, device := range inventory.Devices {
+		if device.MIGEnabled {
+			skippedMIG++
+			continue
+		}
 		partitions = append(partitions, Partition{ID: device.UUID, ParentUUID: device.UUID, Profile: "full-gpu", MemoryBytes: device.MemoryBytes, Share: 1, Labels: map[string]string{"mode": string(PartitionModeFull)}})
 	}
 	observedAt := inventory.ObservedAt
 	if observedAt.IsZero() && b.now != nil {
 		observedAt = b.now().UTC()
 	}
-	return &PartitionSnapshot{Mode: PartitionModeFull, Available: true, Partitions: partitions, ObservedAt: observedAt}, nil
+	result := &PartitionSnapshot{Mode: PartitionModeFull, Available: len(partitions) > 0, Partitions: partitions, ObservedAt: observedAt}
+	if skippedMIG > 0 {
+		result.Reason = fmt.Sprintf("%d physical GPU(s) have MIG mode enabled and were excluded from full GPU capacity", skippedMIG)
+	}
+	if len(partitions) == 0 {
+		result.Reason = "all physical GPUs have MIG mode enabled; full GPU capacity is unavailable"
+	}
+	return result, nil
 }
 
 func (*fullGPUPartitionBackend) Apply(_ context.Context, request BackendActionRequest) (*BackendActionResult, error) {
 	return nil, v2ActionError(request.Action, base.ErrorCodeUnsupported, "full GPU mode has no partition mutation", base.ErrUnsupported)
+}
+
+func (*capabilityAwarePartitionBackend) Mode() PartitionMode { return PartitionModeAuto }
+
+func (b *capabilityAwarePartitionBackend) Discover(ctx context.Context, inventory *InventorySnapshot) (*PartitionSnapshot, error) {
+	if inventory == nil || len(inventory.Devices) == 0 {
+		return &PartitionSnapshot{Mode: PartitionModeAuto, Reason: "physical GPU inventory is empty"}, nil
+	}
+	fullInventory := &InventorySnapshot{DriverVersion: inventory.DriverVersion, ObservedAt: inventory.ObservedAt}
+	migInventory := &InventorySnapshot{DriverVersion: inventory.DriverVersion, ObservedAt: inventory.ObservedAt}
+	for _, device := range inventory.Devices {
+		if device.MIGEnabled {
+			migInventory.Devices = append(migInventory.Devices, device)
+		} else {
+			fullInventory.Devices = append(fullInventory.Devices, device)
+		}
+	}
+	result := &PartitionSnapshot{Mode: PartitionModeAuto, Available: true, ObservedAt: inventory.ObservedAt}
+	if len(fullInventory.Devices) > 0 {
+		full, err := b.full.Discover(ctx, fullInventory)
+		if err != nil {
+			return nil, err
+		}
+		result.Partitions = append(result.Partitions, full.Partitions...)
+	}
+	if len(migInventory.Devices) > 0 {
+		mig, err := b.mig.Discover(ctx, migInventory)
+		if err != nil {
+			if len(result.Partitions) == 0 {
+				return mig, err
+			}
+			result.Reason = "MIG devices unavailable: " + boundedDiagnostic([]byte(err.Error()))
+		} else if mig != nil && mig.Available {
+			result.Partitions = append(result.Partitions, mig.Partitions...)
+			result.SupportedActions = append(result.SupportedActions, mig.SupportedActions...)
+		} else if len(result.Partitions) == 0 {
+			result.Available = false
+			result.Reason = partitionUnavailableReason(PartitionModeMIG, mig, nil)
+		} else if mig != nil && strings.TrimSpace(mig.Reason) != "" {
+			result.Reason = "MIG devices unavailable: " + strings.TrimSpace(mig.Reason)
+		}
+	}
+	if len(result.Partitions) == 0 {
+		result.Available = false
+		if result.Reason == "" {
+			result.Reason = "no schedulable NVIDIA partitions discovered"
+		}
+	}
+	result.SupportedActions = uniqueActionTypes(result.SupportedActions)
+	return result, nil
+}
+
+func (b *capabilityAwarePartitionBackend) Apply(ctx context.Context, request BackendActionRequest) (*BackendActionResult, error) {
+	switch request.Action.GetActionType() {
+	case tgsrlv1.ActionType_ACTION_TYPE_REBIND, tgsrlv1.ActionType_ACTION_TYPE_RECREATE:
+		request.Partitions = migPartitionView(request.Partitions)
+		return b.mig.Apply(ctx, request)
+	default:
+		return b.full.Apply(ctx, request)
+	}
+}
+
+func migPartitionView(snapshot *PartitionSnapshot) *PartitionSnapshot {
+	if snapshot == nil {
+		return nil
+	}
+	result := clonePartitions(snapshot)
+	result.Mode = PartitionModeMIG
+	result.Partitions = result.Partitions[:0]
+	for _, partition := range snapshot.Partitions {
+		if partition.Labels["mode"] == string(PartitionModeMIG) || strings.HasPrefix(partition.ID, "MIG-") {
+			result.Partitions = append(result.Partitions, partition)
+		}
+	}
+	return result
+}
+
+func uniqueActionTypes(values []tgsrlv1.ActionType) []tgsrlv1.ActionType {
+	seen := make(map[tgsrlv1.ActionType]struct{}, len(values))
+	result := make([]tgsrlv1.ActionType, 0, len(values))
+	for _, value := range values {
+		if _, exists := seen[value]; exists {
+			continue
+		}
+		seen[value] = struct{}{}
+		result = append(result, value)
+	}
+	slices.Sort(result)
+	return result
+}
+
+func removeStrings(values []string, removed ...string) []string {
+	blocked := make(map[string]struct{}, len(removed))
+	for _, value := range removed {
+		blocked[value] = struct{}{}
+	}
+	result := make([]string, 0, len(values))
+	for _, value := range values {
+		if _, skip := blocked[value]; !skip {
+			result = append(result, value)
+		}
+	}
+	return result
 }
 
 func (noOpBindingBackend) Discover(context.Context, *InventorySnapshot, *PartitionSnapshot) (*BindingSnapshot, error) {
@@ -140,7 +260,11 @@ func NewLocalDriverV2(options LocalDriverV2Options) (*LocalDriverV2, error) {
 		options.CommandTimeout = defaultCommandTimeout
 	}
 	if options.PartitionMode == "" {
-		options.PartitionMode = PartitionModeMPS
+		if options.Partition != nil {
+			options.PartitionMode = options.Partition.Mode()
+		} else {
+			options.PartitionMode = PartitionModeMPS
+		}
 	}
 	if err := validatePartitionMode(options.PartitionMode); err != nil {
 		return nil, err
@@ -150,6 +274,11 @@ func NewLocalDriverV2(options LocalDriverV2Options) (*LocalDriverV2, error) {
 	}
 	if options.Partition == nil {
 		switch options.PartitionMode {
+		case PartitionModeAuto:
+			options.Partition = &capabilityAwarePartitionBackend{
+				full: &fullGPUPartitionBackend{now: options.Now},
+				mig:  NewMIGBackendWithConfig(options.Executor, options.CommandTimeout, options.MIGHelperBinary, options.RuntimeStatePath, options.BindingStatePath),
+			}
 		case PartitionModeFull:
 			options.Partition = &fullGPUPartitionBackend{now: options.Now}
 		case PartitionModeMPS:
@@ -294,7 +423,7 @@ func (d *LocalDriverV2) Probe(ctx context.Context) (*ProbeResult, error) {
 	if runtimeStatus != nil && runtimeStatus.SandboxesAuthoritative {
 		sandboxes = mergeRuntimeDiscovery(runtimeStatus.Sandboxes, sandboxes, d.now())
 	}
-	return &ProbeResult{Available: true, Devices: devices, Capabilities: capabilities, Sandboxes: sandboxes, SandboxesAuthoritative: runtimeStatus != nil && runtimeStatus.SandboxesAuthoritative}, nil
+	return &ProbeResult{Available: true, Reason: strings.TrimSpace(partitions.Reason), Devices: devices, Capabilities: capabilities, Sandboxes: sandboxes, SandboxesAuthoritative: runtimeStatus != nil && runtimeStatus.SandboxesAuthoritative}, nil
 }
 
 // ExecuteAction dispatches an action to exactly one backend and records a sanitized audit.
@@ -402,7 +531,7 @@ func (d *LocalDriverV2) executeAction(ctx context.Context, state *DriverState, a
 	if !dryRun && (action.GetActionType() == tgsrlv1.ActionType_ACTION_TYPE_SET_SHARE || action.GetActionType() == tgsrlv1.ActionType_ACTION_TYPE_RESIZE) && result.ObservedShare == nil {
 		return nil, v2ActionError(action, ErrorCodeUnavailable, "NVIDIA share mutation returned no authoritative readback", base.ErrFailedPrecondition)
 	}
-	if d.partition.Mode() == PartitionModeMIG && (action.GetActionType() == tgsrlv1.ActionType_ACTION_TYPE_REBIND || action.GetActionType() == tgsrlv1.ActionType_ACTION_TYPE_RECREATE) {
+	if (d.partition.Mode() == PartitionModeMIG || d.partition.Mode() == PartitionModeAuto) && (action.GetActionType() == tgsrlv1.ActionType_ACTION_TYPE_REBIND || action.GetActionType() == tgsrlv1.ActionType_ACTION_TYPE_RECREATE) {
 		if err := d.refreshAfterMIGMutation(executionContext, action, result); err != nil {
 			return nil, err
 		}
@@ -905,6 +1034,14 @@ func v2Capabilities(inventory *InventorySnapshot, partitions *PartitionSnapshot,
 	if !slices.Contains(capabilities.Names, partitionName) {
 		capabilities.Names = append(capabilities.Names, partitionName)
 	}
+	if partitions.Mode == PartitionModeAuto {
+		for _, partition := range partitions.Partitions {
+			if partition.Labels["mode"] == string(PartitionModeMIG) && !slices.Contains(capabilities.Names, CapabilityMIG) {
+				capabilities.Names = append(capabilities.Names, CapabilityMIG)
+			}
+		}
+		sort.Strings(capabilities.Names)
+	}
 	actions := append([]tgsrlv1.ActionType(nil), bindingActions...)
 	actions = append(actions, partitions.SupportedActions...)
 	actions = append(actions, runtimeActions...)
@@ -935,12 +1072,18 @@ func partitionCapability(mode PartitionMode) string {
 	if mode == PartitionModeFull {
 		return CapabilityName
 	}
+	if mode == PartitionModeAuto {
+		return CapabilityName
+	}
 	return CapabilityMPS
 }
 
 func inventoryDevices(inventory *InventorySnapshot, partitions *PartitionSnapshot, capabilities *tgsrlv1.CapabilitySet) []*tgsrlv1.Device {
 	if partitions.Mode == PartitionModeMIG {
 		return migDevices(inventory, partitions, capabilities)
+	}
+	if partitions.Mode == PartitionModeAuto {
+		return capabilityAwareDevices(inventory, partitions, capabilities)
 	}
 	partitionByParent := make(map[string][]Partition)
 	for _, partition := range partitions.Partitions {
@@ -960,6 +1103,87 @@ func inventoryDevices(inventory *InventorySnapshot, partitions *PartitionSnapsho
 	}
 	sort.Slice(devices, func(i, j int) bool { return devices[i].GetDeviceId() < devices[j].GetDeviceId() })
 	return devices
+}
+
+func capabilityAwareDevices(inventory *InventorySnapshot, partitions *PartitionSnapshot, capabilities *tgsrlv1.CapabilitySet) []*tgsrlv1.Device {
+	parents := make(map[string]InventoryDevice, len(inventory.Devices))
+	for _, device := range inventory.Devices {
+		parents[device.UUID] = device
+	}
+	devices := make([]*tgsrlv1.Device, 0, len(partitions.Partitions))
+	for _, partition := range partitions.Partitions {
+		parent, ok := parents[partition.ParentUUID]
+		if !ok {
+			continue
+		}
+		mode := PartitionMode(partition.Labels["mode"])
+		deviceCapabilities := cloneCapabilities(capabilities)
+		deviceCapabilities.Names = removeStrings(deviceCapabilities.Names, CapabilityMIG, CapabilityMPS)
+		deviceCapabilities.Attributes["partition_mode"] = string(mode)
+		if mode == PartitionModeMIG {
+			deviceCapabilities.Names = appendUniqueString(deviceCapabilities.Names, CapabilityName)
+			deviceCapabilities.Names = appendUniqueString(deviceCapabilities.Names, CapabilityMIG)
+			devices = append(devices, migDevice(parent, partition, deviceCapabilities))
+			continue
+		}
+		deviceCapabilities.Names = appendUniqueString(deviceCapabilities.Names, CapabilityName)
+		deviceCapabilities.SupportedActions = removeStrings(
+			deviceCapabilities.SupportedActions,
+			stableActionNames(partitions.SupportedActions)...,
+		)
+		devices = append(devices, physicalGPUDevice(parent, partition, deviceCapabilities))
+	}
+	sort.Slice(devices, func(i, j int) bool { return devices[i].GetDeviceId() < devices[j].GetDeviceId() })
+	return devices
+}
+
+func appendUniqueString(values []string, value string) []string {
+	if slices.Contains(values, value) {
+		return values
+	}
+	return append(values, value)
+}
+
+func physicalGPUDevice(observed InventoryDevice, partition Partition, capabilities *tgsrlv1.CapabilitySet) *tgsrlv1.Device {
+	labels := map[string]string{
+		"provider": "nvidia", "uuid": observed.UUID, "index": observed.Index, "name": observed.Name,
+		"pci_bus_id": observed.PCIAddress, "numa_node": observed.NUMANode,
+		"partition_mode": string(PartitionModeFull), "supports_full": "true",
+		"supports_mig": strconv.FormatBool(observed.MIGEnabled),
+	}
+	for key, value := range observed.Topology {
+		labels["topology."+key] = value
+	}
+	return &tgsrlv1.Device{
+		DeviceId: stableGPUDeviceID(observed.UUID), Kind: tgsrlv1.DeviceKind_DEVICE_KIND_GPU,
+		Health:       tgsrlv1.DeviceHealth_DEVICE_HEALTH_READY,
+		Capacity:     &tgsrlv1.ResourceVector{CpuMillis: ^uint64(0), AcceleratorUnits: partition.Share, MemoryBytes: observed.MemoryBytes, EphemeralStorageBytes: ^uint64(0), NetworkBandwidthBps: ^uint64(0)},
+		Allocatable:  &tgsrlv1.ResourceVector{CpuMillis: ^uint64(0), AcceleratorUnits: partition.Share, MemoryBytes: observed.MemoryBytes, EphemeralStorageBytes: ^uint64(0), NetworkBandwidthBps: ^uint64(0)},
+		Capabilities: capabilities, Labels: labels,
+	}
+}
+
+func migDevice(parent InventoryDevice, partition Partition, capabilities *tgsrlv1.CapabilitySet) *tgsrlv1.Device {
+	memoryBytes := partition.MemoryBytes
+	if memoryBytes == 0 {
+		memoryBytes = parent.MemoryBytes
+	}
+	labels := map[string]string{
+		"provider": "nvidia", "uuid": partition.ID, "parent_uuid": partition.ParentUUID,
+		"profile": partition.Profile, "partition_mode": string(PartitionModeMIG),
+		"pci_bus_id": parent.PCIAddress, "numa_node": parent.NUMANode,
+		"name": parent.Name, "supports_full": "false", "supports_mig": "true",
+	}
+	for key, value := range partition.Labels {
+		labels[key] = value
+	}
+	return &tgsrlv1.Device{
+		DeviceId: partition.ID, Kind: tgsrlv1.DeviceKind_DEVICE_KIND_GPU,
+		Health:       tgsrlv1.DeviceHealth_DEVICE_HEALTH_READY,
+		Capacity:     &tgsrlv1.ResourceVector{CpuMillis: ^uint64(0), AcceleratorUnits: 1, MemoryBytes: memoryBytes, EphemeralStorageBytes: ^uint64(0), NetworkBandwidthBps: ^uint64(0)},
+		Allocatable:  &tgsrlv1.ResourceVector{CpuMillis: ^uint64(0), AcceleratorUnits: 1, MemoryBytes: memoryBytes, EphemeralStorageBytes: ^uint64(0), NetworkBandwidthBps: ^uint64(0)},
+		Capabilities: capabilities, Labels: labels,
+	}
 }
 
 func migDevices(inventory *InventorySnapshot, partitions *PartitionSnapshot, capabilities *tgsrlv1.CapabilitySet) []*tgsrlv1.Device {
@@ -1037,7 +1261,7 @@ func mergeRuntimeDiscovery(runtimeSandboxes, bindingSandboxes []base.Sandbox, no
 
 func validateDiscoveredBindings(bindings []DiscoveredBinding, inventory *InventorySnapshot, partitions *PartitionSnapshot) error {
 	knownDevices := make(map[string]struct{})
-	if partitions.Mode == PartitionModeMIG {
+	if partitions.Mode == PartitionModeMIG || partitions.Mode == PartitionModeAuto {
 		for _, partition := range partitions.Partitions {
 			knownDevices[partition.ID] = struct{}{}
 		}
