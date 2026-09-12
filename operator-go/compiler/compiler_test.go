@@ -57,7 +57,7 @@ func TestCompileDeterministicBundle(t *testing.T) {
 	if got := left.Job.Spec.Template.Spec.Containers[0].Resources.Requests["nvidia.com/gpu"]; got != "1" {
 		t.Fatalf("unexpected accelerator request: %q", got)
 	}
-	if got := left.Job.Spec.Template.Spec.Containers[0].Resources.Requests["cpu"]; got != "2000m" {
+	if got := left.Job.Spec.Template.Spec.Containers[0].Resources.Requests["cpu"]; got != "2" {
 		t.Fatalf("unexpected per-pod cpu request: %q", got)
 	}
 	if got := left.Admission.Requests["nvidia.com/gpu"]; got != "1" {
@@ -104,7 +104,7 @@ func TestCompileRejectsMutuallyExclusiveGPUProfiles(t *testing.T) {
 	}
 }
 
-func TestCompileDRAGeneratesResourceClaim(t *testing.T) {
+func TestCompileDRAGeneratesResourceClaimTemplate(t *testing.T) {
 	c := New()
 	c.SetCapabilities(discoveredGPUCapabilities(GPUProfileKubernetesDRA))
 	input := testCompileInput()
@@ -114,13 +114,13 @@ func TestCompileDRAGeneratesResourceClaim(t *testing.T) {
 	if err != nil {
 		t.Fatalf("compile failed: %v", err)
 	}
-	if bundle.ResourceClaim == nil {
-		t.Fatalf("expected resource claim")
+	if bundle.ResourceClaimTemplate == nil || bundle.ResourceClaim != nil {
+		t.Fatalf("expected resource claim template only")
 	}
-	if len(bundle.ResourceClaim.Spec.Devices.Requests) != 1 {
+	if len(bundle.ResourceClaimTemplate.Spec.Spec.Devices.Requests) != 1 {
 		t.Fatalf("expected exactly one DRA device request")
 	}
-	request := bundle.ResourceClaim.Spec.Devices.Requests[0]
+	request := bundle.ResourceClaimTemplate.Spec.Spec.Devices.Requests[0]
 	if request.Exactly == nil {
 		t.Fatal("stable DRA API must use requests[].exactly")
 	}
@@ -136,8 +136,11 @@ func TestCompileDRAGeneratesResourceClaim(t *testing.T) {
 	if len(bundle.Job.Spec.Template.Spec.ResourceClaims) != 1 {
 		t.Fatalf("expected exactly one pod resource claim reference")
 	}
-	if got := bundle.Job.Spec.Template.Spec.ResourceClaims[0].ResourceClaimName; got != bundle.ResourceClaim.ObjectMeta.Name {
-		t.Fatalf("resource claim reference mismatch: %q vs %q", got, bundle.ResourceClaim.ObjectMeta.Name)
+	if got := bundle.Job.Spec.Template.Spec.ResourceClaims[0].ResourceClaimTemplateName; got != bundle.ResourceClaimTemplate.ObjectMeta.Name {
+		t.Fatalf("resource claim template reference mismatch: %q vs %q", got, bundle.ResourceClaimTemplate.ObjectMeta.Name)
+	}
+	if got := bundle.Job.Spec.Template.Spec.ResourceClaims[0].ResourceClaimName; got != "" {
+		t.Fatalf("new DRA bundles must not reference a fixed claim: %q", got)
 	}
 	if _, ok := bundle.Job.Spec.Template.Spec.Containers[0].Resources.Requests["resource.k8s.io/gpu"]; ok {
 		t.Fatalf("DRA must not use a synthetic extended-resource request")
@@ -147,7 +150,7 @@ func TestCompileDRAGeneratesResourceClaim(t *testing.T) {
 		t.Fatalf("unexpected container DRA claims: %+v", claims)
 	}
 	workloadClaims := bundle.Workload.Spec.PodSets[0].Template.Spec.ResourceClaims
-	if len(workloadClaims) != 1 || workloadClaims[0].ResourceClaimName != bundle.ResourceClaim.ObjectMeta.Name {
+	if len(workloadClaims) != 1 || workloadClaims[0].ResourceClaimTemplateName != bundle.ResourceClaimTemplate.ObjectMeta.Name {
 		t.Fatalf("workload pod set did not receive DRA claim: %+v", workloadClaims)
 	}
 }
@@ -203,6 +206,16 @@ func TestCompileWrapsWorkloadWithManagedWorkerBootstrap(t *testing.T) {
 		t.Fatalf("bootstrap network mode = host:%v dns:%q", pod.HostNetwork, pod.DNSPolicy)
 	}
 	main := pod.Containers[0]
+	if main.ImagePullPolicy != "IfNotPresent" || main.TerminationMessagePath != "/dev/termination-log" || main.TerminationMessagePolicy != "File" {
+		t.Fatalf("main container Kubernetes defaults = %+v", main)
+	}
+	if main.ReadinessProbe == nil || main.ReadinessProbe.HTTPGet == nil || main.ReadinessProbe.HTTPGet.Scheme != "HTTP" {
+		t.Fatalf("readiness probe defaults = %+v", main.ReadinessProbe)
+	}
+	initContainer := pod.InitContainers[0]
+	if initContainer.ImagePullPolicy != "IfNotPresent" || initContainer.TerminationMessagePath != "/dev/termination-log" || initContainer.TerminationMessagePolicy != "File" {
+		t.Fatalf("init container Kubernetes defaults = %+v", initContainer)
+	}
 	if len(main.Command) != 1 || main.Command[0] != WorkerBootstrapBinaryPath {
 		t.Fatalf("bootstrap command = %+v", main.Command)
 	}
@@ -222,6 +235,9 @@ func TestCompileWrapsWorkloadWithManagedWorkerBootstrap(t *testing.T) {
 	}
 	if environment["TGSRL_GENERATION"].Value != "7" || environment["TGSRL_SANDBOX_ID"].Value != "sandbox-1" || environment["TGSRL_DEVICE_IDS"].Value != "GPU-aaaa" {
 		t.Fatalf("bootstrap identity environment = %+v", environment)
+	}
+	if environment["TGSRL_POD_IP"].ValueFrom.FieldRef.APIVersion != "v1" || environment["TGSRL_POD_UID"].ValueFrom.FieldRef.APIVersion != "v1" {
+		t.Fatalf("downward API defaults = %+v %+v", environment["TGSRL_POD_IP"], environment["TGSRL_POD_UID"])
 	}
 	if environment["TGSRL_POLICY_VERSION"].Value != input.RuntimeManifest.GetPolicyVersion() || environment["TGSRL_ALGORITHM"].Value != input.RuntimeManifest.GetAnnotations()["algorithm"] {
 		t.Fatalf("veRL execution environment = %+v", environment)
@@ -300,9 +316,9 @@ func TestCompileDRAV1Beta1UsesLegacyFlatRequest(t *testing.T) {
 	if err != nil {
 		t.Fatalf("compile failed: %v", err)
 	}
-	request := bundle.ResourceClaim.Spec.Devices.Requests[0]
-	if bundle.ResourceClaim.APIVersion != DRAResourceClaimV1Beta1 || bundle.Workload.APIVersion != KueueWorkloadV1Beta1 {
-		t.Fatalf("selected APIs were not projected: claim=%s workload=%s", bundle.ResourceClaim.APIVersion, bundle.Workload.APIVersion)
+	request := bundle.ResourceClaimTemplate.Spec.Spec.Devices.Requests[0]
+	if bundle.ResourceClaimTemplate.APIVersion != DRAResourceClaimV1Beta1 || bundle.Workload.APIVersion != KueueWorkloadV1Beta1 {
+		t.Fatalf("selected APIs were not projected: claim template=%s workload=%s", bundle.ResourceClaimTemplate.APIVersion, bundle.Workload.APIVersion)
 	}
 	if request.Exactly != nil || request.DeviceClassName != NVIDIADRAFullGPUDeviceClass || request.Count != 1 || len(request.Selectors) != 1 || request.Selectors[0].CEL == nil {
 		t.Fatalf("unexpected legacy DRA request: %+v", request)
@@ -321,7 +337,7 @@ func TestCompileDRASelectsEveryConcreteBindingUUID(t *testing.T) {
 	if err != nil {
 		t.Fatalf("compile failed: %v", err)
 	}
-	request := bundle.ResourceClaim.Spec.Devices.Requests[0].Exactly
+	request := bundle.ResourceClaimTemplate.Spec.Spec.Devices.Requests[0].Exactly
 	if request == nil || request.Count != 2 {
 		t.Fatalf("DRA request = %+v, want two exact devices", request)
 	}
@@ -349,7 +365,7 @@ func TestCompileDRASelectsMIGDeviceClass(t *testing.T) {
 	if err != nil {
 		t.Fatalf("compile failed: %v", err)
 	}
-	request := bundle.ResourceClaim.Spec.Devices.Requests[0].Exactly
+	request := bundle.ResourceClaimTemplate.Spec.Spec.Devices.Requests[0].Exactly
 	if request == nil || request.DeviceClassName != NVIDIADRAMIGDeviceClass {
 		t.Fatalf("MIG request = %+v, want device class %q", request, NVIDIADRAMIGDeviceClass)
 	}
@@ -428,8 +444,16 @@ func TestCompileCreatesOneBundlePerBindingWithIndependentResources(t *testing.T)
 	if bundles[0].Key == bundles[1].Key || bundles[0].Job.ObjectMeta.Name == bundles[1].Job.ObjectMeta.Name {
 		t.Fatal("runtime-unit bundles must have distinct stable identities")
 	}
-	if got := bundles[1].Job.Spec.Template.Spec.Containers[0].Resources.Requests["cpu"]; got != "1000m" {
-		t.Fatalf("second bundle cpu = %q, want 1000m", got)
+	if got := bundles[1].Job.Spec.Template.Spec.Containers[0].Resources.Requests["cpu"]; got != "1" {
+		t.Fatalf("second bundle cpu = %q, want 1", got)
+	}
+}
+
+func TestQuantityCPUUsesCanonicalKubernetesForm(t *testing.T) {
+	for millis, want := range map[uint64]string{250: "250m", 1000: "1", 2000: "2", 2250: "2250m"} {
+		if got := quantityCPU(millis); got != want {
+			t.Fatalf("quantityCPU(%d) = %q, want %q", millis, got, want)
+		}
 	}
 }
 
@@ -588,7 +612,7 @@ func TestCompileSelectsOnlyDiscoveredGPUCapability(t *testing.T) {
 	if err != nil {
 		t.Fatalf("compile failed: %v", err)
 	}
-	if bundle.GPUProfile != GPUProfileKubernetesDRA || bundle.ResourceClaim == nil {
+	if bundle.GPUProfile != GPUProfileKubernetesDRA || bundle.ResourceClaimTemplate == nil {
 		t.Fatalf("bundle = %+v", bundle)
 	}
 }

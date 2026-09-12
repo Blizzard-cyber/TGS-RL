@@ -77,7 +77,7 @@ def assert_namespaced_rbac(role, binding, expected_namespace)
 
   expected_mutation_verbs = %w[get list watch create update patch delete]
   managed_resource_rules = {
-    ["resource.k8s.io"] => "resourceclaims",
+    ["resource.k8s.io"] => "resourceclaimtemplates",
     ["kueue.x-k8s.io"] => "workloads",
     ["tgsrl.io"] => "jobrunbundles"
   }
@@ -91,6 +91,12 @@ def assert_namespaced_rbac(role, binding, expected_namespace)
       "#{resource} RBAC verbs do not match the operator read/upsert/delete contract"
     )
   end
+
+  claim_rule = role.fetch("rules").find do |rule|
+    rule["apiGroups"] == ["resource.k8s.io"] && rule["resources"] == ["resourceclaims"]
+  end
+  assert(!claim_rule.nil?, "missing generated ResourceClaim readback rule")
+  assert(claim_rule["verbs"] == %w[get list watch], "generated ResourceClaims must remain read-only")
 
   status_rule = role.fetch("rules").find do |rule|
     rule["apiGroups"] == ["tgsrl.io"] && rule["resources"] == ["jobrunbundles/status"]

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import fcntl
 import importlib.util
 import json
 import stat
@@ -281,7 +282,7 @@ elif args == ["get", "jobrunbundles.tgsrl.io"]:
                 }],
                 "job": {"metadata": {"name": f"kube-job-{current}"}},
                 "workload": {"metadata": {"name": f"workload-{current}"}},
-                "resourceClaim": {"metadata": {"name": f"claim-{current}"}},
+                "resourceClaimTemplate": {"metadata": {"name": f"claim-template-{current}"}},
             }}
         }
     emit({"items": [bundle(current) for current in range(1, generation + 1)]})
@@ -293,7 +294,13 @@ elif args == ["get", "pods"]:
             "ownerReferences": [{"kind": "Job", "name": job_name}],
         },
         "spec": {"nodeName": "gpu-node-a"},
-        "status": {"conditions": [{"type": "Ready", "status": "True"}]},
+        "status": {
+            "conditions": [{"type": "Ready", "status": "True"}],
+            "resourceClaimStatuses": [{
+                "name": "accelerator",
+                "resourceClaimName": claim_name,
+            }],
+        },
     }]})
 elif len(args) == 3 and args[:2] == ["get", "resourceclaims.resource.k8s.io"]:
     owner = "other-job" if os.environ.get("TGSRL_FAKE_BAD_OWNER") else job_id
@@ -316,6 +323,7 @@ elif len(args) == 3 and args[:2] == ["get", "resourceclaims.resource.k8s.io"]:
 elif len(args) == 3 and args[0] == "get" and args[1] in {
     "jobs.batch",
     "workloads.kueue.x-k8s.io",
+    "resourceclaimtemplates.resource.k8s.io",
 }:
     owner = "other-job" if os.environ.get("TGSRL_FAKE_BAD_OWNER") else job_id
     emit({
@@ -356,7 +364,7 @@ elif args[:1] == ["exec"]:
         },
     ]
     print("\n".join(json.dumps(event, sort_keys=True) for event in events))
-elif args[:1] == ["delete"]:
+elif args[:1] in (["delete"], ["patch"]):
     emit({})
 else:
     print("unsupported fake kubectl argv: " + repr(args), file=sys.stderr)
@@ -594,6 +602,17 @@ def _execute(driver: Any, root: Path, request: JsonObject) -> JsonObject:
     return cast(JsonObject, driver.execute(request, operation_root / "response.json"))
 
 
+def test_driver_state_lock_fails_fast_when_another_operation_is_active(tmp_path: Path) -> None:
+    store = DRIVER.StateStore(tmp_path / "state")
+    with (
+        store.lock_path.open("a+", encoding="utf-8") as held,
+        pytest.raises(DRIVER.DriverError, match="another hardware environment driver"),
+    ):
+        fcntl.flock(held.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        with store.locked():
+            pass
+
+
 def test_hardware_job_identity_is_stable_and_attempt_scoped() -> None:
     request = _request("provision", 1)
     first = DRIVER._job_id(request, 1)
@@ -771,3 +790,30 @@ def test_driver_cleanup_rejects_reused_object_name(
     monkeypatch.setenv("TGSRL_FAKE_BAD_OWNER", "1")
     with pytest.raises(DRIVER.DriverError, match="ownership labels do not match"):
         _execute(driver, root, _request("cleanup", 8))
+
+
+def test_driver_cleanup_removes_bundle_finalizer_before_delete(
+    driver_environment: tuple[Any, _GatewayState, Path],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    driver, _state, root = driver_environment
+    _execute(driver, root, _request("provision", 1))
+    calls: list[list[str]] = []
+    original_run = DRIVER.Kubernetes.run
+
+    def record_run(self: Any, argv: list[str], **kwargs: Any) -> str:
+        calls.append(list(argv))
+        return cast(str, original_run(self, argv, **kwargs))
+
+    monkeypatch.setattr(DRIVER.Kubernetes, "run", record_run)
+    _execute(driver, root, _request("cleanup", 8))
+    patch_index = next(
+        index for index, argv in enumerate(calls) if argv[:2] == ["patch", "jobrunbundles.tgsrl.io"]
+    )
+    delete_index = next(
+        index
+        for index, argv in enumerate(calls)
+        if argv[:2] == ["delete", "jobrunbundles.tgsrl.io"]
+    )
+    assert calls[patch_index][-1] == '{"metadata":{"finalizers":[]}}'
+    assert patch_index < delete_index

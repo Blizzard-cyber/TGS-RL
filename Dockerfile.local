@@ -19,12 +19,12 @@ ARG UV_VERSION=0.12.7
 ARG TGSRL_PYPI_INDEX_URL=https://pypi.org/simple
 RUN python -m pip install --index-url "${TGSRL_PYPI_INDEX_URL}" --disable-pip-version-check --no-cache-dir "uv==${UV_VERSION}"
 
+ENV UV_PROJECT_ENVIRONMENT=/opt/tgsrl/venv
 WORKDIR /workspace
 COPY pyproject.toml uv.lock ./
 RUN UV_DEFAULT_INDEX="${TGSRL_PYPI_INDEX_URL}" uv sync --frozen --no-dev --no-install-project
 
-ENV UV_PROJECT_ENVIRONMENT=/workspace/.venv
-ENV PATH=/workspace/.venv/bin:$PATH
+ENV PATH=/opt/tgsrl/venv/bin:$PATH
 
 FROM ${TGSRL_NODE_BASE_IMAGE} AS console
 LABEL org.opencontainers.image.licenses="Apache-2.0"

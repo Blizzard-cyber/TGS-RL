@@ -1,6 +1,7 @@
 ARG TGSRL_VERL_BASE_IMAGE=nvidia/cuda:13.0.2-devel-ubuntu24.04@sha256:5dc1bca23d05bd37b011be68ec470c03b403a5da07ec3a86e41af9470e9d0cc6
 FROM ${TGSRL_VERL_BASE_IMAGE}
 ARG TGSRL_PYPI_INDEX_URL=https://pypi.org/simple
+ARG TGSRL_PYTORCH_INDEX_URL=https://download.pytorch.org/whl/cu130
 
 LABEL org.opencontainers.image.licenses="Apache-2.0"
 
@@ -14,13 +15,14 @@ COPY gen/python ./gen/python
 COPY configs/hardware/gpu-requirements.lock /tmp/gpu-requirements.lock
 COPY scripts/gpu-smoke-workload.py ./scripts/gpu-smoke-workload.py
 COPY LICENSE /licenses/TGS-RL/LICENSE
-RUN sed -i "s#^--index-url .*#--index-url ${TGSRL_PYPI_INDEX_URL}#" /tmp/gpu-requirements.lock \
-    && python3.12 -m pip install --break-system-packages --disable-pip-version-check --no-cache-dir --require-hashes \
+ENV PYTHONPATH=/opt/tgsrl:/opt/tgsrl/gen/python
+RUN --mount=type=cache,target=/root/.cache/pip \
+    sed -i "s#^--index-url .*#--index-url ${TGSRL_PYTORCH_INDEX_URL}\n--extra-index-url ${TGSRL_PYPI_INDEX_URL}#" /tmp/gpu-requirements.lock \
+    && python3.12 -m pip install --break-system-packages --disable-pip-version-check --require-hashes \
         --only-binary=:all: \
-        --extra-index-url https://download.pytorch.org/whl/cu130 \
+        --no-binary=antlr4-python3-runtime \
         -r /tmp/gpu-requirements.lock \
     && python3.12 -m pip check \
     && python3.12 -c 'import importlib.metadata as m; from tgsrl.v1 import runtime_pb2; expected={"verl":"0.9.0","ray":"2.58.0","torch":"2.13.0","vllm":"0.28.0"}; actual={k:m.version(k) for k in expected}; normalized={k:v.split("+",1)[0] for k,v in actual.items()}; assert normalized == expected, (actual, expected); assert runtime_pb2.DESCRIPTOR.package == "tgsrl.v1"'
 
-ENV PYTHONPATH=/opt/tgsrl:/opt/tgsrl/gen/python
 ENTRYPOINT ["python3.12", "/opt/tgsrl/scripts/gpu-smoke-workload.py"]

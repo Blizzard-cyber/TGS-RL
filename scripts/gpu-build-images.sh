@@ -12,6 +12,7 @@ GO_BASE_IMAGE=${TGSRL_GO_BASE_IMAGE:-golang:1.26.4-bookworm@sha256:b305420a68d0f
 DISTROLESS_BASE_IMAGE=${TGSRL_DISTROLESS_BASE_IMAGE:-gcr.io/distroless/static-debian12:nonroot@sha256:afa5c872c891853ca7fcf1f12c3edb23f7eeef36189728842dd51042ff57f7ab}
 GOPROXY=${TGSRL_GOPROXY:-https://proxy.golang.org,direct}
 PYPI_INDEX_URL=${TGSRL_PYPI_INDEX_URL:-https://pypi.org/simple}
+PYTORCH_INDEX_URL=${TGSRL_PYTORCH_INDEX_URL:-https://download.pytorch.org/whl/cu130}
 VERSION=${TGSRL_IMAGE_VERSION:-$(git rev-parse --short=12 HEAD)}
 PLATFORM=${TGSRL_IMAGE_PLATFORM:-linux/amd64}
 PUSH=${TGSRL_PUSH_IMAGES:-1}
@@ -57,7 +58,8 @@ trap 'rm -f "$temp"' EXIT
     "TGSRL_GOPROXY=$GOPROXY"
   build gpu-smoke Dockerfile.gpu-smoke \
     "TGSRL_VERL_BASE_IMAGE=$VERL_BASE_IMAGE" \
-    "TGSRL_PYPI_INDEX_URL=$PYPI_INDEX_URL"
+    "TGSRL_PYPI_INDEX_URL=$PYPI_INDEX_URL" \
+    "TGSRL_PYTORCH_INDEX_URL=$PYTORCH_INDEX_URL"
 } >"$temp"
 chmod 0600 "$temp"
 mv "$temp" "$output"

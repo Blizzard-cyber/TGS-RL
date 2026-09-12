@@ -216,9 +216,18 @@ func (b *KubernetesBackend) repairApplyLocked(ctx context.Context, bundle *api.B
 	}
 	desiredObjects, markerObject := splitCompletionMarker(objects)
 	for _, object := range desiredObjects {
-		// Reconcile every desired object. A marker written by an older
-		// marker-first implementation does not prove that later object updates
-		// completed; an object may exist with stale generation or spec.
+		// A committed marker proves this generation was fully materialized.
+		// Kueue and Kubernetes then own admission, suspend, selector, owner and
+		// status fields on Workload/Job/claims. Replaying a full PUT would erase
+		// those fields or collide with immutable Job selectors. Only recreate a
+		// missing generation-scoped object; lifecycle changes use ControlJob.
+		_, found, err := b.client.Get(ctx, object)
+		if err != nil {
+			return err
+		}
+		if found {
+			continue
+		}
 		if err := b.upsertDesiredObject(ctx, object); err != nil {
 			return err
 		}
@@ -429,8 +438,10 @@ func removeString(values []string, want string) []string {
 }
 
 type storedBundlePayload struct {
-	Metadata api.ObjectMeta `json:"metadata"`
-	Spec     struct {
+	APIVersion string         `json:"apiVersion"`
+	Kind       string         `json:"kind"`
+	Metadata   api.ObjectMeta `json:"metadata"`
+	Spec       struct {
 		Bundle api.Bundle `json:"bundle"`
 	} `json:"spec"`
 }
@@ -521,6 +532,12 @@ func updateStoredBundleMetadata(object ClientObject, mutate func(*api.ObjectMeta
 		return ClientObject{}, api.ObjectMeta{}, err
 	}
 	mutate(&stored.Metadata)
+	if stored.APIVersion == "" {
+		stored.APIVersion = object.APIVersion
+	}
+	if stored.Kind == "" {
+		stored.Kind = object.Kind
+	}
 	payload, err := json.Marshal(stored)
 	if err != nil {
 		return ClientObject{}, api.ObjectMeta{}, fmt.Errorf("encode bundle marker: %w", err)

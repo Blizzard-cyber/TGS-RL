@@ -208,7 +208,7 @@ func buildResources(input *normalizedInput) api.ResourceRequirements {
 		cpuMillis = 1000
 	}
 	requests := api.ResourceList{
-		"cpu":    fmt.Sprintf("%dm", cpuMillis),
+		"cpu":    quantityCPU(cpuMillis),
 		"memory": quantityBytes(memoryBytes),
 	}
 	limits := api.ResourceList{}
@@ -279,6 +279,13 @@ func quotaGroup(run *tgsrlv1.JobRun) string {
 func preemptionAllowed(run *tgsrlv1.JobRun) bool {
 	value := strings.TrimSpace(strings.ToLower(run.GetLabels()["allow_preemption"]))
 	return value == "1" || value == "true" || value == "yes"
+}
+
+func quantityCPU(millis uint64) string {
+	if millis%1000 == 0 {
+		return fmt.Sprintf("%d", millis/1000)
+	}
+	return fmt.Sprintf("%dm", millis)
 }
 
 func quantityBytes(value uint64) string {

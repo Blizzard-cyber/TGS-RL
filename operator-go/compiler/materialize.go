@@ -97,7 +97,7 @@ func buildBundle(input *normalizedInput) (*api.Bundle, error) {
 		}
 	}
 
-	var resourceClaim *api.ResourceClaim
+	var resourceClaimTemplate *api.ResourceClaimTemplate
 	if requiresResourceClaim(input.GPUProfile, input.resourcesPerUnit.GetAcceleratorUnits()) {
 		deviceIDs, err := concreteDeviceIDs(input.binding.GetDeviceIds())
 		if err != nil {
@@ -122,22 +122,25 @@ func buildBundle(input *normalizedInput) (*api.Bundle, error) {
 			request.AllocationMode = "ExactCount"
 			request.Count = int64(len(deviceIDs))
 		}
-		resourceClaim = &api.ResourceClaim{
-			TypeMeta: api.TypeMeta{APIVersion: input.KubernetesAPIs.DRAResourceClaim, Kind: "ResourceClaim"},
+		resourceClaimTemplate = &api.ResourceClaimTemplate{
+			TypeMeta: api.TypeMeta{APIVersion: input.KubernetesAPIs.DRAResourceClaim, Kind: "ResourceClaimTemplate"},
 			ObjectMeta: api.ObjectMeta{
-				Name:        buildObjectName("resourceclaim", input),
+				Name:        buildObjectName("claimtemplate", input),
 				Namespace:   input.Namespace,
 				Labels:      api.CloneMap(labels),
 				Annotations: api.CloneMap(annotations),
 			},
-			Spec: api.ResourceClaimSpec{
-				Devices: api.DeviceClaim{Requests: []api.DeviceRequest{request}},
-				Count:   uint32(len(deviceIDs)),
+			Spec: api.ResourceClaimTemplateSpec{
+				ObjectMeta: api.ObjectMeta{Labels: api.CloneMap(labels), Annotations: api.CloneMap(annotations)},
+				Spec: api.ResourceClaimSpec{
+					Devices: api.DeviceClaim{Requests: []api.DeviceRequest{request}},
+					Count:   uint32(len(deviceIDs)),
+				},
 			},
 		}
 		job.Spec.Template.Spec.ResourceClaims = []api.PodResourceClaim{{
-			Name:              "accelerator",
-			ResourceClaimName: resourceClaim.ObjectMeta.Name,
+			Name:                      "accelerator",
+			ResourceClaimTemplateName: resourceClaimTemplate.ObjectMeta.Name,
 		}}
 		job.Spec.Template.Spec.Containers[0].Resources.Claims = []api.ResourceClaimReference{{
 			Name:    "accelerator",
@@ -159,18 +162,18 @@ func buildBundle(input *normalizedInput) (*api.Bundle, error) {
 	}
 
 	return &api.Bundle{
-		Key:            bundleKey(input),
-		Namespace:      input.Namespace,
-		Generation:     input.Generation,
-		GPUProfile:     input.GPUProfile,
-		SourceRunID:    input.Run.GetRunId(),
-		SourceJobID:    input.Run.GetJobId(),
-		SourceTraceID:  input.Run.GetTraceId(),
-		RuntimeTargets: buildRuntimeTargets(input.Plan, input.Generation),
-		Workload:       workload,
-		Job:            job,
-		RuntimeClass:   runtimeClass,
-		ResourceClaim:  resourceClaim,
+		Key:                   bundleKey(input),
+		Namespace:             input.Namespace,
+		Generation:            input.Generation,
+		GPUProfile:            input.GPUProfile,
+		SourceRunID:           input.Run.GetRunId(),
+		SourceJobID:           input.Run.GetJobId(),
+		SourceTraceID:         input.Run.GetTraceId(),
+		RuntimeTargets:        buildRuntimeTargets(input.Plan, input.Generation),
+		Workload:              workload,
+		Job:                   job,
+		RuntimeClass:          runtimeClass,
+		ResourceClaimTemplate: resourceClaimTemplate,
 		Admission: api.AdmissionSpec{
 			Queue:           queueName(input.Run),
 			QuotaGroup:      quotaGroup(input.Run),
@@ -213,6 +216,7 @@ func configureWorkerBootstrap(template *api.PodTemplateSpec, input *normalizedIn
 		volumeName = "tgsrl-bootstrap"
 	)
 	main := &template.Spec.Containers[0]
+	applyKubernetesContainerDefaults(main)
 	workingDirectory := main.WorkingDir
 	workload := append([]string(nil), main.Command...)
 	workload = append(workload, main.Args...)
@@ -222,12 +226,12 @@ func configureWorkerBootstrap(template *api.PodTemplateSpec, input *normalizedIn
 	main.WorkingDir = ""
 	main.VolumeMounts = append(main.VolumeMounts, api.VolumeMount{Name: volumeName, MountPath: WorkerBootstrapMountPath, ReadOnly: true})
 	main.Ports = append(main.Ports, api.ContainerPort{Name: "tgsrl-control", ContainerPort: 50092, Protocol: "TCP"})
-	main.ReadinessProbe = &api.Probe{HTTPGet: &api.HTTPGetAction{Path: "/readyz", Port: 50092}, PeriodSeconds: 2, TimeoutSeconds: 1, FailureThreshold: 3, SuccessThreshold: 1}
+	main.ReadinessProbe = &api.Probe{HTTPGet: &api.HTTPGetAction{Path: "/readyz", Port: 50092, Scheme: "HTTP"}, PeriodSeconds: 2, TimeoutSeconds: 1, FailureThreshold: 3, SuccessThreshold: 1}
 	main.Env = append(main.Env,
 		api.EnvVar{Name: "TGSRL_WORKER_REGISTRY_URL", Value: bootstrap.RegistryURL},
 		api.EnvVar{Name: "TGSRL_WORKER_REGISTRY_TOKEN", Value: registrationToken},
-		api.EnvVar{Name: "TGSRL_POD_IP", ValueFrom: &api.EnvVarSource{FieldRef: &api.ObjectFieldSelector{FieldPath: "status.podIP"}}},
-		api.EnvVar{Name: "TGSRL_POD_UID", ValueFrom: &api.EnvVarSource{FieldRef: &api.ObjectFieldSelector{FieldPath: "metadata.uid"}}},
+		api.EnvVar{Name: "TGSRL_POD_IP", ValueFrom: &api.EnvVarSource{FieldRef: &api.ObjectFieldSelector{APIVersion: "v1", FieldPath: "status.podIP"}}},
+		api.EnvVar{Name: "TGSRL_POD_UID", ValueFrom: &api.EnvVarSource{FieldRef: &api.ObjectFieldSelector{APIVersion: "v1", FieldPath: "metadata.uid"}}},
 	)
 	if workingDirectory != "" {
 		main.Env = append(main.Env, api.EnvVar{Name: "TGSRL_WORKING_DIRECTORY", Value: workingDirectory})
@@ -243,6 +247,7 @@ func configureWorkerBootstrap(template *api.PodTemplateSpec, input *normalizedIn
 		Args:         []string{"install", "--target", WorkerBootstrapBinaryPath},
 		VolumeMounts: []api.VolumeMount{{Name: volumeName, MountPath: WorkerBootstrapMountPath}},
 	}}
+	applyKubernetesContainerDefaults(&template.Spec.InitContainers[0])
 	template.Spec.SecurityContext = &api.PodSecurityContext{FSGroup: 65532, FSGroupChangePolicy: "OnRootMismatch"}
 	if bootstrap.HostNetwork {
 		template.Spec.HostNetwork = true
@@ -250,6 +255,15 @@ func configureWorkerBootstrap(template *api.PodTemplateSpec, input *normalizedIn
 	}
 	template.Spec.Volumes = []api.Volume{{Name: volumeName, EmptyDir: &api.EmptyDirVolumeSource{}}}
 	return nil
+}
+
+func applyKubernetesContainerDefaults(container *api.Container) {
+	if container == nil {
+		return
+	}
+	container.ImagePullPolicy = "IfNotPresent"
+	container.TerminationMessagePath = "/dev/termination-log"
+	container.TerminationMessagePolicy = "File"
 }
 
 func nvidiaDRADeviceSelector(devices []DRADevice) string {
@@ -306,15 +320,21 @@ func validateBundle(bundle *api.Bundle) error {
 			return fmt.Errorf("runtime class must be cluster-scoped and unowned")
 		}
 	}
+	if bundle.ResourceClaim != nil && bundle.ResourceClaimTemplate != nil {
+		return fmt.Errorf("bundle cannot contain both a resource claim and resource claim template")
+	}
 	if bundle.ResourceClaim != nil && bundle.ResourceClaim.ObjectMeta.Namespace != bundle.Namespace {
 		return fmt.Errorf("resource claim namespace mismatch")
+	}
+	if bundle.ResourceClaimTemplate != nil && bundle.ResourceClaimTemplate.ObjectMeta.Namespace != bundle.Namespace {
+		return fmt.Errorf("resource claim template namespace mismatch")
 	}
 	if bundle.GPUProfile == GPUProfileKubernetesDRA {
 		if err := validateDRAResourceClaim(bundle); err != nil {
 			return err
 		}
-	} else if bundle.ResourceClaim != nil {
-		return fmt.Errorf("resource claim requires kubernetes-dra GPU profile")
+	} else if bundle.ResourceClaim != nil || bundle.ResourceClaimTemplate != nil {
+		return fmt.Errorf("resource claim or template requires kubernetes-dra GPU profile")
 	}
 	if bundle.Admission.Queue == "" || bundle.Admission.QuotaGroup == "" {
 		return fmt.Errorf("admission metadata is incomplete")
@@ -334,29 +354,34 @@ runtimeClassValidated:
 	if bundle.Job.Spec.Template.Spec.RestartPolicy != "Never" && bundle.Job.Spec.Template.Spec.RestartPolicy != "OnFailure" {
 		return fmt.Errorf("job pod restart policy must be Never or OnFailure")
 	}
-	if bundle.ResourceClaim == nil && len(bundle.Job.Spec.Template.Spec.ResourceClaims) > 0 {
-		return fmt.Errorf("job template references absent resource claim")
+	if bundle.ResourceClaim == nil && bundle.ResourceClaimTemplate == nil && len(bundle.Job.Spec.Template.Spec.ResourceClaims) > 0 {
+		return fmt.Errorf("job template references absent resource claim or template")
 	}
-	if bundle.ResourceClaim != nil {
+	if bundle.ResourceClaim != nil || bundle.ResourceClaimTemplate != nil {
 		if len(bundle.Job.Spec.Template.Spec.ResourceClaims) != 1 {
 			return fmt.Errorf("job template must include exactly one resource claim reference")
 		}
-		if bundle.Job.Spec.Template.Spec.ResourceClaims[0].ResourceClaimName != bundle.ResourceClaim.ObjectMeta.Name {
+		reference := bundle.Job.Spec.Template.Spec.ResourceClaims[0]
+		if bundle.ResourceClaim != nil && (reference.ResourceClaimName != bundle.ResourceClaim.ObjectMeta.Name || reference.ResourceClaimTemplateName != "") {
 			return fmt.Errorf("job template references unexpected resource claim")
+		}
+		if bundle.ResourceClaimTemplate != nil && (reference.ResourceClaimTemplateName != bundle.ResourceClaimTemplate.ObjectMeta.Name || reference.ResourceClaimName != "") {
+			return fmt.Errorf("job template references unexpected resource claim template")
 		}
 	}
 	if len(bundle.Workload.Spec.PodSets) != 1 || !reflect.DeepEqual(bundle.Workload.Spec.PodSets[0].Template.Spec, bundle.Job.Spec.Template.Spec) {
 		return fmt.Errorf("workload pod set and job template must use the same pod specification")
 	}
-	if len(bundle.Job.ObjectMeta.OwnerReferences) != 0 || bundle.ResourceClaim != nil && len(bundle.ResourceClaim.ObjectMeta.OwnerReferences) != 0 {
+	if len(bundle.Job.ObjectMeta.OwnerReferences) != 0 || bundle.ResourceClaim != nil && len(bundle.ResourceClaim.ObjectMeta.OwnerReferences) != 0 || bundle.ResourceClaimTemplate != nil && len(bundle.ResourceClaimTemplate.ObjectMeta.OwnerReferences) != 0 {
 		return fmt.Errorf("materialized objects must not contain unresolved owner references")
 	}
 	return nil
 }
 
 func validateDRAResourceClaim(bundle *api.Bundle) error {
-	if bundle.ResourceClaim == nil {
-		return fmt.Errorf("kubernetes-dra profile requires resource claim")
+	claimSpec, apiVersion := bundleDRAClaimSpec(bundle)
+	if claimSpec == nil {
+		return fmt.Errorf("kubernetes-dra profile requires resource claim template")
 	}
 	if len(bundle.RuntimeTargets) != 1 {
 		return fmt.Errorf("kubernetes-dra bundle requires exactly one runtime target")
@@ -365,13 +390,13 @@ func validateDRAResourceClaim(bundle *api.Bundle) error {
 	if err != nil {
 		return err
 	}
-	requests := bundle.ResourceClaim.Spec.Devices.Requests
+	requests := claimSpec.Devices.Requests
 	if len(requests) != 1 {
 		return fmt.Errorf("kubernetes-dra resource claim requires exactly one device request")
 	}
 	request := requests[0]
 	class, selectors, mode, count := request.DeviceClassName, request.Selectors, request.AllocationMode, request.Count
-	if bundle.ResourceClaim.APIVersion != DRAResourceClaimV1Beta1 {
+	if apiVersion != DRAResourceClaimV1Beta1 {
 		if request.Exactly == nil {
 			return fmt.Errorf("kubernetes-dra resource claim requires an exact device request")
 		}
@@ -386,4 +411,17 @@ func validateDRAResourceClaim(bundle *api.Bundle) error {
 		return fmt.Errorf("kubernetes-dra resource request must select the binding device UUIDs")
 	}
 	return nil
+}
+
+func bundleDRAClaimSpec(bundle *api.Bundle) (*api.ResourceClaimSpec, string) {
+	if bundle == nil {
+		return nil, ""
+	}
+	if bundle.ResourceClaimTemplate != nil {
+		return &bundle.ResourceClaimTemplate.Spec.Spec, bundle.ResourceClaimTemplate.APIVersion
+	}
+	if bundle.ResourceClaim != nil {
+		return &bundle.ResourceClaim.Spec, bundle.ResourceClaim.APIVersion
+	}
+	return nil, ""
 }

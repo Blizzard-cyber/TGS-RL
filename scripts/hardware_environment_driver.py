@@ -544,7 +544,12 @@ class _StateLock:
     def __enter__(self) -> JsonObject:
         descriptor = os.open(self.store.lock_path, os.O_CREAT | os.O_RDWR, 0o600)
         self.handle = os.fdopen(descriptor, "r+", encoding="utf-8")
-        fcntl.flock(self.handle.fileno(), fcntl.LOCK_EX)
+        try:
+            fcntl.flock(self.handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError as exc:
+            self.handle.close()
+            self.handle = None
+            raise DriverError("another hardware environment driver operation is active") from exc
         try:
             if self.store.path.is_file():
                 self.state = _read_json(self.store.path)
@@ -1323,6 +1328,10 @@ class HardwareEnvironmentDriver:
                 ("jobs.batch", bundle_spec.get("job")),
                 ("workloads.kueue.x-k8s.io", bundle_spec.get("workload")),
                 (
+                    "resourceclaimtemplates.resource.k8s.io",
+                    bundle_spec.get("resourceClaimTemplate"),
+                ),
+                (
                     "resourceclaims.resource.k8s.io",
                     bundle_spec.get("resourceClaim"),
                 ),
@@ -1360,6 +1369,20 @@ class HardwareEnvironmentDriver:
                 )
             metadata = _mapping(bundle.get("metadata"), label="JobRunBundle metadata")
             name = _string(metadata.get("name"), label="JobRunBundle name")
+            # Child names and ownership labels were verified above. Removing
+            # this test-owned marker finalizer after its children are gone
+            # prevents cleanup from hanging if the external Operator misses a
+            # deletion watch or is stopped during teardown.
+            kube.run(
+                [
+                    "patch",
+                    "jobrunbundles.tgsrl.io",
+                    name,
+                    "--type=merge",
+                    "--patch",
+                    '{"metadata":{"finalizers":[]}}',
+                ]
+            )
             kube.run(
                 [
                     "delete",
@@ -1610,11 +1633,7 @@ class HardwareEnvironmentDriver:
             pod_metadata = _mapping(pod.get("metadata"), label="Pod metadata")
             if require_ready and not self._pod_ready(pod):
                 raise DriverError(f"Pod {pod_metadata.get('name')} is not Ready")
-            claim = _mapping(bundle.get("resourceClaim"), label="bundle ResourceClaim")
-            claim_name = _string(
-                _mapping(claim.get("metadata"), label="ResourceClaim metadata").get("name"),
-                label="ResourceClaim name",
-            )
+            claim_name = self._pod_generated_claim_name(pod)
             live_claim = kube.json(["get", "resourceclaims.resource.k8s.io", claim_name])
             status = _mapping(live_claim.get("status"), label="ResourceClaim status")
             allocation = _mapping(status.get("allocation"), label="ResourceClaim allocation")
@@ -1696,6 +1715,22 @@ class HardwareEnvironmentDriver:
                 }
             )
         return results
+
+    @staticmethod
+    def _pod_generated_claim_name(pod: Mapping[str, Any]) -> str:
+        status = _mapping(pod.get("status"), label="Pod status")
+        claim_statuses = _items(status, "resourceClaimStatuses")
+        names = {
+            _string(item.get("resourceClaimName"), label="generated ResourceClaim name")
+            for item in claim_statuses
+            if item.get("name") == "accelerator" and item.get("resourceClaimName")
+        }
+        if len(names) != 1:
+            raise DriverError(
+                "Pod must report exactly one generated accelerator "
+                f"ResourceClaim, found {len(names)}"
+            )
+        return next(iter(names))
 
     @staticmethod
     def _latest_bundles(values: Sequence[JsonObject]) -> list[JsonObject]:

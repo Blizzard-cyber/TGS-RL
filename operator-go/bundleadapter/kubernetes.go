@@ -92,7 +92,16 @@ func (a *KubernetesAdapter) Materialize(bundle *api.Bundle) ([]Object, error) {
 			objects = append(objects, object)
 		}
 	}
-	if clone.ResourceClaim != nil {
+	if clone.ResourceClaimTemplate != nil {
+		object, err := marshalDesiredObject(metaFor(clone.ResourceClaimTemplate.TypeMeta.APIVersion, clone.ResourceClaimTemplate.TypeMeta.Kind, clone.ResourceClaimTemplate.ObjectMeta), clone.ResourceClaimTemplate)
+		if err != nil {
+			return nil, err
+		}
+		objects = append(objects, object)
+	} else if clone.ResourceClaim != nil {
+		// Legacy bundles may still contain a direct ResourceClaim. Preserve read
+		// and repair compatibility while all newly compiled DRA bundles use a
+		// ResourceClaimTemplate for Kueue admission.
 		object, err := marshalDesiredObject(metaFor(clone.ResourceClaim.TypeMeta.APIVersion, clone.ResourceClaim.TypeMeta.Kind, clone.ResourceClaim.ObjectMeta), clone.ResourceClaim)
 		if err != nil {
 			return nil, err
@@ -124,6 +133,9 @@ func validateSupportedKubernetesContract(bundle *api.Bundle) error {
 	}
 	if bundle.ResourceClaim != nil && (!supportedAPIVersion(bundle.ResourceClaim.TypeMeta.APIVersion, "resource.k8s.io/v1", "resource.k8s.io/v1beta2", "resource.k8s.io/v1beta1") || bundle.ResourceClaim.TypeMeta.Kind != "ResourceClaim") {
 		return fmt.Errorf("unsupported Kubernetes ResourceClaim contract %s %s", bundle.ResourceClaim.TypeMeta.APIVersion, bundle.ResourceClaim.TypeMeta.Kind)
+	}
+	if bundle.ResourceClaimTemplate != nil && (!supportedAPIVersion(bundle.ResourceClaimTemplate.TypeMeta.APIVersion, "resource.k8s.io/v1", "resource.k8s.io/v1beta2", "resource.k8s.io/v1beta1") || bundle.ResourceClaimTemplate.TypeMeta.Kind != "ResourceClaimTemplate") {
+		return fmt.Errorf("unsupported Kubernetes ResourceClaimTemplate contract %s %s", bundle.ResourceClaimTemplate.TypeMeta.APIVersion, bundle.ResourceClaimTemplate.TypeMeta.Kind)
 	}
 	return nil
 }
@@ -266,15 +278,6 @@ func (a *KubernetesAdapter) observeOnce(ctx context.Context, reader Reader, bund
 		}
 		return nil, false, err
 	}
-	var claimBody []byte
-	if bundle.ResourceClaim != nil {
-		claimObject := metaFor(defaultAPIVersion(bundle.ResourceClaim.TypeMeta.APIVersion, "resource.k8s.io/v1beta1"), defaultKind(bundle.ResourceClaim.TypeMeta.Kind, "ResourceClaim"), bundle.ResourceClaim.ObjectMeta)
-		claimBody, err = reader.GetPath(ctx, objectPath(claimObject, bundle.Namespace))
-		if err != nil {
-			return nil, false, err
-		}
-	}
-
 	now := time.Now
 	if a != nil && a.now != nil {
 		now = a.now
@@ -330,21 +333,46 @@ func (a *KubernetesAdapter) observeOnce(ctx context.Context, reader Reader, bund
 	snapshot.JobSucceeded = job.Status.Succeeded
 	snapshot.JobFailed = job.Status.Failed
 	snapshot.JobPaused = job.Spec.Suspend
-	if job.Status.Active > 0 && snapshot.WorkerRegistrationRequired {
+	var podsBody []byte
+	if snapshot.WorkerRegistrationRequired || bundle.ResourceClaimTemplate != nil {
 		podsPath := "/api/v1/namespaces/" + url.PathEscape(bundle.Namespace) + "/pods?labelSelector=" + url.QueryEscape("job-name="+bundle.Job.ObjectMeta.Name)
-		podBody, err := reader.GetPath(ctx, podsPath)
+		podsBody, err = reader.GetPath(ctx, podsPath)
 		if err != nil {
 			return nil, false, fmt.Errorf("read workload pods: %w", err)
 		}
-		ready, err := podListReady(podBody)
+	}
+	if job.Status.Active > 0 && snapshot.WorkerRegistrationRequired {
+		ready, err := podListReady(podsBody)
 		if err != nil {
 			return nil, false, err
 		}
 		snapshot.PodReady = ready
 	}
 
-	if bundle.ResourceClaim == nil {
+	var claimBody []byte
+	if bundle.ResourceClaimTemplate != nil {
+		claimName, found, err := generatedClaimName(podsBody)
+		if err != nil {
+			return nil, false, err
+		}
+		if found {
+			claimObject := Object{APIVersion: defaultAPIVersion(bundle.ResourceClaimTemplate.APIVersion, compiler.DRAResourceClaimV1Beta1), Kind: "ResourceClaim", Name: claimName, Namespace: bundle.Namespace}
+			claimBody, err = reader.GetPath(ctx, objectPath(claimObject, bundle.Namespace))
+			if err != nil {
+				return nil, false, err
+			}
+		}
+	} else if bundle.ResourceClaim != nil {
+		claimObject := metaFor(defaultAPIVersion(bundle.ResourceClaim.TypeMeta.APIVersion, "resource.k8s.io/v1beta1"), defaultKind(bundle.ResourceClaim.TypeMeta.Kind, "ResourceClaim"), bundle.ResourceClaim.ObjectMeta)
+		claimBody, err = reader.GetPath(ctx, objectPath(claimObject, bundle.Namespace))
+		if err != nil {
+			return nil, false, err
+		}
+	}
+	if bundle.ResourceClaim == nil && bundle.ResourceClaimTemplate == nil {
 		snapshot.ResourceClaimsAllocated = true
+	} else if len(claimBody) == 0 {
+		snapshot.ResourceClaimsAllocated = false
 	} else {
 		if bundle.GPUProfile == compiler.GPUProfileKubernetesDRA {
 			allocated, deviceIDs, err := observeDRAAllocation(ctx, reader, bundle, claimBody)
@@ -402,6 +430,40 @@ func podListReady(payload []byte) (bool, error) {
 	return false, nil
 }
 
+func generatedClaimName(payload []byte) (string, bool, error) {
+	var list struct {
+		Items []struct {
+			Status struct {
+				ResourceClaimStatuses []struct {
+					Name              string `json:"name"`
+					ResourceClaimName string `json:"resourceClaimName"`
+				} `json:"resourceClaimStatuses"`
+			} `json:"status"`
+		} `json:"items"`
+	}
+	if err := json.Unmarshal(payload, &list); err != nil {
+		return "", false, fmt.Errorf("decode workload pods for generated claim: %w", err)
+	}
+	claimNames := make(map[string]struct{})
+	for _, pod := range list.Items {
+		for _, status := range pod.Status.ResourceClaimStatuses {
+			if status.Name == "accelerator" && strings.TrimSpace(status.ResourceClaimName) != "" {
+				claimNames[status.ResourceClaimName] = struct{}{}
+			}
+		}
+	}
+	if len(claimNames) == 0 {
+		return "", false, nil
+	}
+	if len(claimNames) != 1 {
+		return "", false, fmt.Errorf("workload pods reference %d generated accelerator claims, want 1", len(claimNames))
+	}
+	for name := range claimNames {
+		return name, true, nil
+	}
+	return "", false, nil
+}
+
 func observeDRAAllocation(ctx context.Context, reader Reader, bundle *api.Bundle, claimBody []byte) (bool, []string, error) {
 	var claim struct {
 		Status struct {
@@ -431,7 +493,7 @@ func observeDRAAllocation(ctx context.Context, reader Reader, bundle *api.Bundle
 			return false, nil, fmt.Errorf("resourceclaim returned an invalid NVIDIA DRA allocation result")
 		}
 	}
-	claimAPI := defaultAPIVersion(bundle.ResourceClaim.APIVersion, compiler.DRAResourceClaimV1Beta1)
+	claimAPI := bundleDRAAPIVersion(bundle)
 	sliceBody, err := reader.GetPath(ctx, "/apis/"+claimAPI+"/resourceslices")
 	if err != nil {
 		return false, nil, fmt.Errorf("read DRA resource slices: %w", err)
@@ -441,7 +503,7 @@ func observeDRAAllocation(ctx context.Context, reader Reader, bundle *api.Bundle
 		return false, nil, err
 	}
 	actual := make([]string, 0, len(allocatedDevices))
-	expectedClass := draRequestDeviceClass(bundle.ResourceClaim)
+	expectedClass := draRequestDeviceClass(bundle)
 	for _, device := range allocatedDevices {
 		if device.DeviceClass != expectedClass {
 			return false, nil, fmt.Errorf("resourceclaim allocated device UUID %q from class %q, want %q", device.UUID, device.DeviceClass, expectedClass)
@@ -454,11 +516,27 @@ func observeDRAAllocation(ctx context.Context, reader Reader, bundle *api.Bundle
 	return true, actual, nil
 }
 
-func draRequestDeviceClass(claim *api.ResourceClaim) string {
-	if claim == nil || len(claim.Spec.Devices.Requests) != 1 {
+func bundleDRAAPIVersion(bundle *api.Bundle) string {
+	if bundle != nil && bundle.ResourceClaimTemplate != nil {
+		return defaultAPIVersion(bundle.ResourceClaimTemplate.APIVersion, compiler.DRAResourceClaimV1Beta1)
+	}
+	if bundle != nil && bundle.ResourceClaim != nil {
+		return defaultAPIVersion(bundle.ResourceClaim.APIVersion, compiler.DRAResourceClaimV1Beta1)
+	}
+	return compiler.DRAResourceClaimV1Beta1
+}
+
+func draRequestDeviceClass(bundle *api.Bundle) string {
+	var spec *api.ResourceClaimSpec
+	if bundle != nil && bundle.ResourceClaimTemplate != nil {
+		spec = &bundle.ResourceClaimTemplate.Spec.Spec
+	} else if bundle != nil && bundle.ResourceClaim != nil {
+		spec = &bundle.ResourceClaim.Spec
+	}
+	if spec == nil || len(spec.Devices.Requests) != 1 {
 		return ""
 	}
-	request := claim.Spec.Devices.Requests[0]
+	request := spec.Devices.Requests[0]
 	if request.Exactly != nil {
 		return request.Exactly.DeviceClassName
 	}

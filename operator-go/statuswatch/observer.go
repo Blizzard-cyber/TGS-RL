@@ -120,7 +120,10 @@ func Project(snapshot *Snapshot, claimRequired bool) Projection {
 			Ready:     true,
 		}
 	}
-	if snapshot.JobPaused {
+	// Kueue requires Jobs to start suspended and releases them after admission.
+	// That infrastructure gate is not a user-visible PAUSE. Only project PAUSED
+	// when the suspended readback is causally tied to a committed pause request.
+	if snapshot.JobPaused && snapshot.ControlCommitted && snapshot.ControlAction == tgsrlv1.JobCommandType_JOB_COMMAND_TYPE_PAUSE {
 		return Projection{
 			EventType: tgsrlv1.SandboxEventType_SANDBOX_EVENT_TYPE_PAUSED,
 			State:     tgsrlv1.RuntimeState_RUNTIME_STATE_PAUSED,

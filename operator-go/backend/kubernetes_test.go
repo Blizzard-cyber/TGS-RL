@@ -173,6 +173,34 @@ func TestKubernetesBackendApplyAndReplay(t *testing.T) {
 	}
 }
 
+func TestKubernetesBackendTemplateCleanupRemovesGeneratedFakeClaim(t *testing.T) {
+	client := NewMemoryClient()
+	backend, err := NewKubernetes(client)
+	if err != nil {
+		t.Fatal(err)
+	}
+	bundle := testBundle()
+	bundle.ResourceClaim = nil
+	bundle.ResourceClaimTemplate = &api.ResourceClaimTemplate{
+		TypeMeta:   api.TypeMeta{APIVersion: "resource.k8s.io/v1", Kind: "ResourceClaimTemplate"},
+		ObjectMeta: api.ObjectMeta{Name: "claim-template-a", Namespace: "ns"},
+		Spec:       api.ResourceClaimTemplateSpec{Spec: api.ResourceClaimSpec{}},
+	}
+	if _, err := backend.Apply(context.Background(), bundle); err != nil {
+		t.Fatal(err)
+	}
+	generated := fakeClaimObject(bundle)
+	if _, found, err := client.Get(context.Background(), generated); err != nil || !found {
+		t.Fatalf("generated fake claim before cleanup: found=%v err=%v", found, err)
+	}
+	if err := backend.Cleanup(context.Background(), bundle.Key, bundle.Generation); err != nil {
+		t.Fatal(err)
+	}
+	if _, found, err := client.Get(context.Background(), generated); err != nil || found {
+		t.Fatalf("generated fake claim after cleanup: found=%v err=%v", found, err)
+	}
+}
+
 func TestKubernetesBackendRepairsMissingObjectsBeforeIdempotentReplay(t *testing.T) {
 	for _, failedKey := range []string{"/runtime-a", "ns/claim-a", "ns/workload-a", "ns/job-a"} {
 		t.Run(failedKey, func(t *testing.T) {
@@ -298,7 +326,7 @@ func TestKubernetesBackendRepairsStaleMarkerReplayByRecreatingMissingObject(t *t
 	}
 }
 
-func TestKubernetesBackendRepairsExistingStaleObjectBeforeIdempotentReplay(t *testing.T) {
+func TestKubernetesBackendPreservesExistingServerManagedObjectOnIdempotentReplay(t *testing.T) {
 	client := NewMemoryClient()
 	b, err := NewKubernetes(client)
 	if err != nil {
@@ -340,8 +368,8 @@ func TestKubernetesBackendRepairsExistingStaleObjectBeforeIdempotentReplay(t *te
 	if err := json.Unmarshal(repaired.Payload, &repairedJob); err != nil {
 		t.Fatalf("decode repaired Job: %v", err)
 	}
-	if repairedJob.Spec.Parallelism != bundle.Job.Spec.Parallelism || repairedJob.ObjectMeta.Name != bundle.Job.ObjectMeta.Name {
-		t.Fatalf("repaired Job remained stale: %+v", repairedJob.Spec)
+	if repairedJob.Spec.Parallelism != 99 || repairedJob.ObjectMeta.Name != bundle.Job.ObjectMeta.Name {
+		t.Fatalf("idempotent replay overwrote an existing server-managed Job: %+v", repairedJob.Spec)
 	}
 }
 
@@ -391,6 +419,31 @@ func TestKubernetesBackendGetReturnsStoredBundleMarkerMetadata(t *testing.T) {
 	}
 	if roundTrippedMeta.Annotations["custom"] != metadata.Annotations["custom"] || roundTrippedMeta.Annotations[bundleSelectedGPUProfile] != bundle.GPUProfile {
 		t.Fatalf("bundle marker metadata lost: %+v", roundTrippedMeta.Annotations)
+	}
+}
+
+func TestUpdateStoredBundleMetadataPreservesTypeMeta(t *testing.T) {
+	bundle := testBundle()
+	objects := mustMaterialize(t, &KubernetesBackend{adapter: bundleadapter.NewKubernetes(0)}, bundle)
+	_, marker := splitCompletionMarker(objects)
+	if marker == nil {
+		t.Fatal("missing JobRunBundle marker")
+	}
+	updated, _, err := updateStoredBundleMetadata(*marker, func(meta *api.ObjectMeta) {
+		meta.Annotations = map[string]string{"test": "true"}
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var payload struct {
+		APIVersion string `json:"apiVersion"`
+		Kind       string `json:"kind"`
+	}
+	if err := json.Unmarshal(updated.Payload, &payload); err != nil {
+		t.Fatal(err)
+	}
+	if payload.APIVersion != "tgsrl.io/v1alpha1" || payload.Kind != "JobRunBundle" {
+		t.Fatalf("marker type metadata = %s %s", payload.APIVersion, payload.Kind)
 	}
 }
 

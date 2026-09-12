@@ -36,7 +36,11 @@ func TestProjectTerminalStatePrecedence(t *testing.T) {
 }
 
 func TestProjectPausedAndDeletedReadback(t *testing.T) {
-	paused := Project(&Snapshot{WorkloadAdmitted: true, JobPaused: true}, false)
+	initiallySuspended := Project(&Snapshot{WorkloadAdmitted: true, ResourceClaimsAllocated: true, JobPaused: true}, true)
+	if !initiallySuspended.Ready || initiallySuspended.State != tgsrlv1.RuntimeState_RUNTIME_STATE_BOUND {
+		t.Fatalf("Kueue admission suspension projection = %+v, want BOUND", initiallySuspended)
+	}
+	paused := Project(&Snapshot{WorkloadAdmitted: true, JobPaused: true, ControlCommitted: true, ControlAction: tgsrlv1.JobCommandType_JOB_COMMAND_TYPE_PAUSE}, false)
 	if !paused.Ready || paused.State != tgsrlv1.RuntimeState_RUNTIME_STATE_PAUSED {
 		t.Fatalf("paused projection = %+v", paused)
 	}

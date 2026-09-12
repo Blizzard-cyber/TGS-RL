@@ -404,7 +404,12 @@ func defaultCapabilities(available bool) *tgsrlv1.CapabilitySet {
 		Revision:         capabilityObservationRevision,
 		SupportedActions: supportedActionNames(),
 		Limits:           map[string]float64{"max_share": 1},
-		Attributes:       map[string]string{"driver": "nvidia"},
+		Attributes: map[string]string{
+			"accelerator_vendor": "nvidia",
+			"data_origin":        "live",
+			"driver":             "nvidia",
+			"hardware_backed":    "true",
+		},
 	}
 	if available {
 		capabilities.Attributes["probe"] = "available"

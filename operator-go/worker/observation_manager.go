@@ -476,7 +476,7 @@ func (m *ObservationManager) publishSnapshot(ctx context.Context, registration *
 	if snapshot == nil || snapshot.ObservedGeneration < decisionGeneration(registration.Decision) {
 		return false, nil
 	}
-	projection := statuswatch.Project(snapshot, registration.Bundle.ResourceClaim != nil)
+	projection := statuswatch.Project(snapshot, registration.Bundle.ResourceClaim != nil || registration.Bundle.ResourceClaimTemplate != nil)
 	if !projection.Ready || !shouldPublishTransition(registration.LastState, registration.PendingState, projection.State) {
 		return false, nil
 	}

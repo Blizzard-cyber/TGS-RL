@@ -109,8 +109,12 @@ func parseInventory(output []byte, observedAt time.Time) (*InventorySnapshot, er
 		} else if snapshot.DriverVersion != record[5] {
 			return nil, fmt.Errorf("conflicting nvidia driver versions %q and %q", snapshot.DriverVersion, record[5])
 		}
-		migMode := strings.ToLower(record[6])
-		if migMode != "enabled" && migMode != "disabled" {
+		migMode := strings.ToLower(strings.TrimSpace(record[6]))
+		switch migMode {
+		case "enabled":
+		case "disabled", "n/a", "[n/a]":
+			migMode = "disabled"
+		default:
 			return nil, fmt.Errorf("nvidia inventory row %d has unknown MIG mode %q", row+1, record[6])
 		}
 		snapshot.Devices = append(snapshot.Devices, InventoryDevice{

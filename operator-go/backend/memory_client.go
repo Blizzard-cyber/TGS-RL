@@ -73,6 +73,9 @@ func (c *MemoryClient) Delete(_ context.Context, object ClientObject) (bool, err
 		return false, nil
 	}
 	delete(c.objects, object.Key)
+	if object.Kind == "ResourceClaimTemplate" {
+		delete(c.objects, object.Namespace+"/"+object.Name+"-fake")
+	}
 	return true, nil
 }
 
@@ -238,12 +241,30 @@ func (c *MemoryClient) setInitialJobState(bundle *api.Bundle) {
 	}
 	workloadObject := metaObject(bundle.Workload.TypeMeta.APIVersion, bundle.Workload.TypeMeta.Kind, bundle.Workload.ObjectMeta)
 	claimObject := ClientObject{}
-	if bundle.ResourceClaim != nil {
+	var generatedClaim *api.ResourceClaim
+	if bundle.ResourceClaimTemplate != nil {
+		claimObject = fakeClaimObject(bundle)
+		claim := api.ResourceClaim{
+			TypeMeta: api.TypeMeta{APIVersion: bundle.ResourceClaimTemplate.APIVersion, Kind: "ResourceClaim"},
+			ObjectMeta: api.ObjectMeta{
+				Name:      bundle.ResourceClaimTemplate.ObjectMeta.Name + "-fake",
+				Namespace: bundle.Namespace,
+				Labels:    api.CloneMap(bundle.ResourceClaimTemplate.Spec.ObjectMeta.Labels),
+			},
+			Spec: bundle.ResourceClaimTemplate.Spec.Spec,
+		}
+		generatedClaim = &claim
+	} else if bundle.ResourceClaim != nil {
 		claimObject = metaObject(bundle.ResourceClaim.TypeMeta.APIVersion, bundle.ResourceClaim.TypeMeta.Kind, bundle.ResourceClaim.ObjectMeta)
 	}
 	object := metaObject(bundle.Job.TypeMeta.APIVersion, bundle.Job.TypeMeta.Kind, bundle.Job.ObjectMeta)
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	if generatedClaim != nil {
+		if payload, err := json.Marshal(generatedClaim); err == nil {
+			c.objects[claimObject.Key] = c.withResourceVersionLocked(ClientObject{APIVersion: claimObject.APIVersion, Kind: claimObject.Kind, Key: claimObject.Key, Name: claimObject.Name, Namespace: claimObject.Namespace, Payload: payload})
+		}
+	}
 	if workload, ok := c.objects[workloadObject.Key]; ok {
 		var storedWorkload api.Workload
 		if json.Unmarshal(workload.Payload, &storedWorkload) == nil {

@@ -351,7 +351,12 @@ func (d *LocalDriverV2) executeAction(ctx context.Context, state *DriverState, a
 			return nil, v2ActionError(action, base.ErrorCodeGenerationConflict, "nvidia backend generation fence failed", base.ErrFailedPrecondition)
 		}
 	}
-	if checkGeneration && action.GetExpectedSnapshotRevision() != 0 && state != nil && state.Revision != 0 && state.Revision != action.GetExpectedSnapshotRevision() {
+	// A transaction's snapshot revision belongs to the Scheduler Store and was
+	// already fenced atomically by ReservePlan. DriverState.Revision is the
+	// provider's independent projection revision, so comparing the two would
+	// reject valid plans after any Store-only mutation (for example publishing
+	// a pending unit). Standalone actions still need the provider revision fence.
+	if receipt == nil && checkGeneration && action.GetExpectedSnapshotRevision() != 0 && state != nil && state.Revision != 0 && state.Revision != action.GetExpectedSnapshotRevision() {
 		return nil, v2ActionError(action, base.ErrorCodeRevisionConflict, "nvidia backend provider revision fence failed", base.ErrFailedPrecondition)
 	}
 	if checkGeneration && action.GetExpectedGeneration() != 0 {
@@ -906,9 +911,9 @@ func v2Capabilities(inventory *InventorySnapshot, partitions *PartitionSnapshot,
 	capabilities.SupportedActions = stableActionNames(actions)
 	capabilities.Limits["partitions"] = float64(len(partitions.Partitions))
 	capabilities.Evidence = append(capabilities.Evidence, &tgsrlv1.CapabilityEvidence{
-		EvidenceId: "nvidia-inventory", Source: commandNvidiaSMI, Revision: capabilities.GetRevision(), ObservedAt: timestamppb.New(inventory.ObservedAt), Collector: "nvidia-driver-v2", Detail: "physical GPU inventory discovered", Attributes: map[string]string{"device_count": strconv.Itoa(len(inventory.Devices)), "topology_warnings": strconv.Itoa(len(inventory.Warnings))},
+		EvidenceId: "nvidia-inventory", Source: capabilities.GetSource(), Revision: capabilities.GetRevision(), ObservedAt: timestamppb.New(inventory.ObservedAt), Collector: "nvidia-driver-v2", Detail: "physical GPU inventory discovered", Attributes: map[string]string{"command": commandNvidiaSMI, "device_count": strconv.Itoa(len(inventory.Devices)), "topology_warnings": strconv.Itoa(len(inventory.Warnings))},
 	}, &tgsrlv1.CapabilityEvidence{
-		EvidenceId: "nvidia-partition-" + string(partitions.Mode), Source: commandNvidiaSMI, Revision: capabilities.GetRevision(), ObservedAt: timestamppb.New(partitions.ObservedAt), Collector: "nvidia-driver-v2", Detail: "partition capability discovered", Attributes: map[string]string{"mode": string(partitions.Mode)},
+		EvidenceId: "nvidia-partition-" + string(partitions.Mode), Source: capabilities.GetSource(), Revision: capabilities.GetRevision(), ObservedAt: timestamppb.New(partitions.ObservedAt), Collector: "nvidia-driver-v2", Detail: "partition capability discovered", Attributes: map[string]string{"command": commandNvidiaSMI, "mode": string(partitions.Mode)},
 	})
 	return capabilities
 }

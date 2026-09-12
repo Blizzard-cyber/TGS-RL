@@ -52,7 +52,9 @@ func TestKubernetesObserverMapsObservedStatus(t *testing.T) {
 			_ = json.NewEncoder(w).Encode(map[string]any{
 				"status": map[string]any{"active": 1, "succeeded": 0, "failed": 0},
 			})
-		case "/apis/resource.k8s.io/v1beta1/namespaces/test-ns/resourceclaims/claim-a":
+		case "/api/v1/namespaces/test-ns/pods":
+			_ = json.NewEncoder(w).Encode(map[string]any{"items": []any{map[string]any{"status": map[string]any{"resourceClaimStatuses": []any{map[string]any{"name": "accelerator", "resourceClaimName": "claim-generated"}}}}}})
+		case "/apis/resource.k8s.io/v1beta1/namespaces/test-ns/resourceclaims/claim-generated":
 			_ = json.NewEncoder(w).Encode(map[string]any{
 				"status": map[string]any{"allocation": map[string]any{"devices": map[string]any{"results": []any{map[string]any{"request": "accelerator", "driver": compiler.NVIDIADRADriver, "pool": "node-a", "device": "gpu-0"}}}}},
 			})
@@ -80,9 +82,12 @@ func TestKubernetesObserverMapsObservedStatus(t *testing.T) {
 			Job: api.Job{
 				ObjectMeta: api.ObjectMeta{Name: "job-a", Namespace: "test-ns"},
 			},
-			ResourceClaim: &api.ResourceClaim{
-				ObjectMeta: api.ObjectMeta{Name: "claim-a", Namespace: "test-ns"},
-				Spec:       api.ResourceClaimSpec{Devices: api.DeviceClaim{Requests: []api.DeviceRequest{{Name: "accelerator", DeviceClassName: compiler.NVIDIADRAFullGPUDeviceClass}}}},
+			ResourceClaimTemplate: &api.ResourceClaimTemplate{
+				TypeMeta:   api.TypeMeta{APIVersion: compiler.DRAResourceClaimV1Beta1, Kind: "ResourceClaimTemplate"},
+				ObjectMeta: api.ObjectMeta{Name: "claim-template-a", Namespace: "test-ns"},
+				Spec: api.ResourceClaimTemplateSpec{Spec: api.ResourceClaimSpec{
+					Devices: api.DeviceClaim{Requests: []api.DeviceRequest{{Name: "accelerator", DeviceClassName: compiler.NVIDIADRAFullGPUDeviceClass}}},
+				}},
 			},
 		},
 		Bindings: []*tgsrlv1.Binding{{BindingId: "binding-a"}},

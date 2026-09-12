@@ -152,6 +152,28 @@ func TestCommandInventoryDiscoveryUsesStableUUIDIdentityAndTopology(t *testing.T
 	}
 }
 
+func TestCommandInventoryTreatsUnsupportedMIGModeAsDisabled(t *testing.T) {
+	executor := NewFakeCommandExecutor(
+		FakeCommandResponse{Result: CommandResult{Stdout: []byte("0, GPU-a10, 00000000:65:01.0, 23028, NVIDIA A10, 580.178.04, [N/A], Default\n"), ExitCode: 0}},
+		FakeCommandResponse{Result: CommandResult{Stdout: []byte("GPU0 X 0-31 0\n"), ExitCode: 0}},
+	)
+
+	inventory, err := NewCommandInventoryBackend(
+		executor,
+		time.Second,
+		func() time.Time { return v2Now },
+	).Discover(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(inventory.Devices) != 1 {
+		t.Fatalf("devices = %+v, want one A10", inventory.Devices)
+	}
+	if inventory.Devices[0].UUID != "GPU-a10" || inventory.Devices[0].MIGEnabled {
+		t.Fatalf("device = %+v, want healthy full GPU with MIG disabled", inventory.Devices[0])
+	}
+}
+
 func TestTopologyDiscoveryUsesReportedNonContiguousHeaders(t *testing.T) {
 	snapshot := &InventorySnapshot{Devices: []InventoryDevice{{UUID: "GPU-a", Index: "1", Topology: map[string]string{}}, {UUID: "GPU-b", Index: "3", Topology: map[string]string{}}}}
 	output := []byte("        GPU1 GPU3 CPU Affinity NUMA Affinity\nGPU1    X    NV4  0-31         0\nGPU3    NV4  X    32-63        1\n")
@@ -506,6 +528,23 @@ func TestFullGPUModeDiscoversWholeDevicesWithoutStartingMPS(t *testing.T) {
 	}
 	if got := probe.Capabilities.GetNames(); !slices.Equal(got, []string{CapabilityName}) {
 		t.Fatalf("full GPU capability names = %v, want one %q entry", got, CapabilityName)
+	}
+	for key, want := range map[string]string{
+		"accelerator_vendor": "nvidia",
+		"data_origin":        "live",
+		"hardware_backed":    "true",
+	} {
+		if got := probe.Capabilities.GetAttributes()[key]; got != want {
+			t.Fatalf("capability attribute %q = %q, want %q", key, got, want)
+		}
+	}
+	if len(probe.Capabilities.GetEvidence()) != 2 {
+		t.Fatalf("capability evidence = %+v, want inventory and partition evidence", probe.Capabilities.GetEvidence())
+	}
+	for _, evidence := range probe.Capabilities.GetEvidence() {
+		if evidence.GetSource() != probe.Capabilities.GetSource() || evidence.GetAttributes()["command"] != commandNvidiaSMI {
+			t.Fatalf("capability evidence provenance = %+v, want provider source with nvidia-smi command attribute", evidence)
+		}
 	}
 }
 
@@ -1203,8 +1242,11 @@ func TestProviderV2TransactionalLifecycle(t *testing.T) {
 	}
 	action := v2Action(tgsrlv1.ActionType_ACTION_TYPE_SET_SHARE)
 	action.Share = 0.5
+	// The Scheduler Store revision is an independent version domain from the
+	// provider revision. The Store fences the plan before transactional apply.
+	action.ExpectedSnapshotRevision = 7
 	action.Rollback = &tgsrlv1.Rollback{ActionType: tgsrlv1.ActionType_ACTION_TYPE_SET_SHARE, TargetId: "sandbox-a"}
-	plan := nvidiaPlan("plan-a", 1, action)
+	plan := nvidiaPlan("plan-a", 7, action)
 	receipt, err := p.PreparePlan(context.Background(), "plan-a", 1, plan)
 	if err != nil || receipt.Phase != base.TransactionPhasePrepared {
 		t.Fatalf("PreparePlan() = (%+v, %v)", receipt, err)

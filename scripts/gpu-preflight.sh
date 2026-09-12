@@ -231,13 +231,22 @@ if [[ -f "$KUBECONFIG_FILE" ]]; then
   for check in \
     'create jobs.batch' 'delete jobs.batch' \
     'create workloads.kueue.x-k8s.io' 'delete workloads.kueue.x-k8s.io' \
-    'create resourceclaims.resource.k8s.io' 'delete resourceclaims.resource.k8s.io' \
+    'create resourceclaimtemplates.resource.k8s.io' 'delete resourceclaimtemplates.resource.k8s.io' \
+    'get resourceclaims.resource.k8s.io' 'list resourceclaims.resource.k8s.io' \
     'create jobrunbundles.tgsrl.io' 'delete jobrunbundles.tgsrl.io'; do
     read -r verb resource <<<"$check"
     if KUBECONFIG="$KUBECONFIG_FILE" kubectl auth can-i "$verb" "$resource" -n "$NAMESPACE" | grep -qx yes; then
       pass "external Operator can $verb $resource"
     else
       fail "external Operator cannot $verb $resource in $NAMESPACE"
+    fi
+  done
+  for forbidden in 'create resourceclaims.resource.k8s.io' 'delete resourceclaims.resource.k8s.io'; do
+    read -r verb resource <<<"$forbidden"
+    if KUBECONFIG="$KUBECONFIG_FILE" kubectl auth can-i "$verb" "$resource" -n "$NAMESPACE" >/dev/null 2>&1; then
+      fail "external Operator must not $verb generated $resource in $NAMESPACE"
+    else
+      pass "external Operator cannot $verb generated $resource"
     fi
   done
   for resource in nodes runtimeclasses.node.k8s.io deviceclasses.resource.k8s.io resourceslices.resource.k8s.io; do

@@ -277,6 +277,8 @@ func descriptorFor(object Object) resourceDescriptor {
 		return descriptorWithVersion(object, "node.k8s.io", "v1", "runtimeclasses", false)
 	case "ResourceClaim":
 		return descriptorWithVersion(object, "resource.k8s.io", "v1beta1", "resourceclaims", true)
+	case "ResourceClaimTemplate":
+		return descriptorWithVersion(object, "resource.k8s.io", "v1beta1", "resourceclaimtemplates", true)
 	default:
 		return resourceDescriptor{group: "tgsrl.io", version: "v1alpha1", resource: strings.ToLower(kind) + "s", namespaced: true}
 	}

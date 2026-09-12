@@ -55,7 +55,8 @@ type EnvVarSource struct {
 }
 
 type ObjectFieldSelector struct {
-	FieldPath string `json:"fieldPath"`
+	APIVersion string `json:"apiVersion,omitempty"`
+	FieldPath  string `json:"fieldPath"`
 }
 
 type VolumeMount struct {
@@ -77,21 +78,25 @@ type PodSecurityContext struct {
 }
 
 type PodResourceClaim struct {
-	Name              string `json:"name"`
-	ResourceClaimName string `json:"resourceClaimName"`
+	Name                      string `json:"name"`
+	ResourceClaimName         string `json:"resourceClaimName,omitempty"`
+	ResourceClaimTemplateName string `json:"resourceClaimTemplateName,omitempty"`
 }
 
 type Container struct {
-	Name           string               `json:"name"`
-	Image          string               `json:"image"`
-	Command        []string             `json:"command,omitempty"`
-	Args           []string             `json:"args,omitempty"`
-	Env            []EnvVar             `json:"env,omitempty"`
-	WorkingDir     string               `json:"workingDir,omitempty"`
-	Resources      ResourceRequirements `json:"resources,omitempty"`
-	VolumeMounts   []VolumeMount        `json:"volumeMounts,omitempty"`
-	Ports          []ContainerPort      `json:"ports,omitempty"`
-	ReadinessProbe *Probe               `json:"readinessProbe,omitempty"`
+	Name                     string               `json:"name"`
+	Image                    string               `json:"image"`
+	Command                  []string             `json:"command,omitempty"`
+	Args                     []string             `json:"args,omitempty"`
+	Env                      []EnvVar             `json:"env,omitempty"`
+	WorkingDir               string               `json:"workingDir,omitempty"`
+	Resources                ResourceRequirements `json:"resources,omitempty"`
+	VolumeMounts             []VolumeMount        `json:"volumeMounts,omitempty"`
+	Ports                    []ContainerPort      `json:"ports,omitempty"`
+	ReadinessProbe           *Probe               `json:"readinessProbe,omitempty"`
+	ImagePullPolicy          string               `json:"imagePullPolicy,omitempty"`
+	TerminationMessagePath   string               `json:"terminationMessagePath,omitempty"`
+	TerminationMessagePolicy string               `json:"terminationMessagePolicy,omitempty"`
 }
 
 type ContainerPort struct {
@@ -101,8 +106,9 @@ type ContainerPort struct {
 }
 
 type HTTPGetAction struct {
-	Path string `json:"path"`
-	Port int32  `json:"port"`
+	Path   string `json:"path"`
+	Port   int32  `json:"port"`
+	Scheme string `json:"scheme,omitempty"`
 }
 
 type Probe struct {
@@ -248,6 +254,17 @@ type ResourceClaim struct {
 	Status     ResourceClaimStatus `json:"status,omitempty"`
 }
 
+type ResourceClaimTemplateSpec struct {
+	ObjectMeta ObjectMeta        `json:"metadata,omitempty"`
+	Spec       ResourceClaimSpec `json:"spec"`
+}
+
+type ResourceClaimTemplate struct {
+	TypeMeta   `json:",inline"`
+	ObjectMeta `json:"metadata"`
+	Spec       ResourceClaimTemplateSpec `json:"spec"`
+}
+
 type StatusProjection struct {
 	RunState string `json:"runState"`
 	JobState string `json:"jobState"`
@@ -296,23 +313,27 @@ type RuntimeTarget struct {
 }
 
 type Bundle struct {
-	Key              string           `json:"key"`
-	Namespace        string           `json:"namespace"`
-	Generation       uint64           `json:"generation"`
-	Fingerprint      string           `json:"fingerprint"`
-	GPUProfile       string           `json:"gpuProfile"`
-	SourceRunID      string           `json:"sourceRunId"`
-	SourceJobID      string           `json:"sourceJobId"`
-	SourceTraceID    string           `json:"sourceTraceId"`
-	RuntimeTargets   []RuntimeTarget  `json:"runtimeTargets,omitempty"`
-	Workload         Workload         `json:"workload"`
-	Job              Job              `json:"job"`
-	RuntimeClass     *RuntimeClass    `json:"runtimeClass,omitempty"`
-	ResourceClaim    *ResourceClaim   `json:"resourceClaim,omitempty"`
-	Admission        AdmissionSpec    `json:"admission"`
-	AdmissionStatus  AdmissionStatus  `json:"admissionStatus"`
-	ControllerStatus ControllerStatus `json:"controllerStatus"`
-	StatusProjection StatusProjection `json:"statusProjection"`
+	Key            string          `json:"key"`
+	Namespace      string          `json:"namespace"`
+	Generation     uint64          `json:"generation"`
+	Fingerprint    string          `json:"fingerprint"`
+	GPUProfile     string          `json:"gpuProfile"`
+	SourceRunID    string          `json:"sourceRunId"`
+	SourceJobID    string          `json:"sourceJobId"`
+	SourceTraceID  string          `json:"sourceTraceId"`
+	RuntimeTargets []RuntimeTarget `json:"runtimeTargets,omitempty"`
+	Workload       Workload        `json:"workload"`
+	Job            Job             `json:"job"`
+	RuntimeClass   *RuntimeClass   `json:"runtimeClass,omitempty"`
+	// ResourceClaim is retained for decoding bundles written before the
+	// ResourceClaimTemplate migration. New bundles use ResourceClaimTemplate so
+	// Kueue can account for DRA devices before Kubernetes creates the Pod claim.
+	ResourceClaim         *ResourceClaim         `json:"resourceClaim,omitempty"`
+	ResourceClaimTemplate *ResourceClaimTemplate `json:"resourceClaimTemplate,omitempty"`
+	Admission             AdmissionSpec          `json:"admission"`
+	AdmissionStatus       AdmissionStatus        `json:"admissionStatus"`
+	ControllerStatus      ControllerStatus       `json:"controllerStatus"`
+	StatusProjection      StatusProjection       `json:"statusProjection"`
 }
 
 func CloneMap(src map[string]string) map[string]string {

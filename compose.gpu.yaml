@@ -128,5 +128,4 @@ services:
       HOST: 127.0.0.1
     command: ["/bin/sh", "-ceu", "exec npm run dev -- --host 127.0.0.1"]
     ports: !override []
-    volumes: !override
-      - ${TGSRL_REPO_ROOT:?set TGSRL_REPO_ROOT}/console:/workspace/console:ro
+    volumes: !override []

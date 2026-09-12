@@ -57,9 +57,9 @@ func (b *KubernetesBackend) fakeSnapshots(ctx context.Context, bundle *api.Bundl
 	}
 	claimAllocated := true
 	deviceIDs := []string(nil)
-	if bundle.ResourceClaim != nil {
+	if bundle.ResourceClaim != nil || bundle.ResourceClaimTemplate != nil {
 		claimAllocated = false
-		claimObject, found, err := b.client.Get(ctx, metaObject(bundle.ResourceClaim.TypeMeta.APIVersion, bundle.ResourceClaim.TypeMeta.Kind, bundle.ResourceClaim.ObjectMeta))
+		claimObject, found, err := b.client.Get(ctx, fakeClaimObject(bundle))
 		if err != nil {
 			return nil, err
 		}
@@ -91,6 +91,20 @@ func (b *KubernetesBackend) fakeSnapshots(ctx context.Context, bundle *api.Bundl
 		applyControlMetadata(observed, metadata)
 	}
 	return []*ObservationSnapshot{bound, observed}, nil
+}
+
+func fakeClaimObject(bundle *api.Bundle) ClientObject {
+	if bundle != nil && bundle.ResourceClaimTemplate != nil {
+		return metaObject(
+			bundle.ResourceClaimTemplate.APIVersion,
+			"ResourceClaim",
+			api.ObjectMeta{Name: bundle.ResourceClaimTemplate.ObjectMeta.Name + "-fake", Namespace: bundle.Namespace},
+		)
+	}
+	if bundle != nil && bundle.ResourceClaim != nil {
+		return metaObject(bundle.ResourceClaim.APIVersion, bundle.ResourceClaim.Kind, bundle.ResourceClaim.ObjectMeta)
+	}
+	return ClientObject{}
 }
 
 func applyControlMetadata(snapshot *ObservationSnapshot, metadata ControlMetadata) {
