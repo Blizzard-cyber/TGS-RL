@@ -21,9 +21,12 @@ Communication happens through this GitHub repo: dev pushes code, test pushes evi
 
 ## Repository state
 
-- Development integration branch: `main`; GPU validation was performed on `test/e1-build-fixes`.
-- The accepted E1 evidence is bound to `d033566`; later changes must receive a final E1 rerun before
-  release if they alter the E1 execution path.
+- Development integration branch: `main`; the clean E1 integration series landed at `8f7494d`.
+  GPU validation was performed on the temporary `test/e1-build-fixes` branch and its fixes were
+  rewritten into three clean commits.
+- The accepted E1 evidence is bound to source revision `d033566`. The released main tree contains
+  that validated execution path plus host-tooling and documentation-only follow-ups. Re-run E1
+  before release only if a later change alters the E1 execution path.
 - Important GPU-host fixes are preserved as small Conventional Commits: DRA ClaimTemplate, bundle
   TypeMeta, prebuilt Workload defaults, admission-suspend semantics, canonical CPU quantities and
   deterministic hardware-driver cleanup.
@@ -58,10 +61,10 @@ See `docs/validation/e1-full-gpu-2026-09-12.md`.
   CDI publishes both ordinal and exact UUID device names; immutable project images were built and used.
 - Kubernetes host modules/sysctls, cgroup v2, zero swap, cache directories and required host ports
   are ready.
-- Network evidence: `dl.k8s.io` is about 33 KiB/s and Docker Hub times out, while DaoCloud file
-  proxy, Minikube upstream, Helm upstream, GitHub releases and Tsinghua PyPI are usable. The current
-  development change adds `TGSRL_NETWORK_PROFILE=cn`; push it before the test host can pull and
-  finish kubectl/Minikube/Helm/Python setup.
+- Network evidence: `dl.k8s.io` was about 33 KiB/s and Docker Hub timed out, while DaoCloud file
+  proxy, Minikube upstream, Helm upstream, GitHub releases and Tsinghua PyPI were usable.
+  `TGSRL_NETWORK_PROFILE=cn` is now committed on `main` and covers Go/npm plus the reusable
+  download/Python mirror settings used to finish host setup.
 - Using those verified mirrors, the host now has kubectl 1.35.1, Minikube 1.38.1, Helm 4.2.4,
   uv 0.12.7 and Python 3.12.14. Tool archives matched canonical upstream SHA-256 values.
 - `uv sync --frozen` completed with the network profile and reusable cache.
@@ -123,7 +126,8 @@ the final integrated-commit rerun and later hardware scenarios.
 
 ## What to run
 
-Follow `docs/guides/gpu-smoke.md` exactly; it is the source of truth. Summary:
+Follow `docs/guides/gpu-smoke.md` exactly; it is the source of truth for a later E1 rerun or new
+hardware scenario. Summary:
 
 1. Clean clone / `git pull` to the exact commit under test, then confirm a clean tree
    (`make gpu-build-images` rejects a dirty tree).
