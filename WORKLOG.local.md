@@ -11,9 +11,9 @@ release, this file and the `handoff/` directory should be deleted.
 
 ## Current local development batch
 
-This macOS checkout has completed the H1 HAMi preparation code and local contract validation. The
-next step is to commit this batch, let the NVIDIA A10 test host pull that exact clean revision, and
-run the real H1 fractional-GPU smoke.
+This macOS checkout completed the H1 HAMi implementation and local contract validation. The NVIDIA
+A10 test host then pulled the clean implementation, ran H1 twice to validate rerun behavior, restored
+the original NVIDIA Device Plugin, and passed E1 again on the final code revision.
 
 - Scheduler NVIDIA Driver v2 now defaults to capability-aware `auto`: non-MIG GPUs remain Full GPU
   resources, while MIG-enabled GPUs publish existing MIG children only. A physical card is never
@@ -58,8 +58,8 @@ H1-local validation for this implementation batch:
 - Python compilation, shell syntax, Go formatting, `git diff --check`, H1 campaign plan and pinned
   HAMi Helm rendering pass.
 
-These results prove code contracts only. Until `.cache/tgsrl/hami-smoke/h1-hami-vgpu/report.json`
-exists and says `PASSED`, HAMi vGPU remains hardware-unverified. MPS and MIG also remain unverified.
+These local results prove code contracts only. The separate GPU-host evidence below establishes the
+single-workload H1 result; MPS, MIG and concurrent HAMi isolation remain unverified.
 
 ## Machine roles
 
@@ -76,9 +76,9 @@ Communication happens through this GitHub repo: dev pushes code, test pushes evi
 - Development integration branch: `main`; the clean E1 integration series landed at `8f7494d`.
   GPU validation was performed on the temporary `test/e1-build-fixes` branch and its fixes were
   rewritten into three clean commits.
-- The accepted E1 evidence is bound to source revision `d033566`. The released main tree contains
-  that validated execution path plus host-tooling and documentation-only follow-ups. Re-run E1
-  before release only if a later change alters the E1 execution path.
+- The original E1 evidence is bound to source revision `d033566`; the latest E1 regression and H1
+  evidence are both bound to `9c65d46`. Later commits in this batch only document those results.
+  Re-run E1/H1 before release only if a later change alters their execution paths.
 - Important GPU-host fixes are preserved as small Conventional Commits: DRA ClaimTemplate, bundle
   TypeMeta, prebuilt Workload defaults, admission-suspend semantics, canonical CPU quantities and
   deterministic hardware-driver cleanup.
@@ -102,6 +102,12 @@ generated-proto/migration checks, Helm/deploy contracts, SBOM, repository-hygien
 The GPU host completed E1 on 2026-09-12: `GPU_SINGLE_NODE`, `simulated=false`, 8/8 workload
 executions, exact Scheduler/DRA/worker UUID equality, real CUDA events and clean resource teardown.
 See `docs/validation/e1-full-gpu-2026-09-12.md`.
+
+The same host completed H1 on `9c65d46`: 8/8 workload executions, exact Scheduler/HAMi/worker
+UUID equality, requested and allocated `40%` core plus `9211 MiB`, real CUDA events and clean
+resource teardown. After uninstalling HAMi, the original NVIDIA Device Plugin returned to `1/1`,
+the Node returned to `nvidia.com/gpu=1`, all `hami.io/*` annotations were removed, and E1 passed
+again. See `docs/validation/h1-hami-vgpu-2026-09-12.md`.
 
 ## GPU test host and E1 result (2026-09-12)
 
@@ -142,7 +148,7 @@ closed; the remaining gap is real hardware evidence, not code structure.
 | CPU Mock + process E2E | Verified (real subprocess, bootstrap, Unix socket, service restart) |
 | Console (9 workspaces) | Closed locally (9 Chinese pages, resource inventory + Trace, responsive layout) |
 | NVIDIA Provider/helper | Full GPU E1 verified; capability-aware Full/MIG code verified locally; MIG/MPS hardware pending |
-| Kubernetes / DRA / HAMi | DRA E1 verified; H1 HAMi installer/campaign/UUID+share readback ready locally, hardware run pending |
+| Kubernetes / DRA / HAMi | DRA E1 verified; HAMi H1 verified for one 0.4-share workload, including UUID/core/memory readback and DRA restoration |
 | veRL adapter | Implemented, real veRL/Ray/PyTorch/vLLM combination pending |
 | Hardware Campaign E1-E8 | E1 PASSED; E2–E8 not run, E3–E8 have 9 thresholds to calibrate |
 | Production release | Not admitted (MIG/MPS/full training/E2–E8 evidence missing) |
@@ -274,7 +280,8 @@ Append one row per run so both sides share history.
 | Date | Commit | Experiment | Result | Evidence path | Notes |
 |---|---|---|---|---|---|
 | 2026-09-12 | `d033566` | E1 | PASSED | `.cache/tgsrl/gpu-smoke/e1-full-gpu/report.json` on GPU host; committed summary in `docs/validation/e1-full-gpu-2026-09-12.md` | 8/8 executions; exact UUID; real CUDA; cleanup clean |
-| 2026-09-12 | H1 implementation batch | H1 | NOT_RUN | `.cache/tgsrl/hami-smoke/h1-hami-vgpu/report.json` | Local code/tests ready; real HAMi environment not run yet |
+| 2026-09-12 | `9c65d46` | H1 | PASSED | `.cache/tgsrl/hami-smoke/h1-hami-vgpu/report.json`; committed summary in `docs/validation/h1-hami-vgpu-2026-09-12.md` | 8/8 executions; 40% core and 9211 MiB readback; exact UUID; real CUDA; cleanup clean |
+| 2026-09-12 | `9c65d46` | E1 regression | PASSED | `.cache/tgsrl/gpu-smoke/e1-full-gpu/report.json` | Re-run after HAMi teardown; DRA exact UUID and cleanup remain healthy |
 
 ---
 
@@ -282,8 +289,8 @@ Append one row per run so both sides share history.
 
 - Preserve the accepted E1 evidence fingerprint. Re-run E1 only if a later change touches the E1
   execution path.
-- On A10 or another non-MIG GPU, run a separate HAMi fractional-allocation smoke and record
-  Scheduler UUID = Node inventory UUID = Pod allocation UUID = worker-visible UUID.
+- Extend the proven H1 single-workload path to two concurrent workloads on one physical UUID and
+  measure isolation, OOM behavior and interference.
 - Run MIG DeviceClass/parent-UUID/rebind E2 only on hardware that actually supports and enables MIG.
 - MPS server PID visibility, share mutation and readback.
 - Complete model-training callbacks and distributed veRL/Ray behavior.

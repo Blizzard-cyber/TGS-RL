@@ -4,9 +4,10 @@
 [HAMi](https://github.com/Project-HAMi/HAMi) 兑现。当前接入复用 HAMi 的公开 Kubernetes
 资源与注解协议，不复制 HAMi 源码，也不让 HAMi 取代 TGS-RL 的任务、运行时或决策权威。
 
-> **当前验证边界**：本仓库已完成 HAMi 协议投影、typed inventory、UUID/份额回读、独立
-> H1 campaign 和 CPU 合同测试；H1 真实 GPU 结果以 `docs/validation/` 中是否存在对应记录
-> 为准。没有报告时不得把 Pod Running 或本地测试写成硬件通过证据。
+> **当前验证边界**：NVIDIA A10 上的单 workload H1 已通过，证明 `0.4` 请求能兑现为
+> `40%` core 和 `9211 MiB`，且 Scheduler、HAMi、worker UUID 一致。详见
+> [H1 验证记录](../validation/h1-hami-vgpu-2026-09-12.md)。该证据不覆盖双 workload
+> 并发隔离、动态改份额或训练收益。
 
 ## 解决什么问题
 

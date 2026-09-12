@@ -56,8 +56,9 @@ TGS-RL 的定位不是新的训练框架，也不是 Kubernetes 的替代品。�
   Kubernetes 与 veRL 接入代码。
 
 > **验证边界**：CPU/Mock、Replay 和 Synthetic Trace 用于验证控制行为，不代表 GPU 吞吐、
-> CUDA 行为、Kubernetes 可用性或模型收敛质量。NVIDIA 与真实训练路径仍需目标环境证据，
-> 详见[支持范围与限制](docs/reference/current-capabilities.md)。
+> CUDA 行为、Kubernetes 可用性或模型收敛质量。当前已有 Full GPU E1 与 HAMi 单 workload
+> H1 证据；MIG、MPS、并发共享和完整训练仍需各自的目标环境证据，详见
+> [支持范围与限制](docs/reference/current-capabilities.md)。
 
 ## 三步运行完整系统
 
@@ -209,7 +210,7 @@ flowchart LR
 | 设备与需求 | 可用路径 | 当前代码状态 |
 |---|---|---|
 | 当前未启用 MIG 的物理卡，独占需求 | Full GPU + NVIDIA DRA | 已实现；已有单节点 E1 证据 |
-| 当前未启用 MIG 的物理卡，单卡分数需求 | HAMi vGPU 或显式 MPS | HAMi 协议接线已实现、MPS 已实现；均待目标环境验证 |
+| 当前未启用 MIG 的物理卡，单卡分数需求 | HAMi vGPU 或显式 MPS | HAMi 单 workload H1 已验证；MPS 与双 workload 并发隔离待验证 |
 | 当前已启用 MIG 且已有实例的物理卡 | MIG 子设备 + NVIDIA DRA | 已实现，待 MIG 硬件验证 |
 | 混合集群 | 每个 Binding 分别选择 DRA/HAMi；每张卡分别发布 Full 或 MIG 容量 | CPU 合同测试已覆盖 |
 
@@ -296,7 +297,7 @@ Operator  ───────────────────── apply 
 | 可观测性 | 多轨 Trace、Decision evidence、Replay、Experiment、Prometheus | CPU full-stack Gate |
 | 进程执行 | worker bootstrap、PID/control endpoint 注册、信号转发、退出清理 | CPU 真实子进程 |
 | Kubernetes | 六服务 Helm、JobRunBundle、Kueue Workload、Job、ResourceClaimTemplate 与生成的 ResourceClaim | E1 单节点 Full GPU 已验证 |
-| NVIDIA | 能力感知 Full/MIG inventory、DRA 精确分配、HAMi vGPU、MPS/MIG/runtime helpers | Full GPU E1 已验证；HAMi/MIG/MPS 待验证 |
+| NVIDIA | 能力感知 Full/MIG inventory、DRA 精确分配、HAMi vGPU、MPS/MIG/runtime helpers | Full GPU E1 与 HAMi 单 workload H1 已验证；MIG/MPS 和 HAMi 并发隔离待验证 |
 | veRL | lifecycle/observation bridge 与 callback adapter | 对象替身，待真实 veRL/Ray/GPU |
 
 详细状态以[支持范围与限制](docs/reference/current-capabilities.md)为准。
@@ -453,6 +454,11 @@ E1 Full GPU identity → E2 MIG identity → E3–E6 性能与动作代价
 环境完成 E1，结果为 `PASSED`。完整边界、指标和证据摘要见
 [E1 单节点 Full GPU 验证记录](docs/validation/e1-full-gpu-2026-09-12.md)。E2–E8 仍保持
 `NOT_RUN`，本结果不代表 MIG/MPS、多节点或完整训练实验通过。
+
+同日也在该 A10 上完成独立 H1 HAMi 分数 GPU smoke：`0.4` 请求被兑现为 `40%` core 和
+`9211 MiB`，Scheduler、HAMi allocation 与 worker UUID 一致，且恢复原 Device Plugin 后
+E1 再次通过。详见
+[H1 单节点 HAMi 分数 GPU 验证记录](docs/validation/h1-hami-vgpu-2026-09-12.md)。
 
 ## 仓库内容边界
 

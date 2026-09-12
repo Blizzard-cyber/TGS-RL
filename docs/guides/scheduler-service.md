@@ -243,8 +243,8 @@ partition mode 时仍保留 MPS 兼容默认；生产入口应始终显式选择
 `set_share`；通用 `resize` 不作为 MPS 能力公开。MIG `rebind/recreate` helper 还必须显式
 声明 safe-point、checkpoint、stop、restore、readiness、durable receipt、generation fence 和
 idempotency，才会公开对应 L4 action。`auto` 下这些 MIG 专属 action 只出现在 MIG 子设备，
-不会错误地出现在 Full GPU 设备上。仓库已有单节点 Full GPU E1 证据；MPS、MIG 和
-HAMi 仍待各自目标环境验证。
+不会错误地出现在 Full GPU 设备上。仓库已有单节点 Full GPU E1 和 HAMi 单 workload H1
+证据；MPS、MIG 与 HAMi 并发共享仍待各自目标环境验证。
 
 使用 `make build-nvidia-binding` 构建 helper。Scheduler 的 `-nvidia-binding-helper` 指定
 可执行文件，`-nvidia-binding-state` 指定状态文件（默认在 `-state-dir` 下），

@@ -105,8 +105,9 @@ namespace，并具有 namespaced Pod `get/list/watch` 权限以读取 managed-wo
 生成的 ResourceClaim 只有 namespaced `get/list/watch` 权限。Kubernetes observer 轮询 Workload、
 Job、Pod 和生成的 ResourceClaim：从 `pod.status.resourceClaimStatuses` 获取实际 claim 名，先发布 `BOUND`，只有
 bootstrap 注册成功、Pod Ready 后才允许 `RUNNING`；失败和完成也由观察状态投影。仓库的
-本地 HTTP 合同测试覆盖这些 JSON 约定；单节点 A10 的 Kubernetes/Kueue/DRA E1 已通过，
-HAMi、MIG 和 MPS 仍需各自目标环境验证。
+本地 HTTP 合同测试覆盖这些 JSON 约定；单节点 A10 的 Kubernetes/Kueue/DRA E1 与
+HAMi 单 workload H1 已通过。MIG、MPS、HAMi 并发隔离和混合 profile 计划仍需各自目标
+环境验证。
 Scheduler binding 中的 `device_ids` 代表 NVIDIA GPU/MIG UUID。`kubernetes-dra` profile 根据
 ResourceSlice 的 typed inventory 选择 Full GPU 或 MIG DeviceClass，把这些 UUID 编译进
 ResourceClaimTemplate 的 CEL selector，并在观察阶段用生成 claim allocation 的

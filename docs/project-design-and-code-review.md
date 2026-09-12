@@ -64,10 +64,10 @@ managed-worker bootstrap、Gateway/SDK/CLI、Console、全栈部署工件和硬�
 | Scheduler 与事务 | 已闭环 | admission/adaptive planner、约束、预算、reservation、receipt、补偿和恢复完整 |
 | CPU Mock / process E2E | 已验证 | 包括真实子进程、worker bootstrap、Unix socket 和服务重启 |
 | NVIDIA Provider/helper | Full GPU E1 已验证 | `auto` 按设备发布 Full/MIG，binding/runtime helper 与 worker registry 已在 A10 验证；MPS/MIG 待验证 |
-| HAMi vGPU | 已实现，H1 待执行 | Node typed inventory、单卡分数资源投影、显式 HAMi scheduler、UUID/core/memory allocation readback、bootstrap 核验和独立 H1 runner 已完成 |
+| HAMi vGPU | 单 workload H1 已验证 | A10 上完成 `0.4 → 40% core + 9211 MiB`、UUID 三方对账、真实 CUDA、Trace、重跑与 DRA 恢复；并发隔离待验证 |
 | 其他加速器厂商 | 接口已预留，未实现 | Proto 有 NPU/TPU/CUSTOM，Scheduler 有厂商中立 Provider 接口；缺少具体 Provider、Operator adapter 与 verifier |
 | Kubernetes/DRA | E1 主链已验证 | ClaimTemplate、生成 Claim、UUID selector/allocation readback、CDI 注入与 cleanup 已在真实集群通过 |
-| 硬件 Campaign | E1 `PASSED` | baseline/variant 各完成 warmup + 3 次 measurement；E2–E8 仍需目标 workload/hook 和真实证据 |
+| 硬件 Campaign | E1 `PASSED`；独立 H1 `PASSED` | 两项均完成 baseline/variant 各 1 次 warmup + 3 次 measurement；E2–E8 仍需目标 workload/hook 和真实证据 |
 | 生产发布 | 尚未准入 | E1 只证明单节点 Full GPU 集成；MIG/MPS/完整训练和 E2–E8 未完成 |
 
 BOM 中的 `gpu_stack_integrated: true` 只表示 E1 所覆盖的单节点 Full GPU
@@ -82,12 +82,12 @@ workload 使用可拉取的 `repository@sha256:...`。这使首次 Full GPU 全�
 [E1 单节点 Full GPU 验证记录](validation/e1-full-gpu-2026-09-12.md)。runner 已锁定仓库控制的 campaign/gate/scenario/executor/
 driver 输入和 workload image digest；本机 `environment.json`、Job template、外部 hook、渲染后 Job
 及目标 cluster UID/version 仍未全部进入证据指纹，`host_hash` 也只是 runner 主机身份。
-HAMi 分数 GPU 使用独立 H1 campaign：仓库已锁定 HAMi 2.10.0 chart、实现可逆 Minikube
-切换、Kueue queue、实际份额 readback 和 Gate 校验；真实结果只能在 H1 跑完后写入
-`docs/validation/`，不会因为本地合同测试自动升级。
+HAMi 分数 GPU 使用独立 H1 campaign：仓库锁定 HAMi 2.10.0 chart，并已在 A10 上验证可逆
+Minikube 切换、Kueue queue、实际份额 readback、真实 CUDA 与 Gate。证据见
+[H1 单节点 HAMi 分数 GPU 验证记录](validation/h1-hami-vgpu-2026-09-12.md)；该结论不覆盖
+并发共享隔离或性能收益。
 除此之外，发布层面的阻塞项是：
 
-- 在最终合并 commit 上复跑 [单机 GPU 全链路 Smoke](guides/gpu-smoke.md)，刷新证据指纹；
 - 配置 E2 rebind 的 Scheduler-observation hook；
 - 为 E4–E8 配置动作或故障 hook，并证明它们作用于真实 worker/环境；
 - 依次执行 E1 Full GPU、E2 MIG，再运行 E3–E8；
@@ -105,7 +105,7 @@ HAMi 分数 GPU 使用独立 H1 campaign：仓库已锁定 HAMi 2.10.0 chart、�
 | 已关闭 | `KubernetesBackend.Cleanup` 所需的 Workload、ResourceClaimTemplate、JobRunBundle `delete` 权限 | Helm 与原生 manifest 已补齐，生成的 ResourceClaim 只读，部署 contract test 逐类约束 |
 | 已关闭 | 全局 NVIDIA mode 无法表达不同分区能力的 GPU 共存 | Scheduler CLI 默认 `auto`，逐卡发布 Full/MIG，排除父卡重复计量并隔离 MIG 专属 action |
 | 已关闭（待硬件验证） | Operator 只能全局选择一种 GPU 兑现方式 | 改为有序 profile；按每个 Binding 的 UUID 和份额选择 DRA/HAMi，无法精确兑现时 fail closed |
-| 已关闭（H1 待执行） | 旧 HAMi profile 只有数量资源，无法证明实际 UUID/份额 | 新增 `hami-vgpu` typed Node inventory、UUID 过滤、显式 scheduler、Pod UUID/memory/core readback、bootstrap 核验和独立 H1 campaign |
+| 已关闭 | 旧 HAMi profile 只有数量资源，无法证明实际 UUID/份额 | 新增 `hami-vgpu` typed Node inventory、UUID 过滤、显式 scheduler、Pod UUID/memory/core readback、bootstrap 核验和独立 H1 campaign；真实 A10 H1 已通过 |
 | 已关闭 | Console 缺少真实资源账本入口 | Gateway 新增 `GET /v1/resources`，中文算力资源页展示 Scheduler 设备、能力和 allocation，并保持响应式布局 |
 | P1 生产阻塞 | 服务端点没有内建 TLS、用户认证、授权、租户隔离或限流 | 仅允许本机/隔离网络；生产前增加统一入口和服务间身份 |
 | P1 生产阻塞 | Job 只提供字符串环境变量，没有通用 Secret/ConfigMap 引用模型 | 依赖凭据的真实训练必须由 namespace/service account 或平台注入；后续应设计显式 secret refs |
