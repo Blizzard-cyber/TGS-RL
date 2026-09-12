@@ -1,5 +1,19 @@
 SHELL := /bin/sh
 .DEFAULT_GOAL := help
+comma := ,
+GOPROXY ?= https://proxy.golang.org$(comma)direct
+NPM_CONFIG_REGISTRY ?= https://registry.npmjs.org
+ifeq ($(TGSRL_NETWORK_PROFILE),cn)
+GOPROXY := https://goproxy.cn$(comma)direct
+NPM_CONFIG_REGISTRY := https://registry.npmmirror.com
+endif
+ifneq ($(strip $(TGSRL_GOPROXY)),)
+GOPROXY := $(TGSRL_GOPROXY)
+endif
+ifneq ($(strip $(TGSRL_NPM_REGISTRY)),)
+NPM_CONFIG_REGISTRY := $(TGSRL_NPM_REGISTRY)
+endif
+export GOPROXY NPM_CONFIG_REGISTRY
 
 BUF_VERSION := 1.72.0
 UV_VERSION := 0.12.7
@@ -215,17 +229,17 @@ check-public-content:
 	./scripts/check-public-content.sh
 
 check-docs:
-	python3 scripts/check-docs.py
+	uv run --frozen python scripts/check-docs.py
 
 sbom:
-	python3 scripts/generate-sbom.py
+	uv run --frozen python scripts/generate-sbom.py
 
 check-governance:
 	./scripts/check-repository-hygiene.sh
-	python3 scripts/check-docs.py
-	python3 scripts/generate-sbom.py --check
-	python3 scripts/check-compatibility.py
-	python3 scripts/check-upstream-patches.py
+	uv run --frozen python scripts/check-docs.py
+	uv run --frozen python scripts/generate-sbom.py --check
+	uv run --frozen python scripts/check-compatibility.py
+	uv run --frozen python scripts/check-upstream-patches.py
 	bash scripts/check-openapi.sh
 
 gate-campaign:
@@ -267,7 +281,7 @@ test-api:
 	uv run --frozen pytest tests/api
 
 test-console:
-	cd console && npm ci && npm run typecheck && npm run lint && npm test && npm run build
+	cd console && npm ci --registry "$(NPM_CONFIG_REGISTRY)" && npm run typecheck && npm run lint && npm test && npm run build
 
 test-console-browser:
 	cd console && VITE_TGSRL_API_ADAPTER=mock npm run test:browser

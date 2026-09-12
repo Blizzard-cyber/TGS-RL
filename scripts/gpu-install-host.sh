@@ -39,6 +39,11 @@ HELM_VERSION=${TGSRL_HELM_VERSION:-v4.2.4}
 MINIKUBE_VERSION=${TGSRL_MINIKUBE_VERSION:-v1.38.1}
 UV_VERSION=${TGSRL_UV_VERSION:-0.12.7}
 PYTHON_VERSION=${TGSRL_PYTHON_VERSION:-3.12.14}
+GO_VERSION=1.26.4
+NODE_VERSION=24.20.0
+BUF_VERSION=1.72.0
+STATICCHECK_VERSION=2026.1
+STATICCHECK_MODULE_VERSION=0.7.0
 INSTALL_DOCKER=${TGSRL_INSTALL_DOCKER:-0}
 INSTALL_TOOLKIT=${TGSRL_INSTALL_NVIDIA_TOOLKIT:-0}
 DOWNLOAD_DIR=${TGSRL_DOWNLOAD_DIR:-.cache/tgsrl/downloads}
@@ -65,7 +70,7 @@ fi
 "${SUDO[@]}" apt-get update
 "${SUDO[@]}" apt-get install -y \
   ca-certificates conntrack curl ebtables ethtool git gnupg ipset iptables jq make openssl \
-  python3 python3-pip python3-venv socat
+  python3 python3-pip python3-venv ruby socat xz-utils
 "${SUDO[@]}" modprobe overlay
 "${SUDO[@]}" modprobe br_netfilter
 printf '%s\n' overlay br_netfilter |
@@ -175,6 +180,54 @@ install_binary minikube "$MINIKUBE_VERSION" \
   "https://storage.googleapis.com/minikube/releases/${MINIKUBE_VERSION}/minikube-linux-amd64" \
   "https://storage.googleapis.com/minikube/releases/${MINIKUBE_VERSION}/minikube-linux-amd64.sha256"
 
+install_archive_from_digest() {
+  local name=$1 version=$2 canonical=$3 expected=$4 archive=$5
+  local actual
+  if [[ ! -f $archive ]] || [[ $(sha256sum "$archive" | awk '{print $1}') != "$expected" ]]; then
+    tgsrl_download "$canonical" "$archive"
+  fi
+  actual=$(sha256sum "$archive" | awk '{print $1}')
+  [[ $actual == "$expected" ]] || { rm -f "$archive"; echo "checksum verification failed for $name $version" >&2; return 1; }
+}
+
+go_archive="$DOWNLOAD_DIR/go${GO_VERSION}.linux-amd64.tar.gz"
+install_archive_from_digest go "$GO_VERSION" \
+  "https://dl.google.com/go/go${GO_VERSION}.linux-amd64.tar.gz" \
+  "1153d3d50e0ac764b447adfe05c2bcf08e889d42a02e0fe0259bd47f6733ad7f" "$go_archive"
+go_root="/opt/tgsrl/tools/go-${GO_VERSION}"
+if [[ ! -x $go_root/bin/go || $($go_root/bin/go version 2>/dev/null | awk '{print $3}') != "go${GO_VERSION}" ]]; then
+  go_extract=$(mktemp -d "${TMPDIR:-/tmp}/tgsrl-go.XXXXXX")
+  tar -C "$go_extract" -xzf "$go_archive"
+  "${SUDO[@]}" install -m 0755 -d /opt/tgsrl/tools
+  "${SUDO[@]}" rm -rf "$go_root"
+  "${SUDO[@]}" mv "$go_extract/go" "$go_root"
+  rm -rf "$go_extract"
+fi
+"${SUDO[@]}" ln -sfn "$go_root/bin/go" /usr/local/bin/go
+"${SUDO[@]}" ln -sfn "$go_root/bin/gofmt" /usr/local/bin/gofmt
+
+node_archive="$DOWNLOAD_DIR/node-v${NODE_VERSION}-linux-x64.tar.xz"
+install_archive_from_digest node "$NODE_VERSION" \
+  "https://nodejs.org/dist/v${NODE_VERSION}/node-v${NODE_VERSION}-linux-x64.tar.xz" \
+  "2f2c0da162318f0de47665410c7c8c2ed3d36c8f3105de4bbc61176c70a7cbf2" "$node_archive"
+node_root="/opt/tgsrl/tools/node-v${NODE_VERSION}"
+if [[ ! -x $node_root/bin/node || $($node_root/bin/node --version 2>/dev/null) != "v${NODE_VERSION}" ]]; then
+  node_extract=$(mktemp -d "${TMPDIR:-/tmp}/tgsrl-node.XXXXXX")
+  tar -C "$node_extract" --strip-components=1 -xJf "$node_archive"
+  "${SUDO[@]}" install -m 0755 -d /opt/tgsrl/tools
+  "${SUDO[@]}" rm -rf "$node_root"
+  "${SUDO[@]}" mv "$node_extract" "$node_root"
+fi
+for executable in node npm npx corepack; do
+  "${SUDO[@]}" ln -sfn "$node_root/bin/$executable" "/usr/local/bin/$executable"
+done
+
+buf_archive="$DOWNLOAD_DIR/buf-${BUF_VERSION}-linux-amd64"
+install_archive_from_digest buf "$BUF_VERSION" \
+  "https://github.com/bufbuild/buf/releases/download/v${BUF_VERSION}/buf-Linux-x86_64" \
+  "8720830e26a733da55bb89bcd3cb44849c0965fc0c44fb5d691cccdc64dca5af" "$buf_archive"
+"${SUDO[@]}" install -m 0755 "$buf_archive" /usr/local/bin/buf
+
 helm_archive="$DOWNLOAD_DIR/helm-${HELM_VERSION}-linux-amd64.tar.gz"
 tgsrl_download_verified helm "$HELM_VERSION" \
   "https://get.helm.sh/helm-${HELM_VERSION}-linux-amd64.tar.gz" \
@@ -198,11 +251,28 @@ uv_python_args=(python install "$PYTHON_VERSION")
   uv_python_args+=(--mirror "$TGSRL_UV_PYTHON_INSTALL_MIRROR")
 uv "${uv_python_args[@]}"
 uv sync --python "$PYTHON_VERSION" --frozen
+"${SUDO[@]}" env GOBIN=/usr/local/bin GOPROXY="${TGSRL_GOPROXY:-https://proxy.golang.org,direct}" \
+  /usr/local/bin/go install "honnef.co/go/tools/cmd/staticcheck@v${STATICCHECK_MODULE_VERSION}"
+go_mod_stage=$(mktemp -d "${TMPDIR:-/tmp}/tgsrl-go-mod.XXXXXX")
+cp go.mod go.sum "$go_mod_stage/"
+if ! (
+  cd "$go_mod_stage"
+  GOPROXY="${TGSRL_GOPROXY:-https://proxy.golang.org,direct}" /usr/local/bin/go mod download all
+); then
+  rm -rf "$go_mod_stage"
+  exit 1
+fi
+rm -rf "$go_mod_stage"
+npm --prefix console ci --registry "${TGSRL_NPM_REGISTRY:-https://registry.npmjs.org}"
 
 [[ $(kubectl version --client -o json | jq -r '.clientVersion.gitVersion') == "$KUBECTL_VERSION" ]] || { echo 'kubectl version verification failed' >&2; exit 1; }
 [[ $(minikube version --short) == "$MINIKUBE_VERSION" ]] || { echo 'minikube version verification failed' >&2; exit 1; }
 [[ $(helm version --short | sed 's/+.*//') == "$HELM_VERSION" ]] || { echo 'helm version verification failed' >&2; exit 1; }
 [[ $(uv --version | awk '{print $2}') == "$UV_VERSION" ]] || { echo 'uv version verification failed' >&2; exit 1; }
+[[ $(go version | awk '{print $3}') == "go${GO_VERSION}" ]] || { echo 'Go version verification failed' >&2; exit 1; }
+[[ $(node --version) == "v${NODE_VERSION}" ]] || { echo 'Node version verification failed' >&2; exit 1; }
+[[ $(buf --version) == "$BUF_VERSION" ]] || { echo 'Buf version verification failed' >&2; exit 1; }
+[[ $(staticcheck -version | awk '{print $2}') == "$STATICCHECK_VERSION" ]] || { echo 'staticcheck version verification failed' >&2; exit 1; }
 
 printf '%s\n' 'host tooling and locked Python dependencies are ready.'
 printf 'network profile: %s\n' "$TGSRL_NETWORK_PROFILE"

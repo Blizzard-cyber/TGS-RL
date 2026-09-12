@@ -52,12 +52,13 @@ def test_gpu_job_template_uses_current_canonical_contract_id() -> None:
     from google.protobuf import json_format
     from tgsrl.v1 import execution_pb2
 
-    from adapters.contracts import canonical_contract_id
+    from adapters.contracts import canonical_contract_id, validate_execution_contract
 
     job = json.loads((ROOT / "configs/hardware/verl-job.example.json").read_text(encoding="utf-8"))
     contract = execution_pb2.ExecutionContract()
     json_format.ParseDict(job["executionContract"], contract)
 
+    validate_execution_contract(contract)
     assert contract.contract_id == canonical_contract_id(contract)
 
 
@@ -68,6 +69,7 @@ def test_gpu_build_script_forwards_only_an_immutable_base_image() -> None:
     assert "TGSRL_GO_BASE_IMAGE" in text
     assert "TGSRL_DISTROLESS_BASE_IMAGE" in text
     assert "TGSRL_PYPI_INDEX_URL" in text
+    assert "TGSRL_PYTORCH_INDEX_URL" in text
     assert "@sha256:" in text
     assert 'args+=(--build-arg "$build_arg")' in text
     assert "TGSRL_IMAGE_PLATFORM=linux/amd64" in text
@@ -96,6 +98,13 @@ def test_gpu_workload_lock_matches_declared_direct_versions() -> None:
     dockerfile = (ROOT / "Dockerfile.gpu-smoke").read_text(encoding="utf-8")
     assert "https://download.pytorch.org/whl/cu130" in dockerfile
     assert "--only-binary=:all:" in dockerfile
+    assert "--no-binary=antlr4-python3-runtime" in dockerfile
+    assert "--mount=type=cache,target=/root/.cache/pip" in dockerfile
+    assert "--index-url ${TGSRL_PYTORCH_INDEX_URL}" in dockerfile
+    assert "--extra-index-url ${TGSRL_PYPI_INDEX_URL}" in dockerfile
+    assert dockerfile.index("ENV PYTHONPATH=") < dockerfile.index(
+        "from tgsrl.v1 import runtime_pb2"
+    )
     assert "--index-strategy" not in dockerfile
 
 
@@ -119,9 +128,7 @@ def test_gpu_shell_scripts_are_syntactically_valid() -> None:
 
 
 def test_gpu_network_profiles_keep_integrity_checks_and_are_explicit() -> None:
-    helper = (ROOT / "scripts" / "lib" / "network-profile.sh").read_text(
-        encoding="utf-8"
-    )
+    helper = (ROOT / "scripts" / "lib" / "network-profile.sh").read_text(encoding="utf-8")
     install = (ROOT / "scripts" / "gpu-install-host.sh").read_text(encoding="utf-8")
     create = (ROOT / "scripts" / "gpu-create-cluster.sh").read_text(encoding="utf-8")
     prepare = (ROOT / "scripts" / "gpu-prepare-cluster.sh").read_text(encoding="utf-8")
@@ -136,8 +143,18 @@ def test_gpu_network_profiles_keep_integrity_checks_and_are_explicit() -> None:
     assert "tgsrl_download_verified" in install
     assert "TGSRL_DOCKER_REGISTRY_MIRRORS" in install
     assert "TGSRL_UV_PYTHON_INSTALL_MIRROR" in install
-    assert 'uv_python_args+=(--mirror' in install
+    assert "uv_python_args+=(--mirror" in install
     assert "MIN_DRIVER_VERSION" in install
+    assert "python3 python3-pip python3-venv ruby socat xz-utils" in install
+    assert "GO_VERSION" in install and "NODE_VERSION" in install
+    assert "BUF_VERSION" in install and "STATICCHECK_VERSION" in install
+    assert "STATICCHECK_MODULE_VERSION=0.7.0" in install
+    assert "tgsrl-go-mod.XXXXXX" in install
+    assert "/usr/local/bin/go mod download all" in install
+    assert "npm --prefix console ci --registry" in install
+    assert "1153d3d50e0ac764b447adfe05c2bcf08e889d42a02e0fe0259bd47f6733ad7f" in install
+    assert "2f2c0da162318f0de47665410c7c8c2ed3d36c8f3105de4bbc61176c70a7cbf2" in install
+    assert "8720830e26a733da55bb89bcd3cb44849c0965fc0c44fb5d691cccdc64dca5af" in install
     assert "br_netfilter" in install
     assert "net.ipv4.ip_forward=1" in install
     assert "tgsrl_load_network_profile" in create
@@ -161,7 +178,7 @@ def test_gpu_network_profiles_keep_integrity_checks_and_are_explicit() -> None:
     assert "m.daocloud.io/gcr.io/distroless" in cn_profile
     assert "m.daocloud.io/docker.io/nvidia/cuda" in cn_profile
     assert "m.daocloud.io/gcr.io/k8s-minikube/kicbase" in cn_profile
-    assert 'TGSRL_MINIKUBE_IMAGE_REPOSITORY:=auto' in cn_profile
+    assert "TGSRL_MINIKUBE_IMAGE_REPOSITORY:=auto" in cn_profile
     assert "http://" not in cn_profile
 
     result = subprocess.run(
@@ -192,7 +209,7 @@ def test_gpu_network_profiles_keep_integrity_checks_and_are_explicit() -> None:
                 "TGSRL_NETWORK_PROFILE=cn; "
                 "source scripts/lib/network-profile.sh; "
                 "tgsrl_load_network_profile; "
-                "printf '%s\n' \"$TGSRL_GO_BASE_IMAGE\" \"$TGSRL_NPM_REGISTRY\""
+                'printf \'%s\n\' "$TGSRL_GO_BASE_IMAGE" "$TGSRL_NPM_REGISTRY"'
             ),
         ],
         check=True,
@@ -209,7 +226,10 @@ def test_gpu_network_profiles_keep_integrity_checks_and_are_explicit() -> None:
     gpu_dockerfile = (ROOT / "Dockerfile.gpu-smoke").read_text(encoding="utf-8")
     assert "x-tgsrl-build-args: &tgsrl-build-args" in compose
     assert "args: *tgsrl-build-args" in compose
-    assert "GOPROXY=\"${TGSRL_GOPROXY}\" go mod download" in local_dockerfile
+    assert 'GOPROXY="${TGSRL_GOPROXY}" go mod download' in local_dockerfile
+    assert "ENV UV_PROJECT_ENVIRONMENT=/opt/tgsrl/venv" in local_dockerfile
+    assert "ENV PATH=/opt/tgsrl/venv/bin:$PATH" in local_dockerfile
+    assert "/workspace/.venv" not in local_dockerfile
     assert "FROM ${TGSRL_DISTROLESS_BASE_IMAGE}" in bootstrap_dockerfile
     assert "TGSRL_PYPI_INDEX_URL" in gpu_dockerfile
 
@@ -219,6 +239,14 @@ def test_bootstrap_mount_does_not_shadow_gpu_workload() -> None:
 
     assert 'WorkerBootstrapMountPath  = "/var/run/tgsrl-bootstrap"' in source
     assert 'WorkerBootstrapMountPath  = "/opt/tgsrl"' not in source
+
+
+def test_gpu_compose_keeps_console_dependencies_from_the_image() -> None:
+    source = (ROOT / "compose.gpu.yaml").read_text(encoding="utf-8")
+    console = source.split("  console:", 1)[1]
+
+    assert "volumes: !override []" in console
+    assert "/workspace/console:ro" not in console
 
 
 def test_gpu_smoke_requires_e1_to_pass() -> None:
