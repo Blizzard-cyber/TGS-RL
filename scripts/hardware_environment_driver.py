@@ -965,6 +965,12 @@ class HardwareEnvironmentDriver:
                 )
             )
             run = cast(JsonObject, runs.get(state_key, {}))
+            if request_value["operation"] == "provision" and run.get("cleaned") is True:
+                run = {"attempt": int(run.get("attempt", 1)) + 1, "receipts": {}}
+                runs[state_key] = run
+            elif not run:
+                run = {"attempt": 1, "receipts": {}}
+                runs[state_key] = run
             request_digest = _canonical_digest(request_value)
             receipts = _mapping(run.get("receipts", {}), label="run receipts")
             request_id = str(request_value["request_id"])
@@ -978,14 +984,6 @@ class HardwareEnvironmentDriver:
                 # fresh directory must not claim files produced by an earlier call.
                 replayed.pop("artifacts", None)
                 return replayed
-            if request_value["operation"] == "provision" and run.get("cleaned") is True:
-                run = {"attempt": int(run.get("attempt", 1)) + 1, "receipts": {}}
-                runs[state_key] = run
-                receipts = cast(JsonObject, run["receipts"])
-            elif not run:
-                run = {"attempt": 1, "receipts": {}}
-                runs[state_key] = run
-                receipts = cast(JsonObject, run["receipts"])
             if request_value["operation"] == "provision":
                 expected_job_id = _job_id(request_value, int(run.get("attempt", 1)))
                 if run.get("job_id") not in {None, "", expected_job_id}:

@@ -62,6 +62,7 @@ class _GatewayState:
         self.marker = marker
         self.job_id = job_id
         self.requests: list[tuple[str, str]] = []
+        self.created_job_ids: list[str] = []
 
     @property
     def generation(self) -> int:
@@ -119,7 +120,12 @@ def _gateway_server(
                         }
                     }
                 )
-            elif path == f"/v1/jobs/{state.job_id}/runs":
+            elif (
+                path.startswith("/v1/jobs/")
+                and path.endswith("/runs")
+                and path.removeprefix("/v1/jobs/").removesuffix("/runs").strip("/")
+                in state.created_job_ids
+            ):
                 self._write(
                     {
                         "runs": [
@@ -166,9 +172,14 @@ def _gateway_server(
             body = json.loads(self.rfile.read(length) or b"{}")
             if self.path == "/v1/jobs":
                 assert body["dataKind"] == "DATA_KIND_LIVE"
-                assert body["jobId"] == state.job_id
-                self._write({"job": {"jobId": state.job_id}}, 201)
-            elif self.path == f"/v1/jobs/{state.job_id}/admit":
+                state.created_job_ids.append(body["jobId"])
+                self._write({"job": {"jobId": body["jobId"]}}, 201)
+            elif (
+                self.path.startswith("/v1/jobs/")
+                and self.path.endswith("/admit")
+                and self.path.removeprefix("/v1/jobs/").removesuffix("/admit").strip("/")
+                in state.created_job_ids
+            ):
                 self._write(
                     {
                         "operation": {
@@ -723,6 +734,33 @@ def test_driver_replays_receipt_without_repeating_side_effect(
     replay = cast(JsonObject, driver.execute(request, root / "replay" / "response.json"))
     assert replay == first
     assert state.requests.count(("POST", "/v1/jobs")) == create_count
+
+
+def test_driver_starts_new_attempt_after_completed_cleanup(
+    driver_environment: tuple[Any, _GatewayState, Path],
+) -> None:
+    driver, state, root = driver_environment
+    provision = _request("provision", 1)
+    first = _execute(driver, root, provision)
+    _execute(driver, root, _request("cleanup", 8))
+
+    replay_root = root / "second-attempt"
+    replay_root.mkdir()
+    second = cast(
+        JsonObject,
+        driver.execute(provision, replay_root / "response.json"),
+    )
+
+    assert first["status"] == second["status"] == "SUCCEEDED"
+    assert state.requests.count(("POST", "/v1/jobs")) == 2
+    assert state.created_job_ids == [
+        DRIVER._job_id(provision, 1),
+        DRIVER._job_id(provision, 2),
+    ]
+    persisted = json.loads((root / "state/state.json").read_text(encoding="utf-8"))
+    run = next(iter(persisted["runs"].values()))
+    assert run["attempt"] == 2
+    assert run["job_id"] == DRIVER._job_id(provision, 2)
 
 
 def test_driver_preflight_accepts_full_gpu_inventory(
