@@ -6,8 +6,8 @@
 本周期目标是**验证模块、执行链和工程交付是否完整**，不是毕业实验、性能收益或生产发布验收。
 
 已具备 Job → Runtime → Scheduler → Provider → Operator → bootstrap → worker → observation/Trace
-的实现路径。但不能判定“所有代码逻辑已完成”：独立安装包存在已修复的启动缺陷，通用 GPU
-Helm 接线、目标环境故障场景与完整训练 callbacks 仍需进一步验证/集成。
+的实现路径。本批进一步补齐 scoped lifecycle、真实 allocator 观测、A10 readiness 聚合和
+六服务 NVIDIA Helm 实装入口；目标 A10/Helm/GPU 故障证据与完整训练 callbacks 仍需测试机验证。
 
 审查以第一方代码和入口调用链为范围：Job Controller、Runtime/SQLite、Scheduler/事务/Provider、
 Operator/backend/registry、Gateway、Console 数据层、打包/部署与 Gate。生成协议和第三方依赖
@@ -38,15 +38,20 @@ Operator/backend/registry、Gateway、Console 数据层、打包/部署与 Gate�
 | worker 故障回写 | crash、注册响应丢失、marker 写失败、终态上报失败和 callback timeout 均有真实进程/通信回归 | bootstrap Go 测试 |
 | 单节点 NVIDIA Helm | NVIDIA Driver v2、helpers、共享 worker state、RuntimeClass、节点绑定和专用镜像 target 已接入并 fail closed 校验 | Helm render contract；待 GPU 集群实装 |
 | MPS 在线份额错误声明 | 生产 CLI 和 Helm 拒绝 MPS，backend 不再广告/执行在线 `set_share` | NVIDIA Provider/CLI 测试 |
+| scoped worker lifecycle | registry 允许 exact token/sandbox/generation 的 pause/sleep/offload/resume/stop；`bind` 仍由 Scheduler 权威执行 | Go registry/controller 与 driver contract |
+| A10 显存证据 | 最小 CUDA workload 保留 resident tensor；allocator bytes 经 worker/bootstrap/registry/driver 返回，Gate 要求 offload 下降、resume 回升 | Python/Go/Gate 专项；实机待执行 |
+| A10 总体验收 | 卡型硬校验、Full lifecycle、H2、恢复 DRA 后 E1、聚合摘要与旧证据归档 | shell/Gate contract；实机待执行 |
+| 故障 readiness | crash、response loss、receipt 重启、Operator partial failure、CPU/内存/GPU capacity 拒绝、provider unavailable、Runtime SQLite 恢复形成可重复报告 | `.cache/tgsrl/engineering-fault-readiness/report.json` 本机 PASSED |
+| Helm 实装入口 | 构建全部不可变镜像，生成 values，install/upgrade、健康检查、A10 Full、成功/失败证据索引 | Helm/shell contract；实装待执行 |
 
 ## 尚未关闭的工程事项
 
 | 项 | 源码/证据入口 | 影响与下一步 |
 |---|---|---|
-| 单节点 NVIDIA Helm 尚未实装验证 | `deploy/helm/tgsrl/`、`scheduler-nvidia` image target | 代码和 render 已闭合，需 GPU 集群构建镜像并验证 RuntimeClass、NVIDIA CLI、DRA/HAMi 和 NetworkPolicy |
+| 单节点 NVIDIA Helm 尚未实装验证 | `make gpu-render-helm-values`、`make gpu-helm-smoke` | 代码、镜像 targets、render 与证据归档已闭合，需 A10 集群验证 RuntimeClass、DRA、NetworkPolicy 和生命周期 |
 | MPS 节点级 realization 缺失 | `mps_backend.go` | 在线 `set_share` 已撤下；未来需要 checkpoint/recreate 新 client、启动限额注入与 incarnation readback |
-| 完整 veRL 生命周期未验收 | `adapters/frameworks/verl_runtime.py`、GPU workload | 真实包导入和最小 adapter CUDA 测试不覆盖完整 trainer、collective、checkpoint、offload/reload |
-| 真实 GPU 故障证据不足 | Operator、registry、Kubernetes backend | CPU 已覆盖 crash/timeout/响应丢失/组件重启/partial failure；仍需目标集群验证 Pod/节点/网络故障与清理 |
+| A10 lifecycle 与完整 veRL 未验收 | `make gpu-a10-full-readiness`、GPU workload | 最小 adapter 已能做真实 checkpoint/offload/reload 和 allocator 观测，仍需 A10 实机；完整 trainer/collective 另行验证 |
+| 真实 GPU 故障证据不足 | `make engineering-fault-readiness`、environment hooks | CPU/真实进程报告已覆盖 crash/timeout/响应丢失/组件重启/partial failure；Pod/容量/节点网络故障明确 `NOT_RUN` |
 | 大文件维护成本 | hardware driver、Gate tools、planner 等 | 后续新增功能前按职责拆分；本轮不为“缩行数”重写稳定状态机 |
 
 以上区分“已确认代码/部署缺口”和“缺少目标环境证据”。未在本轮复现的风险不写成确定故障，
@@ -112,7 +117,9 @@ adapter 产物，由真实静态/同源代理服务提供；Playwright 使用本
   正吞吐，不要求 0.95，也不能声称性能不退化或有收益。
 - evidence 为 CPU_INTEGRATION；即使工程规则通过，report 的 GPU 准入状态仍为 NOT_RUN。
 
-未执行：Docker 实际 build/pull、容器 Compose smoke、Helm 集群安装、GPU/ECS 复测。
+本批新增故障 readiness 报告在本机为 `PASSED`，证据级别是
+`CPU_REAL_PROCESS_AND_COMPONENT_INTEGRATION`；GPU fault 三项保持 `NOT_RUN`。
+未执行：Docker 实际 build/pull、容器 Compose smoke、Helm 集群安装、A10 lifecycle/H2/E1 复测。
 本机 daemon 不可达且本批禁止下载/构建镜像；Compose config/Helm render 不替代实装证据。
 
 ## 后续按工程依赖推进

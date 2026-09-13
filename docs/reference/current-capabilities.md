@@ -23,10 +23,10 @@
 | 性能回归门禁 | **支持（CI 回归）** | 独立非 race CI 检查 Scheduler 8 devices/100 units、1000 devices/1000 units 与 NVIDIA Provider observation apply 的 P95 预算 | 预算只约束固定 CPU fixture 的代码回退，不是生产 SLA、GPU 性能或训练收益证明 |
 | CPU Mock Provider | **支持** | 能力匹配、逻辑资源绑定、L1–L4 逻辑模拟动作、故障注入、generation fence 和逐动作 rollback | Adaptive Planner 会在满足观测、能力与安全条件时生成 L1–L4 动作；这些结果只验证控制逻辑，不代表真实硬件行为或性能 |
 | NVIDIA Provider（默认） | **有条件（Conditional）** | `LocalDriver` 可通过 `nvidia-smi` 形成设备快照 | 需要 NVIDIA 驱动和 `nvidia-smi`；默认不声明资源动作 |
-| NVIDIA Driver v2 | **Full GPU E1 已验证** | `auto` 按设备发布 Full GPU 或已有 MIG 子设备；显式 MPS/MIG；binding/runtime/MIG helper、Scheduler worker registry 和 workload bootstrap 的 generation fence、scoped registration、幂等 durable receipt、原子落盘、进程监管、PID 信号控制和 managed-worker lifecycle | E1 已在单节点 NVIDIA A10 上验证 Full GPU/DRA/CDI、真实 CUDA、注册、Trace 和清理；`auto` 与异构卡能力模型有 CPU 合同测试，MIG、MPS、offload/reload、完整训练与多节点仍待验证 |
+| NVIDIA Driver v2 | **Full GPU E1 已验证；lifecycle 待新实机证据** | `auto` 按设备发布 Full GPU 或已有 MIG 子设备；显式 MPS/MIG；binding/runtime/MIG helper、Scheduler worker registry 和 workload bootstrap 的 generation fence、scoped registration、幂等 durable receipt、原子落盘、进程监管、PID 信号控制和 managed-worker lifecycle | E1 已在单节点 NVIDIA A10 上验证 Full GPU/DRA/CDI、真实 CUDA、注册、Trace 和清理；新 `A10-FULL` 会校验 checkpoint、offload/reload/resume 与 allocator bytes，但尚未在新提交上执行。MIG、MPS、完整训练与多节点仍待验证 |
 | HAMi vGPU | **H1/H2 单节点已验证** | 从 `hami.io/node-nvidia-register` 建立物理 UUID inventory；把单卡分数份额投影为 `nvidia.com/gpu`、`gpucores`、`gpumem-percentage`、显式 `hami-scheduler` 与 `use-gpuuuid`；从 Pod allocation annotation 回读 UUID、显存 MiB 和 core 百分比 | NVIDIA A10 上 H1 `0.4 → 40% core + 9211 MiB` 与 H2 两个 `0.4` worker 同卡并发均已通过，并在恢复 Device Plugin 后复跑 E1；单 Binding 仍只支持一张物理 GPU、`hami-core`、同一份额约束 core/memory。OOM 隔离、公平性、干扰上界和动态改份额仍待验证 |
-| 外部 Runtime Adapter | **已实现，待完整训练验证** | veRL 已有第一方 lifecycle/observation bridge，以及面向 veRL 0.9 trainer/worker-group/checkpoint-manager 公共接口的 callback adapter；支持显式 safe-point hook、checkpoint、rollout abort/sleep/wake、actor/critic offload/reload、policy update、durable receipt 与 typed TraceEvent | H1/H2 workload 镜像已锁定并导入真实 `verl/ray/torch/vllm` 包，最小 adapter trainer 已完成真实 CUDA/Trace；完整 veRL trainer 生命周期、distributed collective、真实 checkpoint/offload/reload 和显存释放仍待验证；SGLang 与 OpenRLHF 仍只有通用 adapter 边界 |
-| Kubernetes Operator | **有条件支持** | 编译和调和 `JobRunBundle`、Kueue `Workload`、Kubernetes `Job`、可选 `ResourceClaimTemplate`/`RuntimeClass`；按每个 Binding 从有序 profile 中选择 DRA 或 HAMi；分别从 ResourceClaim/ResourceSlice 或 Pod HAMi annotation 回读实际 UUID；bootstrap 自动注册 PID/control endpoint，并用 Pod readiness 阻止提前发布 RUNNING；全栈 Helm chart 部署六个控制面服务 | DRA 支持整数个 Full GPU/MIG；HAMi 当前支持单 Binding 单物理卡 `(0,1]`，多个 Binding 可共享同一物理 UUID。两者均要求 exact UUID 与 managed worker；ResourceClaimTemplate/Job/Workload/JobRunBundle 为 namespaced 管理权限，生成的 ResourceClaim 只读；Full GPU DRA E1、HAMi H1/H2 已验证，MIG/MPS/混合 profile、HAMi 动态份额与故障隔离仍待验证；Kueue 和 GPU 管理组件由平台侧提供 |
+| 外部 Runtime Adapter | **已实现，待 A10 lifecycle 与完整训练验证** | veRL 已有第一方 lifecycle/observation bridge，以及面向 veRL 0.9 trainer/worker-group/checkpoint-manager 公共接口的 callback adapter；支持显式 safe-point hook、checkpoint、rollout abort/sleep/wake、actor/critic offload/reload、policy update、allocator bytes、durable receipt 与 typed TraceEvent | H1/H2 workload 镜像已锁定并导入真实 `verl/ray/torch/vllm` 包，最小 adapter trainer 已完成真实 CUDA/Trace；A10 lifecycle 场景与显存下降/恢复硬判定已有本地合同测试，但真实 GPU 结果仍为 `NOT_RUN`。完整 trainer、distributed collective 和真实模型 checkpoint 仍待验证 |
+| Kubernetes Operator | **有条件支持；NVIDIA Helm 待实装** | 编译和调和 `JobRunBundle`、Kueue `Workload`、Kubernetes `Job`、可选 `ResourceClaimTemplate`/`RuntimeClass`；按每个 Binding 从有序 profile 中选择 DRA 或 HAMi；分别从 ResourceClaim/ResourceSlice 或 Pod HAMi annotation 回读实际 UUID；bootstrap 自动注册 PID/control endpoint，并用 Pod readiness 阻止提前发布 RUNNING；全栈 Helm chart 部署六个控制面服务 | DRA 支持整数个 Full GPU/MIG；HAMi 当前支持单 Binding 单物理卡 `(0,1]`，多个 Binding 可共享同一物理 UUID。Full GPU DRA E1、HAMi H1/H2 已验证；六服务 NVIDIA Helm 已有不可变镜像/values/install/证据入口和 render contract，但真实集群结果仍为 `NOT_RUN`。MIG/MPS、HAMi 动态份额与故障隔离仍待验证 |
 | 其他加速器厂商 | **不支持（接口已预留）** | 通用 Proto 已有 `NPU`、`TPU`、`CUSTOM`，Scheduler 使用厂商中立 `Device`、`CompleteResourceProvider`、`CapabilitySet` 与工厂注册表 | 当前没有昇腾或其他厂商的 Provider、Operator realization adapter、worker identity verifier、依赖锁、假实现或硬件证据 |
 
 ## 单机方案
@@ -90,9 +90,11 @@ artifact 时，Operator 才把对应模块清单注入 bootstrap 并在启动前
 - 使用 managed-worker bootstrap 时，已发布的不可变 bootstrap 镜像、workload 可访问的 registry
   URL，以及同时挂载给 Operator/Scheduler 的至少 32 bytes HMAC signing key；Pod 只获得 scoped token。
 
-全栈 Helm 默认使用 CPU 配置，目前没有完整暴露 NVIDIA v2/helper/host-device/shared mount 接线；
-仅修改 Operator `gpuProfile` 不能切换为可用的 GPU 全栈。E1/H1/H2 使用专用 GPU smoke 部署，
-不替代 Helm 实装证据，详见[部署指南](../guides/deployment.md)。
+全栈 Helm 默认使用 CPU 配置；显式 `scheduler.nvidia.enabled=true` 时要求 NVIDIA
+RuntimeClass、同节点 selector、worker registry/bootstrap、设备验证和所有控制面镜像 digest。
+`make gpu-render-helm-values` 与 `make gpu-helm-smoke` 提供单节点实装和证据入口，但尚无本次
+提交的真实集群结果。E1/H1/H2 历史 smoke 不替代 Helm 实装证据，详见
+[部署指南](../guides/deployment.md)和 [A10 Readiness](../guides/a10-readiness.md)。
 
 Helm 默认将业务对象写权限限制在 namespace，并为 Node、RuntimeClass、DeviceClass、ResourceSlice
 discovery 提供只读 `list` 集群权限。只有在设置 `runtimeClassCreate=true` 时才授予
@@ -192,6 +194,11 @@ gate-tools/campaign/gate/scenario/executor/driver digest，拒绝旧 commit、�
 [E1 单节点 Full GPU 验证记录](../validation/e1-full-gpu-2026-09-12.md)。部署者需要从
 `configs/hardware/environment.example.json` 创建本地配置，并提供真实 workload 模板、trace
 导出命令与必要的 observation/fault hook；未配置的自适应动作会直接拒绝。
+
+独立 `A10-FULL` readiness 使用同一 executor，但 worker action 直接走 current
+JobRunBundle 中的 scoped registry token，且只允许一个 exact sandbox/generation。它要求
+offload/resume 动作前后存在权威 allocator bytes；`make gpu-a10-readiness` 再组合 H2 和
+DRA/E1 恢复回归。没有新提交的 GPU report 时仍为 `NOT_RUN`。
 
 HAMi 使用独立 H1/H2 campaign，不修改正式 E1–E8 顺序。`make gpu-prepare-hami` 在专用
 Minikube 上安装锁定 chart；`make gpu-hami-smoke` 验证单 worker 身份/份额，

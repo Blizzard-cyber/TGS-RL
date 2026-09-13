@@ -59,6 +59,12 @@ H1 结果写入 `.cache/tgsrl/hami-smoke/h1-hami-vgpu/`，H2 结果写入
 `.cache/tgsrl/hami-concurrency-smoke/h2-hami-concurrency/`。两者都是 realization smoke，
 不进入 E1–E8 release evaluation；H2 也不替代 E5 共置干扰、OOM/公平性或 E6 生命周期实验。
 
+A10 实验前 readiness 另有独立 `A10-FULL` campaign。它在 E1 已证明的 exact-device 主链上，
+通过 scoped registry 调用 cooperative worker，要求 checkpoint 存在，并把 PyTorch allocator 的
+allocated/reserved bytes 从 worker → bootstrap → registry → hardware driver → Gate 证据链
+带回。offload 后 allocated bytes 必须下降，resume 后必须回升；仅有状态布尔值不能通过。
+`make gpu-a10-readiness` 再组合 H2 与 DRA 恢复后的 E1，但不改变 E1–E8 发布矩阵。
+
 仓库提供 `scripts/tgsrl-hardware-environment-driver`。目标环境从
 `configs/hardware/environment.example.json` 派生本地配置，至少指定 Gateway URL、固定
 Kubernetes context/namespace、workload Job 模板和容器内 trace 导出命令。driver 的私有状态按
@@ -67,7 +73,8 @@ Kubernetes context/namespace、workload Job 模板和容器内 trace 导出命�
 
 仓库内 executor 固定读取各 scenario 的 `execution_plan`，并对每个 baseline/variant 的
 warmup/measurement iteration 依次执行 `provision`、`launch`、`verify_device_identity`、
-`apply_action`、`inject_fault`、`recover_fault`、`measure`、`stop` 和 `cleanup` 中声明的步骤。
+`apply_action`、`apply_worker_action`、`inject_fault`、`recover_fault`、`measure`、`stop` 和
+`cleanup` 中声明的步骤。
 失败后仍会单独执行 cleanup。目标集群只需要提供一个原子 environment driver；它接受：
 
 ```text
@@ -99,6 +106,9 @@ action/fault ID；response 必须使用 `tgsrl.io/hardware-driver-response/v1alp
   Full GPU/MIG 分别要求正确 DeviceClass；在 HAMi 模式下对账 Node registration、Pod
   `use-gpuuuid`、实际 allocation UUID/memory/core 与 worker 可见 UUID；
 - `measure` 执行配置中的容器内只读 trace 导出命令，只接收身份匹配的真实 worker NDJSON；
+- `apply_worker_action` 只接受当前 JobRunBundle 中一个 exact sandbox/generation，并使用
+  bootstrap 注入的 scoped token 调 registry；`bind` 仍只能走 Scheduler。A10 offload/resume
+  还要求动作前后真实 GPU allocator bytes；
 - `stop` 通过 Gateway lifecycle API；`cleanup` 仅删除该 run 的 JobRunBundle 及其精确命名的
   Job、Workload、ResourceClaimTemplate，不使用 label-wide 或 namespace-wide 删除；Pod 生成的
   ResourceClaim 由 owner 生命周期回收；逐一完成身份校验和子资源删除后，driver 移除本次

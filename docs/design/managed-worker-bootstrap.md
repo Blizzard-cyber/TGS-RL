@@ -111,7 +111,7 @@ Kubernetes 不在同一 generation 自动重启 workload；失败后由上层 re
 | 模式 | 启动/状态 | pause/resume | checkpoint/offload/reload | GPU 资源释放 |
 |---|---|---|---|---|
 | signal-only | 进程存活；可选 readiness marker | 仅在 safe-point marker 为真时 `SIGSTOP/SIGCONT` | 不支持，fail closed | 不保证；CUDA context/显存通常仍保留 |
-| cooperative socket | worker callback 的 status/readiness | worker 显式确认 safe point 和状态 | worker 显式确认并返回 checkpoint | 取决于真实 framework callback |
+| cooperative socket | worker callback 的 status/readiness | worker 显式确认 safe point 和状态 | worker 显式确认并返回 checkpoint | 可选回报 allocator bytes；A10 readiness 要求 offload 下降、resume 回升 |
 
 control request 使用幂等键。bootstrap 会缓存确定结果；连接断开且无法确认副作用时返回
 unknown outcome，由 runtime helper 的 durable receipt 在重启后通过 status 调和，不能盲目重放。
@@ -132,7 +132,9 @@ Trace/observation 路径可用，避免控制线程与训练线程在安全点�
 
 当前 CPU/模拟验证覆盖真实子进程启动、PID identity、scoped token、来源 IP、binding/
 generation fence、HTTP control、signal 转发、退出上报、旧 generation 清理保护、Operator
-Pod projection/readiness 和 durable runtime receipt。
+Pod projection/readiness 和 durable runtime receipt。`make engineering-fault-readiness` 会把
+crash、响应丢失、pending receipt 重启调和、Operator partial failure、Provider unavailable 和
+Runtime SQLite 恢复的实际测试结果写成独立报告。
 
 已归档的 E1 证明单节点 DRA/CDI 可见 UUID、注册、CUDA Trace 与清理；H1/H2 增加 HAMi
 份额兑现和双 worker 同卡并发。结果仅适用于各记录中的版本与环境，见
@@ -142,7 +144,8 @@ Pod projection/readiness 和 durable runtime receipt。
 
 - Pod restart、跨节点 endpoint、NetworkPolicy 与异常退出恢复；
 - MPS checkpoint/recreate 新 client、启动份额注入及 incarnation readback；
-- 完整 veRL trainer/collective/checkpoint/offload/reload 与真实显存释放；
+- A10 最小 trainer 的 checkpoint/offload/reload 与真实显存释放仍待新提交实机复测；
+- 完整 veRL trainer、distributed collective 和真实模型 checkpoint 仍待专门 workload；
 - MIG rebind、部分失败、超时和未知结果调和。
 
 bootstrap CLI 单独运行的 listener 默认值仍为 `50092`；Operator compiler 显式传动态端口，

@@ -120,6 +120,7 @@ flowchart LR
 不同时计入 MIG 父卡和子设备，也不创建或销毁 MIG 拓扑。
 
 - [NVIDIA / HAMi 使用指南](docs/guides/hami.md)
+- [NVIDIA A10 工程验收](docs/guides/a10-readiness.md)
 - [可插拔加速器设计](docs/design/accelerator-extension.md)
 - [完整支持矩阵与限制](docs/reference/current-capabilities.md)
 
@@ -151,10 +152,12 @@ API 和字段说明见[API、CLI 与 Console](docs/guides/api-and-console.md)。
 | 本机验证真实进程 | `make gate-cpu-integration` | 实际服务 API、bootstrap、Unix socket、pause/resume 回执与 Trace；不启动 Console |
 | 空白 NVIDIA 主机验证全链路 | [GPU Smoke 指南](docs/guides/gpu-smoke.md) | Full GPU、Kubernetes/DRA、CUDA worker、注册与清理 |
 | 验证同卡分数共享 | [HAMi 指南](docs/guides/hami.md) | H1 份额兑现与 H2 同卡并发 |
+| 毕业设计实验前做 A10 工程验收 | [A10 Readiness](docs/guides/a10-readiness.md) | Full lifecycle、显存释放/恢复、H2、DRA 回归、Helm 证据 |
 | 部署 Kubernetes 控制面 | [部署指南](docs/guides/deployment.md) | 六服务 Helm 的配置、依赖和部署边界 |
 
-**当前阶段是工程链路验证，不是毕业实验或生产发布。** E1/H1/H2 不证明完整 veRL trainer、
-distributed collective、checkpoint/offload 显存释放、MIG/MPS、多节点、强隔离或性能收益。
+**当前阶段是工程链路验证，不是毕业实验或生产发布。** A10 lifecycle/H2/Helm 的新入口仍需
+测试机执行；历史 E1/H1/H2 不证明完整 veRL trainer、distributed collective、
+checkpoint/offload 显存释放、MIG/MPS、多节点、强隔离或性能收益。
 历史证据各自绑定当时的源代码版本，不能自动覆盖后续修改。
 
 | 已归档的硬件验证 | 记录 |

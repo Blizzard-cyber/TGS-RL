@@ -31,8 +31,8 @@ flowchart TD
 | 工件 | 内含内容 | 不应携带 |
 |---|---|---|
 | `Dockerfile.local` | 锁定开发工具和依赖；Compose 挂载源码 | 测试结论、生产凭据 |
-| `Dockerfile.services` | Scheduler、Job Controller、Runtime、Gateway、Console targets | GPU 训练依赖、本机环境配置 |
-| `Dockerfile.operator` | Operator 可执行程序 | kubeconfig、签名主 key |
+| `Dockerfile.services` | Scheduler、NVIDIA Scheduler、Job Controller、Operator、Runtime、Gateway、Console targets | GPU 训练依赖、本机环境配置 |
+| `Dockerfile.operator` | 独立 Operator 构建入口 | kubeconfig、签名主 key |
 | `Dockerfile.worker-bootstrap` | bootstrap 与安装入口 | 训练模型、主机 PID 文件 |
 | `Dockerfile.gpu-smoke` | 锁定 veRL/Ray/PyTorch/vLLM/CUDA workload | 控制面私有状态 |
 | Python sdist/wheel | Runtime、Gateway、adapters、生成协议与 SQL 迁移 | 运行数据库、editable 环境和构建缓存 |
@@ -98,12 +98,26 @@ scripts/deploy-full-stack.sh rollback REVISION
 
 Chart 支持显式 `scheduler.nvidia.enabled=true` 的单 GPU 节点模式。当前 Provider 通过本地
 `nvidia-smi` 建 inventory，因此 Scheduler 和 managed workload 必须使用相同的 hostname selector。
-同时必须配置 NVIDIA RuntimeClass、不可变 `scheduler-nvidia` 镜像、worker registry/bootstrap、
+同时必须配置 NVIDIA RuntimeClass、所有控制面不可变镜像、worker registry/bootstrap、
 设备身份验证、NVIDIA compatibility manifest 以及 DRA/HAMi realization profile；缺一项 render 失败。
 
 `scheduler-nvidia` 使用 `Dockerfile.services --target scheduler-nvidia` 构建，基于锁定 NVIDIA CUDA
 镜像并包含 Scheduler 与三个 helper；GPU Runtime 在目标节点注入驱动库和 `nvidia-smi`。
-`scripts/gpu-build-images.sh` 会生成对应不可变引用。示例 values：
+`scripts/gpu-build-images.sh` 会生成所有对应不可变引用。专用 A10 测试机可直接运行：
+
+```bash
+make gpu-render-helm-values
+make gpu-helm-smoke
+```
+
+第一个命令检查 context、节点、pull secret 与镜像 digest，并创建 worker-registry Secret；
+第二个命令 install/upgrade 六服务、等待 rollout、检查 NetworkPolicy/Gateway/Console，
+执行 A10 Full lifecycle，并在 `.cache/tgsrl/helm-smoke/` 保存资源、日志和 SHA-256 索引。
+宿主机 driver 通过临时 Gateway/registry port-forward 访问集群服务，Pod 内仍使用 ClusterIP
+registry 与 scoped token。已有证据目录不会被覆盖。完整顺序见
+[A10 Readiness](a10-readiness.md)。
+
+手工 values 示例：
 
 ```yaml
 scheduler:
@@ -133,7 +147,7 @@ operator:
       verifyDeviceIdentities: true
 ```
 
-该模式仍需目标集群验证 RuntimeClass、DRA/HAMi、NetworkPolicy 和 GPU 驱动注入；已有 E1/H1/H2
+该模式仍需目标集群验证 RuntimeClass、DRA、NetworkPolicy 和 GPU 驱动注入；已有 E1/H1/H2
 使用专用 GPU smoke 部署，不是 Helm 实装证据。多节点需要独立的集群 inventory agent，当前
 不把一个本地 Scheduler 的 `nvidia-smi` 结果扩展成多节点能力。MPS 模式会被 chart 拒绝。
 

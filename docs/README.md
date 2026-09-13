@@ -13,6 +13,7 @@ TGS-RL 连接强化学习的任务控制、训练语义、资源调度与进程�
 | 在 Kubernetes 部署控制面 | [部署指南](guides/deployment.md) |
 | 在空白 NVIDIA 主机验证全链路 | [单机 GPU Smoke](guides/gpu-smoke.md) |
 | 使用 HAMi 兑现单卡分数份额 | [HAMi vGPU 接入](guides/hami.md) |
+| 执行实验前 A10 工程验收 | [A10 Readiness](guides/a10-readiness.md) |
 | 判断功能是否适合自己的环境 | [支持范围与限制](reference/current-capabilities.md) |
 
 ## 理解设计与实现

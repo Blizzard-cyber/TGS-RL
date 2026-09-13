@@ -309,6 +309,10 @@ H2 是并发共置 smoke，不是隔离或性能实验。它证明两个真实 C
 物理 GPU 的两个 HAMi 份额，并能被 TGS-RL 按独立 sandbox/binding 观测；它没有故意触发
 OOM，也没有为公平性、干扰率或吞吐收益设置统计门槛。
 
+在 NVIDIA A10 上做毕业设计实验前验收时，优先使用 `make gpu-a10-hami-readiness` 或
+完整的 `make gpu-a10-readiness`。它会先核对卡型，再复用同一 H2 合同，并在结束后恢复
+DRA；完整入口还会复跑 E1 和生成聚合摘要。详见 [A10 Readiness](a10-readiness.md)。
+
 测试完成后先停止控制面，再恢复 DRA 所需的原 NVIDIA Device Plugin：
 
 ```bash

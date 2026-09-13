@@ -175,4 +175,5 @@ Sandbox、Decision 和 allocation；组件恢复职责见[配置与恢复](guide
 - [系统设计](design/system-design.md)：理解职责、身份与状态模型。
 - [开发指南](maintainers/development.md)：从源码启动，执行真实子进程验证。
 - [GPU Smoke](guides/gpu-smoke.md)：在 NVIDIA 主机验证全链路。
+- [A10 Readiness](guides/a10-readiness.md)：在毕业设计实验前验证 lifecycle、共享、恢复与 Helm。
 - [部署指南](guides/deployment.md)：了解 Kubernetes/Helm 的实际前置条件。

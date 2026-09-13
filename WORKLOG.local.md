@@ -14,12 +14,11 @@
 
 ## 当前工作树与 CI
 
-- 本批起点：`4831ac041e71b93d3bb53a4765971445efc5e7be`，分支 `main`；本文件随本批实现一起提交。
+- 本批起点：`08b13313b95c82a86a19ef311db1976653d68ad7`，分支 `main`；本文件随本批实现一起提交。
 - 测试机复测前以实际拉取的 `git rev-parse HEAD` 为准，不要把起点 SHA 当作本批结果 SHA。
-- 基线 [CI run 34710517617](https://github.com/Blizzard-cyber/TGS-RL/actions/runs/34710517617)
-  为 **failure**：6 success、1 failure、3 skipped。Python 格式检查失败导致三个进程类 job 跳过。
-- 格式已在本地修正，但本地通过不等于远端绿色。获授权推送后逐项检查新 SHA 的所有适用 workflow/job
-  到终态；skipped/cancelled/running 都不是通过。不绕过 hooks，不加自动 `Co-authored-by` trailer。
+- 当前改动尚未推送或获得新 CI 结果。本地通过不等于远端绿色；获授权推送后逐项检查新 SHA
+  的所有适用 workflow/job 到终态，skipped/cancelled/running 都不是通过。不绕过 hooks，
+  不加自动 `Co-authored-by` trailer。
 
 ## 本批改动
 
@@ -35,6 +34,11 @@
 | 文档检查 | 未暂存删除文档不再导致扫描崩溃，失效链接仍报错 |
 | 可读性 | 失败上下文重命名、错误 registry 注释清理 |
 | 开源文档 | 首页精简，设计与源码导读分层，独立部署/审查记录，CPU 完整任务示例与 smoke 共用 |
+| scoped lifecycle | registry/driver 直接执行 exact worker offload/resume，保留 Scheduler bind 权威 |
+| A10 lifecycle | resident CUDA tensor、allocator bytes、checkpoint/offload/reload/resume 硬判定 |
+| A10 聚合 | 故障 readiness → Full lifecycle → H2 HAMi → DRA 恢复 → E1，生成总汇摘要 |
+| 故障 readiness | 真实进程/响应丢失/重启/partial failure 可重复报告；GPU fault 保持 NOT_RUN |
+| Helm 实装 | 全部不可变控制面镜像、values、install/upgrade、健康检查和证据索引 |
 
 详细发现与本批最终验证见 [工程审查](docs/maintainers/engineering-review.md)。
 稳定架构见 [系统设计](docs/design/system-design.md)，使用入口见 [快速上手](docs/getting-started.md)。
@@ -43,18 +47,18 @@
 
 1. 本批回归/干净副本六服务/真实 HTTP 前端已通过，下一步审查并按授权提交；细节见下节。
 2. 经授权推送并核对 CI，测试机拉取该精确 SHA；不要拿旧硬件结果冒充新版本验证。
-3. 新包/driver 先复跑 E1；共享路径相关改动再复跑 H1/H2，并检查失败与正常清理。
-4. CPU 已覆盖 worker crash、callback timeout/响应丢失、组件重启和 partial failure；GPU 机仍需验证 Pod/节点/网络故障。
-5. 完整 veRL trainer/collective/checkpoint/offload/reload 尚待目标 workload 验证；最小 adapter 不是完整训练。
-6. 单节点 NVIDIA Helm 代码/render 已完成，需在 GPU 集群构建 `scheduler-nvidia` 并验证 RuntimeClass、DRA/HAMi 与 NetworkPolicy。
-7. MPS 在线 `set_share` 已因 NVIDIA 语义不成立而撤下；未来需 checkpoint/recreate 新 client 的节点级 adapter。MIG 仅在具备实例的硬件上测。
-8. driver 条件删除和完整 provenance 已完成；新硬件证据必须包含 cluster/namespace UID、环境/模板/hook 摘要和 rendered Job。
+3. 测试机先执行 `make gpu-a10-readiness`；它会跑 Full lifecycle、H2 和恢复后的 E1。
+4. 再执行 `make gpu-render-helm-values`、`make gpu-helm-smoke` 验证六服务集群部署。
+5. `make engineering-fault-readiness` 已覆盖 worker crash、响应丢失、组件重启和 partial failure；GPU Pod/容量/节点网络故障仍为 NOT_RUN。
+6. 完整 veRL trainer/collective 仍待目标 workload；A10 最小 trainer 不能代表完整训练。
+7. MPS 在线 `set_share` 已因 NVIDIA 语义不成立而撤下；未来需 checkpoint/recreate 新 client 的节点级 adapter。A10 无 MIG，不为 E2 改拓扑。
+8. 新硬件证据必须包含 cluster/namespace UID、环境/模板/hook 摘要、rendered Job 和聚合摘要。
 
 后续实验标定、吞吐/干扰公平性、长期存储、HA 与入口安全另行排期，不把它们混作已完成能力。
 
 ## 本批本机验证
 
-- Python Runtime/Storage/Governance 492 passed，Gateway API 39 passed；Go 全模块/race、lint/staticcheck、性能门禁通过。
+- Python Runtime/Storage/Governance 515 passed，Gateway API 39 passed；Go 全模块/race、lint/staticcheck 通过。
 - Console 73 unit tests + build/typecheck/lint；17 项 mock 浏览器路由/响应式检查通过。
 - 产品 E2E 重启/恢复通过；生成协议、docs、部署、Compose config、SBOM/公开内容/仓库检查通过。
 - 干净源码副本新建独立 venv、重新构建 Go，六服务 smoke 四次操作成功、13 条 Trace、无 allocation 残留；
@@ -63,6 +67,7 @@
   吞吐比 0.7034，包含控制暂停开销；只证明正吞吐和控制链，不证明性能收益，GPU 状态仍 NOT_RUN。
 - 原始本机证据：`.cache/tgsrl/review-clean-7s7wkc0m/`、`.cache/tgsrl/review-20260913-process/`。
 - 本轮 CPU process Gate 证据：`.cache/tgsrl/final-engineering-process/`，三条工程规则通过，GPU 状态保持 `NOT_RUN`。
+- 本轮故障 readiness：`.cache/tgsrl/engineering-fault-readiness/report.json`，七类真实进程/组件检查通过；三类 GPU fault 为 `NOT_RUN`。
 - 本机 Python 为 3.12.13，BOM 为 3.12.14；没有 Docker 实装、Helm 实装或 GPU 复测，不夸大验证范围。
 
 ## 已有硬件证据（不可改写来源）
@@ -88,9 +93,9 @@ DRA 0.5.0、Minikube 1.38.1。**这是历史快照，复测先检查当前状态
 1. clone/pull 指定 clean commit，记录 `git rev-parse HEAD` 与 `git status --short`。
 2. 按 [GPU Smoke](docs/guides/gpu-smoke.md) 安装依赖/准备集群/镜像/凭据；已有资源先检查再复用。
    网络受限可 `export TGSRL_NETWORK_PROFILE=cn`。仅在明确需要时安装或构建，不重建已健康集群。
-3. 新批次先保留旧输出，再运行 `make gpu-preflight`、`make gpu-up`、`make gpu-smoke`。
-4. 检查 report 为 PASSED、身份一致、真实 CUDA Trace、worker 操作确认与资源回收，不只看退出码。
-5. HAMi 按 [HAMi 指南](docs/guides/hami.md) 执行 H1/H2，结束恢复 DRA，并再次核对 E1。
+3. 新批次使用 `make gpu-a10-readiness`；脚本会归档旧 A10/H2/E1 输出并执行完整顺序。
+4. 检查 `readiness-summary.json`、子 report、显存 before/after、真实 CUDA Trace 与资源回收。
+5. Helm 使用 `make gpu-render-helm-values`、`make gpu-helm-smoke`；旧 Helm 证据目录需先归档。
 6. 故障测试仅针对专用测试 Job/进程，记录故障注入、受影响对象、恢复过程和残留资源。
 7. 尚无硬件/接线的场景标 NOT_RUN/BLOCKED，不改 DataKind、阈值或校验逻辑强行通过。
 
@@ -101,6 +106,9 @@ DRA 0.5.0、Minikube 1.38.1。**这是历史快照，复测先检查当前状态
 - E1：`.cache/tgsrl/gpu-smoke/`
 - H1：`.cache/tgsrl/hami-smoke/`
 - H2：`.cache/tgsrl/hami-concurrency-smoke/`
+- A10 汇总：`.cache/tgsrl/a10-readiness/readiness-summary.json`
+- Helm：`.cache/tgsrl/helm-smoke/evidence-index.json`
+- 故障 readiness：`.cache/tgsrl/engineering-fault-readiness/report.json`
 
 每批复测前归档旧目录，不能覆盖原证据。提交给开发机的是**脱敏副本**：
 

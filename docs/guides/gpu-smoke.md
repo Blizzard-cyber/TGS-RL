@@ -157,8 +157,9 @@ make gpu-build-images
 make gpu-configure-registry
 ```
 
-`gpu-build-images` 只构建并推送 bootstrap 和 GPU smoke workload；六个控制面服务由
-`compose.yaml` 在宿主机本地构建。脚本把推送后的 immutable digest 写入
+`gpu-build-images` 构建并推送 bootstrap、GPU smoke workload 和 Helm 所需的六个控制面
+target（NVIDIA Scheduler、Runtime、Job Controller、Operator、Gateway、Console）。Compose
+仍可在宿主机本地构建同一控制面。脚本把推送后的 immutable digest 写入
 `.cache/tgsrl/gpu-images.env`。`gpu-configure-registry` 把专用 `DOCKER_CONFIG` 中的凭据
 复制为 namespace imagePullSecret；它不会读取或改写默认的 `~/.docker/config.json`。
 如果仓库确实允许匿名拉取，可以跳过该命令，并在预检前显式设置
@@ -272,7 +273,9 @@ make gpu-down
 
 ## 8. 首轮通过后的顺序
 
-E1 通过只证明全流程打通，不代表毕业实验结论成立。下一步按顺序执行：
+E1 通过后先执行 [A10 工程验收](a10-readiness.md)，确认 cooperative offload/resume、
+显存释放/恢复、HAMi H2、DRA 恢复和可选 Helm 六服务实装。它仍不代表毕业实验结论成立。
+工程验收通过后，实验矩阵按顺序执行：
 
 ```text
 E2 MIG identity
