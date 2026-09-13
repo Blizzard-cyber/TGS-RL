@@ -209,9 +209,10 @@ Scheduler 与 Runtime 默认使用镜像内的锁定配置图；`config.existing
 `"kubernetes-dra,hami-vgpu"`；引号用于保证 YAML 将逗号分隔值作为一个字符串传给
 Operator。Operator 启动日志会记录 profile 候选以及 discovery 选择的 Kueue 和 DRA API
 版本。若所有 GPU profile、Kueue API 或 RBAC 均不可用，
-启动前置检查会失败。该字段仅配置 Operator，不会自动接好 Scheduler 的 NVIDIA v2、helper、
-host GPU/PID 与共享挂载。通用 GPU Helm 集成仍需补齐，第一次实机验证请走
-[GPU Smoke](gpu-smoke.md)；各工件边界见[部署指南](deployment.md)。
+启动前置检查会失败。umbrella chart 的 `scheduler.nvidia` 可显式接入单 GPU 节点 Driver v2，
+要求 Scheduler/workload 相同节点选择器、NVIDIA RuntimeClass、不可变专用镜像、registry/bootstrap
+与身份验证。多节点 inventory 和 MPS 节点 PID 集成仍不在该模式内。第一次实机验证优先走
+[GPU Smoke](gpu-smoke.md)；完整 values 与边界见[部署指南](deployment.md)。
 
 仓库不假定已有公开镜像。先从当前源码构建默认镜像，并按集群运行时要求将其加载到
 目标集群或推送到你自己的镜像仓库：

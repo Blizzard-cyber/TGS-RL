@@ -44,18 +44,17 @@
 1. 本批回归/干净副本六服务/真实 HTTP 前端已通过，下一步审查并按授权提交；细节见下节。
 2. 经授权推送并核对 CI，测试机拉取该精确 SHA；不要拿旧硬件结果冒充新版本验证。
 3. 新包/driver 先复跑 E1；共享路径相关改动再复跑 H1/H2，并检查失败与正常清理。
-4. 补 worker 异常退出、callback timeout/响应丢失、Runtime/Operator 重启、partial failure 的真实证据。
-5. 完整 veRL trainer/collective/checkpoint/offload/reload 尚待验证；最小 adapter 不是完整训练。
-6. 通用 GPU Helm 未完整接 NVIDIA v2/helper/host-device/shared mount；默认 chart 是 CPU 配置。
-7. MPS 需验证 server/client 归属和运行中份额是否生效；MIG 仅在具备实例的硬件上测，不阻塞其他卡。
-8. driver cleanup 尚有 GET→DELETE 竞争窗口，需 UID/resourceVersion precondition；完整 provenance
-   还需固定环境配置、Job template、hook、rendered Job 和 cluster UID。
+4. CPU 已覆盖 worker crash、callback timeout/响应丢失、组件重启和 partial failure；GPU 机仍需验证 Pod/节点/网络故障。
+5. 完整 veRL trainer/collective/checkpoint/offload/reload 尚待目标 workload 验证；最小 adapter 不是完整训练。
+6. 单节点 NVIDIA Helm 代码/render 已完成，需在 GPU 集群构建 `scheduler-nvidia` 并验证 RuntimeClass、DRA/HAMi 与 NetworkPolicy。
+7. MPS 在线 `set_share` 已因 NVIDIA 语义不成立而撤下；未来需 checkpoint/recreate 新 client 的节点级 adapter。MIG 仅在具备实例的硬件上测。
+8. driver 条件删除和完整 provenance 已完成；新硬件证据必须包含 cluster/namespace UID、环境/模板/hook 摘要和 rendered Job。
 
 后续实验标定、吞吐/干扰公平性、长期存储、HA 与入口安全另行排期，不把它们混作已完成能力。
 
 ## 本批本机验证
 
-- Python 529 passed；Go 全模块/race、lint/staticcheck、性能门禁通过。
+- Python Runtime/Storage/Governance 492 passed，Gateway API 39 passed；Go 全模块/race、lint/staticcheck、性能门禁通过。
 - Console 73 unit tests + build/typecheck/lint；17 项 mock 浏览器路由/响应式检查通过。
 - 产品 E2E 重启/恢复通过；生成协议、docs、部署、Compose config、SBOM/公开内容/仓库检查通过。
 - 干净源码副本新建独立 venv、重新构建 Go，六服务 smoke 四次操作成功、13 条 Trace、无 allocation 残留；
@@ -63,6 +62,7 @@
 - CPU process Gate 8/8 执行；四源 Trace 和 worker pause/resume 确认；variant scheduling P95 60.611 ms。
   吞吐比 0.7034，包含控制暂停开销；只证明正吞吐和控制链，不证明性能收益，GPU 状态仍 NOT_RUN。
 - 原始本机证据：`.cache/tgsrl/review-clean-7s7wkc0m/`、`.cache/tgsrl/review-20260913-process/`。
+- 本轮 CPU process Gate 证据：`.cache/tgsrl/final-engineering-process/`，三条工程规则通过，GPU 状态保持 `NOT_RUN`。
 - 本机 Python 为 3.12.13，BOM 为 3.12.14；没有 Docker 实装、Helm 实装或 GPU 复测，不夸大验证范围。
 
 ## 已有硬件证据（不可改写来源）

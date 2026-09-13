@@ -141,7 +141,7 @@ Pod projection/readiness 和 durable runtime receipt。
 仍需目标环境验证：
 
 - Pod restart、跨节点 endpoint、NetworkPolicy 与异常退出恢复；
-- host MPS server PID、共享目录及份额是否影响目标 worker；
+- MPS checkpoint/recreate 新 client、启动份额注入及 incarnation readback；
 - 完整 veRL trainer/collective/checkpoint/offload/reload 与真实显存释放；
 - MIG rebind、部分失败、超时和未知结果调和。
 

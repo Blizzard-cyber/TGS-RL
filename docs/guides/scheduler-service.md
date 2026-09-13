@@ -24,7 +24,7 @@ go run ./scheduler-go/cmd/scheduler \
 | `-state-dir` | `.tmp/scheduler-state` | checkpoint 与 journal 目录 |
 | `-metrics-listen` | `127.0.0.1:9090` | Prometheus 地址；空字符串可禁用 |
 | `-nvidia-driver-v2` | `false` | 启用 NVIDIA Driver v2 |
-| `-nvidia-partition-mode` | `auto` | CLI 的 v2 分区模式：`auto`、`full`、`mps` 或 `mig`；`auto` 按设备能力发布 Full/MIG，且不启动 MPS |
+| `-nvidia-partition-mode` | `auto` | 生产 CLI 支持 `auto`、`full`、`mig`；`mps` 当前明确拒绝 |
 | `-nvidia-dry-run` | `false` | 只规划 NVIDIA mutation，不生成硬件证据 |
 | `-nvidia-command-timeout` | `15s` | 单次 helper 命令超时 |
 | `-nvidia-binding-helper` | `tgsrl-nvidia-binding` | binding helper 路径 |
@@ -224,8 +224,8 @@ resource/sandbox watch；执行 action 时先调用 Driver，再提交 Provider 
 command、事务、幂等、超时、回滚、重启发现、dry-run 和审计编排。仓库内
 Scheduler CLI 的默认分区模式是 `auto`，按物理卡实际状态发布资源：未启用 MIG 的设备
 发布整卡 UUID，已启用 MIG 的设备只发布已存在的 MIG 子设备；同一物理卡不会重复贡献容量，
-且不支持或未启用 MIG 的设备仍正常进入资源池。`auto` 不启动 MPS。需要强制整卡、动态份额
-或纯 MIG 时分别设置 `-nvidia-partition-mode=full|mps|mig`；显式 `full` 也会排除已经启用
+且不支持或未启用 MIG 的设备仍正常进入资源池。`auto` 不启动 MPS。需要强制整卡或纯 MIG
+时分别设置 `-nvidia-partition-mode=full|mig`；显式 `full` 也会排除已经启用
 MIG mode 的物理卡。仓库内
 `tgsrl-nvidia-binding` 提供 binding 状态、generation fence、幂等 durable receipt 和重启
 发现；它不直接修改已启动进程的 GPU 可见性，实际设备注入由 Kubernetes DRA/CDI 完成。
@@ -237,10 +237,10 @@ offload、reload 和 readiness 协议。仓库内 `tgsrl-nvidia-mig` 复用同�
 Full GPU backend 将每个物理 UUID 投影为 share=1 的整卡分区，不执行分区 mutation；为了让同一
 Intent 的 CPU/memory/storage/network 需求仍由 Kubernetes/节点层处理，NVIDIA 设备快照只约束
 加速卡维度，其他资源维度不作为单卡容量拒绝条件。库级 `NewLocalDriverV2` 在调用方未传
-partition mode 时仍保留 MPS 兼容默认；生产入口应始终显式选择模式。Provider 只会公开 helper
+partition mode 时同样默认 `auto`，不会隐式启动 MPS。Provider 只会公开 helper
 握手确认的 action；helper 缺失、协议不匹配或能力不完整时
-明确返回 unavailable。MPS 当前只公开带 active-thread percentage 读回校验的
-`set_share`；通用 `resize` 不作为 MPS 能力公开。MIG `rebind/recreate` helper 还必须显式
+明确返回 unavailable。生产 CLI 拒绝 `mps`：server-level percentage 只影响未来创建的 client，
+不能在线改变当前训练进程。MPS backend 因此不公开 `set_share`。MIG `rebind/recreate` helper 必须显式
 声明 safe-point、checkpoint、stop、restore、readiness、durable receipt、generation fence 和
 idempotency，才会公开对应 L4 action。`auto` 下这些 MIG 专属 action 只出现在 MIG 子设备，
 不会错误地出现在 Full GPU 设备上。仓库已有单节点 Full GPU E1、HAMi 单 worker H1 和
@@ -250,7 +250,7 @@ idempotency，才会公开对应 L4 action。`auto` 下这些 MIG 专属 action 
 使用 `make build-nvidia-binding` 构建 helper。Scheduler 的 `-nvidia-binding-helper` 指定
 可执行文件，`-nvidia-binding-state` 指定状态文件（默认在 `-state-dir` 下），
 `-nvidia-mps-pid-dir` 指向 Runtime 提供的 `<sandbox>.pid` 目录。helper 只在 PID 可验证存活时
-声明 `mps_profile_pid`；receipt 的 `committed=false` 表示步骤已执行但 Provider 尚未完成事务
+声明 `mps_profile_pid`，该事实不授权在线份额 mutation；receipt 的 `committed=false` 表示步骤已执行但 Provider 尚未完成事务
 提交，重启时由 PlanExecutor 依据 durable plan 和 action digest 调和后续步骤。
 binding 状态必须由实际启动进程或容器的执行层消费；仅写入 helper 状态不等于已经完成
 CUDA/container 级设备隔离。

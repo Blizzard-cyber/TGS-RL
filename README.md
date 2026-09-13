@@ -113,7 +113,7 @@ flowchart LR
 | 未启用 MIG 的物理 GPU | Full GPU + NVIDIA DRA，精确 UUID 分配 | 单节点 E1 已验证 |
 | 单物理卡分数份额 | HAMi vGPU，核对 UUID、core 与显存份额 | H1 单 worker、H2 双 worker 同卡并发已验证 |
 | 已启用 MIG 且预先创建的实例 | MIG UUID + `mig.nvidia.com` DeviceClass | 代码与 CPU 合同测试；待硬件验证 |
-| 显式 MPS 共享 | 节点侧 MPS PID、限额与回读 | 需要额外节点集成；待硬件验证 |
+| MPS 共享 | 当前不作为生产在线动作开放 | server-level percentage 只影响未来 client；需 checkpoint/recreate adapter |
 | 其他厂商加速器 | 通用 Device/Capability/Provider 工厂接口 | 仅扩展边界，没有假实现或支持承诺 |
 
 没有 MIG 的卡仍可使用整卡路径；满足部署条件时可使用 HAMi。默认 `auto` 不启动 MPS，

@@ -29,16 +29,24 @@ Operator/backend/registry、Gateway、Console 数据层、打包/部署与 Gate�
 | P2 | README 无可运行任务示例、设计与滚动审查混杂、bootstrap 端口/探针描述过时 | 文档分层；示例与 smoke 共用；更新动态端口与 marker probe | 文档链接/命令检查、实际服务 smoke |
 | P1 CI | 已推送基线 Python 格式检查失败，下游进程检查 skipped | 按已有 Ruff 规范整理，不削弱 CI | 本地 lint；需提交后确认新 SHA 的远端结果 |
 
+## 本轮进一步关闭的工程事项
+
+| 项 | 处理结果 | 验证 |
+|---|---|---|
+| hardware cleanup GET→DELETE 竞争 | 子资源和 Bundle 使用 UID/resourceVersion 条件删除；finalizer patch 使用 JSON Patch test | driver/Gate 专项测试 |
+| 硬件 provenance 不完整 | 锁定 cluster/namespace UID、Kubernetes 版本、environment、Job template、Trace command、hook executable 和 rendered Job | 73 项 Gate/driver 测试 |
+| worker 故障回写 | crash、注册响应丢失、marker 写失败、终态上报失败和 callback timeout 均有真实进程/通信回归 | bootstrap Go 测试 |
+| 单节点 NVIDIA Helm | NVIDIA Driver v2、helpers、共享 worker state、RuntimeClass、节点绑定和专用镜像 target 已接入并 fail closed 校验 | Helm render contract；待 GPU 集群实装 |
+| MPS 在线份额错误声明 | 生产 CLI 和 Helm 拒绝 MPS，backend 不再广告/执行在线 `set_share` | NVIDIA Provider/CLI 测试 |
+
 ## 尚未关闭的工程事项
 
 | 项 | 源码/证据入口 | 影响与下一步 |
 |---|---|---|
-| 通用 GPU Helm 接线不完整 | `deploy/helm/tgsrl/templates/scheduler.yaml`、`values.yaml` | 默认 CPU 配置，未完整暴露 NVIDIA v2/helper/host-device/shared mount；不能只改 gpuProfile 就承诺 GPU 全栈部署。先用已支持的 GPU smoke 路径 |
-| MPS 动态控制仍缺目标进程证据 | `scheduler-go/provider/nvidia/mps_backend.go`、bootstrap MPS PID 发现 | 回读 server percentage 不证明运行中的独立 worker 获得预期份额；需实机核对 server/client 归属和生效时机 |
+| 单节点 NVIDIA Helm 尚未实装验证 | `deploy/helm/tgsrl/`、`scheduler-nvidia` image target | 代码和 render 已闭合，需 GPU 集群构建镜像并验证 RuntimeClass、NVIDIA CLI、DRA/HAMi 和 NetworkPolicy |
+| MPS 节点级 realization 缺失 | `mps_backend.go` | 在线 `set_share` 已撤下；未来需要 checkpoint/recreate 新 client、启动限额注入与 incarnation readback |
 | 完整 veRL 生命周期未验收 | `adapters/frameworks/verl_runtime.py`、GPU workload | 真实包导入和最小 adapter CUDA 测试不覆盖完整 trainer、collective、checkpoint、offload/reload |
-| hardware cleanup 有 GET→DELETE 竞争窗口 | `scripts/hardware_environment_driver.py` cleanup | 已核对 ownership labels，但未把 UID/resourceVersion 作为 API delete precondition；多控制者环境应补条件删除 |
-| 硬件 provenance 仍不完整 | 同文件 preflight、配置与 hook 加载 | 尚未完整固定 environment config、Job template、hook 文件、rendered Job 和 cluster UID；不作为最终可复现实验基线 |
-| 真实故障与恢复覆盖不足 | Operator、registry、process/Kubernetes backend | 补 worker crash、callback timeout/响应丢失、组件重启、部分失败与清理证据；无 MIG 的机器不阻塞 Full/HAMi 路径 |
+| 真实 GPU 故障证据不足 | Operator、registry、Kubernetes backend | CPU 已覆盖 crash/timeout/响应丢失/组件重启/partial failure；仍需目标集群验证 Pod/节点/网络故障与清理 |
 | 大文件维护成本 | hardware driver、Gate tools、planner 等 | 后续新增功能前按职责拆分；本轮不为“缩行数”重写稳定状态机 |
 
 以上区分“已确认代码/部署缺口”和“缺少目标环境证据”。未在本轮复现的风险不写成确定故障，
@@ -67,7 +75,7 @@ SQL、锁文件和原始本机证据保留；`.cache`、依赖、数据库、私
 
 | 检查 | 结果 |
 |---|---|
-| Python Runtime/Storage/Governance/API | **529 passed**；文档整理期间的缺链接失败已在最终重跑关闭 |
+| Python Runtime/Storage/Governance | **492 passed**；Gateway API **39 passed** |
 | Go 模块与 race | 全部通过；MPS 零百分比 dry-run/执行前拒绝回归通过 |
 | 静态检查 | `make lint`、`make staticcheck` 通过；Ruff、mypy、Go vet/Buf lint |
 | 前端 | typecheck、ESLint、**73 unit tests**、production build 通过 |
@@ -76,7 +84,7 @@ SQL、锁文件和原始本机证据保留；`.cache`、依赖、数据库、私
 | CPU process Gate | 8/8 workload 执行，三条工程规则通过；GPU 发布状态仍是 NOT_RUN |
 | 配置与发布边界 | docs、repository、public-content、SBOM、compatibility、OpenAPI、两层 Helm、Compose config 通过 |
 | 生成协议 | `make check-generated` 通过 |
-| 性能回归 | Scheduler 小/大 fixture CPU P95 约 7.45/17.03 ms；Provider observation 6 µs，均在当前代码预算内；非 wall-clock SLA |
+| 性能回归 | 本轮 Scheduler 小/大 fixture CPU P95 中位数约 10.79/20.10 ms；Provider observation 6 µs，均在预算内；非 wall-clock SLA |
 
 ### 干净副本与真实 HTTP 前端
 
@@ -113,7 +121,7 @@ adapter 产物，由真实静态/同源代理服务提供；Playwright 使用本
 2. 经授权提交/推送后，检查**精确 SHA**所有适用 Actions；failure/skipped/cancelled 不视为通过。
 3. GPU 机拉取干净版本；打包/driver 变更先复跑 E1，涉及共享链路再复跑 H1/H2。
 4. 核对正常/异常退出、控制超时、重启恢复、UUID 与资源清理；脱敏结果提交到 `handoff/`。
-5. 分别补完整 trainer callbacks、MPS/可用 MIG 和通用 GPU Helm；未支持硬件标记 NOT_RUN。
+5. 在目标环境验证完整 trainer callbacks、单节点 NVIDIA Helm 和可用 MIG；MPS 节点 adapter 未实现，保持 NOT_RUN。
 6. 工程链路与证据稳定后，再讨论 E3–E8 标定、VUG/算法优化和毕业实验。
 
 历史 E1/H1/H2 报告继续引用原 commit，不重写 source hash，不把本地 CPU PASS 当作新的 GPU PASS。

@@ -29,7 +29,7 @@ NVIDIA Driver v2 增加 `auto` partition mode，并作为 Scheduler CLI 默认�
 - `MIGEnabled=true`：只发布已发现的 MIG UUID，不发布父卡整卡容量；
 - MIG helper 或 MIG inventory 不可用时，只影响对应 MIG 设备；其他非 MIG GPU 继续可用；
 - Full GPU 设备不声明 MIG 专属 capability 或 `rebind/recreate`；
-- `auto` 不启动 MPS；动态 MPS 仍是显式运维选择；
+- `auto` 不启动 MPS；生产入口拒绝无法证明会影响现有 client 的在线 MPS 份额 mutation；
 - 显式 `full` 也排除已启用 MIG mode 的物理卡。
 
 ### Operator 按 Binding 选择

@@ -79,7 +79,7 @@ Scheduler 还支持以下启动覆盖：
 | `-state-dir` | `.tmp/scheduler-state` | 持久化根目录 |
 | `-metrics-listen` | `127.0.0.1:9090` | Prometheus 地址；空字符串关闭 |
 | `-nvidia-driver-v2` | `false` | 启用可执行 NVIDIA Driver v2；未启用时 LocalDriver 只发现设备 |
-| `-nvidia-partition-mode` | `auto` | CLI 的 v2 模式：`auto`、`full`、`mps` 或 `mig`；`auto` 按每张卡的 MIG mode 发布 Full/MIG，且不启动 MPS |
+| `-nvidia-partition-mode` | `auto` | 生产 CLI 支持 `auto`、`full`、`mig`；`mps` 因不能在线改变已有 client 而 fail closed |
 | `-nvidia-dry-run` | `false` | 只生成/校验 NVIDIA 命令计划，不形成硬件通过证据 |
 | `-nvidia-command-timeout` | `15s` | 单次 NVIDIA helper 命令超时 |
 | `-nvidia-binding-helper` | `tgsrl-nvidia-binding` | binding helper 路径 |

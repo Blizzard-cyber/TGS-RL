@@ -104,22 +104,23 @@ discovery 提供只读 `list` 集群权限。只有在设置 `runtimeClassCreate
 Scheduler 可通过 `-nvidia-driver-v2` 选择 v2 编排。Scheduler CLI 默认使用不会启动 MPS 的
 `auto` 模式：未启用 MIG 的物理卡发布为 Full GPU；已启用 MIG 的卡只发布已有 MIG 子设备；
 同一物理卡不会同时贡献整卡与 MIG 容量。不支持或未启用 MIG 的设备因此仍可正常整卡调度。
-`full`、`mps`、`mig` 仍可显式选择；显式 `full` 会排除已启用 MIG mode 的卡，MPS 只在
-显式 `mps` 下启用。底层 Go 构造器为兼容既有嵌入调用仍保留 MPS 默认，生产入口应显式传值。
+`full`、`mig` 可显式选择。生产 CLI 当前拒绝 `mps`：NVIDIA server-level active-thread
+percentage 只影响之后创建的 MPS client，不能证明已经运行的训练进程份额发生变化。底层
+backend 只保留 daemon/既有 binding 发现，不公开在线 `set_share`；需要共享时使用已验证的 HAMi。
 
 启动后只有 helper 的 capability handshake、generation fencing、幂等与 durable receipt 条件
 全部满足时，Provider 才会公开对应 action。helper 缺失或协议不匹配时返回 unavailable，
 不会静默回退到模拟成功。`-nvidia-dry-run` 只验证命令计划，不能生成 GPU 通过证据。
-MPS `set_share` 必须在写入后读回实际 active-thread percentage，事务提交后才发布该字段的
-Sandbox observation；通用 `resize` 当前不由 MPS 暴露。MIG `rebind/recreate` 只有在 helper
+MPS 在线 `set_share` 当前 fail closed；未来只有在新增 checkpoint/recreate 新 client、启动时
+注入限额并对新 incarnation 回读验证后才可开放。MIG `rebind/recreate` 只有在 helper
 同时声明 safe-point、checkpoint、stop、restore 和 readiness 时才可用。
 
 仓库内 helper 可用 `make build-nvidia-binding` 构建到 `bin/tgsrl-nvidia-binding`。Scheduler
 通过 `-nvidia-binding-helper` 指定二进制，通过 `-nvidia-binding-state` 指定持久化文件；
 未指定时状态文件位于 `-state-dir` 下。bootstrap 可在显式配置 `TGSRL_NVIDIA_MPS_PID_DIR`、
 且容器能看到唯一宿主 MPS server PID 时维护 generation-fenced `<sandbox>.pid`；普通 Pod
-默认不具备该 PID 可见性。只有 PID identity 仍匹配时 helper 才声明 `mps_profile_pid`，从而允许 MPS
-`set_share`；binding receipt 只表示该步骤已落盘，Provider commit 仍由事务执行器完成。
+默认不具备该 PID 可见性。PID 记录仅保留为节点集成诊断信息，不授权在线 `set_share`；
+binding receipt 只表示该步骤已落盘，Provider commit 仍由事务执行器完成。
 helper 的持久化 binding 需要由创建进程或容器的执行层消费，不能用它替代 CUDA/container
 级设备隔离验证。
 

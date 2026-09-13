@@ -94,14 +94,48 @@ scripts/deploy-full-stack.sh rollback REVISION
 | `operator.controller.workerBootstrap` | 安装镜像、registry URL、签名 Secret 和设备验证 |
 | `networkPolicy.enabled` | chart 的基础网络约束；需结合 CNI/入口/Pod 网络验证 |
 
-### 当前不能承诺的 Helm GPU 路径
+### 单节点 NVIDIA Helm 模式
 
-默认 Scheduler 模板使用 `cpu-mock`，没有完整暴露 NVIDIA Driver v2 参数、host GPU 可见性、
-节点 helper 与 MPS PID 共享挂载。**仅把 `gpuProfile` 改成 DRA/HAMi，不会把整个 Helm 栈切成
-可用的 GPU 调度系统。** worker 反向控制还需可达的动态 endpoint 与适配后的网络策略。
+Chart 支持显式 `scheduler.nvidia.enabled=true` 的单 GPU 节点模式。当前 Provider 通过本地
+`nvidia-smi` 建 inventory，因此 Scheduler 和 managed workload 必须使用相同的 hostname selector。
+同时必须配置 NVIDIA RuntimeClass、不可变 `scheduler-nvidia` 镜像、worker registry/bootstrap、
+设备身份验证、NVIDIA compatibility manifest 以及 DRA/HAMi realization profile；缺一项 render 失败。
 
-已有 E1/H1/H2 使用的是专用 GPU smoke 部署路径，不是全栈 Helm 安装测试。首次 GPU 测试
-优先走已具备操作步骤的 GPU Smoke；通用 GPU Helm 安装仍属于后续工程集成项。
+`scheduler-nvidia` 使用 `Dockerfile.services --target scheduler-nvidia` 构建，基于锁定 NVIDIA CUDA
+镜像并包含 Scheduler 与三个 helper；GPU Runtime 在目标节点注入驱动库和 `nvidia-smi`。
+`scripts/gpu-build-images.sh` 会生成对应不可变引用。示例 values：
+
+```yaml
+scheduler:
+  manifest: compatibility/manifests/gpu-smoke-verl.yaml
+  workerRegistry:
+    enabled: true
+    signingKeySecret: tgsrl-worker-registry
+  nvidia:
+    enabled: true
+    image:
+      repository: registry.example.com/tgsrl/scheduler-nvidia
+      digest: sha256:replace-with-real-digest
+    partitionMode: auto
+    runtimeClassName: nvidia
+    nodeSelector:
+      kubernetes.io/hostname: gpu-node-a
+operator:
+  controller:
+    gpuProfile: kubernetes-dra
+    nodeSelector:
+      kubernetes.io/hostname: gpu-node-a
+    workerBootstrap:
+      enabled: true
+      installerImage: registry.example.com/tgsrl/worker-bootstrap@sha256:replace
+      registryURL: http://tgsrl-scheduler:50091
+      registrySigningKeySecret: tgsrl-worker-registry
+      verifyDeviceIdentities: true
+```
+
+该模式仍需目标集群验证 RuntimeClass、DRA/HAMi、NetworkPolicy 和 GPU 驱动注入；已有 E1/H1/H2
+使用专用 GPU smoke 部署，不是 Helm 实装证据。多节点需要独立的集群 inventory agent，当前
+不把一个本地 Scheduler 的 `nvidia-smi` 结果扩展成多节点能力。MPS 模式会被 chart 拒绝。
 
 ## 4. NVIDIA 首次链路验证
 

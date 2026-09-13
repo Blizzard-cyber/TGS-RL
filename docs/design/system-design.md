@@ -269,13 +269,12 @@ ResourceProvider 是硬件或基础设施能力边界。通用 Intent、Plan 和
   binding authority、generation fence、幂等 receipt 与重启发现；仓库内
   `tgsrl-nvidia-runtime` 负责本机进程信号控制与 managed-worker safe-point/checkpoint/offload/
   reload/readiness 协议；仓库内 `tgsrl-nvidia-mig` 在现有 MIG 实例之间执行完整 lifecycle
-  后的 rebind/recreate，并用 `nvidia-smi -L` 回读目标实例。MPS share 需可用 server PID 与
-  硬件读回后才形成 observation。当前 helper 不隐式创建或销毁 MIG 拓扑。
+  后的 rebind/recreate，并用 `nvidia-smi -L` 回读目标实例。MPS server percentage 只影响未来
+  client，生产入口不提供在线 `set_share`。当前 helper 不隐式创建或销毁 MIG 拓扑。
   Scheduler CLI 的 v2 默认 partition mode 是 `auto`：未启用 MIG 的卡形成 share=1 的整卡
   分区，已启用 MIG 的卡只发布已有 MIG 子设备，因此不支持或未启用 MIG 的设备不会退出资源池，
   同一物理卡也不会被整卡和 MIG 重复计量。Full GPU 设备不继承 MIG 专属动作。`full`、`mps`
-  和 `mig` 仍可显式选择，MPS 不会被 `auto` 隐式启动。底层 Go 构造器保留 MPS 兼容默认，
-  嵌入式调用方必须显式传入期望模式。
+  和 `mig` 仍可显式选择，MPS 不会被 `auto` 隐式启动。底层 Go 构造器也默认 `auto`。
   NVIDIA device 只对 accelerator 维度做容量约束；CPU、memory、storage 和 network 由后续
   Kubernetes/节点层调度，不能错误地拿单张 GPU 的属性拒绝整个 workload。
 

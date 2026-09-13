@@ -19,7 +19,7 @@ MIG 的设备仍应正常进入资源池：
 |---|---|---|
 | 独占一张物理卡 | Full GPU + NVIDIA DRA | 设备独占，UUID 可精确验证 |
 | 单卡分数算力与显存 | HAMi vGPU | 软件层共享，适合不支持 MIG 的卡 |
-| 动态修改 CUDA 计算份额 | NVIDIA MPS | 需要节点侧 MPS PID、共享目录和硬件读回 |
+| 在线修改现有 CUDA client 份额 | 当前不支持 | NVIDIA server-level MPS percentage 仅影响未来 client；需 checkpoint/recreate adapter 后才能安全开放 |
 | 硬件级切片 | MIG + NVIDIA DRA | 仅适用于支持 MIG 且已创建实例的设备 |
 
 TGS-RL 的统一模型是“每张卡独立声明能力”，而不是“整个集群只能选一种 GPU 模式”。
@@ -320,7 +320,7 @@ make gpu-restore-dra
 
 1. **HAMi 干扰与故障边界**：在 H2 同卡并发基础上测量公平性、干扰、OOM 与单 worker 失败；
 2. **HAMi 动态份额**：验证运行中修改 core/memory 份额及 readback；
-3. **MPS**：单独验证 server PID、active-thread percentage 写入/readback 和显存释放边界；
+3. **MPS**：未来实现 checkpoint/recreate 新 client 后，验证启动限额、incarnation readback 和显存边界；
 4. **MIG**：获得支持型号后再执行 E2，验证 DeviceClass、parent UUID 和 rebind。
 
 HAMi smoke 的原始输出仍应写入 `.cache/tgsrl/`，只将脱敏报告和必要日志放入 `handoff/`

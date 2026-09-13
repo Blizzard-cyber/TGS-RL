@@ -157,7 +157,7 @@ Provider 是厂商接口，不是第二个 Scheduler。工厂当前只注册 Moc
 | `driver_v2.go` | 能力握手、路由、互斥、审计与恢复 |
 | `binding_backend.go` | binding helper、持久回执 |
 | `runtime_backend.go` | 已注册 worker 生命周期 |
-| `mps_backend.go` | server PID 对应 percentage 写入与回读 |
+| `mps_backend.go` | MPS daemon 与既有 profile 发现；在线 share mutation fail closed |
 | `mig_backend.go` | 已有 MIG UUID 间 lifecycle/rebind |
 
 `auto` 逐卡发布 Full GPU 或已有 MIG 子设备，不重复计量、不启动 MPS。默认 LocalDriver 仅发现
