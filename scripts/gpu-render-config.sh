@@ -10,6 +10,9 @@ HOST_GATEWAY=${TGSRL_HOST_GATEWAY:-}
 KUBE_CONTEXT=${TGSRL_KUBE_CONTEXT:-$(kubectl config current-context)}
 NAMESPACE=${TGSRL_WORKLOAD_NAMESPACE:-tgsrl-system}
 RUNTIME_ENV=${TGSRL_GPU_RUNTIME_ENV:-.cache/tgsrl/gpu-runtime.env}
+GATEWAY_URL=${TGSRL_HARDWARE_GATEWAY_URL:-http://127.0.0.1:8080}
+WORKER_REGISTRY_URL=${TGSRL_HARDWARE_WORKER_REGISTRY_URL:-}
+DRIVER_STATE=${TGSRL_HARDWARE_DRIVER_STATE_DIR:-.cache/tgsrl/hardware-driver}
 
 [[ -f "$IMAGE_ENV" ]] || { echo "missing image output: $IMAGE_ENV; run make gpu-build-images" >&2; exit 1; }
 if [[ -z "$HOST_GATEWAY" ]]; then
@@ -27,31 +30,39 @@ set +a
 [[ "$GPU_SMOKE_IMAGE" == *@"$GPU_SMOKE_DIGEST" ]] || { echo 'GPU_SMOKE_IMAGE does not match GPU_SMOKE_DIGEST' >&2; exit 1; }
 [[ "$WORKER_BOOTSTRAP_IMAGE" =~ ^[^[:space:]@]+@sha256:[a-f0-9]{64}$ ]] || { echo 'WORKER_BOOTSTRAP_IMAGE is not immutable' >&2; exit 1; }
 
-mkdir -p "$(dirname "$OUTPUT")" "$(dirname "$RUNTIME_ENV")" .cache/tgsrl/hardware-driver
-TGSRL_GPU_RUNTIME_ENV=$RUNTIME_ENV WORKER_BOOTSTRAP_IMAGE=$WORKER_BOOTSTRAP_IMAGE python3 - "$OUTPUT" "$HOST_GATEWAY" "$KUBE_CONTEXT" "$NAMESPACE" "$GPU_SMOKE_IMAGE" "$GPU_SMOKE_DIGEST" <<'PY'
+mkdir -p "$(dirname "$OUTPUT")" "$(dirname "$RUNTIME_ENV")" "$DRIVER_STATE"
+TGSRL_GPU_RUNTIME_ENV=$RUNTIME_ENV WORKER_BOOTSTRAP_IMAGE=$WORKER_BOOTSTRAP_IMAGE python3 - "$OUTPUT" "$HOST_GATEWAY" "$KUBE_CONTEXT" "$NAMESPACE" "$GPU_SMOKE_IMAGE" "$GPU_SMOKE_DIGEST" "$GATEWAY_URL" "$WORKER_REGISTRY_URL" "$DRIVER_STATE" <<'PY'
 import json
 import sys
 from pathlib import Path
 
-output, host, context, namespace, image, digest = sys.argv[1:]
+output, host, context, namespace, image, digest, gateway_url, worker_registry_url, state_dir = sys.argv[1:]
+defaults = {
+    "gateway_url": gateway_url,
+    "namespace": namespace,
+    "kube_context": context,
+    "kubectl": "kubectl",
+    "job_template": str(Path("configs/hardware/verl-job.example.json").resolve()),
+    "trace_command": ["sh", "-c", "test -f /tmp/tgsrl/verl.ndjson && cat /tmp/tgsrl/verl.ndjson"],
+    "variables": {"WORKLOAD_IMAGE": image, "WORKLOAD_IMAGE_DIGEST": digest},
+    "operation_timeout_seconds": 1800,
+    "poll_interval_seconds": 2
+}
+if worker_registry_url:
+    defaults["worker_registry_url"] = worker_registry_url
 payload = {
     "schema_version": "tgsrl.io/hardware-environment/v1alpha1",
-    "state_directory": str(Path(".cache/tgsrl/hardware-driver").resolve()),
-    "defaults": {
-        "gateway_url": "http://127.0.0.1:8080",
-        "namespace": namespace,
-        "kube_context": context,
-        "kubectl": "kubectl",
-        "job_template": str(Path("configs/hardware/verl-job.example.json").resolve()),
-        "trace_command": ["sh", "-c", "test -f /tmp/tgsrl/verl.ndjson && cat /tmp/tgsrl/verl.ndjson"],
-        "variables": {"WORKLOAD_IMAGE": image, "WORKLOAD_IMAGE_DIGEST": digest},
-        "operation_timeout_seconds": 1800,
-        "poll_interval_seconds": 2
-    },
+    "state_directory": str(Path(state_dir).resolve()),
+    "defaults": defaults,
     "targets": {
         "E1": {
             "gpu_profile": "full-gpu",
             "execution_mode": "kubernetes-dra",
+        },
+        "A10-FULL": {
+            "gpu_profile": "full-gpu",
+            "execution_mode": "kubernetes-dra",
+            "job_template": str(Path("configs/hardware/verl-lifecycle-job.example.json").resolve()),
         },
         "H1": {
             "gpu_profile": "full-gpu",

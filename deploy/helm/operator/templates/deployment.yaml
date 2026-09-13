@@ -17,6 +17,10 @@ spec:
         app.kubernetes.io/part-of: tgsrl
     spec:
       serviceAccountName: {{ .Values.serviceAccount.name }}
+{{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+{{ toYaml . | indent 8 }}
+{{- end }}
       securityContext:
 {{ toYaml .Values.podSecurityContext | indent 8 }}
       containers:

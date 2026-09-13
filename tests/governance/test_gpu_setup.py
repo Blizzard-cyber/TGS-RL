@@ -54,6 +54,7 @@ def test_kueue_patch_preserves_existing_resources() -> None:
     "template",
     [
         "verl-job.example.json",
+        "verl-lifecycle-job.example.json",
         "hami-job.example.json",
         "hami-concurrency-job.example.json",
     ],
@@ -84,6 +85,15 @@ def test_gpu_build_script_forwards_only_an_immutable_base_image() -> None:
     assert 'args+=(--build-arg "$build_arg")' in text
     assert "TGSRL_IMAGE_PLATFORM=linux/amd64" in text
     assert "GPU evidence images require a clean checkout" in text
+    for target in (
+        "scheduler-nvidia",
+        "job-controller",
+        "operator",
+        "runtime",
+        "gateway",
+        "console",
+    ):
+        assert f"build_target {target}" in text
 
 
 def test_gpu_workload_lock_matches_declared_direct_versions() -> None:
@@ -244,6 +254,16 @@ def test_gpu_network_profiles_keep_integrity_checks_and_are_explicit() -> None:
     assert "/workspace/.venv" not in local_dockerfile
     assert "FROM ${TGSRL_DISTROLESS_BASE_IMAGE}" in bootstrap_dockerfile
     assert "TGSRL_PYPI_INDEX_URL" in gpu_dockerfile
+    services_dockerfile = (ROOT / "Dockerfile.services").read_text(encoding="utf-8")
+    for target in (
+        "scheduler-nvidia",
+        "job-controller",
+        "operator",
+        "runtime",
+        "gateway",
+        "console",
+    ):
+        assert f" AS {target}" in services_dockerfile
 
 
 def test_hami_smoke_installer_is_pinned_reversible_and_fail_closed() -> None:
@@ -296,6 +316,234 @@ def test_gpu_smoke_requires_e1_to_pass() -> None:
     assert "--experiment E1" in target
     assert 'select(.experiment_id == "E1")' in target
     assert '.status == "PASSED"' in target
+
+
+def test_a10_full_readiness_requires_lifecycle_campaign_to_pass() -> None:
+    makefile = (ROOT / "Makefile").read_text(encoding="utf-8")
+    target = makefile.split("gpu-a10-full-readiness:", 1)[1].split("\ngpu-a10-hami-readiness:", 1)[
+        0
+    ]
+
+    assert "--campaign configs/gates/a10-readiness.json" in target
+    assert "A10_READINESS_REPORTS ?= .cache/tgsrl/a10-readiness" in makefile
+    assert '--reports-dir "$(A10_READINESS_REPORTS)"' in target
+    assert "--experiment A10-FULL" in target
+    assert 'select(.experiment_id == "A10-FULL")' in target
+    assert '.status == "PASSED"' in target
+
+
+def test_a10_readiness_aggregates_full_hami_and_dra_restore() -> None:
+    makefile = (ROOT / "Makefile").read_text(encoding="utf-8")
+    target = makefile.split("gpu-a10-readiness:", 1)[1].split("\ngpu-helm-smoke:", 1)[0]
+    script = (ROOT / "scripts" / "gpu-a10-readiness.sh").read_text(encoding="utf-8")
+
+    assert "./scripts/gpu-a10-readiness.sh all" in target
+    assert 'name != "NVIDIA A10"' in script
+    assert "make engineering-fault-readiness" in script
+    assert "make gpu-a10-full-readiness" in script
+    assert "make gpu-hami-concurrency-smoke" in script
+    assert "make gpu-restore-dra" in script
+    assert "make gpu-smoke" in script
+    assert '"MIG: NVIDIA A10 does not expose a usable MIG topology"' in script
+
+
+@pytest.mark.parametrize(
+    ("name", "returncode"),
+    [("NVIDIA A10", 0), ("NVIDIA L4", 1)],
+)
+def test_a10_readiness_verifies_the_physical_gpu_model(
+    tmp_path: Path, name: str, returncode: int
+) -> None:
+    nvidia_smi = tmp_path / "nvidia-smi"
+    nvidia_smi.write_text(
+        f"#!/usr/bin/env bash\nprintf '%s\\n' 'GPU-a10, {name}, 580.178.04, 23028'\n",
+        encoding="utf-8",
+    )
+    nvidia_smi.chmod(0o755)
+    output = tmp_path / "evidence"
+    result = subprocess.run(
+        [str(ROOT / "scripts/gpu-a10-readiness.sh"), "verify"],
+        cwd=ROOT,
+        env={
+            **os.environ,
+            "PATH": f"{tmp_path}:{os.environ['PATH']}",
+            "TGSRL_A10_READINESS_DIR": str(output),
+        },
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == returncode
+    if returncode == 0:
+        evidence = json.loads((output / "host-gpu.json").read_text(encoding="utf-8"))
+        assert evidence["name"] == "NVIDIA A10"
+        assert evidence["memory_mib"] == 23028
+    else:
+        assert "requires NVIDIA A10" in result.stderr
+
+
+def test_gpu_render_config_supports_helm_port_forward_overrides(tmp_path: Path) -> None:
+    digest = "sha256:" + "a" * 64
+    image_env = tmp_path / "images.env"
+    image_env.write_text(
+        f"GPU_SMOKE_IMAGE=registry.example.test/gpu-smoke@{digest}\n"
+        f"GPU_SMOKE_DIGEST={digest}\n"
+        f"WORKER_BOOTSTRAP_IMAGE=registry.example.test/bootstrap@{digest}\n",
+        encoding="utf-8",
+    )
+    output = tmp_path / "environment.json"
+    runtime_env = tmp_path / "runtime.env"
+    state_dir = tmp_path / "driver-state"
+
+    subprocess.run(
+        [str(ROOT / "scripts/gpu-render-config.sh")],
+        cwd=ROOT,
+        env={
+            **os.environ,
+            "TGSRL_IMAGE_ENV_FILE": str(image_env),
+            "TGSRL_HARDWARE_DRIVER_CONFIG": str(output),
+            "TGSRL_GPU_RUNTIME_ENV": str(runtime_env),
+            "TGSRL_HOST_GATEWAY": "192.0.2.10",
+            "TGSRL_KUBE_CONTEXT": "test-context",
+            "TGSRL_HARDWARE_GATEWAY_URL": "http://127.0.0.1:18080",
+            "TGSRL_HARDWARE_WORKER_REGISTRY_URL": "http://127.0.0.1:15091",
+            "TGSRL_HARDWARE_DRIVER_STATE_DIR": str(state_dir),
+        },
+        text=True,
+        capture_output=True,
+        check=True,
+    )
+
+    rendered = json.loads(output.read_text(encoding="utf-8"))
+    assert rendered["state_directory"] == str(state_dir)
+    assert rendered["defaults"]["gateway_url"] == "http://127.0.0.1:18080"
+    assert rendered["defaults"]["worker_registry_url"] == "http://127.0.0.1:15091"
+    assert rendered["targets"]["A10-FULL"]["job_template"].endswith(
+        "configs/hardware/verl-lifecycle-job.example.json"
+    )
+
+
+def test_gpu_helm_smoke_builds_all_services_and_runs_a10_readiness() -> None:
+    build = (ROOT / "scripts" / "gpu-build-images.sh").read_text(encoding="utf-8")
+    render = (ROOT / "scripts" / "gpu-render-helm-values.sh").read_text(encoding="utf-8")
+    smoke = (ROOT / "scripts" / "gpu-helm-smoke.sh").read_text(encoding="utf-8")
+
+    for target in (
+        "scheduler-nvidia",
+        "job-controller",
+        "operator",
+        "runtime",
+        "gateway",
+        "console",
+    ):
+        assert f"build_target {target}" in build
+    assert "WORKER_BOOTSTRAP_IMAGE" in render
+    assert "TGSRL_KUBE_CONTEXT" in render and "TGSRL_KUBE_CONTEXT" in smoke
+    assert "scripts/deploy-full-stack.sh install" in smoke
+    assert "scripts/deploy-full-stack.sh upgrade" in smoke
+    assert "make gpu-a10-full-readiness" in smoke
+    assert 'A10_READINESS_REPORTS="$OUTPUT/a10-readiness"' in smoke
+    assert "TGSRL_HARDWARE_WORKER_REGISTRY_URL" in smoke
+    assert "TGSRL_HARDWARE_DRIVER_STATE_DIR" in smoke
+    assert "custom-columns=" in smoke
+    assert "deployment,service,pvc,networkpolicy" in smoke
+    assert "deployment,service,pod,pvc,networkpolicy" not in smoke
+
+
+def test_gpu_helm_values_renderer_produces_a_valid_immutable_chart(tmp_path: Path) -> None:
+    kubectl = tmp_path / "kubectl"
+    kubectl.write_text(
+        """#!/usr/bin/env bash
+set -eu
+case "$*" in
+  "config current-context")
+    printf '%s\\n' tgsrl-gpu
+    ;;
+  "get nodes -o json")
+    printf '%s\\n' '{"items":[{"metadata":{"name":"gpu-node-a"}}]}'
+    ;;
+  "get runtimeclass.node.k8s.io nvidia")
+    ;;
+  "create namespace tgsrl-system --dry-run=client -o yaml")
+    printf '%s\\n' 'apiVersion: v1' 'kind: Namespace' 'metadata: {name: tgsrl-system}'
+    ;;
+  "apply -f -")
+    cat >/dev/null
+    ;;
+  "-n tgsrl-system create secret generic tgsrl-worker-registry --from-file=signing-key="*)
+    printf '%s\\n' 'apiVersion: v1' 'kind: Secret' 'metadata: {name: tgsrl-worker-registry}'
+    ;;
+  "-n tgsrl-system get secret tgsrl-registry")
+    ;;
+  *)
+    printf 'unexpected kubectl args: %s\\n' "$*" >&2
+    exit 3
+    ;;
+esac
+""",
+        encoding="utf-8",
+    )
+    kubectl.chmod(0o755)
+    digest = "sha256:" + "a" * 64
+    image_env = tmp_path / "images.env"
+
+    def image_line(name: str) -> str:
+        repository = name.lower().replace("_image", "").replace("_", "-")
+        return f"{name}=registry.example.test/tgsrl/{repository}@{digest}\n"
+
+    image_env.write_text(
+        "".join(
+            image_line(name)
+            for name in (
+                "SCHEDULER_NVIDIA_IMAGE",
+                "JOB_CONTROLLER_IMAGE",
+                "OPERATOR_IMAGE",
+                "RUNTIME_IMAGE",
+                "GATEWAY_IMAGE",
+                "CONSOLE_IMAGE",
+                "WORKER_BOOTSTRAP_IMAGE",
+            )
+        ),
+        encoding="utf-8",
+    )
+    key = tmp_path / "worker-registry.key"
+    key.write_text("a" * 64 + "\n", encoding="utf-8")
+    values = tmp_path / "values.yaml"
+
+    subprocess.run(
+        [str(ROOT / "scripts/gpu-render-helm-values.sh")],
+        cwd=ROOT,
+        env={
+            **os.environ,
+            "PATH": f"{tmp_path}:{os.environ['PATH']}",
+            "TGSRL_IMAGE_ENV_FILE": str(image_env),
+            "TGSRL_GPU_HELM_VALUES": str(values),
+            "TGSRL_GPU_REGISTRY_KEY_FILE": str(key),
+        },
+        text=True,
+        capture_output=True,
+        check=True,
+    )
+    rendered = subprocess.run(
+        [str(ROOT / "scripts/deploy-full-stack.sh"), "render", str(values)],
+        cwd=ROOT,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert rendered.returncode == 0, rendered.stderr
+    for repository in (
+        "scheduler-nvidia",
+        "job-controller",
+        "operator",
+        "runtime",
+        "gateway",
+        "console",
+    ):
+        assert f"registry.example.test/tgsrl/{repository}@sha256:" in rendered.stdout
+    assert "name: tgsrl-registry" in rendered.stdout
 
 
 def test_hami_smoke_requires_h1_to_pass() -> None:

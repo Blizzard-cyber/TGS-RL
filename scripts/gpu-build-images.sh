@@ -10,9 +10,12 @@ REGISTRY=${TGSRL_IMAGE_REGISTRY:?set TGSRL_IMAGE_REGISTRY, for example localhost
 VERL_BASE_IMAGE=${TGSRL_VERL_BASE_IMAGE:-nvidia/cuda:13.0.2-devel-ubuntu24.04@sha256:5dc1bca23d05bd37b011be68ec470c03b403a5da07ec3a86e41af9470e9d0cc6}
 GO_BASE_IMAGE=${TGSRL_GO_BASE_IMAGE:-golang:1.26.4-bookworm@sha256:b305420a68d0f229d91eb3b3ed9e519fcf2cf5461da4bef997bf927e8c0bfd2b}
 DISTROLESS_BASE_IMAGE=${TGSRL_DISTROLESS_BASE_IMAGE:-gcr.io/distroless/static-debian12:nonroot@sha256:afa5c872c891853ca7fcf1f12c3edb23f7eeef36189728842dd51042ff57f7ab}
+PYTHON_BASE_IMAGE=${TGSRL_PYTHON_BASE_IMAGE:-python:3.12.14-slim-bookworm@sha256:0f5b26b9518d002b6173fd61daad821fa340635ebfec5bba471013f9ca114579}
+NODE_BASE_IMAGE=${TGSRL_NODE_BASE_IMAGE:-node:24.20.0-bookworm-slim@sha256:ba849c60be29959425b8734d57b8b4b7d56f98edd9504c9af091d5281095a71e}
 GOPROXY=${TGSRL_GOPROXY:-https://proxy.golang.org,direct}
 PYPI_INDEX_URL=${TGSRL_PYPI_INDEX_URL:-https://pypi.org/simple}
 PYTORCH_INDEX_URL=${TGSRL_PYTORCH_INDEX_URL:-https://download.pytorch.org/whl/cu130}
+NPM_REGISTRY=${TGSRL_NPM_REGISTRY:-https://registry.npmjs.org}
 VERSION=${TGSRL_IMAGE_VERSION:-$(git rev-parse --short=12 HEAD)}
 PLATFORM=${TGSRL_IMAGE_PLATFORM:-linux/amd64}
 PUSH=${TGSRL_PUSH_IMAGES:-1}
@@ -23,6 +26,8 @@ PUSH=${TGSRL_PUSH_IMAGES:-1}
 [[ "$VERL_BASE_IMAGE" =~ ^[^[:space:]@]+@sha256:[a-f0-9]{64}$ ]] || { echo 'TGSRL_VERL_BASE_IMAGE must be an immutable repository@sha256 reference' >&2; exit 2; }
 [[ "$GO_BASE_IMAGE" =~ ^[^[:space:]@]+@sha256:[a-f0-9]{64}$ ]] || { echo 'TGSRL_GO_BASE_IMAGE must be immutable' >&2; exit 2; }
 [[ "$DISTROLESS_BASE_IMAGE" =~ ^[^[:space:]@]+@sha256:[a-f0-9]{64}$ ]] || { echo 'TGSRL_DISTROLESS_BASE_IMAGE must be immutable' >&2; exit 2; }
+[[ "$PYTHON_BASE_IMAGE" =~ ^[^[:space:]@]+@sha256:[a-f0-9]{64}$ ]] || { echo 'TGSRL_PYTHON_BASE_IMAGE must be immutable' >&2; exit 2; }
+[[ "$NODE_BASE_IMAGE" =~ ^[^[:space:]@]+@sha256:[a-f0-9]{64}$ ]] || { echo 'TGSRL_NODE_BASE_IMAGE must be immutable' >&2; exit 2; }
 [[ "$VERSION" =~ ^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$ ]] || { echo 'TGSRL_IMAGE_VERSION is not a valid OCI tag' >&2; exit 2; }
 docker buildx version >/dev/null 2>&1 || { echo 'Docker Buildx is required' >&2; exit 1; }
 [[ -z $(git status --porcelain=v1 --untracked-files=all) ]] || { echo 'GPU evidence images require a clean checkout' >&2; exit 1; }
@@ -66,6 +71,9 @@ build_target() {
   printf '%s_IMAGE=%s@%s\n%s_DIGEST=%s\n' "$variable_name" "${REGISTRY}/${name}" "$digest" "$variable_name" "$digest"
 }
 
+# The workload image intentionally remains separate because it owns the large
+# CUDA/veRL dependency graph. Control-plane stages share one build graph.
+
 output=${TGSRL_IMAGE_ENV_FILE:-.cache/tgsrl/gpu-images.env}
 mkdir -p "$(dirname "$output")"
 temp=$(mktemp "${TMPDIR:-/tmp}/tgsrl-gpu-images.XXXXXX")
@@ -79,6 +87,26 @@ trap 'rm -f "$temp"' EXIT
     "TGSRL_GO_BASE_IMAGE=$GO_BASE_IMAGE" \
     "TGSRL_NVIDIA_BASE_IMAGE=$VERL_BASE_IMAGE" \
     "TGSRL_GOPROXY=$GOPROXY"
+  build_target job-controller Dockerfile.services job-controller \
+    "TGSRL_GO_BASE_IMAGE=$GO_BASE_IMAGE" \
+    "TGSRL_DISTROLESS_BASE_IMAGE=$DISTROLESS_BASE_IMAGE" \
+    "TGSRL_GOPROXY=$GOPROXY"
+  build_target operator Dockerfile.services operator \
+    "TGSRL_GO_BASE_IMAGE=$GO_BASE_IMAGE" \
+    "TGSRL_DISTROLESS_BASE_IMAGE=$DISTROLESS_BASE_IMAGE" \
+    "TGSRL_GOPROXY=$GOPROXY"
+  build_target runtime Dockerfile.services runtime \
+    "TGSRL_GO_BASE_IMAGE=$GO_BASE_IMAGE" \
+    "TGSRL_PYTHON_BASE_IMAGE=$PYTHON_BASE_IMAGE" \
+    "TGSRL_PYPI_INDEX_URL=$PYPI_INDEX_URL"
+  build_target gateway Dockerfile.services gateway \
+    "TGSRL_GO_BASE_IMAGE=$GO_BASE_IMAGE" \
+    "TGSRL_PYTHON_BASE_IMAGE=$PYTHON_BASE_IMAGE" \
+    "TGSRL_PYPI_INDEX_URL=$PYPI_INDEX_URL"
+  build_target console Dockerfile.services console \
+    "TGSRL_GO_BASE_IMAGE=$GO_BASE_IMAGE" \
+    "TGSRL_NODE_BASE_IMAGE=$NODE_BASE_IMAGE" \
+    "TGSRL_NPM_REGISTRY=$NPM_REGISTRY"
   build gpu-smoke Dockerfile.gpu-smoke \
     "TGSRL_VERL_BASE_IMAGE=$VERL_BASE_IMAGE" \
     "TGSRL_PYPI_INDEX_URL=$PYPI_INDEX_URL" \

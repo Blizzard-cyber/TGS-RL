@@ -3,6 +3,7 @@
   "state_directory": "/var/lib/tgsrl-hardware-driver",
   "defaults": {
     "gateway_url": "http://tgsrl-gateway.tgsrl.svc.cluster.local:8080",
+    "worker_registry_url": "",
     "namespace": "tgsrl-workloads",
     "kube_context": "tgsrl-validation",
     "kubectl": "kubectl",
@@ -30,6 +31,20 @@
           "${RESPONSE_PATH}"
         ]
       }
+    },
+    "A10-FULL": {
+      "gpu_profile": "full-gpu",
+      "job_template": "./verl-lifecycle-job.example.json"
+    },
+    "H1": {
+      "gpu_profile": "full-gpu",
+      "execution_mode": "hami-vgpu",
+      "job_template": "./hami-job.example.json"
+    },
+    "H2": {
+      "gpu_profile": "full-gpu",
+      "execution_mode": "hami-vgpu",
+      "job_template": "./hami-concurrency-job.example.json"
     }
   }
 }

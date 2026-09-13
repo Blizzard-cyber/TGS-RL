@@ -156,6 +156,11 @@ begin
     chart,
     "--set", "scheduler.nvidia.enabled=true",
     "--set-string", "scheduler.nvidia.image.digest=sha256:#{'c' * 64}",
+    "--set-string", "runtime.image.digest=sha256:#{'d' * 64}",
+    "--set-string", "jobController.image.digest=sha256:#{'e' * 64}",
+    "--set-string", "gateway.image.digest=sha256:#{'f' * 64}",
+    "--set-string", "console.image.digest=sha256:#{'1' * 64}",
+    "--set-string", "operator.image.digest=sha256:#{'2' * 64}",
     "--set", "scheduler.nvidia.partitionMode=auto",
     "--set", "scheduler.nvidia.runtimeClassName=nvidia",
     "--set-json", 'scheduler.nvidia.nodeSelector={"kubernetes.io/hostname":"gpu-node-a"}',
@@ -183,6 +188,38 @@ begin
   assert(gpu_env.include?({"name" => "NVIDIA_VISIBLE_DEVICES", "value" => "all"}), "NVIDIA Scheduler device visibility is not configured")
   gpu_operator_args = resource(gpu_docs, "Deployment", "tgsrl-operator").dig("spec", "template", "spec", "containers", 0, "args")
   assert(gpu_operator_args.include?("--node-selector=kubernetes.io/hostname=gpu-node-a"), "managed workloads must be pinned to the Scheduler inventory node")
+  missing_runtime_args = [
+    "--set", "scheduler.nvidia.enabled=true",
+    "--set-string", "scheduler.nvidia.image.digest=sha256:#{'c' * 64}",
+    "--set-string", "jobController.image.digest=sha256:#{'e' * 64}",
+    "--set-string", "gateway.image.digest=sha256:#{'f' * 64}",
+    "--set-string", "console.image.digest=sha256:#{'1' * 64}",
+    "--set-string", "operator.image.digest=sha256:#{'2' * 64}",
+    "--set", "scheduler.nvidia.runtimeClassName=nvidia",
+    "--set-json", 'scheduler.nvidia.nodeSelector={"kubernetes.io/hostname":"gpu-node-a"}',
+    "--set", "scheduler.workerRegistry.enabled=true",
+    "--set", "scheduler.workerRegistry.signingKeySecret=tgsrl-worker-registry",
+    "--set", "scheduler.manifest=compatibility/manifests/gpu-smoke-verl.yaml",
+    "--set", "operator.controller.gpuProfile=kubernetes-dra",
+    "--set-json", 'operator.controller.nodeSelector={"kubernetes.io/hostname":"gpu-node-a"}',
+    "--set", "operator.controller.workerBootstrap.enabled=true",
+    "--set", "operator.controller.workerBootstrap.installerImage=registry.example.test/tgsrl/bootstrap@sha256:#{'b' * 64}",
+    "--set", "operator.controller.workerBootstrap.registryURL=http://tgsrl-scheduler:50091",
+    "--set", "operator.controller.workerBootstrap.registrySigningKeySecret=tgsrl-worker-registry",
+    "--set", "operator.controller.workerBootstrap.verifyDeviceIdentities=true"
+  ]
+  failure, status = Open3.capture2e("helm", "template", "contract-test", chart, *missing_runtime_args)
+  assert(!status.success? && failure.include?("runtime.image.digest"), "NVIDIA Helm mode must require immutable control-plane images")
+
+  pull_secret_docs = render(
+    chart,
+    "--set", "global.imagePullSecrets[0].name=tgsrl-registry",
+    "--set", "operator.imagePullSecrets[0].name=tgsrl-registry"
+  )
+  EXPECTED_DEPLOYMENTS.each do |name|
+    pod_spec = resource(pull_secret_docs, "Deployment", name).dig("spec", "template", "spec")
+    assert(pod_spec["imagePullSecrets"] == [{"name" => "tgsrl-registry"}], "#{name} must use the configured pull secret")
+  end
 
   failure, status = Open3.capture2e("helm", "template", "contract-test", chart, "--set", "scheduler.workerRegistry.enabled=true")
   assert(!status.success? && failure.include?("signingKeySecret"), "registry render must fail when its signing-key Secret is missing")

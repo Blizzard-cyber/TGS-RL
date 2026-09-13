@@ -1,5 +1,8 @@
 ARG TGSRL_GO_BASE_IMAGE=golang:1.26.4-bookworm@sha256:b305420a68d0f229d91eb3b3ed9e519fcf2cf5461da4bef997bf927e8c0bfd2b
 ARG TGSRL_NVIDIA_BASE_IMAGE=nvidia/cuda:13.0.2-devel-ubuntu24.04@sha256:5dc1bca23d05bd37b011be68ec470c03b403a5da07ec3a86e41af9470e9d0cc6
+ARG TGSRL_PYTHON_BASE_IMAGE=python:3.12.14-slim-bookworm@sha256:0f5b26b9518d002b6173fd61daad821fa340635ebfec5bba471013f9ca114579
+ARG TGSRL_NODE_BASE_IMAGE=node:24.20.0-bookworm-slim@sha256:ba849c60be29959425b8734d57b8b4b7d56f98edd9504c9af091d5281095a71e
+ARG TGSRL_DISTROLESS_BASE_IMAGE=gcr.io/distroless/static-debian12:nonroot@sha256:afa5c872c891853ca7fcf1f12c3edb23f7eeef36189728842dd51042ff57f7ab
 FROM --platform=$BUILDPLATFORM ${TGSRL_GO_BASE_IMAGE} AS go-build
 
 ARG TARGETOS
@@ -13,6 +16,7 @@ COPY cmd ./cmd
 COPY gen/go ./gen/go
 COPY internal ./internal
 COPY job-controller-go ./job-controller-go
+COPY operator-go ./operator-go
 COPY scheduler-go ./scheduler-go
 COPY storage ./storage
 
@@ -21,13 +25,15 @@ RUN CGO_ENABLED=0 GOOS="${TARGETOS}" GOARCH="${TARGETARCH}" \
     CGO_ENABLED=0 GOOS="${TARGETOS}" GOARCH="${TARGETARCH}" \
     go build -trimpath -ldflags='-s -w' -o /out/tgsrl-job-controller ./job-controller-go/cmd/job-controller && \
     CGO_ENABLED=0 GOOS="${TARGETOS}" GOARCH="${TARGETARCH}" \
+    go build -trimpath -ldflags='-s -w' -o /out/tgsrl-operator ./cmd/operator && \
+    CGO_ENABLED=0 GOOS="${TARGETOS}" GOARCH="${TARGETARCH}" \
     go build -trimpath -ldflags='-s -w' -o /out/tgsrl-nvidia-binding ./cmd/tgsrl-nvidia-binding && \
     CGO_ENABLED=0 GOOS="${TARGETOS}" GOARCH="${TARGETARCH}" \
     go build -trimpath -ldflags='-s -w' -o /out/tgsrl-nvidia-runtime ./cmd/tgsrl-nvidia-runtime && \
     CGO_ENABLED=0 GOOS="${TARGETOS}" GOARCH="${TARGETARCH}" \
     go build -trimpath -ldflags='-s -w' -o /out/tgsrl-nvidia-mig ./cmd/tgsrl-nvidia-mig
 
-FROM gcr.io/distroless/static-debian12:nonroot@sha256:afa5c872c891853ca7fcf1f12c3edb23f7eeef36189728842dd51042ff57f7ab AS scheduler
+FROM ${TGSRL_DISTROLESS_BASE_IMAGE} AS scheduler
 LABEL org.opencontainers.image.licenses="Apache-2.0"
 COPY --from=go-build /out/tgsrl-scheduler /usr/local/bin/tgsrl-scheduler
 COPY --from=go-build /out/tgsrl-nvidia-binding /usr/local/bin/tgsrl-nvidia-binding
@@ -59,15 +65,22 @@ WORKDIR /opt/tgsrl/config
 USER 65532:65532
 ENTRYPOINT ["/usr/local/bin/tgsrl-scheduler"]
 
-FROM gcr.io/distroless/static-debian12:nonroot@sha256:afa5c872c891853ca7fcf1f12c3edb23f7eeef36189728842dd51042ff57f7ab AS job-controller
+FROM ${TGSRL_DISTROLESS_BASE_IMAGE} AS job-controller
 LABEL org.opencontainers.image.licenses="Apache-2.0"
 COPY --from=go-build /out/tgsrl-job-controller /usr/local/bin/tgsrl-job-controller
 COPY LICENSE /licenses/TGS-RL/LICENSE
 ENTRYPOINT ["/usr/local/bin/tgsrl-job-controller"]
 
-FROM python:3.12.14-slim-bookworm@sha256:0f5b26b9518d002b6173fd61daad821fa340635ebfec5bba471013f9ca114579 AS python-build
+FROM ${TGSRL_DISTROLESS_BASE_IMAGE} AS operator
+LABEL org.opencontainers.image.licenses="Apache-2.0"
+COPY --from=go-build /out/tgsrl-operator /usr/local/bin/tgsrl-operator
+COPY LICENSE /licenses/TGS-RL/LICENSE
+ENTRYPOINT ["/usr/local/bin/tgsrl-operator"]
+
+FROM ${TGSRL_PYTHON_BASE_IMAGE} AS python-build
 ARG UV_VERSION=0.12.7
-RUN python -m pip install --disable-pip-version-check --no-cache-dir "uv==${UV_VERSION}"
+ARG TGSRL_PYPI_INDEX_URL=https://pypi.org/simple
+RUN python -m pip install --index-url "${TGSRL_PYPI_INDEX_URL}" --disable-pip-version-check --no-cache-dir "uv==${UV_VERSION}"
 ENV UV_PROJECT_ENVIRONMENT=/opt/tgsrl/venv
 WORKDIR /src
 COPY pyproject.toml uv.lock README.md LICENSE ./
@@ -75,14 +88,14 @@ COPY adapters ./adapters
 COPY gateway-python ./gateway-python
 COPY gen/python ./gen/python
 COPY runtime-python ./runtime-python
-RUN uv sync --frozen --no-dev --no-editable
+RUN UV_DEFAULT_INDEX="${TGSRL_PYPI_INDEX_URL}" uv sync --frozen --no-dev --no-editable
 
-FROM python:3.12.14-slim-bookworm@sha256:0f5b26b9518d002b6173fd61daad821fa340635ebfec5bba471013f9ca114579 AS runtime
+FROM ${TGSRL_PYTHON_BASE_IMAGE} AS runtime
 LABEL org.opencontainers.image.licenses="Apache-2.0"
 ENV PATH=/opt/tgsrl/venv/bin:$PATH \
     PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1
-COPY --from=python-build /opt/tgsrl/venv /opt/tgsrl/venv
+COPY --from=python-build --chown=65532:65532 /opt/tgsrl/venv /opt/tgsrl/venv
 COPY compatibility /opt/tgsrl/config/compatibility
 COPY configs /opt/tgsrl/config/configs
 COPY upstream /opt/tgsrl/config/upstream
@@ -91,32 +104,33 @@ WORKDIR /opt/tgsrl/config
 USER 65532:65532
 ENTRYPOINT ["tgsrl-runtime"]
 
-FROM python:3.12.14-slim-bookworm@sha256:0f5b26b9518d002b6173fd61daad821fa340635ebfec5bba471013f9ca114579 AS gateway
+FROM ${TGSRL_PYTHON_BASE_IMAGE} AS gateway
 LABEL org.opencontainers.image.licenses="Apache-2.0"
 ENV PATH=/opt/tgsrl/venv/bin:$PATH \
     PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1
-COPY --from=python-build /opt/tgsrl/venv /opt/tgsrl/venv
+COPY --from=python-build --chown=65532:65532 /opt/tgsrl/venv /opt/tgsrl/venv
 COPY LICENSE /licenses/TGS-RL/LICENSE
 WORKDIR /opt/tgsrl
 USER 65532:65532
 ENTRYPOINT ["tgsrl-gateway", "serve"]
 
-FROM --platform=$BUILDPLATFORM node:24.20.0-bookworm-slim@sha256:ba849c60be29959425b8734d57b8b4b7d56f98edd9504c9af091d5281095a71e AS console-build
+FROM --platform=$BUILDPLATFORM ${TGSRL_NODE_BASE_IMAGE} AS console-build
 WORKDIR /src/console
+ARG TGSRL_NPM_REGISTRY=https://registry.npmjs.org
 COPY console/package.json console/package-lock.json ./
-RUN npm ci
+RUN npm ci --registry "${TGSRL_NPM_REGISTRY}"
 COPY console ./
 RUN npm run build
 
-FROM node:24.20.0-bookworm-slim@sha256:ba849c60be29959425b8734d57b8b4b7d56f98edd9504c9af091d5281095a71e AS console
+FROM ${TGSRL_NODE_BASE_IMAGE} AS console
 LABEL org.opencontainers.image.licenses="Apache-2.0"
 ENV HOST=0.0.0.0 \
     PORT=8080 \
     TGSRL_GATEWAY_URL=http://tgsrl-gateway:8080
 WORKDIR /opt/tgsrl/console
-COPY --from=console-build /src/console/dist ./dist
-COPY console/server.mjs ./server.mjs
+COPY --from=console-build --chown=65532:65532 /src/console/dist ./dist
+COPY --chown=65532:65532 console/server.mjs ./server.mjs
 COPY LICENSE /licenses/TGS-RL/LICENSE
 USER 65532:65532
 EXPOSE 8080

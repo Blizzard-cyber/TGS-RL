@@ -38,4 +38,10 @@
 {{- if eq .Values.scheduler.manifest "compatibility/manifests/cpu-mock.yaml" -}}
 {{- fail "scheduler.nvidia.enabled requires an NVIDIA compatibility manifest" -}}
 {{- end -}}
+{{- $immutableImages := dict "runtime.image" .Values.runtime.image "jobController.image" .Values.jobController.image "gateway.image" .Values.gateway.image "console.image" .Values.console.image "operator.image" .Values.operator.image -}}
+{{- range $name, $image := $immutableImages -}}
+{{- if not $image.digest -}}
+{{- fail (printf "scheduler.nvidia.enabled requires immutable %s.digest" $name) -}}
+{{- end -}}
+{{- end -}}
 {{- end -}}

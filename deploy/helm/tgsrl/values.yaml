@@ -116,6 +116,7 @@ networkPolicy:
   enabled: true
 
 operator:
+  imagePullSecrets: []
   image:
     repository: tgsrl-operator
     tag: "0.1.0"

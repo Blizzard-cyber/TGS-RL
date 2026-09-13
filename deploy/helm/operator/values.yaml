@@ -6,6 +6,8 @@ image:
   digest: ""
   pullPolicy: IfNotPresent
 
+imagePullSecrets: []
+
 podSecurityContext:
   runAsNonRoot: true
   runAsUser: 65532

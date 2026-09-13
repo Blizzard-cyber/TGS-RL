@@ -18,6 +18,10 @@ required_files=(
   compatibility/sbom/lockfiles.spdx.json
   configs/hardware/environment.example.json
   configs/hardware/verl-job.example.json
+  configs/hardware/verl-lifecycle-job.example.json
+  configs/gates/a10-readiness.json
+  configs/gates/gate-a10-readiness.json
+  configs/scenarios/a10-full-lifecycle.yaml
   configs/hardware/gpu-requirements.in
   configs/hardware/gpu-requirements.lock
   configs/network/cn.env
@@ -25,6 +29,10 @@ required_files=(
   Dockerfile.gpu-smoke
   scripts/check-docs.py
   scripts/gpu-configure-registry.sh
+  scripts/gpu-a10-readiness.sh
+  scripts/engineering-fault-readiness.py
+  scripts/gpu-render-helm-values.sh
+  scripts/gpu-helm-smoke.sh
   scripts/lib/network-profile.sh
   README.md
   LICENSE
@@ -65,7 +73,7 @@ grep -Fqx '!LICENSE' .dockerignore ||
 distributable_stages=(
   "Dockerfile.local:3"
   "Dockerfile.operator:1"
-  "Dockerfile.services:6"
+  "Dockerfile.services:7"
   "Dockerfile.worker-bootstrap:1"
   "Dockerfile.gpu-smoke:1"
 )
