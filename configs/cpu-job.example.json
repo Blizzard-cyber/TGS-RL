@@ -1,0 +1,83 @@
+{
+  "displayName": "本机示例任务",
+  "protocolVersion": "v0.3",
+  "createdAt": "2026-01-01T00:00:00Z",
+  "algorithm": "grpo",
+  "runtime": {
+    "framework": "fake",
+    "frameworkVersion": "1.0.0",
+    "executionBackend": "fake",
+    "executionBackendVersion": "1.0.0",
+    "trainer": "fake",
+    "trainerVersion": "1.0.0",
+    "rolloutEngine": "fake",
+    "rolloutEngineVersion": "1.0.0",
+    "imageDigest": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+    "compatibilityProfile": "cpu-mock-v1",
+    "command": ["python", "-c", "print('local fake runtime')"]
+  },
+  "executionContract": {
+    "contractId": "contract-sha256-f08c33e2b53718bb4d2e75efa323f4574c677d6ab1445023ad5416bcaee04732",
+    "version": "1.0.0",
+    "phaseGraph": {
+      "phases": [
+        {
+          "phaseId": "decode",
+          "displayName": "Decode",
+          "kind": "PHASE_KIND_DECODE",
+          "parallelism": 1,
+          "maxAttempts": 1
+        }
+      ],
+      "entryPhaseIds": ["decode"]
+    },
+    "validityRules": [
+      {
+        "ruleId": "synthetic-only",
+        "description": "Only generated local data is used",
+        "expression": "data_kind == synthetic",
+        "failureMode": "VALIDITY_FAILURE_MODE_REJECT"
+      }
+    ],
+    "versionConstraints": [
+      {
+        "component": "protocol",
+        "operator": "VERSION_OPERATOR_COMPATIBLE",
+        "version": "0.3.0",
+        "source": "compose-smoke",
+        "revision": "1"
+      }
+    ],
+    "commitPolicy": {
+      "mode": "COMMIT_MODE_ALL_OR_NOTHING",
+      "minimumSuccessfulUnits": 1,
+      "maxRetries": 1,
+      "commitTimeout": "30s"
+    },
+    "backpressurePolicy": {
+      "mode": "BACKPRESSURE_MODE_BLOCK_PRODUCER",
+      "lowWatermark": "1",
+      "highWatermark": "2",
+      "maximumBufferLevel": "4",
+      "stallTimeout": "30s"
+    },
+    "safePointPolicy": {"enabled": false},
+    "capabilities": {"deterministicReplay": true}
+  },
+  "resourcesPerUnit": {"cpuMillis": "1000", "memoryBytes": "536870912"},
+  "requiredCapabilities": {
+    "names": ["logical-cpu"],
+    "algorithms": ["grpo"],
+    "rolloutModes": ["partially_async"],
+    "source": "mock",
+    "revision": "1",
+    "supportedActions": ["bind"]
+  },
+  "desiredUnits": 2,
+  "priority": 1,
+  "queue": "default",
+  "labels": {"quota_group": "default", "allow_preemption": "false"},
+  "rolloutMode": "ROLLOUT_MODE_PARTIALLY_ASYNC",
+  "policyRef": "1",
+  "dataKind": "DATA_KIND_SYNTHETIC"
+}

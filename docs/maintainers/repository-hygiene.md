@@ -43,7 +43,7 @@
 提交前执行：
 
 ```bash
-git status --short --untracked-files=all
+git status --short
 git status --short --ignored
 git diff --check
 make check-repository
@@ -54,3 +54,29 @@ make check-public-content
 如果被 ignore 的文件实际包含源码，先查明命中规则的原因。除非路径已审查且 ignore 规则已经
 收窄或记录，不要使用 `git add -f`。仓库检查会扫描源码和配置根目录下被忽略的类源码文件，
 专门拦截“只在作者机器上可运行”的问题。
+
+## Git、Docker、Python 包是三个边界
+
+| 边界 | 权威输入 | 检查重点 |
+|---|---|---|
+| Git 发布内容 | `.gitignore`、tracked 文件、提交 diff | 凭据、数据库、缓存、无用临时脚本不提交 |
+| Docker context | `.dockerignore`、各 Dockerfile 的 COPY | Git ignore 不生效；末尾重新包含 configs 后必须再次排除本机配置 |
+| Python sdist/wheel | `pyproject.toml` package-data、包发现 | SQL 迁移和许可证随包发布，不依赖 checkout/egg-info 残留 |
+
+运行打包回归：
+
+```bash
+uv run --frozen pytest tests/governance/test_packaging.py
+```
+
+它从干净的打包源目录构建 sdist，再从 sdist 构建 wheel，隔离安装后创建数据库、写入和重开读取。
+Docker ignore 规则检查不等于实际 BuildKit context 检查；镜像仍需在获授权的构建环境验证。
+
+## 清理原则
+
+- 保留正在使用的 Mock/fake、Synthetic 与 reference workload，它们承担产品演示或契约测试。
+- 删除失去调用方且已被新文档承接的重复长文，先更新所有入口链接。
+- 不为减少文件数合并职责不同的组件，也不删除生成代码、迁移、锁文件。
+- 缓存/依赖/构建输出无需上传，但不是必须现场删除；原始 GPU 证据、数据库和凭据必须保留。
+- 避免全仓 `git clean` 或无差别删除 `.cache`。有需要时只清理可再生且已确认归属的具体路径。
+- `handoff/` 中仅放脱敏结果摘要和必要日志；原始证据留在测试机，结果记录 source SHA 与复现命令。

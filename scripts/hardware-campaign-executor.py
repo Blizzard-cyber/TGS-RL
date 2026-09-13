@@ -531,9 +531,7 @@ def _validate_driver_response(
                 raise ExecutionError("hardware driver MIG identity omitted parent UUID")
         if len(seen_sandboxes) != minimum_workers:
             raise ExecutionError("hardware driver device identity returned the wrong worker count")
-        if shared_device_identity and (
-            execution_mode != "hami-vgpu" or len(seen_devices) != 1
-        ):
+        if shared_device_identity and (execution_mode != "hami-vgpu" or len(seen_devices) != 1):
             raise ExecutionError(
                 "shared device identity requires one HAMi physical GPU across all workers"
             )
@@ -999,9 +997,7 @@ def execute(args: argparse.Namespace) -> int:
                             experiment["requirements"].get("shared_device_identity", False)
                         ),
                         expected_total_core_percent=int(
-                            experiment["requirements"].get(
-                                "expected_total_core_percent", 0
-                            )
+                            experiment["requirements"].get("expected_total_core_percent", 0)
                         ),
                     )
                     events.extend(run_events)

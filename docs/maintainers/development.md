@@ -4,6 +4,64 @@
 [快速上手](../getting-started.md)。第一次修改核心调用链前，先阅读
 [源码导读与维护边界](code-walkthrough.md)。
 
+## 从源码启动六个服务（不需要 Docker）
+
+版本以 `compatibility/bom/runtime.yaml` 为准：Go 1.26.4、Python 3.12.14、uv 0.12.7、Node.js
+24.20.0。Buf 用于协议检查，Helm 用于部署验证，不是本机服务运行依赖。仓库根目录执行：
+
+```bash
+uv sync --frozen
+npm --prefix console ci
+umask 077
+mkdir -p .cache/tgsrl
+```
+
+以下每段在独立终端、仓库根目录运行：
+
+```bash
+go run ./scheduler-go/cmd/scheduler -listen 127.0.0.1:50051 \
+  -metrics-listen 127.0.0.1:9090 -state-dir .cache/tgsrl/scheduler-state
+```
+
+```bash
+uv run --frozen tgsrl-runtime --bind 127.0.0.1:50071 \
+  --scheduler-target 127.0.0.1:50051 --operator-target 127.0.0.1:50081 \
+  --job-control-target 127.0.0.1:50061 --state-db .cache/tgsrl/runtime.db --config-root .
+```
+
+```bash
+go run ./job-controller-go/cmd/job-controller -listen 127.0.0.1:50061 \
+  -runtime-target 127.0.0.1:50071 -state-dir .cache/tgsrl/job-controller
+```
+
+```bash
+go run ./cmd/operator -mode fake -listen 127.0.0.1:50081 \
+  -scheduler 127.0.0.1:50051 -control 127.0.0.1:50061 -runtime 127.0.0.1:50071 \
+  -cursor-dir .cache/tgsrl/operator
+```
+
+```bash
+uv run --frozen tgsrl serve --host 127.0.0.1 --port 8080 --backend-mode grpc \
+  --job-control-target 127.0.0.1:50061 --scheduler-target 127.0.0.1:50051 \
+  --runtime-target 127.0.0.1:50071 --experiment-target 127.0.0.1:50071
+```
+
+```bash
+make run-console
+```
+
+打开 <http://127.0.0.1:4173>，使用[快速上手](../getting-started.md)的 CPU 示例。
+源码客户端使用 `uv run --frozen tgsrl ...`，不使用快速上手中的 Docker 函数。
+这条路径仍为 fake；需要真实子进程时执行：
+
+```bash
+TGSRL_GATE_OUTPUT_DIR="$PWD/.cache/tgsrl/my-process-check" make gate-cpu-integration
+```
+
+Gate 自动启动后端、registry、bootstrap 和 worker，结束后清理自己创建的进程，不启动 Console。
+使用新输出目录保留旧证据。手动服务用 Ctrl-C 按 Console/Gateway → Operator → Job Controller →
+Runtime → Scheduler 停止。保留状态目录；重启 fake 对象不是恢复训练进程。
+
 ## 常用检查
 
 ```bash

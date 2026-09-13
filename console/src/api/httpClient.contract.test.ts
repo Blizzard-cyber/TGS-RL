@@ -118,6 +118,18 @@ describe('HttpApiClient contract', () => {
     expect(result.data?.[0]?.jobId).toBe('job-live-017');
   });
 
+  it.each(['listJobs', 'listOverview'] as const)('%s does not hide failed run queries', async (method) => {
+    globalThis.fetch = vi.fn(async (input: RequestInfo | URL) => {
+      const url = new URL(String(input), 'http://localhost');
+      if (url.pathname === '/v1/jobs') return jsonResponse({ jobs: [{ jobId: 'job-failed-runs' }] });
+      if (url.pathname.endsWith('/runs')) return jsonResponse({ error: { message: 'run query unavailable' } }, 503);
+      return jsonResponse({});
+    }) as typeof fetch;
+    const result = await new HttpApiClient('')[method]();
+    expect(result.state).not.toBe('ready');
+    expect(result.data).toBeUndefined();
+  });
+
   it('aggregates overview from health, capabilities, jobs, runs, and experiments', async () => {
     const controller = new AbortController();
     const seenSignals: AbortSignal[] = [];

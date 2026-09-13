@@ -926,6 +926,22 @@ def test_corruption_detection_on_decode(tmp_path: Path) -> None:
     restarted.close()
 
 
+@pytest.mark.parametrize("directory_exists", [False, True])
+def test_apply_migrations_rejects_missing_packaged_files(
+    tmp_path: Path, directory_exists: bool
+) -> None:
+    migrations = tmp_path / "migrations"
+    if directory_exists:
+        migrations.mkdir()
+    connection = sqlite3.connect(":memory:")
+    try:
+        with pytest.raises(FileNotFoundError, match="migration files are missing"):
+            apply_migrations(connection, migrations_dir=migrations)
+        assert connection.execute("SELECT name FROM sqlite_master").fetchall() == []
+    finally:
+        connection.close()
+
+
 def test_apply_migrations_rolls_back_failed_migration_atomically(tmp_path: Path) -> None:
     migrations_dir = tmp_path / "migrations"
     migrations_dir.mkdir()

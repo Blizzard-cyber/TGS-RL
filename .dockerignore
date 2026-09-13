@@ -87,3 +87,27 @@ scripts/**
 **/*.journal
 **/*.checkpoint
 **/*.log
+
+# Git ignores do not apply to the configuration trees copied into images.
+configs/hardware/environment.json
+configs/hardware/*-job.json
+**/.env
+**/.env.*
+**/.envrc
+**/.ssh
+**/.kube
+**/kubeconfig
+**/kubeconfig.*
+**/credentials.json
+**/*.credentials.json
+**/values.production.yaml
+**/*.pem
+**/*.key
+**/*.crt
+**/*.p12
+**/*.pfx
+**/*.jks
+**/*.pid
+**/*.sock
+**/*.egg-info
+**/.DS_Store

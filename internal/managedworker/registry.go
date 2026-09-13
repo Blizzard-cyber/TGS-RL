@@ -92,9 +92,6 @@ type registryHandler struct {
 	publishTrace WorkerTracePublisher
 }
 
-// NewRegistryHandler exposes the narrow bootstrap registration boundary. It
-// intentionally does not expose lifecycle action execution; Scheduler helpers
-// read the durable registry and contact each bootstrap's private control URL.
 func NewRegistryHandler(controller *Controller, store *Store, signingKey []byte, authorize WorkerAuthority, observe WorkerObserver, tracePublishers ...WorkerTracePublisher) (http.Handler, error) {
 	if controller == nil || store == nil {
 		return nil, errors.New("runtime controller and store are required")

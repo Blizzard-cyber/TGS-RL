@@ -341,6 +341,21 @@ func TestMPSBackendDiscoversDaemonAndAppliesDynamicShare(t *testing.T) {
 	}
 }
 
+func TestMPSBackendRejectsShareRoundedToZeroBeforeMutation(t *testing.T) {
+	for _, dryRun := range []bool{false, true} {
+		executor := NewFakeCommandExecutor()
+		backend := NewMPSBackend(executor, time.Second, "", "")
+		action := v2Action(tgsrlv1.ActionType_ACTION_TYPE_SET_SHARE)
+		action.Share = 0.004
+		result, err := backend.Apply(context.Background(), BackendActionRequest{
+			Action: action, Binding: &DiscoveredBinding{ServerPID: 4242}, DryRun: dryRun,
+		})
+		if !errors.Is(err, base.ErrInvalidArgument) || result != nil || len(executor.Commands()) != 0 {
+			t.Fatalf("Apply(dryRun=%v) = (%+v, %v), commands=%+v", dryRun, result, err, executor.Commands())
+		}
+	}
+}
+
 func TestMPSBackendFailsWhenShareReadbackDoesNotMatch(t *testing.T) {
 	executor := NewFakeCommandExecutor(
 		FakeCommandResponse{Result: CommandResult{}},

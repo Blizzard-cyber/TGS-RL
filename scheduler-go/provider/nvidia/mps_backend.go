@@ -123,6 +123,9 @@ func (b *MPSBackend) Apply(ctx context.Context, request BackendActionRequest) (*
 		return nil, fmt.Errorf("%w: MPS share must be finite and within (0,1]", base.ErrInvalidArgument)
 	}
 	percentage := int(math.Round(share * 100))
+	if percentage == 0 {
+		return nil, fmt.Errorf("%w: MPS share rounds to zero active thread percentage", base.ErrInvalidArgument)
+	}
 	command := b.controlCommand([]byte("set_active_thread_percentage " + strconv.FormatUint(uint64(request.Binding.ServerPID), 10) + " " + strconv.Itoa(percentage) + "\n"))
 	result := &BackendActionResult{Detail: fmt.Sprintf("MPS dynamic profile set to %d%%", percentage), Commands: []Command{command}}
 	if request.DryRun {

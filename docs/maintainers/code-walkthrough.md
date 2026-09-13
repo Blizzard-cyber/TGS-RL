@@ -1,427 +1,283 @@
-# TGS-RL 源码导读与维护边界
+# 源码与组件导读
 
-本文面向第一次阅读或准备修改 TGS-RL 的维护者。目标不是逐文件复述代码，而是回答四个
-更重要的问题：**请求从哪里进入、状态由谁负责、外部副作用在哪里发生、失败后从哪里恢复**。
+先阅读[系统设计](../design/system-design.md)理解问题、职责与身份关系。本页回答：
+**请求在哪进入、状态在哪保存、副作用在哪执行、错误后从哪恢复、修改后测什么。**
+阶段性发现与验证结果见[工程审查记录](engineering-review.md)，不混入长期设计。
 
-阅读本页时应始终区分三类事实：
+## 1. 阅读地图
 
-- **期望状态**：用户或控制器希望系统达到的状态；
-- **执行回执**：某个组件已经接受或执行了一步命令；
-- **权威观测**：从实际 Runtime、Provider 或 Kubernetes 对象回读的状态。
+| 层 | 入口 | 核心对象 | 修改时关注 |
+|---|---|---|---|
+| 契约 | `proto/tgsrl/v1/` | Job、Run、Manifest、Intent、Plan、Trace | wire compatibility 与跨语言语义 |
+| 产品控制 | `job-controller-go/controller/` | Job/Run/Operation | 持久化后派发、幂等与观察态收敛 |
+| 运行时 | `runtime-python/tgsrl_runtime/supervisor.py` | Unit/Sandbox/Trace/Intent | 逻辑角色与具体实例的关联 |
+| 调度服务 | `scheduler-go/service/` | keyed event loop、Decision | 版本、TTL、snapshot revision |
+| 调度算法 | `scheduler-go/scheduler/` | candidate、proposal、Plan | 硬约束、稳定排序、安全与预算 |
+| 事务 | `scheduler-go/planexecutor/`、`scheduler-go/state/` | reservation/receipt/transaction | 副作用前后 checkpoint、补偿 |
+| 资源 | `scheduler-go/provider/` | Device/Capability/Binding | 实际能力与观察，不按型号分支 |
+| 基础设施 | `operator-go/worker/`、`compiler/`、`backend/` | Bundle、delivery、cursor | 一 Binding 一 Bundle、设备回读 |
+| 进程 | `cmd/tgsrl-worker-bootstrap/`、`internal/managedworker/` | PID token、endpoint、receipt | 注册、退出与旧代际隔离 |
+| 用户接口 | `gateway-python/`、`console/src/api/` | HTTP JSON、页面模型 | 错误、分页与数据来源 |
+| 验证 | `scripts/`、`tests/` | Gate、Trace、report | 从实际证据重算 |
 
-命令返回成功不等于工作负载已经收敛。TGS-RL 的主要设计约束，就是不允许用前两类事实
-冒充第三类事实。
+`gen/` 来自 Proto，不手改。SQL 迁移、OpenAPI、锁文件是发布所需输入，不因“自动生成”而删除。
 
-## 1. 先看哪些文件
+## 2. Job Controller：生命周期权威
 
-推荐按以下顺序阅读：
+```text
+HTTP 请求 → GatewayApplication / GrpcGatewayBackend
+ → Normalize / Validate → Repository 保存 Job、Operation、幂等记录
+ → Runtime validate / compile / prepare → WAITING Run
+ → StartRuntime → 等待 ComponentStatus → RUNNING + Operation SUCCEEDED
+```
 
-| 顺序 | 文件或目录 | 先理解什么 |
-|---|---|---|
-| 1 | `proto/tgsrl/v1/` | 跨语言业务对象、RPC 和枚举；这是契约唯一来源 |
-| 2 | `job-controller-go/controller/` | Job、Run、Operation 的生命周期与幂等入口 |
-| 3 | `runtime-python/tgsrl_runtime/supervisor.py` | Manifest、RuntimeUnit、Sandbox、Trace 和 Intent 如何关联 |
-| 4 | `scheduler-go/service/` | Intent 如何进入 keyed event loop，并在执行前后持久化 |
-| 5 | `scheduler-go/scheduler/` | 候选生成、合同评估、自适应目标、仲裁和预算 |
-| 6 | `scheduler-go/planexecutor/`、`scheduler-go/state/` | 事务状态机、reservation、receipt、补偿与恢复 |
-| 7 | `scheduler-go/provider/` | Mock 与 NVIDIA 的统一 Provider 边界 |
-| 8 | `operator-go/worker/`、`operator-go/backend/` | Decision 如何变成 fake/Kubernetes 对象并产生观测 |
-| 9 | `gateway-python/tgsrl_gateway/`、`console/src/api/` | 北向 HTTP、CLI、SDK 和页面数据映射 |
-| 10 | `scripts/gate-tools.py` | 验证证据如何从原始事件重算，而不是信任汇总值 |
+| 文件 | 责任 |
+|---|---|
+| `job-controller-go/compiler/compiler.go` | 规范化、合法性与确定性身份 |
+| `job-controller-go/controller/catalog.go` | 创建、查询、校验 |
+| `job-controller-go/controller/admission_prepare.go` | 准入阶段、Runtime 准备与结果保存 |
+| `job-controller-go/controller/command.go` | 生命周期派发、过渡态、不确定结果 |
+| `job-controller-go/state/` | Repository、copy-on-write、snapshot/journal |
 
-`gen/` 是由 Proto 生成的代码，不应手工修改。`.cache/`、`.tmp/`、`bin/`、虚拟环境、
-Node 依赖和 Console 构建目录都是本地产物，不属于提交内容。`WORKLOG.local.md` 与 `handoff/`
-是开发机与 GPU 测试机之间的临时交接材料，会被提交但发布前删除。
+关键约束：
 
-## 2. 三个系统与五个状态权威
+- Job 是声明；Run 保存一次 attempt 的不可变执行规格，retry 创建新 Run。
+- 请求指纹不混入服务端后来生成的时间，否则延迟重试会冲突。
+- 先保存过渡态与 Operation，再调用 Runtime；网络超时可能发生在副作用之后。
+- 仅权威 `runtime-observation` 推进最终 Run 状态，不以 dispatch accepted 代替完成。
+- 恢复先核对观察态；不具备安全重放条件时进入 `RECONCILIATION_REQUIRED`。
+- 内存与文件 Repository 均在隔离副本更新，回调失败不留下部分状态。
+
+测试：`job-controller-go/controller/controller_test.go`、`job-controller-go/state/file_repository_test.go`、
+`tests/api/test_gateway_api.py`、`make product-e2e`。
+
+## 3. Runtime：训练事实到调度意图
+
+`RuntimeSupervisor` 组合存储、Adapter、Executor、Trace、DAG、Intent 和实验协调器，
+不选择物理设备，不直接创建 Kubernetes Job。
+
+| 模块 | 输入 → 输出 |
+|---|---|
+| `adapters/runtime_registry.py` | 组件声明 → adapter、LaunchSpec 与逻辑角色 |
+| `runtime_lifecycle.py` | 生命周期请求 → desired state、Start outbox、backend control |
+| `executor.py` | LifecycleAction → hook 结果与命令 receipt |
+| `trace_ingest.py`、`trace.py` | batch → 身份验证、去重、规范事件 |
+| `aggregation.py` | Trace → typed ContractObservation |
+| `dag.py` | phase 事件 → 增量 DAG 与等待分类 |
+| `intent.py`、`intent_coordinator.py` | Unit/observation → 版本化 Intent |
+| `replay.py`、`experiments.py` | 记录输入 → 无资源副作用的决策预览与对比 |
+| `storage/` | 状态变更 → SQLite 事务与恢复水位 |
+
+`RuntimeExecutor` 的 LAUNCH 维护控制语义，真实启动在 Operator 的 process/Kubernetes backend。
+`_failure_context_spec` 仅供 adapter 编译失败时诊断，不是未实现的 launcher。
+Runtime 先保存 Start Intent，发布成功才确认 outbox，重启只补投未确认项。
 
 ```mermaid
 flowchart LR
-  Client[Console / CLI / SDK / HTTP]
-  Gateway[Gateway]
-  Job[Job Controller]
-  Runtime[Runtime + Experiment]
-  Scheduler[Scheduler]
-  Provider[ResourceProvider]
-  Operator[Operator]
-  Backend[fake / process / Kubernetes]
-
-  Client --> Gateway --> Job
-  Job --> Runtime
-  Runtime -->|SchedulingIntent| Scheduler
-  Scheduler --> Provider
-  Scheduler -->|Decision stream| Operator
-  Operator --> Backend
-  Backend -->|readback| Operator
-  Operator -->|SandboxEvent| Runtime
-  Runtime -->|ComponentStatus| Job
-  Gateway --> Runtime
-  Gateway --> Scheduler
+  W[worker batch] --> B[bootstrap / registry 核对与签名]
+  B --> I[Runtime 验签与实例检查]
+  I --> T[SQLite: Trace + Intent + 幂等响应]
+  T --> P[至少一次发布 Intent]
+  T --> D[DAG / API / Console]
 ```
 
-| 状态 | 权威 | 主要代码 |
+- managed-worker 路径核对 run、trace、execution、stage、phase、unit、sandbox、binding、generation、设备。
+- 一个 RuntimeUnit 可有多个副本；校验具体 Sandbox，不只接受 Unit 的代表性 sandbox。
+- 重复 batch 不重复写事件；未确认 Intent 可以再次投递。
+- `image_digests` 表达内容身份，`oci_image` artifact 才是可拉取的 `repository@sha256:...`。
+- Replay 重算语义，不运行 GPU 动作；不同 DataKind 不可混合冒充硬件证据。
+
+SQLite 使用 WAL、`synchronous=FULL`、foreign keys、busy timeout。迁移缺失立即失败，
+初始化失败关闭连接；sdist/wheel 必须包含 `storage/migrations/*.sql`，不能只测 editable 安装。
+测试：`tests/python/`、`tests/storage/`、`tests/governance/test_packaging.py`。
+
+## 4. Scheduler：候选与安全动作
+
+启动入口为 `scheduler-go/cmd/scheduler/main.go`：配置图 → Provider → snapshot →
+checkpoint/journal → 未完成事务调和 → event loop → gRPC。恢复完成前不接受新请求。
+Intent 按 execution/stage 合并，避免旧版本排队覆盖新版本。
+
+### 放置路径
+
+```text
+Snapshot + Intent + 固定 evaluation time/seed
+ → 版本 / TTL / 合同校验 → pending unit 展开
+ → health / capacity / capability / topology 硬过滤
+ → scoring 与稳定排序 → Top-K evidence → PlacementPlan
+```
+
+约束、候选、评分、策略分别在 `constraints/`、`candidates/`、`scoring/`、`policy/`；
+`scheduler/integration.go` 组合调用。同输入必须产生稳定 Plan/Action identity。
+证据可能截断，检查 totals 和 truncation flag，不把 Top-K 当全部候选。
+
+### 自适应路径
+
+`adaptive_integration.go` 把 admission 与 runtime mutation 放入同一仲裁：
+
+| Planner | 动作方向 | 约束 |
 |---|---|---|
-| Job、Run、Operation、JobEvent | Job Controller | `job-controller-go/controller/`、`job-controller-go/state/` |
-| Manifest、RuntimeUnit、Sandbox、Trace、Replay、Experiment | Runtime | `runtime-python/tgsrl_runtime/` |
-| Snapshot、Intent、Plan、Decision、reservation、transaction | Scheduler | `scheduler-go/service/`、`scheduler-go/state/` |
-| 资源动作与硬件回执 | ResourceProvider | `scheduler-go/provider/` |
-| workload 对象和实际生命周期观测 | Operator backend | `operator-go/backend/`、`operator-go/statuswatch/` |
+| Admission | bind | 容量、能力、队列、合同 |
+| Fast | share、priority、resize、scale-in | pressure、hysteresis、cooldown |
+| Medium | pause、resume、sleep、offload | 新鲜 observation、安全点、恢复成本 |
+| Slow | rebind、recreate | 替代资源、动作能力、L4 预算 |
 
-同一业务状态可能出现在多个对象中，但只有表中对应组件可以推进自己的权威状态。
-例如，Runtime 命令返回成功后，Job Controller 仍保持 `STARTING`；只有 Runtime 收到
-Operator 的 Sandbox 观测并回报带 `runtime.source=runtime-observation` 的收敛状态后，Run 才
-进入 `RUNNING`。
+这是一套可解释的有界规则，不是学习控制器。producer/consumer 对 buffer、lag、staleness、ESS
+的响应方向不同。阻断性合同要求 pause 时，必须覆盖全部相关 active allocation：已被新鲜观察
+确认为 paused，或全部进入同一安全计划；观察缺失、过期、冲突、超预算都拒绝，优化 filter
+不能缩小安全集合。`noop` 不授权新 mutation，`static` 仅保留兼容分配；不读取 reward 选设备。
 
-## 3. Job 从创建到运行
+测试：`scheduler-go/scheduler/`、`scheduler-go/semantics/`、`make test-performance`。
 
-### 3.1 创建与准入
+## 5. 事务与资源 Provider
 
-1. `GatewayApplication` 在 `gateway-python/tgsrl_gateway/app.py` 解析 HTTP、限制请求体并
-   转换查询参数。
-2. `GrpcGatewayBackend` 把请求转换为 `JobControlService` RPC，并保留 gRPC 错误的 HTTP
-   语义。
-3. `Controller.CreateJob` 调用 `compiler.NormalizeJob`：整理字符串、验证 Runtime pin、生成
-   确定性 Job ID，并记录 validate Operation。
-4. `Controller.AdmitJob` 先持久化 `ADMITTING` Run 和运行中 Operation，再调用 Runtime 的
-   validate、compile、prepare。
-5. Runtime 准备成功后 Run 进入 `WAITING`；失败则记录失败 Operation 和 component status。
-
-所有写操作都应提供稳定的 idempotency key。Job 的请求指纹只包含调用方可控的规范化
-内容，不能包含服务端临时生成的时间或状态，否则延迟重试会被误判为 key 冲突。
-
-### 3.2 启动与收敛
-
-1. `Controller.ApplyJobCommand` 先把 Run 改为 `STARTING`，创建运行中 Operation。
-2. `RuntimeExecutor` 根据 Manifest 选择 Adapter，并把 generation、idempotency key 和
-   checkpoint reference 传给 bridge。
-3. Runtime 保存 desired state，生成并发布 `SchedulingIntent`。
-4. Scheduler 完成资源计划和 Provider 事务后发布 `DecisionRecord`。
-5. Operator 消费 Decision，读取 JobRun 与 RuntimeManifest，编译并调和 backend 对象。
-6. 独立观察路径发布 `SandboxEvent`；Runtime 聚合后向 Job Controller 报告 component status。
-7. `advanceRunFromComponent` 只接受权威、已收敛的 Runtime 观测，然后完成 Operation。
-
-这条链路解释了为什么 `runtime.dispatch.accepted=true` 只表示命令已投递，不能直接把 Run
-改为最终状态。超时或连接中断属于结果不确定，Operation 会保持可恢复的运行态，而不是
-错误地标记失败或成功。
-
-## 4. Runtime、Trace 与 Intent
-
-`RuntimeSupervisor` 是 Python 数据面的协调中心，但不会成为集群资源权威。它组合以下模块：
-
-- `runtime_registry.py`：根据 Manifest 选择 framework、execution、trainer 和 rollout adapter；
-- `executor.py`：执行 lifecycle hook，并维护每个 Run 的 generation 和幂等结果；
-- `trace_ingest.py`、`trace.py`：校验、规范化并按因果顺序保存 TraceEvent；
-- `aggregation.py`：从事件形成 typed `ContractObservation`；
-- `dag.py`：维护增量 phase DAG 和 gap 分类；
-- `intent.py`、`intent_coordinator.py`：生成版本化、带 TTL 的 SchedulingIntent；
-- `replay.py`、`experiments.py`：用记录的输入执行无资源副作用的调度预览；
-- `storage/`：通过 SQLite 保存运行态和恢复水位。
-
-Runtime 恢复时只重放明确可安全重试的 outbox 项。Checkpoint 记录的是完成元数据，不是
-训练进程镜像；外部 worker 的 checkpoint、reload 和 readiness 必须由 bridge 明确确认。
-`RuntimeManifest.image_digests` 保存内容身份，`oci_image` artifact 保存可拉取的
-`repository@sha256:...` 引用；Operator 只用后者填 Kubernetes `container.image`。训练依赖在
-worker bootstrap 内验证，不能要求 Runtime 服务镜像安装整套训练栈。
-
-## 5. Scheduler 的两层决策
-
-### 5.1 Admission 选择
-
-`scheduler-go/scheduler/integration.go` 负责传统放置：
-
-```text
-Snapshot + Intent
-→ 合同和输入校验
-→ pending unit 展开
-→ 硬约束过滤
-→ 候选评分与稳定排序
-→ PlacementPlan
+```mermaid
+stateDiagram-v2
+  [*] --> PROPOSED
+  PROPOSED --> RESERVED
+  RESERVED --> PREPARED
+  PREPARED --> APPLYING
+  APPLYING --> COMMITTED
+  APPLYING --> APPLY_FAILED
+  APPLY_FAILED --> COMPENSATING
+  COMPENSATING --> ABORTED
+  COMPENSATING --> DEGRADED
 ```
 
-同一输入、配置、时间和 seed 必须产生同样的候选顺序、Plan ID 和 Action ID。Scheduler 不
-读取 reward 来选择设备。
+`planexecutor.Executor` 与 `state.Store` 管理 reservation、pending checkpoint 和逐步结果。
+receipt 匹配 transaction、plan、action/index、幂等键、generation、digest。失败逆序补偿已执行
+动作；field-scoped before-image 不覆盖无关并发字段。`APPLYING` 恢复先查 Provider receipt/readback，
+再决定继续、提交、补偿或 degraded。
 
-### 5.2 Adaptive 控制与统一仲裁
+Provider 是厂商接口，不是第二个 Scheduler。工厂当前只注册 Mock/NVIDIA；未来新增实现再注册，
+不添加空的 Ascend 实现或型号白名单。
 
-`adaptive_integration.go` 将 admission plan 与当前 tick 的 runtime mutation 放进同一候选池：
-
-```text
-Observation
-→ normalizePlanningSignals
-→ directional target
-→ Admission / Fast / Medium / Slow proposals
-→ priority + conflict + budget arbitration
-→ one transactional PlacementPlan
-```
-
-- **Fast**：share、priority、resize、scale-in；
-- **Medium**：pause、resume、sleep、offload；
-- **Slow**：rebind、recreate；
-- **Admission**：bind。
-
-预算在最终 Action 集合上执行，同时限制受影响 Sandbox、GPU 重配置次数、恢复成本和 L4。
-安全优先级高于普通 admission。阻断性 contract 的 pause 是全体动作：所有匹配的活跃
-allocation 必须已经被新鲜观测确认为 paused，或在同一计划中获得 pause；任何目标缺失、
-过期、冲突或超预算都会整体 fail closed。调用方的优化 target filter 不能缩小这类安全动作。
-
-Directional controller 当前是可解释的有界规则，而不是学习型控制器。producer 和 consumer
-对 buffer pressure、policy lag、sample staleness、ESS 的响应方向不同，并受 hysteresis、
-observation window、cooldown 和 recovery cost 约束。
-
-## 6. 事务执行与崩溃恢复
-
-`scheduler-go/planexecutor/Executor` 驱动下面的状态机：
-
-```text
-PROPOSED → RESERVED → PREPARED → APPLYING → COMMITTED
-                                   │
-                                   └→ APPLY_FAILED → COMPENSATING → ABORTED
-                                                        └→ DEGRADED
-```
-
-关键规则：
-
-- `state.Store` 是 reservation 和 transaction progress 的持久权威；
-- 每个外部副作用前后都经过 checkpoint 边界；
-- receipt 必须匹配 transaction、plan、action index、action ID、idempotency key 和 generation；
-- 进程在 `APPLYING` 中退出后，先由 Provider 重建/读取 receipt，再决定继续、提交、补偿或
-  标记 degraded；
-- 多 Action 计划要求稳定顺序和补偿能力；不允许部分成功被整体解释为成功。
-
-Scheduler 进程恢复时，`service.ResumeRecoveredState` 先恢复 Decision 与保护状态，再调和
-transaction 和旧 reservation，最后重新排队 Intent。恢复期间不会对外提供服务。
-
-## 7. Provider 与 NVIDIA Helper
-
-### 7.1 Mock Provider
-
-`scheduler-go/provider/` 的 Mock Provider 是完整的协议实现，可验证 reservation、action、
-rollback、watch 和 recovery，但其资源、GPU 和生命周期效果都是逻辑状态，不能作为真实
-硬件证据。
-
-### 7.2 NVIDIA Driver v2
-
-NVIDIA 路径分成编排层和三个本机 helper：
-
-| 部分 | 责任 | 不代表什么 |
-|---|---|---|
-| `driver_v2.go` | inventory、capability handshake、backend 路由、互斥、审计与恢复 | 不直接操作训练进程 |
-| `tgsrl-nvidia-binding` | binding authority、generation fence、幂等 receipt、MPS PID 发现 | 不改变已运行进程的 CUDA 可见性 |
-| `tgsrl-nvidia-runtime` | PID 身份、pause/resume/sleep、managed-worker checkpoint/offload/reload/readiness | 无 socket 时不能声称 offload |
-| `tgsrl-nvidia-mig` | 在已发现 MIG UUID 间执行停止、切换、恢复和回读 | 不创建或销毁 MIG 拓扑 |
-
-helper 状态通过 `helperstate.Store` 使用文件锁、临时文件、`fsync` 和原子 rename。exit code
-`75` 表示外部副作用可能已经发生但结果无法确认，调用方必须通过 receipt 和 readback 调和，
-不能直接重放。
-
-## 8. veRL Bridge
-
-`adapters/frameworks/verl.py` 声明 veRL adapter，`verl_bridge.py` 提供协议与持久化状态机，
-`verl_runtime.py` 则把 callback 显式接到 veRL 0.9 trainer 的 actor/critic worker groups 和
-checkpoint manager。训练循环仍须在 batch/rollout 边界调用 `VerlControlHook.safe_point()`，
-从而让控制线程只在真实安全点执行 checkpoint/offload/reload，并开放 Unix socket。
-该适配器锁定 veRL `0.9.0` 的 `save_checkpoint`/`load_checkpoint`、worker-group `to()`，以及
-checkpoint manager 的 replica sleep/wake/abort 和 weight update 接口；它不通过反射猜测其他
-方法，也不会自动 monkey-patch trainer。
-
-生命周期映射为：
-
-| TGS-RL 动作 | Worker 协议 |
+| NVIDIA 模块 | 责任 |
 |---|---|
-| pause | `prepare_pause → pause` |
-| checkpoint | `prepare_pause → checkpoint` |
-| sleep/offload | `prepare_pause → checkpoint → offload` |
-| wake | `reload → resume` |
-| terminate | `stop` |
+| `inventory_backend.go` | 物理卡、MIG 模式、已有子设备和拓扑 |
+| `driver_v2.go` | 能力握手、路由、互斥、审计与恢复 |
+| `binding_backend.go` | binding helper、持久回执 |
+| `runtime_backend.go` | 已注册 worker 生命周期 |
+| `mps_backend.go` | server PID 对应 percentage 写入与回读 |
+| `mig_backend.go` | 已有 MIG UUID 间 lifecycle/rebind |
 
-bridge 在调用 callback 前持久化 pending request，完成后持久化 response。重启发现 pending
-意味着副作用结果未知，因此不会盲目重放。`scripts/verl-reference-workload.py` 只验证协议、
-队列、checkpoint 和进程生命周期；它不是完整 veRL 训练或模型质量验证。
+`auto` 逐卡发布 Full GPU 或已有 MIG 子设备，不重复计量、不启动 MPS。默认 LocalDriver 仅发现
+资源；v2 才接动作 helpers。文件 helper 使用 lock、临时文件、fsync、rename；退出码 `75` 表示
+结果不确定，不可盲重放。MPS 需可信 server PID 与共享目录；同 server PID 的 worker 是否可独立
+兑现份额需实机验证。SIGSTOP 不释放显存，MIG helper 不改拓扑。
 
-bridge 的 state lock 只保护身份、状态、receipt 和 Trace 快照；生命周期 mutation 由另一把锁
-串行化。`prepare_pause` 等待训练线程进入 safe point 时不得占用 state lock，否则训练线程可能
-在发布 observation 时与控制线程互锁。`VerlControlHook.safe_point()` 会把文件 Trace 和 typed
-observation 的 `safe_point` 同时标为真，再等待 resume/stop。
+测试：`scheduler-go/planexecutor/`、`state/`、`provider/nvidia/`、`internal/managedworker/`。
+扩展见[Provider 设计](../design/accelerator-extension.md)。
 
-## 9. Operator、Gateway 与 Console
-
-Operator 的 `worker` 消费 Decision 后执行：
+## 6. Operator：兑现与回读
 
 ```text
-Decision
-→ 读取 JobRun / RuntimeManifest
-→ compiler 生成 Bundle
-→ backend reconcile
-→ 保存 observation registration
-→ statuswatch 回读对象
-→ 发布 SandboxEvent
+WatchDecisions(cursor)
+ → 成功、非 fallback、身份完整的 Decision
+ → JobRun + 不可变 RuntimeManifest
+ → 每个 concrete Binding 编译一个 Bundle
+ → backend apply + durable delivery/观察注册
+ → 推进 cursor → 独立 statuswatch → SandboxEvent
 ```
 
-fake backend 用于纯内存控制契约；process backend 在本机复用同一 Bundle 投影，但由 Operator
-真实启动 `tgsrl-worker-bootstrap` 和子进程，并通过 Scheduler registry 的 scoped status/action
-接口执行 pause/resume/stop。它只用于 CPU 集成和 Gate harness，不模拟 Kubernetes 或 GPU。
-Kubernetes backend 管理 CRD、Kueue Workload、Job 和可选
-ResourceClaimTemplate，Kubernetes 再为 Pod 生成 ResourceClaim。GPU 身份由 Scheduler 选择：
-NVIDIA Driver v2 的 device ID 就是 GPU/MIG UUID；
-`kubernetes-dra` 按 typed inventory 为 Full GPU/MIG 选择不同 DeviceClass，再编译 NVIDIA DRA
-`uuid` CEL selector。Operator 从 ResourceClaim 的
-`driver/pool/device` 和最新 ResourceSlice 回读 UUID，完全一致后才发布收敛状态。
-
-`hami-vgpu` 是独立的 exact identity adapter：Operator 从 Node
-`hami.io/node-nvidia-register` 建立物理 GPU inventory，将单卡分数份额投影为 HAMi 的
-`nvidia.com/gpu`、core/memory percentage 与 `use-gpuuuid`，并从 Pod
-`hami.io/vgpu-devices-allocated` 回读实际 UUID。一个计划中的不同 Binding 可以分别选择
-DRA 或 HAMi。传统 Device Plugin 和旧 `volcano-hami` 仍只承诺数量，不能用于证明精确
-UUID 落点。
-
-启用 managed-worker 后，compiler 以不可变 `RuntimeManifest` 的 command/args/environment/
-working directory 包装主容器，并通过 init container 安装 `tgsrl-worker-bootstrap`。Operator
-使用控制面主 key 为每个 binding 派生 scoped HMAC；Pod 不得到主 key。bootstrap fork 真实
-进程、生成 PID token/control token、发布 HTTP control endpoint，并向 Scheduler registry 注册。
-registry 再验证当前 Provider binding、Runtime BOUND generation 与来源 IP，注册成功后 readiness
-才允许 Operator 投影 RUNNING。退出上报由注册 token hash、Pod UID、process token 与 generation
-共同 fence。signal-only 路径只能在 safe point 上 pause/resume；checkpoint/offload/reload 必须由
-cooperative worker socket 确认。
-
-bootstrap 二进制安装在 `/var/run/tgsrl-bootstrap`，不覆盖 workload 常用的 `/opt/tgsrl`。
-只有 manifest 存在 workload OCI artifact 时，Operator 才注入由 framework/execution/trainer/
-rollout engine 推导出的 `TGSRL_REQUIRED_PYTHON_MODULES`；bootstrap 使用 workload command
-自身的 Python 解释器逐一 import，控制面不需要安装 veRL/Ray/PyTorch/vLLM。
-
-Gateway 不保存业务状态，只做 Proto/JSON 转换、分页 token 封装、RPC 转发和错误映射。
-Console 的 `HttpApiClient` 再把 Gateway JSON 映射为页面模型。前端判断 Sandbox 是否使用
-accelerator 时，应以 binding resource 为主、设备标识为辅；MIG UUID 不包含普通 `gpu`
-文本，不能只靠字符串 `gpu`/`a100` 判断。
-`GET /v1/resources` 直接代理 Scheduler `GetSnapshot(include_pending_units=true)`；算力资源页
-只能把它当作调度账本。DRA/HAMi 的最终设备兑现仍必须由 Operator readback 和 worker
-observation 证明。
-
-## 10. Gate G/I 证据链
-
-`scripts/gate-tools.py` 固定运行同一个 workload manifest 的 baseline 和 variant，保存原始
-stdout/stderr 和 trace，再从事件重新计算指标。校验器不信任外部报告中的汇总值：
-
-- 指标必须是有限数值，不能是布尔值、`NaN` 或无穷；
-- trace digest、suite、seed、label、warmup 和 measurement 次数必须匹配；
-- 执行记录必须完整且无超时；
-- full-stack 模式按每个 warmup/measurement iteration 校验唯一 service job/run、Scheduler
-  decision/plan、managed-worker identity，variant 还必须有 Operator pause/resume 因果事件；
-- GPU PASS 需要 CUDA measurement、正 GPU active time、硬件指纹和干净 commit；
-- `GPU_MULTI_NODE` 还要求两侧出现同一组至少两个节点身份。
-
-`SIMULATED` 与 `CPU_INTEGRATION` 永远不能生成真实 GPU PASS。
-
-`configs/gates/e1-e8.json` 在单次 Gate report 之上增加 release campaign：E1 Full GPU
-identity、E2 MIG identity、E3 throughput/VUG、E4 staleness/ESS、E5 共置干扰、E6 动作
-代价、E7 故障恢复、E8 多节点收敛。每个 experiment 都绑定独立 scenario、最低证据等级、
-执行模式、GPU profile、节点/设备数量、必需动作与故障事件。使用
-`campaign-ingest E<n> --report ...` 导入单项外部证据，使用 `campaign-evaluate` 汇总。缺失报告、
-CPU 证据、身份不一致或故障未恢复都不能通过；`calibration_required` 阈值补齐前结果为
-`BLOCKED`。
-
-## 11. 全仓源码审查发现并修复的问题
-
-| 问题 | 风险 | 修复 | 回归位置 |
-|---|---|---|---|
-| MemoryRepository 的失败 Update 会残留部分写入 | 内存模式违反原子事务，且与 FileRepository 语义不同 | 统一使用隔离副本，回调成功后一次性替换 live state | `job-controller-go/state/file_repository_test.go` |
-| CreateJobRun 用前 100 条记录数量计算 attempt | 第 102 个 Run 起可能重复 attempt 和确定性 Run ID | 改为最新 Run 的 attempt 加一，并检查溢出 | `job-controller-go/controller/controller_test.go` |
-| 服务生成的 Job 时间进入 idempotency hash | 延迟重试被误判为同 key 不同请求 | 请求指纹排除服务生成字段，保留显式调用方字段 | `job-controller-go/controller/controller_test.go` |
-| 真实 Job Controller 忽略 `after_job_id`/`after_run_id` | memory Gateway 与 gRPC 后端分页行为不一致 | 将 after cursor 纳入 Repository 查询，并拒绝与 page token 混用 | `job-controller-go/controller/controller_test.go` |
-| 最新 Operation 按完成时间而非创建时间选择 | 新的运行中操作可能被旧完成记录遮蔽 | 改为按创建时间和 ID 稳定选择 | `job-controller-go/state/file_repository_test.go` |
-| 无幂等键的重复 lifecycle 命令复用 Operation ID | 新命令会覆盖同 Run 的旧操作历史 | 无幂等键时把创建时间加入身份；有 key 时保持稳定 | `job-controller-go/controller/controller_test.go` |
-| 阻断性 pause 只检查可生成 proposal 的目标 | 观测缺失/过期时可能执行部分安全动作 | 按全部活跃 allocation 对账，并忽略优化 target filter | `scheduler-go/scheduler/adaptive_planner_test.go` |
-| Gateway 丢失部分 gRPC 状态语义 | 权限、限流、超时和未实现被错误显示为统一 503 | 映射为 401/403/429/501/504 | `tests/api/test_gateway_api.py` |
-| Operation 数值过滤接受未知枚举 | 无效过滤静默退化为不可预期查询 | 拒绝 0 和未声明枚举值 | `tests/api/test_gateway_api.py` |
-| Gate 接受 bool、NaN、Infinity 作为数值 | 非法证据可能绕过 schema 检查 | 要求非 bool 的有限 int/float | `tests/governance/test_gate_tools.py` |
-| Console 不识别 MIG 或 opaque accelerator ID | 已绑定 GPU 的 Sandbox 被错误展示为未绑定 | 优先检查 `acceleratorUnits`，兼容常见设备标识 | 由 Console 全量 typecheck/lint/test/build 覆盖 |
-| veRL raw/typed trace 分两次读取共享 sequence | 并发 observe 时两种输出的事件身份可能错位 | `_emit` 返回本次不可变身份，typed event 复用同一快照 | `tests/python/test_adapters_runtime.py` |
-| 多个本地状态文件显式使用宽松权限 | 运行元数据可能被同机其他用户读取 | 核心状态文件改为 `0600`、新建目录改为 `0700`，cursor 增加 fsync | 既有 persistence/restart 测试 |
-| admit/retry 成功分支重复 upsert Operation | 增加阅读噪声，容易误判为追加两次 | 保留单一统一 upsert | Job Controller 测试集 |
-| 普通单测以单批本机 p95 判定性能 | CI 负载变化会造成孤立抖动失败，也不能代表生产性能 | 从普通单测移出墙钟断言；独立非 race CI 固定单 P，以多次同进程 CPU 校准归一化 P95，并用 allocation 上限防止内存回退 | `make test-performance`、`scheduler-go/scheduler/benchmark_test.go` |
-| 手写 Proto 描述符与 Gate JSON 常量测试重复正式门禁 | 生成面或配置每次变化都要维护第二份影子契约 | 依赖 Buf、跨语言 round-trip、Gate loader 与治理验证 | `make check-generated`、`make proto-roundtrip`、`tests/governance/test_gate_tools.py` |
-| 测试 fake 与仅测试使用的查询方法位于生产源码 | 扩大公开表面，并让读者误判其为产品能力 | 将 NVIDIA driver/command fake 移入既有 `_test.go`，删除未使用的 `Guard.Snapshot` | NVIDIA、Protection 与 Provider 测试集 |
-| 硬件 workflow 约束单独占用一个极小测试文件 | 增加碎片化，但与治理门禁属于同一职责 | 合并到既有 governance 测试；继续禁止 CPU/模拟证据冒充 GPU | `tests/governance/test_governance.py` |
-| Scheduler UUID 只进入 RuntimeTarget，且 MIG class 无法区分 | 调度账本与训练进程可能分别使用 GPU-A/GPU-B，MIG claim 可能永远无法满足 | typed DRA inventory 区分 Full GPU/MIG class；claim 使用 UUID selector；allocation 回读不一致时 fail closed | Operator Compiler、Kube client、BundleAdapter 与 StatusWatch 测试 |
-| 单一 NVIDIA partition mode 无法描述不同分区能力的 GPU 共存 | 无 MIG 的卡被排除，或父卡与切片被重复计量 | Scheduler CLI 默认 `auto`，逐卡发布 Full/MIG，并按设备过滤 MIG capability/action | NVIDIA Driver v2 混合 inventory 测试 |
-| Operator GPU profile 是全局单选 | 一个计划中的不同 Binding 无法分别选择 DRA/HAMi | 把配置改为有序候选，按 UUID inventory 和份额逐 Binding 选择 | Operator Compiler fallback/异构计划测试 |
-| HAMi 旧 profile 只申请数量 | Scheduler 选中 UUID 与 Pod 实际设备可能分叉 | 新增 `hami-vgpu` typed inventory、UUID 注解、allocation readback 和 bootstrap 核验 | Operator Compiler、Kube client、BundleAdapter、Worker 测试与 H1/H2 实机证据 |
-| RuntimeUnit 的代表性 sandbox 被当作唯一 sandbox | 同一逻辑单元的第二个 replica Trace 被错误拒绝 | Trace ingestion 改为按具体 sandbox/binding/generation/device 校验，同时保留 logical runtime identity | Runtime supervisor 多副本测试与 H2 实机证据 |
-| hardware driver 永久保存完整测量响应 | 多轮双 worker Trace 让 state 超过通用 JSON 上限，stop/cleanup 无法继续 | 独立 state 迁移上限；完成 cleanup 后仅保留最小 attempt/identity 和 cleanup receipt | hardware-driver state 迁移/幂等测试与 H2 实机证据 |
-| Kubernetes Job 直接执行用户命令，无 PID/control 注册与退出回报 | Scheduler 动作没有真实进程对象可控，Pod active 可能被误报为 Runtime running | 增加 workload bootstrap、scoped registry、PID/Pod UID/process token fence、readiness gate 与 exit observation；manifest 成为执行输入权威 | bootstrap、runtimehelper、Scheduler registry、Operator compiler/statuswatch 测试 |
-| bootstrap emptyDir 挂载到 workload 的 `/opt/tgsrl` | 注入 bootstrap 时遮住镜像自身代码，Pod 启动后找不到 workload | 将 bootstrap 安装目录隔离到 `/var/run/tgsrl-bootstrap` 并保持原 working directory | Operator compiler 与 StatusWatch 测试 |
-| Full GPU v2 复用 MPS 默认与 capability 名称 | 普通整卡 smoke 会启动无关 MPS，或因重复 capability 被 Scheduler 拒绝 | 增加无分区 mutation 的 `full` backend；CLI 后续升级为逐卡 `auto`，并去重 capability | NVIDIA Driver v2 与 Scheduler CLI 测试 |
-| Kueue DRA patch 只做字符串断言 | 错误缩进的 YAML 可绕过测试并在目标集群失败 | 修正嵌套列表缩进，并对生成结构做回归校验 | `tests/governance/test_gpu_setup.py` |
-| GPU workload 与控制面共用 Python dependency 约束 | vLLM CUDA 13 需要 protobuf 6，而控制面锁定 protobuf 5，镜像会产生不可满足依赖 | GPU workload 使用独立 hash lock 与 site-packages，通过 protobuf wire/HTTP registry 连接控制面 | GPU lock、SBOM 与 governance 测试 |
-| veRL bridge 在持锁状态等待 safe point | 训练线程若同时上报完成事件，会等待同一 state lock，控制线程最终超时 | lifecycle mutation 与状态/Trace 锁分离；safe-point observation 显式写入 true | `tests/python/test_adapters_runtime.py`、`make gate-cpu-integration` |
-
-## 12. 测试和提交边界
-
-测试应保护长期契约，而不是保留一次性实验。全仓测试按责任分成五层：
-
-| 层级 | 应保留的内容 | 不应承担的内容 |
+| backend | 对象与回读 | 用途 |
 |---|---|---|
-| 单元测试 | 原子性、幂等、状态机、排序、校验和 fail-closed 分支 | 本机性能 SLA、第三方服务可用性 |
-| 组件集成 | 跨 Repository、RPC、Provider、Operator 或持久化边界的失败与恢复 | 重复每个底层纯函数的所有分支 |
-| 契约与治理 | Proto round-trip、OpenAPI、配置图、SBOM、证据防伪 | 复制生成描述符或整份 JSON 常量 |
-| 进程 E2E | 真实启动、重启、恢复和跨组件闭环 | 伪装成 GPU、Kubernetes 或训练性能验证 |
-| Benchmark | 可重复比较算法吞吐、耗时和分配数 | 作为普通 `go test` 的绝对 wall-clock 通过条件 |
+| fake | 内存 bundle | 本机产品控制；退出丢失实际对象 |
+| process | bootstrap 子进程 + scoped registry | CPU Gate；不模拟 Kubernetes |
+| Kubernetes | API Server、Job/Pod、Kueue、DRA/HAMi | 目标环境 |
 
-新增或保留测试前逐项判断：失败时能否指出一个长期产品契约；同一断言是否已由更低层测试
-或正式门禁覆盖；是否依赖机器负载、网络或当前输出文案；fixture 是否会被多个测试复用。仅用于
-开发时观察输出、验证测试替身自身、复制已有覆盖或一次性定位问题的文件应在本地验证后删除。
-小型同类检查应合并进现有测试文件，避免每个修复都新增一个文件。
+`JobRunBundle` 是 Kubernetes completion marker。新 generation 对象准备、旧对象清理完成后才
+更新 marker；同 generation fingerprint 不得静默变更。lifecycle ledger 保存 pending/in-flight/
+ambiguous/completed；NOT_FOUND 与查询失败必须区分。cursor 不能越过未完成 delivery。
 
-调度性能通过显式 benchmark 观察，不进入普通单测的固定毫秒门禁：
+| 设备路径 | 编译 | 回读 |
+|---|---|---|
+| DRA | typed ResourceSlice → class/type/UUID selector → ResourceClaimTemplate | Pod 生成的 claim → allocation → 最新 ResourceSlice → UUID/class |
+| HAMi | typed Node inventory → UUID annotation + core/memory | Pod allocation annotation → UUID、core、显存 |
 
-```bash
-go test ./scheduler-go/scheduler -run '^$' -bench BenchmarkEvaluateSimulation -benchmem
-```
+Full GPU class 为 `gpu.nvidia.com`，MIG class 为 `mig.nvidia.com`，driver domain 均为 `gpu.nvidia.com`。
+单 Binding 不混 class。HAMi 当前单 Binding 单物理卡 `(0,1]`，多 Binding 可共享 UUID。
+有序 profile 逐 Binding 选择，没有候选能精确兑现便拒绝。
 
-`scheduler-go/scheduler/benchmark_test.go` 同时保留 1000 device × 1000 unit 的无时间阈值
-正确性用例，防止性能清理误删大规模绑定唯一性覆盖。`job-controller-go/runtimeclient/fake.go`
-是当前唯一明确保留在生产目录的纯测试支撑：Controller 与 Service 两个外部测试包共享同一套
-完整 lifecycle fake；迁移会复制状态机。其他名为 mock/fake 的实现均是公开的本地运行模式，
-不是一次性测试桩。
+compiler 从 manifest 获取 command/args/environment/working directory，init container 将 bootstrap
+装入 `/var/run/tgsrl-bootstrap`，不遮住 workload 的 `/opt/tgsrl`。主容器使用动态 control port，
+`ready --file` exec probe 核对注册 marker，避免 hostNetwork 多副本端口冲突。
 
-提交前至少执行：
+Operator/Scheduler 持主签名 key，Pod 仅持 binding-scoped HMAC。bootstrap 记录 PID token、Pod UID、
+control token、endpoint 后注册；registry 核对 Provider binding、来源 IP、Runtime BOUND generation。
+worker 仅拿独立 loopback trace token，退出按 incarnation fence。带 OCI workload 的 Python 命令
+由同一解释器预检训练依赖，不要求控制面安装训练栈。
 
-```bash
-git diff --check
-make lint
-make test
-make race
-make product-e2e
-make check-generated
-make check-docs
-make check-governance
-make check-public-content
-```
+测试：`operator-go/compiler/`、`bundleadapter/`、`statuswatch/`、`worker/`、`cmd/tgsrl-worker-bootstrap/`。
+详细协议见[bootstrap 设计](../design/managed-worker-bootstrap.md)。
 
-逐文件暂存源码、必要测试和文档，不使用 `git add .`。以下内容必须留在本地：
+## 7. veRL：合作式生命周期
 
-- `.cache/`、`.tmp/`、`bin/`；
-- `.venv/`、`node_modules/` 和前端构建输出目录；
-- `__pycache__`、pytest/mypy/Ruff cache、`*.tsbuildinfo`；
-- kubeconfig、registry 凭据、签名 key、`.env` 和 `configs/hardware/environment.json`；
-- Gate 输出、运行时数据库、checkpoint、journal、日志和本机凭据。
+| 文件 | 责任 |
+|---|---|
+| `adapters/frameworks/verl.py` | LaunchSpec、生命周期命令 |
+| `verl_bridge.py` | socket、幂等日志、generation、Trace |
+| `verl_runtime.py` | veRL 0.9 trainer/worker-group/checkpoint-manager callbacks |
+| `adapters/trace_transport.py` | protobuf batch 发送 |
 
-`WORKLOG.local.md` 与脱敏后的 `handoff/` 是开发机与 GPU 测试机之间的临时交接材料，会被提交，
-发布前删除。
+训练循环显式调用 `VerlControlHook.safe_point()`，不 monkey-patch trainer，不用反射猜接口。
 
-## 13. 当前仍需真实环境完成的验证
+| 动作 | callback 链 |
+|---|---|
+| pause | prepare_pause → pause |
+| checkpoint | prepare_pause → checkpoint |
+| offload/sleep | prepare_pause → checkpoint → offload |
+| wake | reload → resume |
+| terminate | stop |
 
-E1 已证明单节点 Full GPU 的 NVIDIA CUDA、DRA/CDI、bootstrap、Trace 和 cleanup 主链；
-独立 H1/H2 已证明 HAMi 单 worker 份额兑现与双 worker 同卡并发。
-代码和本地门禁仍不能替代以下证据：
+callback 确认后才改 bridge 状态。mutation lock 串行控制，等待 safe point 不持 Trace/state lock，
+否则训练线程上报 observation 时会互锁。pending 请求落盘后重启意味着结果可能未知，不盲重放。
+真实依赖导入和最小 CUDA adapter workload 不等于完整 trainer/collective/checkpoint 验证。
+ReferenceCallbacks 保留为协议 fixture。测试：`tests/python/test_adapters_runtime.py`、进程 Gate。
 
-- NVIDIA MPS share 写入、读回与显存释放；
-- HAMi 动态份额、OOM 隔离、公平性、干扰上界与单 worker 故障恢复；
-- 真实 MIG 实例 rebind/recreate 与故障恢复；
-- 真实 veRL/Ray/PyTorch/vLLM/SGLang 训练进程；
-- bootstrap registry/control endpoint 的 Pod restart 与 NetworkPolicy 行为；
-- Kubernetes、Kueue、DRA 与 GPU 控制器在 MIG 和多节点目标集群上的联调；
-- 单节点和多节点吞吐、延迟、恢复时间与训练质量。
+## 8. Gateway 与中文 Console
 
-在这些验证完成前，对外只能声明“E1 单节点 Full GPU、H1 单 worker 份额兑现和 H2 双
-worker 同卡并发已验证”；不能写成 MIG/MPS、HAMi 强隔离、完整训练、生产可用或真实性能
-收益已证明。
+Gateway 无业务状态；`app.py` 处理路由、请求大小、参数、错误，`grpc_backend.py` 对接四个逻辑
+服务。Proto JSON 使用 lowerCamelCase，Gateway envelope/pagination 保留 snake_case。
+分页 token 绑定资源/filter，不跨查询复用；错误保留 invalid/not-found/conflict/timeout 等语义。
+
+Console HTTP adapter 取实际服务数据，mock adapter 仅供预览和 fixture。页面按运行、可观测、资源、
+分析组织，任务下钻到 Run/Decision/Sandbox/设备。资源页是 Scheduler 账本，不是 allocation 成功证明。
+加速器识别优先 typed resource，不靠型号或 `gpu` 字符串。
+
+Trace 按 component/track 分轨，用 request/worker/executor/span/parent-span 关联。duration 仅取事件
+声明值，缺失时显示时间点。Flex 外壳和局部滚动避免长 ID/表格撑宽页面。
+测试：`tests/api/`、Console unit tests、`console/tests/browser/`。mock 浏览器与实际服务流分别验证，
+类型检查不能证明用户功能可用。
+
+## 9. Gate 与发布验证
+
+| 层 | 入口 | 不替代什么 |
+|---|---|---|
+| 单元/组件 | Go/Python/API/Console tests | 真实集群 |
+| 发布包 | `tests/governance/test_packaging.py` | Docker 实装 |
+| 产品进程 | `make product-e2e` | 浏览器/GPU |
+| 子进程 | `make gate-cpu-integration` | Kubernetes/完整训练 |
+| 页面 | `make test-console-browser` | 真实后端操作 |
+| 配置/部署 | `make check-deploy`、`make check-governance` | 集群网络/RBAC/存储 |
+| 硬件 | E1/H1/H2 与独立后续场景 | 未执行场景或收益 |
+
+`gate-tools.py` 从原始 Trace 重算指标，核对 suite/seed/label/warmup/measurement/digest 和执行完整性。
+拒绝 bool/NaN/Infinity；full-stack 核对每轮 Job/Run/Plan/worker 与控制回执。GPU PASS 需实际 CUDA
+measurement、硬件身份、源码 provenance，CPU 证据不升级为 GPU。
+
+`hardware_environment_driver.py` 实现 preflight/launch/measure/identity/control/cleanup，通过 Gateway
+操作任务，不 patch Binding 伪造决策。bind 等待同步检查 Start Operation，终态失败立即报告，进行中
+Start 不阻止成功 Decision 被读取。环境 hooks、删除前置条件和 provenance 后续事项见[工程审查](engineering-review.md)。
+
+## 10. 扩展的最短路径
+
+| 修改 | 顺序 |
+|---|---|
+| 字段/RPC | Proto → 生成 → 两端校验 → breaking/round-trip → API/文档 |
+| 策略 | typed signal → proposal → 仲裁/预算 → 确定性/失败/补偿测试 |
+| 硬件厂商 | Provider factory → realization adapter → worker verifier → 实机证据 |
+| 训练框架 | registry → LaunchSpec → 显式 callbacks → Trace/生命周期测试 |
+| Gate | manifest/scenario → 实际服务驱动 → 原始证据 → 缺失/失败/防伪校验 |
+
+先维护契约与失败语义，再加能力，不为未验证的未来需求写空抽象。
+运行与回归见[开发指南](development.md)，提交边界见[仓库规范](repository-hygiene.md)。

@@ -90,6 +90,10 @@ artifact 时，Operator 才把对应模块清单注入 bootstrap 并在启动前
 - 使用 managed-worker bootstrap 时，已发布的不可变 bootstrap 镜像、workload 可访问的 registry
   URL，以及同时挂载给 Operator/Scheduler 的至少 32 bytes HMAC signing key；Pod 只获得 scoped token。
 
+全栈 Helm 默认使用 CPU 配置，目前没有完整暴露 NVIDIA v2/helper/host-device/shared mount 接线；
+仅修改 Operator `gpuProfile` 不能切换为可用的 GPU 全栈。E1/H1/H2 使用专用 GPU smoke 部署，
+不替代 Helm 实装证据，详见[部署指南](../guides/deployment.md)。
+
 Helm 默认将业务对象写权限限制在 namespace，并为 Node、RuntimeClass、DeviceClass、ResourceSlice
 discovery 提供只读 `list` 集群权限。只有在设置 `runtimeClassCreate=true` 时才授予
 最小的 cluster-scoped RuntimeClass 写权限；否则应预先创建并引用 RuntimeClass。部署者

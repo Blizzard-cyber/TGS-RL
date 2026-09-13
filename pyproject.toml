@@ -55,6 +55,9 @@ tgsrl_gateway = "gateway-python/tgsrl_gateway"
 tgsrl = "gen/python/tgsrl"
 "tgsrl.v1" = "gen/python/tgsrl/v1"
 
+[tool.setuptools.package-data]
+"tgsrl_runtime.storage" = ["migrations/*.sql"]
+
 [project.scripts]
 tgsrl = "tgsrl_gateway.cli:main"
 tgsrl-gateway = "tgsrl_gateway.cli:main"

@@ -181,7 +181,7 @@ export TGSRL_GATEWAY_EXPERIMENT_TARGET=127.0.0.1:50071
 | `-worker-registry-url` | 空 | workload 可访问的 Scheduler registry URL |
 | `-worker-registry-signing-key-file` | 空 | 与 Scheduler 相同的主签名 key，仅供 Operator 派生 scoped token |
 | `-worker-verify-device-identities` | `false` | 注册前核对容器可见设备 UUID；DRA claim 物化时强制执行 |
-| `-worker-host-network` | `false` | 仅用于单机单 worker GPU smoke 的 Pod host network；必须同时启用 bootstrap |
+| `-worker-host-network` | `false` | 专用单节点 GPU smoke 的 Pod host network；必须启用 bootstrap，control listener 使用动态端口以支持多 worker |
 | `-worker-bootstrap-binary` | `tgsrl-worker-bootstrap` | process backend 使用的本机 bootstrap 可执行文件 |
 | `-process-state-dir` | `<cursor-dir>/processes` | process backend 的状态与 worker log 目录 |
 

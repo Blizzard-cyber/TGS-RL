@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import importlib.util
 import json
 import subprocess
 import sys
@@ -24,6 +25,22 @@ def test_documentation_links_and_commands_match_repository() -> None:
     checked = run_script("check-docs.py")
     assert checked.returncode == 0, checked.stderr
     assert "documentation-ok" in checked.stdout
+
+
+def test_docs_check_handles_unstaged_deleted_document(tmp_path: Path) -> None:
+    subprocess.run(["git", "init", "--quiet", str(tmp_path)], check=True)
+    removed = tmp_path / "removed.md"
+    removed.write_text("# Removed\n", encoding="utf-8")
+    subprocess.run(["git", "-C", str(tmp_path), "add", "removed.md"], check=True)
+    removed.unlink()
+    retained = tmp_path / "retained.md"
+    retained.write_text("# Retained\n", encoding="utf-8")
+    spec = importlib.util.spec_from_file_location("check_docs", ROOT / "scripts/check-docs.py")
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    module.ROOT = tmp_path
+    assert module.repository_markdown() == [retained]
 
 
 def test_sbom_is_current_and_covers_all_lockfile_ecosystems(tmp_path: Path) -> None:

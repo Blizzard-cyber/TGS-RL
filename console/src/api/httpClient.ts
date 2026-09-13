@@ -106,7 +106,7 @@ export class HttpApiClient implements ApiClient {
     }
 
     const runsByJob = new Map<string, RunSummary>();
-    await Promise.all(
+    const runResults = await Promise.all(
       ensureArray<Record<string, unknown>>(jobsResult.data?.jobs).map(async (job) => {
         const jobId = String(ensureObject(job).jobId ?? '');
         if (!jobId) {
@@ -117,8 +117,14 @@ export class HttpApiClient implements ApiClient {
         if (latestRun) {
           runsByJob.set(jobId, latestRun);
         }
+        return runsResult;
       }),
     );
+
+    const failedRun = runResults.find((result) => result && result.state !== 'ready');
+    if (failedRun) {
+      return asResult<OverviewResponse>(failedRun);
+    }
 
     const mappedJobs = ensureArray<Record<string, unknown>>(jobsResult.data?.jobs).map((job) =>
       mapJob(job, runsByJob.get(String(ensureObject(job).jobId ?? ''))),
@@ -158,7 +164,7 @@ export class HttpApiClient implements ApiClient {
       return asResult<JobSummary[]>(result);
     }
     const runsByJob = new Map<string, RunSummary>();
-    await Promise.all(
+    const runResults = await Promise.all(
       ensureArray<Record<string, unknown>>(result.data?.jobs).map(async (job) => {
         const jobId = String(ensureObject(job).jobId ?? '');
         if (!jobId) {
@@ -169,8 +175,13 @@ export class HttpApiClient implements ApiClient {
         if (latestRun) {
           runsByJob.set(jobId, latestRun);
         }
+        return runsResult;
       }),
     );
+    const failedRun = runResults.find((result) => result && result.state !== 'ready');
+    if (failedRun) {
+      return asResult<JobSummary[]>(failedRun);
+    }
     return {
       state: 'ready',
       data: ensureArray<Record<string, unknown>>(result.data?.jobs).map((job) =>

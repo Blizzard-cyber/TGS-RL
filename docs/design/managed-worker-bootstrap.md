@@ -1,8 +1,8 @@
 # Managed-worker bootstrap 设计
 
 本文定义 Kubernetes workload 从“已分配设备”到“训练进程可被 TGS-RL 识别和控制”的
-执行层契约。实现目标是闭合进程身份与生命周期链路；它不替代 DRA/CDI，不把 Scheduler
-变成进程 launcher，也不宣称真实 GPU、Kubernetes 或 veRL 已完成验证。
+执行层契约。它不替代 DRA/CDI，也不把 Scheduler 变成进程 launcher。Full GPU E1、HAMi
+H1/H2 已有对应实机证据，但不覆盖完整 veRL、MIG/MPS、显存释放或通用集群故障恢复。
 
 ## 组件与边界
 
@@ -77,7 +77,7 @@ Operator 为每个 concrete binding 生成独立 Job，设置 `backoffLimit: 0`�
 从不可变 digest 镜像安装 bootstrap。main container 的原命令被包装为：
 
 ```text
-/var/run/tgsrl-bootstrap/tgsrl-worker-bootstrap --listen 0.0.0.0:50092 -- <manifest command...>
+/var/run/tgsrl-bootstrap/tgsrl-worker-bootstrap --listen 0.0.0.0:0 --registration-ready-file /tmp/tgsrl/bootstrap-ready -- <manifest command...>
 ```
 
 bootstrap 使用独立的 `/var/run/tgsrl-bootstrap` emptyDir；不得挂载到 `/opt/tgsrl` 等常见
@@ -94,7 +94,9 @@ bootstrap 的启动顺序为：
 5. 启动带随机 control token 的 HTTP endpoint。
 6. 等待 cooperative socket readiness，或确认 signal-only 进程仍存活。
 7. 有界重试 registry；Runtime 尚未观察到 BOUND 时保持未 Ready。
-8. 注册成功后 `/readyz` 才返回成功，Operator 才能发布 RUNNING。
+8. 注册成功后原子写入带身份的 marker；Pod 使用 `ready --file /tmp/tgsrl/bootstrap-ready` exec
+   probe 核对注册身份。动态 HTTP endpoint 仍提供 `/readyz` 与状态查询，marker 不是完整训练
+   健康探针；动态端口避免 hostNetwork 多副本冲突。
 9. worker observation 以有界 batch 经 bootstrap/registry 回传 Runtime；完成或关闭时强制 flush。
 10. 转发 SIGTERM/SIGINT，等待子进程退出，generation-fenced 清理 MPS PID 文件并上报终态。
 
@@ -132,10 +134,16 @@ Trace/observation 路径可用，避免控制线程与训练线程在安全点�
 generation fence、HTTP control、signal 转发、退出上报、旧 generation 清理保护、Operator
 Pod projection/readiness 和 durable runtime receipt。
 
-仍需真实环境完成：
+已归档的 E1 证明单节点 DRA/CDI 可见 UUID、注册、CUDA Trace 与清理；H1/H2 增加 HAMi
+份额兑现和双 worker 同卡并发。结果仅适用于各记录中的版本与环境，见
+[支持矩阵](../reference/current-capabilities.md)。
 
-- Kubernetes Pod/init container、Service/NetworkPolicy 与 Pod restart；
-- NVIDIA DRA/CDI 的实际可见 UUID；
-- host MPS server PID 与共享状态目录；
-- 真实 veRL/Ray/PyTorch/vLLM callbacks；
-- GPU pause/offload/reload、MIG rebind 与 Gate G/I 证据。
+仍需目标环境验证：
+
+- Pod restart、跨节点 endpoint、NetworkPolicy 与异常退出恢复；
+- host MPS server PID、共享目录及份额是否影响目标 worker；
+- 完整 veRL trainer/collective/checkpoint/offload/reload 与真实显存释放；
+- MIG rebind、部分失败、超时和未知结果调和。
+
+bootstrap CLI 单独运行的 listener 默认值仍为 `50092`；Operator compiler 显式传动态端口，
+不能把 CLI 默认值写成所有 Pod 的固定端口。

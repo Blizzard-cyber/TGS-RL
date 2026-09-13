@@ -371,6 +371,10 @@ checkpoint、Replay、Experiment 和 component status，并启用 WAL、完整�
 migration。一次 Sandbox 观察会将 sandbox、unit、event 和 component status 作为同一事务
 提交，再更新内存投影。
 
+SQL 迁移随 Python sdist/wheel 发布；目录缺失或为空时启动立即报错，而不是创建一个不完整的
+空数据库。修复安装包后重试，不要删除已有数据库绕过错误。独立安装回归见
+`tests/governance/test_packaging.py`。
+
 进程启动时会从 SQLite 重建：
 
 - RuntimeManifest；

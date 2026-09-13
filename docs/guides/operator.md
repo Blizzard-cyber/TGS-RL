@@ -162,9 +162,9 @@ Scheduler registry 和 bootstrap control endpoint 都没有内建 TLS；明文 H
 ## Kubernetes 部署工件
 
 本地 Kubernetes 工具链固定 Minikube `1.38.1`、Kubernetes `1.35.1` 和 Kueue
-`0.19.2`；kubectl 应与 API server 保持在同一 minor 或相邻 minor。仓库目前验证的是
-manifest/Helm、HTTP client 与 RBAC 契约；在实际集群完成 smoke 前，不应把这些静态和模拟
-检查写成真实 API Server、恢复、GPU 或 CUDA 证据。
+`0.19.2`；kubectl 应与 API server 保持在同一 minor 或相邻 minor。E1/H1/H2 已在专用
+单节点 GPU smoke 路径验证设备兑现、注册和 CUDA Trace；Helm 工件仍以模板/参数契约校验为主，
+不把 smoke 的成功推广为全栈 Helm 安装、网络策略或所有故障恢复已验证。
 
 ```bash
 minikube start --profile tgsrl --driver=docker --kubernetes-version=v1.35.1
@@ -200,8 +200,8 @@ Device Plugin 或 HAMi。默认 NetworkPolicy 只允许 TGS-RL/managed-workload 
 并开放 Console Service；入口控制器或代理仍需由部署方配置 TLS、认证和授权。
 Scheduler 与 Runtime 默认使用镜像内的锁定配置图；`config.existingConfigMap` 可把同一份
 外部配置只读挂载给两者。worker registry signing key 不放入通用 ConfigMap 或全局环境，
-只通过同名 Secret 挂载给 Scheduler 与 Operator。
-`scripts/deploy-full-stack.sh upgrade ./values.production.yaml` 使用 Helm 原子升级与等待；
+通过同名 Secret 挂载给 Scheduler、Operator 和需要验证 worker Trace 的 Runtime，不注入 workload。
+`scripts/deploy-full-stack.sh upgrade ./values.production.yaml` 使用 Helm 4 的失败回滚与等待；
 `scripts/deploy-full-stack.sh rollback REVISION` 回退到已有 release revision。CRD 仍需在升级前
 单独审查，因为 Helm 不会通过普通 upgrade 更新 `crds/`。
 
@@ -209,7 +209,9 @@ Scheduler 与 Runtime 默认使用镜像内的锁定配置图；`config.existing
 `"kubernetes-dra,hami-vgpu"`；引号用于保证 YAML 将逗号分隔值作为一个字符串传给
 Operator。Operator 启动日志会记录 profile 候选以及 discovery 选择的 Kueue 和 DRA API
 版本。若所有 GPU profile、Kueue API 或 RBAC 均不可用，
-启动前置检查会失败。
+启动前置检查会失败。该字段仅配置 Operator，不会自动接好 Scheduler 的 NVIDIA v2、helper、
+host GPU/PID 与共享挂载。通用 GPU Helm 集成仍需补齐，第一次实机验证请走
+[GPU Smoke](gpu-smoke.md)；各工件边界见[部署指南](deployment.md)。
 
 仓库不假定已有公开镜像。先从当前源码构建默认镜像，并按集群运行时要求将其加载到
 目标集群或推送到你自己的镜像仓库：
@@ -276,8 +278,8 @@ umbrella chart 的 `crds/` 会在首次安装时创建 CRD，但 Helm 不会自�
 
 这些独立 Operator 工件假定 Scheduler、Job Controller、Runtime、上述外部 CRD、
 Kueue 和所选 GPU/DRA 依赖已经由部署者提供；umbrella chart 补齐前三个控制面依赖，
-但 Kueue 与 GPU/DRA 依赖仍由平台侧提供。所有 Kubernetes 工件当前只有模板和镜像
-契约验证，不构成真实集群兼容性、可用性或性能证明。
+但 Kueue 与 GPU/DRA 依赖仍由平台侧提供。Helm render 与镜像合同不构成集群安装证明；
+已有 E1/H1/H2 只覆盖对应版本、专用环境和设备路径。
 
 ## Lifecycle control
 

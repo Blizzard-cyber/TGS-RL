@@ -319,9 +319,7 @@ def test_hami_control_plane_selects_profile_and_two_worker_manifest_together() -
 
 def test_hami_concurrency_smoke_requires_h2_to_pass() -> None:
     makefile = (ROOT / "Makefile").read_text(encoding="utf-8")
-    target = makefile.split("gpu-hami-concurrency-smoke:", 1)[1].split(
-        "\ngpu-restore-dra:", 1
-    )[0]
+    target = makefile.split("gpu-hami-concurrency-smoke:", 1)[1].split("\ngpu-restore-dra:", 1)[0]
 
     assert "--campaign configs/gates/hami-concurrency-smoke.json" in target
     assert "--experiment H2" in target

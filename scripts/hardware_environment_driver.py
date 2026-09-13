@@ -615,9 +615,7 @@ class _StateLock:
                 self.state = {"schema_version": STATE_SCHEMA, "runs": {}}
             runs = _mapping(self.state.get("runs"), label="hardware driver state runs")
             for value in runs.values():
-                _compact_cleaned_run(
-                    _mapping(value, label="hardware driver persisted run")
-                )
+                _compact_cleaned_run(_mapping(value, label="hardware driver persisted run"))
             self.ready = True
             return self.state
         except Exception:
@@ -967,9 +965,7 @@ def _worker_concurrency_overlap_ms(
             completions[sandbox_id] = max(completions.get(sandbox_id, observed), observed)
     for sandbox_id in sorted(set(starts) & set(completions)):
         if completions[sandbox_id] <= starts[sandbox_id]:
-            raise DriverError(
-                f"managed worker {sandbox_id} has a non-positive execution interval"
-            )
+            raise DriverError(f"managed worker {sandbox_id} has a non-positive execution interval")
         intervals[sandbox_id] = (starts[sandbox_id], completions[sandbox_id])
     if len(intervals) != required_workers:
         raise DriverError(
@@ -1781,18 +1777,23 @@ class HardwareEnvironmentDriver:
         self._wait_operation(gateway, operation_id, target)
         return result
 
+    @staticmethod
+    def _read_operation(gateway: Gateway, operation_id: str) -> JsonObject:
+        payload = gateway.get(f"/v1/operations/{parse.quote(operation_id, safe='')}")
+        operation = _mapping(payload.get("operation"), label="operation")
+        if operation.get("state") == "OPERATION_STATE_FAILED":
+            raise TerminalDriverError(
+                f"TGS-RL operation {operation_id} failed: {operation.get('errorMessage', '')}"
+            )
+        return payload
+
     def _wait_operation(
         self, gateway: Gateway, operation_id: str, target: TargetConfig
     ) -> JsonObject:
         def poll() -> JsonObject | None:
-            payload = gateway.get(f"/v1/operations/{parse.quote(operation_id, safe='')}")
+            payload = self._read_operation(gateway, operation_id)
             operation = _mapping(payload.get("operation"), label="operation")
-            state = str(operation.get("state", ""))
-            if state == "OPERATION_STATE_FAILED":
-                raise TerminalDriverError(
-                    f"TGS-RL operation {operation_id} failed: {operation.get('errorMessage', '')}"
-                )
-            return payload if state == "OPERATION_STATE_SUCCEEDED" else None
+            return payload if operation.get("state") == "OPERATION_STATE_SUCCEEDED" else None
 
         return cast(
             JsonObject,
@@ -1823,6 +1824,8 @@ class HardwareEnvironmentDriver:
     ) -> JsonObject:
         def poll() -> JsonObject | None:
             gateway = Gateway(target.gateway_url, target.timeout)
+            if action == "bind" and run.get("start_operation_id"):
+                self._read_operation(gateway, str(run["start_operation_id"]))
             payload = gateway.get(
                 f"/v1/jobs/{parse.quote(str(run['job_id']), safe='')}/decisions"
                 f"?run_id={parse.quote(str(run['run_id']), safe='')}&limit=100"
@@ -2334,9 +2337,7 @@ class HardwareEnvironmentDriver:
             raise DriverError("job template desiredUnits is below the scenario worker requirement")
         version_lock = _mapping(lock.get("version_lock"), label="workload_lock.version_lock")
         if runtime.get("compatibilityProfile") != version_lock.get("compatibility_profile"):
-            raise DriverError(
-                "job template compatibilityProfile does not match workload_lock"
-            )
+            raise DriverError("job template compatibilityProfile does not match workload_lock")
         capabilities = _mapping(job.get("requiredCapabilities"), label="job.requiredCapabilities")
         names = capabilities.get("names", [])
         if not isinstance(names, list) or "nvidia-gpu" not in names:

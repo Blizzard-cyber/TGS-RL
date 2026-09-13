@@ -10,12 +10,11 @@ import os
 import time
 import uuid
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from typing import Any, cast
 
 import grpc
-from google.protobuf import json_format
 from tgsrl.v1 import (
-    execution_pb2,
     runtime_pb2,
     runtime_pb2_grpc,
     scheduling_pb2,
@@ -26,105 +25,17 @@ from tgsrl_gateway.sdk import GatewayClient
 from tgsrl_runtime.duration import to_timestamp
 from tgsrl_runtime.trace_auth import sign_trace_request
 
-from adapters.contracts import canonical_contract_id
-
 type JsonObject = dict[str, Any]
 
 _LOCAL_TRACE_SIGNING_KEY = b"tgsrl-local-worker-trace-signing-key-v1"
 
 
 def _job_payload(name: str) -> JsonObject:
-    contract: JsonObject = {
-        "contractId": "computed-below",
-        "version": "1.0.0",
-        "phaseGraph": {
-            "phases": [
-                {
-                    "phaseId": "decode",
-                    "displayName": "Decode",
-                    "kind": "PHASE_KIND_DECODE",
-                    "parallelism": 1,
-                    "maxAttempts": 1,
-                }
-            ],
-            "entryPhaseIds": ["decode"],
-        },
-        "validityRules": [
-            {
-                "ruleId": "synthetic-only",
-                "description": "Only generated local data is used",
-                "expression": "data_kind == synthetic",
-                "failureMode": "VALIDITY_FAILURE_MODE_REJECT",
-            }
-        ],
-        "versionConstraints": [
-            {
-                "component": "protocol",
-                "operator": "VERSION_OPERATOR_COMPATIBLE",
-                "version": "0.3.0",
-                "source": "compose-smoke",
-                "revision": "1",
-            }
-        ],
-        "commitPolicy": {
-            "mode": "COMMIT_MODE_ALL_OR_NOTHING",
-            "minimumSuccessfulUnits": 1,
-            "maxRetries": 1,
-            "commitTimeout": "30s",
-        },
-        "backpressurePolicy": {
-            "mode": "BACKPRESSURE_MODE_BLOCK_PRODUCER",
-            "lowWatermark": "1",
-            "highWatermark": "2",
-            "maximumBufferLevel": "4",
-            "stallTimeout": "30s",
-        },
-        "safePointPolicy": {"enabled": False},
-        "capabilities": {"deterministicReplay": True},
-    }
-    message = execution_pb2.ExecutionContract()
-    json_format.ParseDict(contract, message)
-    contract["contractId"] = canonical_contract_id(message)
-    return {
-        "displayName": name,
-        "protocolVersion": "v0.3",
-        "createdAt": "2026-01-01T00:00:00Z",
-        "algorithm": "grpo",
-        "runtime": {
-            "framework": "fake",
-            "frameworkVersion": "1.0.0",
-            "executionBackend": "fake",
-            "executionBackendVersion": "1.0.0",
-            "trainer": "fake",
-            "trainerVersion": "1.0.0",
-            "rolloutEngine": "fake",
-            "rolloutEngineVersion": "1.0.0",
-            "imageDigest": "sha256:" + "1" * 64,
-            "compatibilityProfile": "cpu-mock-v1",
-            "command": ["python", "-c", "print('local fake runtime')"],
-        },
-        "executionContract": contract,
-        "resourcesPerUnit": {"cpuMillis": "1000", "memoryBytes": str(512 << 20)},
-        "requiredCapabilities": {
-            "names": ["logical-cpu"],
-            "algorithms": ["grpo"],
-            "rolloutModes": ["partially_async"],
-            "source": "mock",
-            "revision": "1",
-            "supportedActions": ["bind"],
-        },
-        "desiredUnits": 2,
-        "priority": 1,
-        "queue": "default",
-        "labels": {
-            "quota_group": "default",
-            "allow_preemption": "false",
-            "local_smoke": name,
-        },
-        "rolloutMode": "ROLLOUT_MODE_PARTIALLY_ASYNC",
-        "policyRef": "1",
-        "dataKind": "DATA_KIND_SYNTHETIC",
-    }
+    path = Path(__file__).resolve().parents[1] / "configs/cpu-job.example.json"
+    job = cast(JsonObject, json.loads(path.read_text(encoding="utf-8")))
+    job["displayName"] = name
+    job["labels"]["local_smoke"] = name
+    return job
 
 
 def _wait_for_run(

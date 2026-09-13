@@ -14,12 +14,15 @@ def _apply_migration_script(connection: sqlite3.Connection, script: str) -> None
 
 
 def apply_migrations(connection: sqlite3.Connection, *, migrations_dir: Path) -> None:
+    migrations = sorted(migrations_dir.glob("*.sql"))
+    if not migrations:
+        raise FileNotFoundError(f"SQLite migration files are missing: {migrations_dir}")
     connection.execute("CREATE TABLE IF NOT EXISTS schema_migrations (version TEXT PRIMARY KEY)")
     applied = {
         row["version"]
         for row in connection.execute("SELECT version FROM schema_migrations ORDER BY version")
     }
-    for migration in sorted(migrations_dir.glob("*.sql")):
+    for migration in migrations:
         if migration.name in applied:
             continue
         script = migration.read_text(encoding="utf-8")

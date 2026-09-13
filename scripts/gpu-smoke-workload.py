@@ -64,10 +64,7 @@ def main() -> int:
     args = parser.parse_args()
     if args.iterations <= 0 or args.matrix_size <= 0:
         raise SystemExit("iterations and matrix-size must be positive")
-    if (
-        not math.isfinite(args.iteration_delay_seconds)
-        or args.iteration_delay_seconds < 0
-    ):
+    if not math.isfinite(args.iteration_delay_seconds) or args.iteration_delay_seconds < 0:
         raise SystemExit("iteration-delay-seconds must be finite and non-negative")
     if not torch.cuda.is_available():
         raise SystemExit("CUDA is unavailable in the managed workload")

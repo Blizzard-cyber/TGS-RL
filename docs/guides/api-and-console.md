@@ -138,18 +138,20 @@ allocation、pending unit、revision 和观察时间。它是调度资源账本�
 
 ### 校验、创建并运行 Job
 
-Job 请求体是 `tgsrl.v1.RLTrainingJob` 的 Protobuf JSON 表示。不同 Runtime、
-执行契约和资源需求需要不同字段，本文不提供一个看似完整但无法在你的后端运行的
-缩略载荷。请准备完整的 `job.json`，先校验，再创建：
+Job 请求体是 `tgsrl.v1.RLTrainingJob` 的 Protobuf JSON 表示。默认 CPU Mock/fake 栈直接使用
+[`configs/cpu-job.example.json`](../../configs/cpu-job.example.json)，它与 Compose smoke 共用。
+可复制为本机 `job.json` 后再改名称；执行契约变更必须由 adapter 重算 canonical ID。
+真实 GPU 任务应使用 GPU 指南中的完整模板，不能只把示例的资源字段改成 GPU。
+先校验，再创建：
 
 ```bash
 uv run --frozen tgsrl validate-job \
-  --job ./job.json \
+  --job configs/cpu-job.example.json \
   --idempotency-key validate-job-example-1 \
   --request-id request-validate-example-1
 
 uv run --frozen tgsrl create-job \
-  --job ./job.json \
+  --job configs/cpu-job.example.json \
   --idempotency-key create-job-example-1 \
   --request-id request-create-example-1
 ```
@@ -215,7 +217,7 @@ Operation、Timeline、Sandbox 和 Decision 接口确认最终结果。
 1. 如果参数值是一个已存在的路径，CLI 以 UTF-8 读取该文件并解析 JSON；
 2. 否则，CLI 将参数值本身解析为行内 JSON。
 
-因此可以传 `--job ./job.json`，也可以将完整 JSON 对象作为一个正确引用的 shell
+因此可以传 `--job configs/cpu-job.example.json`，也可以将完整 JSON 对象作为一个正确引用的 shell
 参数传给 `--job`。这里没有 `@file` 语法，也不支持用 `-` 从标准输入读取请求体。
 若一个行内字符串恰好与现有路径同名，文件输入优先。
 

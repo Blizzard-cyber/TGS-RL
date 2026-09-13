@@ -1,56 +1,61 @@
 # TGS-RL 文档
 
-TGS-RL 由 **Job & Product Control**、**Runtime, Trace & Experiments** 和
-**Scheduling & Infrastructure Control** 三个系统组成。第一次使用时，建议先通过
-Docker Compose 启动单机栈，再根据需要选择 Console、CLI、Python SDK 或 HTTP API。
+TGS-RL 连接强化学习的任务控制、训练语义、资源调度与进程执行。第一次接触项目，建议按
+**理解问题 → 本机运行 → 查看执行证据 → 阅读组件实现**的顺序阅读。
 
 ## 开始使用
 
-- [快速上手](getting-started.md)：安装、启动、健康检查、提交首个 Job，以及停止和恢复。
-- [单机 GPU 全链路 Smoke](guides/gpu-smoke.md)：空白 Ubuntu GPU 主机的依赖安装、
-  Minikube/Kueue/DRA、镜像、前后端启动、E1 证据与故障定位。
-- [HAMi vGPU 接入](guides/hami.md)：让未启用 MIG 的设备按算力/显存份额参与调度，
-  并保持 Scheduler UUID、Pod allocation 与 worker 可见设备一致。
-- [API、CLI 与 Console](guides/api-and-console.md)：调用 HTTP API，使用 CLI/SDK，配置 Console。
-- [支持范围与限制](reference/current-capabilities.md)：选择本地、外部框架、NVIDIA 或 Kubernetes
-  方案前需要满足的条件。
-- [贡献指南](../CONTRIBUTING.md)：开发环境、变更边界与提交前检查。
-- [安全策略](../SECURITY.md)：漏洞报告入口与部署安全边界。
-- [Apache License 2.0](../LICENSE)：使用、修改与分发本项目的许可证条款。
+| 你想做什么 | 阅读入口 |
+|---|---|
+| 了解项目解决什么问题 | [项目首页](../README.md) |
+| 在本机启动前后端、提交第一个任务 | [快速上手](getting-started.md) |
+| 通过 HTTP、CLI、SDK 操作任务和 Trace | [API、CLI 与 Console](guides/api-and-console.md) |
+| 在 Kubernetes 部署控制面 | [部署指南](guides/deployment.md) |
+| 在空白 NVIDIA 主机验证全链路 | [单机 GPU Smoke](guides/gpu-smoke.md) |
+| 使用 HAMi 兑现单卡分数份额 | [HAMi vGPU 接入](guides/hami.md) |
+| 判断功能是否适合自己的环境 | [支持范围与限制](reference/current-capabilities.md) |
 
-## 配置各组件
+## 理解设计与实现
 
-- [Python Runtime](guides/python-runtime.md)：执行契约、Adapter、Trace、DAG、Replay、
-  Experiment 与 Intent。
-- [Scheduler](guides/scheduler-service.md)：调度 RPC、策略、Provider、指标、决策与恢复。
-- [Operator](guides/operator.md)：决策消费、对象编译、调和、Kubernetes 要求与恢复。
-- [配置、持久化与恢复](guides/configuration-and-recovery.md)：配置图、启动参数、状态目录、
-  备份和重启顺序。
+```mermaid
+flowchart LR
+  A[问题与边界] --> B[系统架构与对象身份]
+  B --> C[组件输入、状态与副作用]
+  C --> D[进程控制与设备回读]
+  D --> E[故障恢复与证据核对]
+```
 
-## 理解系统
+| 层次 | 文档 | 重点 |
+|---|---|---|
+| 顶层设计 | [系统架构](design/system-design.md) | 问题、上游复用、职责、对象关系、正常/失败链路 |
+| 组件实现 | [源码与组件导读](maintainers/code-walkthrough.md) | 输入输出、核心函数、状态权威、扩展与测试入口 |
+| 执行层 | [Managed-worker bootstrap](design/managed-worker-bootstrap.md) | 身份、令牌、PID、socket、注册、退出与代际隔离 |
+| 硬件扩展 | [Provider 扩展](design/accelerator-extension.md) | 厂商中立接口、NVIDIA 实现、未来插件边界 |
+| 故障恢复 | [配置、持久化与恢复](guides/configuration-and-recovery.md) | 启动参数、数据目录、重启顺序与未知结果 |
+| 设计依据 | [架构决策记录](adr/README.md) | Proto-first、Mock-first、设备身份与能力感知 |
 
-- [项目设计、代码导读与工程 Review](project-design-and-code-review.md)：单文档理解项目目标、
-  架构、端到端控制链、状态权威、源码入口、恢复、安全、部署、测试和真实环境准入。
-- [系统架构](design/system-design.md)：组件职责、端到端控制流、状态权威和部署边界。
-- [加速器 Provider 扩展设计](design/accelerator-extension.md)：当前 NVIDIA 支持边界，以及未来
-  新增 NPU/TPU/其他厂商 Provider 与 Operator adapter 的稳定接口。
-- [E1–E8 硬件验证 Campaign](design/gate-e1-e8.md)：实验矩阵、证据合同与 fail-closed 发布准入。
-- [E1 单节点 Full GPU 验证记录](validation/e1-full-gpu-2026-09-12.md)：真实 A10、DRA、
-  managed worker、CUDA、Trace 与 cleanup 的脱敏验收摘要。
-- [H1 单节点 HAMi 分数 GPU 验证记录](validation/h1-hami-vgpu-2026-09-12.md)：真实 A10、
-  40% core/显存份额、UUID 对账、重复执行与 DRA 恢复的验收摘要。
-- [H2 单节点 HAMi 双 worker 并发验证记录](validation/h2-hami-concurrency-2026-09-13.md)：
-  两个真实 CUDA worker 共享同一 A10 UUID、各自 40% 份额和执行重叠的验收摘要。
-- [Managed-worker bootstrap](design/managed-worker-bootstrap.md)：Pod 内进程监管、身份、注册、
-  生命周期控制、安全边界与真实环境验证要求。
-- [源码导读与维护边界](maintainers/code-walkthrough.md)：按真实调用链理解状态、事务、
-  恢复、NVIDIA/veRL 执行和 Gate 证据。
-- [维护者开发指南](maintainers/development.md)：测试分层、性能 benchmark、完整门禁和提交边界。
-- [仓库卫生与发布内容](maintainers/repository-hygiene.md)：哪些文件必须提交、哪些必须保持本地。
-- [架构决策记录](adr/README.md)：协议与资源抽象背后的设计约束。
+## 配置与集成各组件
 
-Gateway 运行后可通过 `GET /openapi.json` 获取 OpenAPI 3.1 文档。也可以直接查看
-[`api/openapi.json`](../api/openapi.json)。
+- [Scheduler](guides/scheduler-service.md)：配置图、接口、候选与动作、Provider 和恢复。
+- [Python Runtime](guides/python-runtime.md)：ExecutionContract、Trace、DAG、Replay、Intent 与 adapter。
+- [Operator](guides/operator.md)：backend、Bundle、DRA/HAMi、bootstrap、RBAC 与 cursor。
 
-文档以当前代码和机器可读配置为准，不把历史 commit、某次 CI run 或本机实验结果当作永久
-能力声明。提交前运行 `make check-docs`，验证本地链接、Make 目标和 `tgsrl` CLI 命令引用。
+指南描述**如何使用**；设计页解释**为什么这样实现**；源码导读定位**在哪里修改**。
+三类文档不混入滚动 CI 数字或临时进度百分比。
+
+## 维护与验证
+
+| 主题 | 文档 |
+|---|---|
+| 开发依赖、无 Docker 启动、回归命令 | [开发指南](maintainers/development.md) |
+| Git、Docker context、Python wheel 的内容边界 | [仓库卫生与发布](maintainers/repository-hygiene.md) |
+| 本轮审查、已修复缺陷与未覆盖风险 | [工程审查记录](maintainers/engineering-review.md) |
+| 硬件场景与证据规则 | [E1–E8 设计](design/gate-e1-e8.md) |
+| Full GPU 实机结果 | [E1 验证记录](validation/e1-full-gpu-2026-09-12.md) |
+| HAMi 单 worker 份额 | [H1 验证记录](validation/h1-hami-vgpu-2026-09-12.md) |
+| HAMi 双 worker 同卡并发 | [H2 验证记录](validation/h2-hami-concurrency-2026-09-13.md) |
+
+验证记录只适用于其中写明的 commit、环境和场景；不能把 E1/H1/H2 或 CPU CI 解释为
+MIG/MPS、完整训练、生产可靠性或调度收益已证明。当前先完成工程链路验证，实验标定另行推进。
+
+参与项目请阅读[贡献指南](../CONTRIBUTING.md)和[安全策略](../SECURITY.md)。

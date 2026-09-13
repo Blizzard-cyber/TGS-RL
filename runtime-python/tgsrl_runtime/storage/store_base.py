@@ -38,7 +38,11 @@ class SQLiteStoreBase:
         self._connection.execute("PRAGMA foreign_keys=ON")
         self._connection.execute("PRAGMA temp_store=MEMORY")
         self._connection.execute("PRAGMA busy_timeout=5000")
-        self._migrate()
+        try:
+            self._migrate()
+        except Exception:
+            self._connection.close()
+            raise
         if str(self.path) != ":memory:":
             for database_file in (self.path, Path(f"{self.path}-wal"), Path(f"{self.path}-shm")):
                 if database_file.exists():

@@ -1715,10 +1715,8 @@ def _validate_campaign_requirements(
                     break
                 if execution_mode == "hami-vgpu" and (
                     event.get("allocation_mode") != "hami-vgpu"
-                    or event.get("requested_core_percent")
-                    != event.get("allocated_core_percent")
-                    or event.get("requested_memory_mib")
-                    != event.get("allocated_memory_mib")
+                    or event.get("requested_core_percent") != event.get("allocated_core_percent")
+                    or event.get("requested_memory_mib") != event.get("allocated_memory_mib")
                 ):
                     errors.append(f"{label} HAMi allocation does not match the requested share")
                     break
@@ -1728,9 +1726,7 @@ def _validate_campaign_requirements(
             )
             for iteration in sorted(identity_iterations):
                 iteration_identities = [
-                    event
-                    for event in identities
-                    if int(event.get("iteration", 0)) == iteration
+                    event for event in identities if int(event.get("iteration", 0)) == iteration
                 ]
                 sandboxes = {
                     str(event.get("sandbox_id", ""))
@@ -1766,9 +1762,7 @@ def _validate_campaign_requirements(
                         int(event.get("allocated_core_percent", 0))
                         for event in iteration_identities
                     )
-                    expected_total = int(
-                        requirements.get("expected_total_core_percent", 0)
-                    )
+                    expected_total = int(requirements.get("expected_total_core_percent", 0))
                     if len(shared_ids) != 1:
                         errors.append(
                             f"{label} shared device identity does not converge on one GPU"
@@ -1779,9 +1773,7 @@ def _validate_campaign_requirements(
                         or requested_total != expected_total
                         or requested_total > 100
                     ):
-                        errors.append(
-                            f"{label} shared device aggregate share is invalid"
-                        )
+                        errors.append(f"{label} shared device aggregate share is invalid")
                         break
             if requirements.get("shared_device_identity") is True:
                 concurrency = [
@@ -1790,9 +1782,7 @@ def _validate_campaign_requirements(
                     if event.get("event_type") == "worker_concurrency_verified"
                     and event.get("source") == "operator"
                 ]
-                concurrency_iterations = {
-                    int(event.get("iteration", 0)) for event in concurrency
-                }
+                concurrency_iterations = {int(event.get("iteration", 0)) for event in concurrency}
                 if concurrency_iterations != iterations or any(
                     int(event.get("worker_count", 0)) != minimum_workers
                     or not _is_finite_number(event.get("overlap_ms"))

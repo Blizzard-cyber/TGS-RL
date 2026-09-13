@@ -1,10 +1,55 @@
 # TGS-RL 系统架构与运行边界
 
-本页帮助部署者和集成方理解组件职责、调用链、状态归属以及故障恢复边界。TGS-RL
-使用 `tgsrl.v1` Protobuf/gRPC 契约连接三个系统；用户入口为 Console、CLI、Python SDK
-或 HTTP API。
+本页从问题讲到架构与状态模型；具体实现入口见[源码与组件导读](../maintainers/code-walkthrough.md)，
+运行步骤见[快速上手](../getting-started.md)。设计描述不是硬件验收报告，当前证据见
+[支持矩阵](../reference/current-capabilities.md)。
 
-## 总体架构
+## 1. 先理解问题
+
+强化学习流水线里的训练、采样、奖励计算与推理角色并非持续同时繁忙。阶段之间的等待、
+策略版本滞后、样本有效性和显存占用决定了资源能否安全复用；单纯提高 GPU 利用率不一定
+提高有效训练产出。
+
+```mermaid
+flowchart LR
+  A[训练 / 采样 / 推理] --> B[不同阶段负载与等待]
+  B --> C{只看 Pod 状态或 GPU 利用率?}
+  C --> D[不知道是否到达安全点]
+  C --> E[不知道样本是否有效]
+  C --> F[不知道调度动作是否生效]
+  D --> G[需要语义、决策与执行证据闭环]
+  E --> G
+  F --> G
+```
+
+TGS-RL 用 Trace 和结构化 observation 表达训练事实，用 ExecutionContract 声明安全约束，
+再把调度计划落实到可核对身份的资源与进程。有效更新吞吐（VUG）是设计目标，**不是当前
+已证明的收益**；本周期先验证系统接线、故障行为和可重复运行。
+
+| TGS-RL 提供 | 仍由外部系统提供 |
+|---|---|
+| Job/Run 生命周期、控制操作与查询 | 训练算法、数据集、模型、loss 与优化器 |
+| Intent、资源计划、动作事务与回执 | GPU 驱动、容器运行时和设备注入 |
+| Runtime/worker 观察态、Trace 与调度关联 | Kubernetes 节点/Pod 管理、Kueue 配额准入 |
+| 可插拔 Provider 与训练 adapter | 厂商硬件实现、框架版本适配和目标环境验证 |
+
+## 2. 复用了哪些开源组件
+
+| 组件 | 使用位置 | 复用边界 |
+|---|---|---|
+| Protobuf / gRPC / Buf | `proto/`、`gen/`、跨语言服务 | 契约与传输；业务状态机由本项目实现 |
+| Kubernetes | `operator-go/backend/`、`deploy/` | 对象持久化、Pod 生命周期和资源调度；不是 TGS-RL 的训练语义层 |
+| Kueue | Operator 的 Workload 投影 | 队列/配额准入；不替 TGS-RL 选择具体 UUID |
+| NVIDIA DRA / CDI | DRA profile 和 GPU smoke | 按 selector 分配并注入设备；Operator 再核对 allocation |
+| HAMi | `hami-vgpu` realization adapter | 使用资源/注解协议兑现份额；不复制其控制面或 WebUI 源码 |
+| veRL / Ray / PyTorch / vLLM | workload 镜像与 `adapters/` | 训练和推理执行；控制面不安装完整训练栈 |
+| SQLite | Runtime/Experiment 持久化 | 本机事务与恢复；不构成全局分布式事务 |
+| React / Vite | `console/` | 中文前端与构建；页面通过 Gateway 获取业务事实 |
+
+锁定版本见 `compatibility/bom/runtime.yaml`、各语言锁文件和 GPU workload 独立 hash lock；
+来源与补丁规则见 `upstream/`。HAMi 等外部集群组件不是 vendored 代码，部署版本需另行记录。
+
+## 3. 总体架构
 
 ```mermaid
 flowchart LR
@@ -60,7 +105,14 @@ Runtime 和 Experiment 是同一个 Python 进程中的两个 gRPC 服务，共�
 Operator 订阅 Scheduler 的 Decision stream，并在 `50081` 提供
 `RuntimeBackendControlService`，用于对 backend 对象执行带 generation fence 的生命周期操作。
 
-## 组件职责
+## 组件职责与设计原则
+
+- **Proto-first**：`proto/tgsrl/v1/` 是跨语言 wire contract 的唯一来源，不维护手写影子协议。
+- **双平面、三系统**：Python 解释训练语义，Go 承担调度和基础设施控制；产品生命周期独立于两者。
+- **多权威而非一个总状态**：Job、Runtime、Scheduler、Provider、backend 各自推进自己负责的状态。
+- **可重放但不盲重试**：幂等键去重、generation 防旧实例、cursor 定位消费；结果不明先回读。
+- **失败关闭**：未知能力、缺失观察或身份不一致时不执行危险动作，也不宣称成功。
+
 
 | 系统 | 组件 | 负责 | 不负责 |
 |---|---|---|---|
@@ -74,6 +126,37 @@ Operator 订阅 Scheduler 的 Decision stream，并在 `50081` 提供
 - Runtime unit、Sandbox、Trace、Replay 或 Experiment 问题先查询 Runtime；
 - 候选过滤、fallback 或资源动作问题先查询 Scheduler Decision；
 - workload 对象或 lifecycle 调和问题先检查 Operator 与实际 backend。
+
+## 对象关系与身份
+
+```mermaid
+flowchart TD
+  J[Job 用户声明] -->|多次 attempt| R[Run 不可变执行规格]
+  R --> M[RuntimeManifest]
+  M --> U[RuntimeUnit 逻辑训练角色]
+  U -->|可展开多个副本| I[SchedulingIntent / pending units]
+  I --> D[Decision / PlacementPlan]
+  D --> B[Binding 具体资源绑定]
+  B --> S[Sandbox 可控实例]
+  S --> W[bootstrap / worker incarnation]
+  W --> T[Trace / ContractObservation]
+  T --> I
+```
+
+| 身份 | 用途 | 不能混淆的边界 |
+|---|---|---|
+| `job_id` / `run_id` / `trace_id` | 任务、一次尝试与事件集合 | retry 创建新 Run，不复用旧执行规格 |
+| `runtime_unit_id` | 逻辑角色 | 不是唯一 worker；一个 Unit 可以有多个 Sandbox 副本 |
+| `sandbox_id` / `binding_id` | 可控实例与资源绑定 | rebind 的新绑定不能被旧消息覆盖 |
+| `generation` | 实例/绑定代际 fence | 不是队列位置，也不是请求去重键 |
+| `device_ids` | Scheduler 选定的具体资源 | 必须与 allocation 和 worker 可见身份一致 |
+| Pod UID / PID token | 一次进程 incarnation | PID 数值本身不足以防止复用误控 |
+| `decision_id` / `plan_id` / `action_id` | 决策到外部副作用 | 动作响应不等同于 workload 已收敛 |
+| `operation_id` / `idempotency_key` | 产品操作及安全重试 | 同 key 不同请求内容必须拒绝 |
+| `cursor` | 已完成 durable delivery 的消费位置 | 不能替代 generation 或幂等记录 |
+
+多副本 Trace 保留同一 logical unit，但逐事件核验具体 Sandbox、Binding、generation 和设备；
+不能用 Unit 的代表性 `sandbox_id` 排除合法的第二个 worker。
 
 ## Job 到 workload 的控制流
 
@@ -122,6 +205,38 @@ SandboxEvent 回报。Operation 在 Runtime 观察态收敛后完成。
 1. 为可重试写操作使用稳定、作用域明确的幂等键；
 2. 把命令返回理解为请求已接收，而不是 workload 已完成；
 3. 通过 Operation、Sandbox 和 Decision 接口观察最终状态。
+
+## 暂停、失败、取消与恢复
+
+```mermaid
+sequenceDiagram
+  participant J as Job Controller
+  participant R as Runtime
+  participant O as Operator / backend
+  participant W as bootstrap / worker
+  J->>J: 持久化 PAUSING 与 Operation
+  J->>R: pause + idempotency key
+  R->>R: 更新 desired state
+  R->>O: generation-fenced control
+  O->>W: cooperative callback 或受限 signal
+  W-->>O: 回执与独立 status
+  O->>R: SandboxEvent PAUSED
+  R->>J: 全部目标收敛的 ComponentStatus
+  J->>J: PAUSED / Operation SUCCEEDED
+```
+
+| 情况 | 处理 | 不能做的事 |
+|---|---|---|
+| 请求重复 | 核对请求 digest，复用幂等结果 | 重复启动第二个进程 |
+| RPC 超时/客户端断开 | 保留未完成或 ambiguous 状态，恢复后回读 | 认为没有收到响应就没有副作用 |
+| worker 启动失败或崩溃 | 上报失败，保留可诊断回执并回收所属资源 | 用 Pod active 推断训练正常 |
+| stop/terminate | 向当前身份下发终止，观察退出再收敛 | 直接删除无所有权证明的其他 workload |
+| 部分动作失败 | 按已持久化进度补偿；无法确认则 degraded | 把部分成功当作整个计划成功 |
+| 控制面重启 | 恢复 outbox、receipt、cursor，核对实际 backend | 仅加载数据库便声称任务已恢复 |
+
+北向命令为 `start/pause/resume/stop/retry/terminate`。资源级 share/offload/rebind 由调度链产生，
+不允许客户端绕过资源权威修改设备。signal pause 不释放 CUDA context 或显存；资源腾挪必须
+由支持 cooperative socket 的训练 callback 完成并确认。
 
 ## 调度与基础设施边界
 
@@ -218,7 +333,10 @@ binding/generation/device 集合的 HMAC 注册令牌。init container 从不可
 main container 由 bootstrap 启动真实子进程、维护进程组、PID token、
 Pod UID、私有 control token 与 HTTP control endpoint。Scheduler registry 先验证 scoped token、
 请求来源 IP、当前 Provider binding 和 Runtime 已观察到的 `BOUND` generation，再持久化注册并
-发布 `RUNNING` observation。Pod readiness 在注册成功且 worker 仍 Ready 前不会通过。worker
+发布 `RUNNING` observation。compiler 使用动态 control 端口（`--listen 0.0.0.0:0`），
+并配置 `ready --file /tmp/tgsrl/bootstrap-ready` exec probe；marker 随注册就绪状态维护，
+避免 hostNetwork 多副本争用固定端口。注册 marker 不是完整 GPU 健康探针，实际 worker
+状态仍需 registry/status 与 Operator 回读。worker
 退出后按 registration credential、instance、process token 和 generation 上报终态，旧进程不能
 覆盖替代进程。
 对具有 workload OCI artifact 的 Python 训练命令，Operator 还会注入所选 adapter 对应的
@@ -262,8 +380,23 @@ Job Controller 的内存与文件 Repository 使用相同的 copy-on-write 更�
 | Gateway | 环境变量与命令行参数 | gRPC 模式需连接四个逻辑服务；Runtime/Experiment 可共享 `50071` |
 | Console | Vite 环境变量与代理 | HTTP adapter 需要 Gateway；`mock` adapter 不发出 HTTP 请求 |
 
-配置声明用于能力匹配，不能替代实际 backend 的资源保证。互斥 GPU 管理 profile 不得
-同时启用；未知 capability 默认拒绝。
+配置声明用于能力匹配，不能替代实际 backend 的资源保证。Operator 可配置有序 DRA/HAMi
+候选，但底层同一卡上的互斥 Device Plugin/管理组件不能未经协调同时接管；未知 capability 默认拒绝。
+
+## 部署形态不是同一套证据
+
+| 形态 | 控制面 | workload | 验证边界 |
+|---|---|---|---|
+| 默认 Compose | 六服务、CPU Mock | fake bundle | 产品控制、Synthetic Trace；不执行训练命令 |
+| CPU process Gate | 五个后端进程 | 本机 bootstrap + worker/socket | 进程与服务接线；没有 Console 或 Kubernetes |
+| GPU smoke | Linux host-network Compose 控制面 | Kubernetes Job + CUDA worker | E1/H1/H2 对应设备路径；不是 Helm 实装证据 |
+| 全栈 Helm | namespace 内六服务 | 按配置选择 backend/profile | 默认 CPU 配置；GPU 需补 NVIDIA helper、可见设备和网络挂载 |
+
+`Dockerfile.services` 把控制面打包为独立镜像，`Dockerfile.worker-bootstrap` 提供监管二进制，
+`Dockerfile.gpu-smoke` 锁定 CUDA 训练依赖。Python wheel 必须携带 SQLite SQL 迁移，缺失时
+启动直接失败；只从 checkout 进行 editable 安装不足以验证发布包。
+
+完整安装、镜像输入与 Helm 限制见[部署指南](../guides/deployment.md)。
 
 ## 单机端口
 
@@ -277,7 +410,7 @@ Job Controller 的内存与文件 Repository 使用相同的 copy-on-write 更�
 | Gateway | `127.0.0.1:8080` | HTTP / JSON |
 | Console | `127.0.0.1:4173` | HTTP |
 | Scheduler worker registry（可选） | `50091` | HTTP(S)；GPU smoke 监听 `0.0.0.0` 供 Pod 回连 |
-| Worker bootstrap control（Pod 内） | `50092` | HTTP；由 Operator 通过 Pod IP 访问 |
+| Worker bootstrap control（Pod 内） | 动态端口 | compiler 传 `--listen 0.0.0.0:0`，向 registry 发布实际 endpoint；单独运行 CLI 的默认值为 `50092` |
 
 Compose 使用 CPU Mock Provider、fake Operator backend 和 named volumes。手动运行时，
 Gateway 的 Runtime target 与 Experiment target 都应指向 Runtime 的同一地址。

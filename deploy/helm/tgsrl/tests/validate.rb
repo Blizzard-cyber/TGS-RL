@@ -64,6 +64,20 @@ begin
   script_output, script_status = Open3.capture2e("bash", DEPLOY_SCRIPT, "render")
   assert(script_status.success? && script_output.include?("kind: Deployment"), "deployment script must render the staged full chart")
 
+  script_source = File.read(DEPLOY_SCRIPT)
+  %w[install upgrade].each do |action|
+    help, help_status = Open3.capture2e("helm", action, "--help")
+    assert(help_status.success?, "helm #{action} help failed")
+    supported_flags = help.scan(/--[a-z][a-z-]*/).uniq
+    command_lines = script_source.lines.select { |line| line.strip.start_with?("helm #{action} ") }
+    assert(!command_lines.empty?, "deployment script must implement #{action}")
+    command_lines.each do |line|
+      unknown_flags = line.scan(/--[a-z][a-z-]*/).uniq - supported_flags
+      assert(unknown_flags.empty?, "unsupported helm #{action} flags: #{unknown_flags.join(', ')}")
+      assert(line.include?("--rollback-on-failure"), "helm #{action} must roll back failed changes")
+    end
+  end
+
   lint_output, lint_status = Open3.capture2e("helm", "lint", chart)
   assert(lint_status.success?, "helm lint failed:\n#{lint_output}")
 

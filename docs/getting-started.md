@@ -1,339 +1,178 @@
 # 快速上手
 
-本指南在一台主机上启动 TGS-RL 的六个组件，并完成健康检查与 Job 生命周期操作。
-默认方案使用 CPU Mock Provider 和 fake Operator backend，不需要 GPU、CUDA 或
-Kubernetes。该方案运行完整控制链，但不会创建真实基础设施资源或执行真实训练。
+本指南让你在本机启动六个服务，并完成第一个任务的生命周期。默认是 **CPU Mock Provider +
+fake Operator**：请求经过真实服务，但 workload 是逻辑对象，不执行模型训练或 GPU 命令。
 
-## 1. 选择启动方式
+需要理解系统再运行，可先看[系统设计](design/system-design.md)；无 Docker 的源码开发方式见
+[开发指南](maintainers/development.md)，GPU 主机使用[GPU Smoke 指南](guides/gpu-smoke.md)。
 
-### Docker Compose
+## 1. 准备与启动
 
-主机要求：Docker Engine 和 Docker Compose v2。Compose 负责准备组件运行环境，
-无需在主机安装 Go、Python、`uv` 或 Node.js。
+需要 Git、Docker Engine 和 Docker Compose v2。执行 `docker info` 确认 daemon 可用，
+执行 `docker compose version` 确认 Compose 可用。宿主机不需要 Python、Go、Node.js 或 CUDA。
 
 ```bash
+git clone https://github.com/Blizzard-cyber/TGS-RL.git
+cd TGS-RL
 docker compose up -d --build --wait
+docker compose ps
 ```
 
-Compose 启动 Scheduler、Runtime/Experiment、Job Controller、Operator、Gateway 和
-Console。首次启动需要下载基础镜像和依赖。所有宿主机端口只绑定到 `127.0.0.1`，
-四个有状态组件使用 named volumes。服务就绪后打开 <http://127.0.0.1:4173>。
-Console 默认使用中文，主导航包含运行总览、任务中心、链路追踪、算力资源和实验对比。启动任务后，
-可以从任务详情进入链路追踪，查看 Runtime 持久化的 `TraceEvent` 时间轨，并关联对应的
-Run、Decision 和 Sandbox。
-链路页面在一条统一横向时间轴上展示训练阶段、请求处理、推理调度和工作进程轨道。
-点击“跨轨调用关联”中的请求，可以同时高亮该请求对应的 Executor 与 Worker 片段；
-事件详情会显示耗时、批量大小、设备、span/parent span 和代际。真实事件未携带
-`duration_ms`、`duration_us` 或 `duration_ns` 时会显示为菱形瞬时事件，不会推测时长。
+首次启动会拉取镜像和安装依赖。失败时先看报错及 `docker compose logs --tail=100`，
+不要通过删除数据卷来解决依赖或网络问题。
 
-用 Console 同源代理执行六服务生命周期验收。该命令完全在 Docker 中运行，宿主机不需要
-安装 Python 或 `uv`：
+| 入口 | 用途 |
+|---|---|
+| <http://127.0.0.1:4173> | 中文 Console |
+| <http://127.0.0.1:8080/health> | Gateway 依赖诊断 |
+| <http://127.0.0.1:4173/openapi.json> | 同源 OpenAPI 文档 |
+| <http://127.0.0.1:9090/metrics> | Scheduler 指标 |
+
+所有宿主机端口绑定 loopback。请勿直接把未鉴权的 Gateway/gRPC 暴露到公网。
+
+## 2. 先跑一次完整检查
 
 ```bash
 docker compose --profile tools run --rm --no-deps smoke
 ```
 
-该 smoke 会新建一个 CPU/Mock Job，依次完成 `start`、`pause`、`resume`、`stop`，并验证
-Scheduler Decision、Runtime Trace、两个 Sandbox 的终态以及 Scheduler allocation 回收。启动成功后，
-它还会以当前 RuntimeUnit、Sandbox、Binding 和 generation 身份，通过正式 HMAC 鉴权 RPC 发布一组
-`DATA_KIND_SYNTHETIC` 多轨 Trace，供本机验证请求到 Executor/Worker 的可视化；这些数据明确是
-CPU/Mock 合成证据，不能解释为 GPU 性能。它保留现有数据，
-适合每次重启或升级后重复运行。建议至少执行一次以下恢复检查：
+通过标准是输出 `"status": "ok"`，而不只是容器显示 healthy。检查包含：
 
-```bash
-docker compose --profile tools run --rm --no-deps smoke
-docker compose restart
-docker compose up -d --wait
-docker compose --profile tools run --rm --no-deps smoke
+```text
+创建任务 → 准入 → 启动 → 暂停 → 恢复 → 停止
+                    ├─ Scheduler Decision
+                    ├─ 两个 Sandbox 终态
+                    ├─ Synthetic 多轨 Trace 写入与查询
+                    └─ Scheduler allocation 回收
 ```
 
-第二次 smoke 能继续获得资源，说明各组件从原 named volumes 恢复后没有被旧 delivery、
-已终止 allocation 或已淘汰的 Decision 审计阻塞。
+脚本使用 [`configs/cpu-job.example.json`](../configs/cpu-job.example.json) 创建独立任务，
+不会删除已有用户任务。注入的 Trace 明确标为 `DATA_KIND_SYNTHETIC`，用于验证展示和关联，
+不代表真实推理时长或 GPU 利用率。
 
-停止进程并保留容器与数据：
+## 3. 自己提交第一个任务
 
-```bash
-docker compose stop
-```
+### 方式 A：中文 Console
 
-删除容器与网络但保留 named volumes：
+1. 打开任务中心，进入创建任务的 JSON 输入。
+2. 粘贴 `configs/cpu-job.example.json` 的完整内容，校验后创建。
+3. 对新任务执行准入，得到一次 Run；再对该 Run 执行启动。
+4. 查看 Run、Operation、Sandbox 和 Decision，等待观察态进入 `RUNNING`。
+5. 每次等待前一操作完成后，再执行暂停、恢复或停止。
 
-```bash
-docker compose down
-```
+### 方式 B：容器内 CLI
 
-只有在确认不再需要 Job、Run、Replay、Decision 和恢复状态时，才删除 volumes：
-
-```bash
-docker compose down --volumes
-```
-
-### Kubernetes 全栈工件
-
-`Dockerfile.services` 提供 Scheduler、Job Controller、Runtime、Gateway 和 Console 的
-production image targets；Operator 与 worker-bootstrap 使用各自 Dockerfile。部署脚本会在
-临时目录构建本地 Operator 子 chart 依赖：
+下面命令在已挂载示例和 Python 源码的 Runtime 容器内运行 CLI，通过服务名访问 Gateway，
+不在容器内重新安装项目。先在当前终端定义快捷函数：
 
 ```bash
-scripts/deploy-full-stack.sh render
-scripts/deploy-full-stack.sh install ./values.production.yaml
+tgsrl_local() {
+  docker compose exec -T \
+    -e PYTHONPATH=/workspace/gateway-python:/workspace/gen/python \
+    runtime python -m tgsrl_gateway "$@" --base-url http://gateway:8080
+}
 ```
 
-默认 tag 只用于本地镜像验证。真实环境必须为六个服务和 bootstrap 配置已推送的不可变
-digest，并预先安装 Kueue 与所选 DRA/HAMi GPU 控制器。单节点 A10 的 Full GPU
-DRA/bootstrap/CUDA E1 已有真实验证记录。仓库另提供锁定 HAMi 2.10.0 的专用 Minikube
-H1/H2 切换与 smoke 命令，真实 A10 单 worker 兑现和双 worker 同卡并发均已通过，详见
-[HAMi vGPU 接入](guides/hami.md)。HAMi OOM/公平性/动态份额、MIG、MPS、多节点和完整模型
-训练仍待各自目标环境证据，不能由 Helm render 或本机测试替代。
-Scheduler 与 Runtime 默认读取镜像内的锁定配置图；如需环境配置，可用
-`config.existingConfigMap` 和 `config.items` 将经审查的 ConfigMap 挂载到两者的同一
-`config.mountPath`。Secret 不通过全局环境变量广播；worker registry key 只挂载到
-Scheduler 和 Operator。
-升级使用 `scripts/deploy-full-stack.sh upgrade ./values.production.yaml`；回滚到已存在的
-Helm revision 使用 `scripts/deploy-full-stack.sh rollback REVISION`。脚本在临时目录构建
-本地 chart dependency，不会把 `Chart.lock` 或子 chart 归档写入仓库。
+创建操作的幂等键固定，重复执行会返回同一结果；想创建另一个任务时使用新键，并修改示例名称。
 
-### 从源码运行
+```bash
+tgsrl_local validate-job \
+  --job configs/cpu-job.example.json \
+  --idempotency-key quickstart-validate-1
 
-从源码运行需要：
+tgsrl_local create-job \
+  --job configs/cpu-job.example.json \
+  --idempotency-key quickstart-create-1
+```
 
-| 工具 | 版本或范围 | 用途 |
+把创建响应的 `job.jobId` 填入变量，再准入：
+
+```bash
+JOB_ID='<创建响应中的 job.jobId>'
+tgsrl_local admit-job "$JOB_ID" \
+  --idempotency-key quickstart-admit-1
+```
+
+把准入响应的 `operation.runId` 填入变量，再启动：
+
+```bash
+RUN_ID='<准入响应中的 operation.runId>'
+tgsrl_local job-command "$JOB_ID" "$RUN_ID" start \
+  --idempotency-key quickstart-start-1
+
+tgsrl_local list-runs "$JOB_ID"
+tgsrl_local list-operations \
+  --job-id "$JOB_ID" --run-id "$RUN_ID"
+```
+
+**命令被接受不等于已启动。** 应同时看到 Run 为 `JOB_RUN_STATE_RUNNING`、对应 Operation 为
+`OPERATION_STATE_SUCCEEDED`，以及 Sandbox 的真实观察态收敛。出现 FAILED 时检查错误详情；
+长时间处于过渡态时检查 Operator 和后端，不能反复换幂等键重发来掩盖问题。
+
+结束示例任务：
+
+```bash
+tgsrl_local job-command "$JOB_ID" "$RUN_ID" stop \
+  --idempotency-key quickstart-stop-1
+```
+
+完整命令、HTTP 和 SDK 示例见[接口指南](guides/api-and-console.md)。
+
+### 示例字段应如何理解
+
+| 字段 | 本机示例 | 真实训练时 |
 |---|---|---|
-| Go | 1.26.4 | Scheduler、Job Controller、Operator |
-| Python | 3.12.14；最低 3.12 | Runtime、Experiment、Gateway、SDK/CLI |
-| `uv` | 0.12.7 | 安装锁定的 Python 环境 |
-| Node.js | 24.20.0 LTS | Web Console |
-| Buf | 1.72.0 | Protobuf lint 与代码生成 |
-| Docker | Compose v2；已验证 Engine 29.6.1 / Compose 5.2.0 | 完整六服务本地栈和镜像构建 |
-| Helm | 4.2.4 | 全栈与 Operator chart 校验和安装 |
-| kubectl / minikube | kubectl 与集群相差不超过一个 minor；minikube 1.38.1 | 单机 GPU/Kubernetes smoke 目标环境 |
+| `runtime` 组件 | `fake` | 已适配的框架、执行后端、trainer 与 rollout engine |
+| `imageDigest` | 合成 digest，不可拉取 | 与 `artifactUri=repository@sha256:...` 一致的真实镜像 |
+| `executionContract` | 单阶段、Synthetic 合同 | 由 adapter 构造并生成 canonical contract ID；勿手改内容后保留旧 ID |
+| `desiredUnits` | 2 | 所需可调度实例数；逻辑角色可展开多个副本 |
+| `resourcesPerUnit` | CPU 与内存 | 经 Provider 和目标 backend 支持的资源 |
+| `dataKind` | `DATA_KIND_SYNTHETIC` | 按数据真实来源填写，不通过改标签升级证据 |
 
-从项目根目录准备依赖与私有状态目录：
+## 4. 查看 Trace 和资源
 
-```bash
-make doctor-dev
-uv sync --frozen
-npm --prefix console ci
-umask 077
-mkdir -p .cache/tgsrl
-```
+- **任务中心**：Run 状态、Operation 与操作错误。
+- **链路追踪**：训练/请求/执行器/worker 多轨时间轴及 span 关联。
+- **事件时间线**：产品生命周期与运行事件；不是所有 JobEvent 都是训练 span。
+- **调度决策**：候选、拒绝原因、Plan、ActionResult 和 fallback。
+- **运行沙箱**：具体 Sandbox、Binding、generation 与设备。
+- **算力资源**：Scheduler 的设备账本；默认 CPU 模式没有 NVIDIA 卡是正常现象。
 
-只有 Docker 的本机用户可用 `make doctor` 检查运行条件。需要 Kubernetes/Helm 集成时使用
-`make doctor-kubernetes` 检查完整集群工具链。
+手动创建 fake 任务不会自动产生真实训练 span。想检查丰富时间轴，先执行第 2 步的 smoke；
+想获得真实 worker Trace，使用 CPU process Gate 或 GPU workload。缺少 duration 的事件显示为
+时间点，不会被补成虚构耗时。
 
-## 2. 手动启动组件
-
-每段命令使用一个终端。推荐按下列顺序启动。
-
-### Scheduler
+## 5. 停止、重启与数据
 
 ```bash
-go run ./scheduler-go/cmd/scheduler \
-  -listen 127.0.0.1:50051 \
-  -metrics-listen 127.0.0.1:9090 \
-  -state-dir .cache/tgsrl/scheduler-state
+docker compose stop                  # 保留容器和数据
+docker compose up -d --wait           # 再次启动
+docker compose --profile tools run --rm --no-deps smoke
 ```
 
-未指定 `-manifest` 时，Scheduler 使用 `compatibility/manifests/cpu-mock.yaml`。
+四个 named volumes 保存 Scheduler、Runtime、Job Controller、Operator 状态。
+`docker compose down` 删除容器/网络但保留这些卷；仅在确认放弃所有状态时使用
+`CONFIRM_RESET=1 make local-reset`。不要删除数据来绕过恢复失败。
 
-### Runtime 与 Experiment
-
-```bash
-uv run --frozen tgsrl-runtime \
-  --bind 127.0.0.1:50071 \
-  --scheduler-target 127.0.0.1:50051 \
-  --operator-target 127.0.0.1:50081 \
-  --job-control-target 127.0.0.1:50061 \
-  --state-db .cache/tgsrl/runtime.db \
-  --config-root .
-```
-
-一个 Python 进程在 `50071` 同时提供 `RuntimeControlService` 和
-`ExperimentService`。显式绑定 `127.0.0.1` 可避免无意暴露未认证的 gRPC 服务。
-
-### Job Controller
-
-```bash
-go run ./job-controller-go/cmd/job-controller \
-  -listen 127.0.0.1:50061 \
-  -runtime-target 127.0.0.1:50071 \
-  -state-dir .cache/tgsrl/job-controller
-```
-
-### Operator
-
-```bash
-go run ./cmd/operator \
-  -mode fake \
-  -listen 127.0.0.1:50081 \
-  -scheduler 127.0.0.1:50051 \
-  -control 127.0.0.1:50061 \
-  -runtime 127.0.0.1:50071 \
-  -cursor-dir .cache/tgsrl/operator
-```
-
-`fake` 模式消费 Scheduler 决策、编译和调和 bundle，并向 Runtime 发布 Sandbox 事件，
-但 backend 对象只保存在 Operator 进程内。它不会连接 Kubernetes API Server。
-
-如需使用 `-mode kubernetes`，必须提供可访问的集群凭据、Kueue 与所选 GPU/DRA
-依赖。`deploy/helm/tgsrl` 可安装六个 TGS-RL 控制面服务；只把 Operator 接入已有
-控制面时可继续使用 `deploy/helm/operator` 或原生 YAML。具体要求见
-[Operator 指南](guides/operator.md)。
-
-### Gateway
-
-```bash
-uv run --frozen tgsrl-gateway serve \
-  --host 127.0.0.1 \
-  --port 8080 \
-  --backend-mode grpc \
-  --job-control-target 127.0.0.1:50061 \
-  --scheduler-target 127.0.0.1:50051 \
-  --runtime-target 127.0.0.1:50071 \
-  --experiment-target 127.0.0.1:50071
-```
-
-Runtime 与 Experiment 共用端口 `50071`；不要把 Experiment target 指向 Operator 的
-`50081`。
-
-### Console
-
-```bash
-make run-console
-```
-
-Vite 默认监听 <http://127.0.0.1:4173>，并将 `/health`、`/openapi.json` 和 `/v1`
-代理到 `127.0.0.1:8080`。
-
-也可以用以下等价目标启动各组件：
-
-```bash
-make run-scheduler
-make run-runtime
-make run-controller
-make run-operator
-make run-gateway
-make run-console
-```
-
-## 3. 检查服务
-
-```bash
-uv run --frozen tgsrl health
-uv run --frozen tgsrl capabilities
-uv run --frozen tgsrl resources
-curl -fsS http://127.0.0.1:9090/metrics >/dev/null
-```
-
-`health` 报告 Job Control、Scheduler、Runtime 和 Experiment 四个 Gateway 依赖，
-不包含 Operator。Runtime 的轻量探测在可达时也可能报告 `grpc_probe:unknown`，从而使
-汇总状态为 `degraded`。因此：
-
-- `healthy` 或 `degraded` 用于诊断服务连接，不表示 Job 已能完整执行；
-- 还需确认 Operator `127.0.0.1:50081` 正在监听；
-- 提交任务后，应通过 Run、Operation、Sandbox 和 Decision 查询确认控制链结果。
-
-Console 提供九个中文工作区：运行总览、任务中心、链路追踪、事件时间线、算力资源、
-资源拓扑、运行沙箱、调度决策和实验对比。算力资源页直接读取 Scheduler snapshot，
-按设备展示健康状态、容量、调度分区、可用方式、UUID 与活动 allocation；任务中心可创建
-Job/Run、执行准入、创建 Replay，以及发送 Run/Replay 生命周期命令。
-
-## 4. 提交并启动 Job
-
-`job.json` 必须是 `tgsrl.v1.RLTrainingJob` 的 Proto JSON 表示，包含有效的协议版本、
-算法、Rollout 模式、data kind、资源、`desiredUnits`、Runtime 组件和执行图。
-`runtime.imageDigest` 始终必填；Kubernetes DRA workload 还必须提供与该 digest 对应的
-`runtime.artifactUri=repository@sha256:...`。CPU Mock/fake backend 可使用合成 digest，
-但不能把它当作可拉取镜像。建议通过 Adapter 构造 `ExecutionContract`。
-
-先校验并创建 Job：
-
-```bash
-uv run --frozen tgsrl validate-job \
-  --job ./job.json \
-  --idempotency-key validate-job-1 \
-  --request-id request-1
-
-uv run --frozen tgsrl create-job \
-  --job ./job.json \
-  --idempotency-key create-job-1
-```
-
-从创建响应的 `job.jobId` 获取 `JOB_ID`，然后准入：
-
-```bash
-uv run --frozen tgsrl admit-job JOB_ID \
-  --idempotency-key admit-job-1
-uv run --frozen tgsrl list-runs JOB_ID
-```
-
-`admit-job` 在没有 Run 时创建一个 Run，并完成 Runtime 校验、编译和准备。如果需要
-先建立新的不可变 Run generation，可先调用 `create-run JOB_ID`；该 Run 仍需准入。
-
-从准入响应的 `operation.runId` 或 `list-runs` 获取 `RUN_ID`，再启动：
-
-```bash
-uv run --frozen tgsrl job-command JOB_ID RUN_ID start \
-  --idempotency-key start-run-1
-```
-
-`start` 会让 Runtime 发布各阶段 Intent。Scheduler 接收 Intent 并执行 Mock 资源动作，
-Operator 将成功决策物化为 fake backend 对象。运行状态在 Operator 观察事件回传后收敛，
-因此命令响应不是最终完成状态。查询结果：
-
-```bash
-uv run --frozen tgsrl list-runs JOB_ID
-uv run --frozen tgsrl list-operations --job-id JOB_ID --run-id RUN_ID
-uv run --frozen tgsrl timeline JOB_ID --run-id RUN_ID
-uv run --frozen tgsrl topology JOB_ID --run-id RUN_ID
-uv run --frozen tgsrl sandboxes JOB_ID --run-id RUN_ID
-uv run --frozen tgsrl list-decisions JOB_ID --run-id RUN_ID
-```
-
-完整接口见 [API、CLI 与 Console](guides/api-and-console.md)。
-
-## 5. 停止与恢复
-
-手动运行时，用 `Ctrl-C` 停止各进程。为减少新的写入，推荐按以下顺序停止：
-Console/Gateway → Operator → Job Controller → Runtime → Scheduler。
-
-保留 `.cache/tgsrl/` 后按启动顺序重启：
-
-1. Scheduler 从相同 `-state-dir` 恢复并调和 reservation；
-2. Runtime/Experiment 从相同 `--state-db` 分页恢复数据，并仅补投未确认的 Start Intent；
-3. Job Controller 从相同 `-state-dir` 恢复控制面记录；
-4. Operator 从相同 `-cursor-dir` 恢复 cursor、delivery、观察注册和 lifecycle ledger；
-5. Gateway 与 Console 从后端重新读取状态。
-
-恢复不是跨服务事务。Job Controller 会在启动时调和运行中的 Operation：已收敛观察可直接
-补写终态；尚未派发且具备稳定幂等键的命令可以安全重放；已派发但结果未知或缺少幂等键的
-记录进入 `RECONCILIATION_REQUIRED`。fake Operator backend 的内存对象在退出后丢失，
-Runtime Checkpoint 也不是训练进程镜像。恢复后应核对
-Operation、Decision、reservation、Sandbox 和实际 backend 对象。详见
-[配置、持久化与恢复](guides/configuration-and-recovery.md)。
-
-要清空源码运行产生的状态，请先停止全部组件，再删除你在命令中显式指定的
-`.cache/tgsrl/` 目录。该操作不可恢复。
+fake backend 对象位于内存，重启不等于复活之前的训练进程。恢复后仍应核对 Operation、
+Sandbox、Decision 和 allocation；组件恢复职责见[配置与恢复](guides/configuration-and-recovery.md)。
 
 ## 常见问题
 
-### Gateway 报告 `degraded`
+| 现象 | 检查方式 |
+|---|---|
+| Docker daemon 不可达 | 启动 Docker Engine/Desktop，确认 `docker info`；仅安装 CLI 不够 |
+| 镜像/依赖下载失败 | 检查代理、registry 与 DNS；不要通过换随机版本绕过锁文件 |
+| Gateway `degraded` | 核对依赖地址；Runtime 空资源探测可能返回 `grpc_probe:unknown`，继续检查实际操作 |
+| Job 创建后没有 Decision | 创建不是启动；先准入，再对 Run 执行 start |
+| 任务停在 STARTING | 查看 Operator 日志、Sandbox、Decision；health 不覆盖整个控制链 |
+| Trace 为空 | 检查数据来源、Run 筛选和是否上报 worker Trace；fake 任务不是训练进程 |
+| 端口冲突 | 默认占用 4173/8080/9090/50051/50061/50071/50081；不同 project name 仅隔离卷/网络，不改变端口 |
+| 多份 clone 同时运行 | 在 Compose override 中修改所有宿主机 published ports；容器内 target 保持服务名和原端口 |
 
-确认 `50051`、`50061`、`50071` 和 `50081` 都在监听。Gateway 的 Runtime 与
-Experiment target 都应为 `50071`；Runtime 的 Operator target 应为 `50081`。
-如果只有 Runtime 探测返回 `grpc_probe:unknown`，继续用实际查询和 Job 操作判断可用性。
+## 下一步
 
-### Job 校验失败
-
-运行 `validate-job` 并查看 `diagnostics`。常见原因包括缺少协议版本、资源、
-`desiredUnits`、不可变镜像 digest、组件名称或完整执行图，以及 manifest 与配置图冲突。
-
-### 没有调度决策
-
-创建 Job 或 Run 不会启动执行。确认已对目标 Run 执行 `admit-job`，随后发送
-`job-command ... start`，并确认 Runtime 的 `--scheduler-target` 可达。
-
-### 端口被占用
-
-修改监听端口时也要同步修改所有调用方 target。Console 开发代理默认指向 Gateway
-`8080`；可通过 `VITE_TGSRL_GATEWAY_TARGET` 修改代理目标。
+- [系统设计](design/system-design.md)：理解职责、身份与状态模型。
+- [开发指南](maintainers/development.md)：从源码启动，执行真实子进程验证。
+- [GPU Smoke](guides/gpu-smoke.md)：在 NVIDIA 主机验证全链路。
+- [部署指南](guides/deployment.md)：了解 Kubernetes/Helm 的实际前置条件。

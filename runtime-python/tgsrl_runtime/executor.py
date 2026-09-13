@@ -347,7 +347,7 @@ class RuntimeExecutor:
             )
         component_results: list[ComponentActionResult] = []
         for component, adapter in components:
-            launch_spec = self._placeholder_launch_spec(manifest, component, action)
+            launch_spec = self._failure_context_spec(manifest, component, action)
             try:
                 call = adapter.lifecycle_call(manifest, action)
                 launch_spec = call.launch_spec
@@ -586,7 +586,7 @@ class RuntimeExecutor:
             raise ValueError(f"unknown run_id: {run_id}")
         return clone_message(self._manifests[run_id])
 
-    def _placeholder_launch_spec(
+    def _failure_context_spec(
         self,
         manifest: runtime_pb2.RuntimeManifest,
         component: str,

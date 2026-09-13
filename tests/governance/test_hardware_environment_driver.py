@@ -788,6 +788,63 @@ def test_driver_runs_e2_through_gateway_dra_worker_and_scheduler_hook(
     )
 
 
+@pytest.mark.parametrize("pending_polls", [0, 2])
+def test_bind_stops_polling_when_start_operation_fails(
+    driver_environment: tuple[Any, _GatewayState, Path],
+    monkeypatch: pytest.MonkeyPatch,
+    pending_polls: int,
+) -> None:
+    driver, _state, root = driver_environment
+    _execute(driver, root, _request("provision", 1))
+    original_get = DRIVER.Gateway.get
+    operation_polls = 0
+    decision_polls = 0
+
+    def get(self: Any, path: str) -> JsonObject:
+        nonlocal operation_polls, decision_polls
+        if path == "/v1/operations/op-start":
+            operation_polls += 1
+            return {
+                "operation": {
+                    "state": (
+                        "OPERATION_STATE_RUNNING"
+                        if operation_polls <= pending_polls
+                        else "OPERATION_STATE_FAILED"
+                    ),
+                    "errorMessage": "invalid execution contract",
+                }
+            }
+        if "/decisions?" in path:
+            decision_polls += 1
+            return {"decisions": []}
+        return cast(JsonObject, original_get(self, path))
+
+    monkeypatch.setattr(DRIVER.Gateway, "get", get)
+    with pytest.raises(DRIVER.TerminalDriverError, match="invalid execution contract"):
+        _execute(driver, root, _request("apply_action", 2, action="bind"))
+    assert operation_polls == pending_polls + 1
+    assert decision_polls == pending_polls
+
+
+def test_bind_does_not_wait_for_start_convergence_before_accepting_decision(
+    driver_environment: tuple[Any, _GatewayState, Path],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    driver, _state, root = driver_environment
+    _execute(driver, root, _request("provision", 1))
+    original_get = DRIVER.Gateway.get
+
+    def get(self: Any, path: str) -> JsonObject:
+        if path == "/v1/operations/op-start":
+            return {"operation": {"state": "OPERATION_STATE_RUNNING"}}
+        return cast(JsonObject, original_get(self, path))
+
+    monkeypatch.setattr(DRIVER.Gateway, "get", get)
+    response = _execute(driver, root, _request("apply_action", 2, action="bind"))
+    assert response["status"] == "SUCCEEDED"
+    assert response["events"][-1]["decision_id"] == "decision-1"
+
+
 def test_driver_replays_receipt_without_repeating_side_effect(
     driver_environment: tuple[Any, _GatewayState, Path],
 ) -> None:
@@ -905,9 +962,7 @@ def test_cleanup_accepts_already_terminal_run(
     monkeypatch.setattr(driver, "_bundles", lambda *_args, **_kwargs: [])
 
     def already_failed(*_args: object, **_kwargs: object) -> None:
-        raise DRIVER.DriverError(
-            "cannot terminate run in state JOB_RUN_STATE_FAILED"
-        )
+        raise DRIVER.DriverError("cannot terminate run in state JOB_RUN_STATE_FAILED")
 
     monkeypatch.setattr(driver, "_command", already_failed)
 
@@ -1115,9 +1170,7 @@ def test_worker_concurrency_requires_overlapping_complete_intervals() -> None:
         },
     ]
 
-    overlap_ms, sandboxes = DRIVER._worker_concurrency_overlap_ms(
-        events, required_workers=2
-    )
+    overlap_ms, sandboxes = DRIVER._worker_concurrency_overlap_ms(events, required_workers=2)
 
     assert overlap_ms == 3000.0
     assert sandboxes == ["sandbox-a", "sandbox-b"]

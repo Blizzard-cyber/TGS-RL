@@ -61,7 +61,9 @@ def repository_markdown() -> list[Path]:
         capture_output=True,
         text=True,
     )
-    return [ROOT / line for line in completed.stdout.splitlines() if line]
+    return [
+        ROOT / line for line in completed.stdout.splitlines() if line and (ROOT / line).is_file()
+    ]
 
 
 def link_path(raw: str) -> str | None:

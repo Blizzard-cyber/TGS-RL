@@ -58,16 +58,16 @@ case "$ACTION" in
     ;;
   install)
     if [[ -n "$ARGUMENT" ]]; then
-      helm install "$RELEASE" "$CHART_DIR" --namespace "$NAMESPACE" --create-namespace --atomic --wait --timeout "$TIMEOUT" --values "$ARGUMENT"
+      helm install "$RELEASE" "$CHART_DIR" --namespace "$NAMESPACE" --create-namespace --rollback-on-failure --wait --timeout "$TIMEOUT" --values "$ARGUMENT"
     else
-      helm install "$RELEASE" "$CHART_DIR" --namespace "$NAMESPACE" --create-namespace --atomic --wait --timeout "$TIMEOUT"
+      helm install "$RELEASE" "$CHART_DIR" --namespace "$NAMESPACE" --create-namespace --rollback-on-failure --wait --timeout "$TIMEOUT"
     fi
     ;;
   upgrade)
     if [[ -n "$ARGUMENT" ]]; then
-      helm upgrade "$RELEASE" "$CHART_DIR" --namespace "$NAMESPACE" --atomic --wait --timeout "$TIMEOUT" --values "$ARGUMENT"
+      helm upgrade "$RELEASE" "$CHART_DIR" --namespace "$NAMESPACE" --rollback-on-failure --wait --timeout "$TIMEOUT" --values "$ARGUMENT"
     else
-      helm upgrade "$RELEASE" "$CHART_DIR" --namespace "$NAMESPACE" --atomic --wait --timeout "$TIMEOUT"
+      helm upgrade "$RELEASE" "$CHART_DIR" --namespace "$NAMESPACE" --rollback-on-failure --wait --timeout "$TIMEOUT"
     fi
     ;;
 esac
