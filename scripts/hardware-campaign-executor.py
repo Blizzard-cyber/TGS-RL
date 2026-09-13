@@ -25,6 +25,7 @@ ALLOWED_OPERATIONS = frozenset(
         "preflight",
         "provision",
         "apply_action",
+        "apply_worker_action",
         "launch",
         "verify_device_identity",
         "inject_fault",
@@ -201,7 +202,7 @@ def _scenario_plan(
                 raise ExecutionError(f"scenario {label} step {index} has invalid operation")
             action = str(step.get("action", "")).strip()
             fault_id = str(step.get("fault_id", "")).strip()
-            if operation == "apply_action":
+            if operation in {"apply_action", "apply_worker_action"}:
                 if not action or fault_id:
                     raise ExecutionError(f"scenario {label} action step {index} is invalid")
             elif action:
@@ -258,7 +259,7 @@ def _scenario_plan(
         action_steps = [
             (index, str(step.get("action")))
             for index, step in enumerate(normalized)
-            if step["operation"] == "apply_action"
+            if step["operation"] in {"apply_action", "apply_worker_action"}
         ]
         if any(action not in allowed_actions for _index, action in action_steps):
             raise ExecutionError(f"scenario execution_plan.{label} has an undeclared action")
@@ -304,7 +305,9 @@ def _scenario_plan(
         result[label] = normalized
     variant = result["variant"]
     planned_actions = [
-        str(step.get("action")) for step in variant if step["operation"] == "apply_action"
+        str(step.get("action"))
+        for step in variant
+        if step["operation"] in {"apply_action", "apply_worker_action"}
     ]
     missing_actions = set(experiment["requirements"]["required_actions"]) - set(planned_actions)
     if missing_actions:
@@ -570,7 +573,7 @@ def _validate_driver_response(
                     "hardware driver shared HAMi identity has an invalid aggregate share"
                 )
     expected_action_source = "scheduler" if action == "bind" else "operator"
-    if operation == "apply_action" and not any(
+    if operation in {"apply_action", "apply_worker_action"} and not any(
         event.get("event_type") in {"decision_applied", "control_completed"}
         and event.get("source") == expected_action_source
         and event.get("action") == action
@@ -578,6 +581,38 @@ def _validate_driver_response(
         for event in events
     ):
         raise ExecutionError(f"hardware driver omitted successful {action} action evidence")
+    if operation == "apply_worker_action" and action in {"offload", "resume"}:
+        controls = [
+            event
+            for event in events
+            if event.get("event_type") == "control_completed"
+            and event.get("source") == "operator"
+            and event.get("action") == action
+            and event.get("succeeded") is True
+        ]
+        if len(controls) != 1:
+            raise ExecutionError(f"hardware driver returned ambiguous {action} evidence")
+        before = controls[0].get("gpu_memory_allocated_before_bytes")
+        after = controls[0].get("gpu_memory_allocated_after_bytes")
+        reserved_before = controls[0].get("gpu_memory_reserved_before_bytes")
+        reserved_after = controls[0].get("gpu_memory_reserved_after_bytes")
+        values = (before, after, reserved_before, reserved_after)
+        if any(
+            not isinstance(value, int) or isinstance(value, bool) or value < 0 for value in values
+        ):
+            raise ExecutionError(f"hardware driver {action} omitted GPU memory evidence")
+        if action == "offload" and not (
+            int(after) < int(before) and int(reserved_after) < int(reserved_before)
+        ):
+            raise ExecutionError(
+                "managed worker offload did not reduce allocated/reserved GPU memory"
+            )
+        if action == "resume" and not (
+            int(after) > int(before) and int(reserved_after) > int(reserved_before)
+        ):
+            raise ExecutionError(
+                "managed worker resume did not restore allocated/reserved GPU memory"
+            )
     fault_event = {
         "inject_fault": "fault_injected",
         "recover_fault": "fault_recovered",

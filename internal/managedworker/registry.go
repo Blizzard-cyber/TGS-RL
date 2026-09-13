@@ -56,6 +56,10 @@ type WorkerActionRequest struct {
 	IdempotencyKey string `json:"idempotency_key"`
 }
 
+var scopedWorkerActions = map[string]struct{}{
+	"pause": {}, "resume": {}, "sleep": {}, "offload": {}, "stop": {},
+}
+
 // WorkerStatusRequest identifies one exact registered workload generation.
 type WorkerStatusRequest struct {
 	SandboxID  string `json:"sandbox_id"`
@@ -79,8 +83,11 @@ type WorkerTraceResponse struct {
 }
 
 type workerActionResponse struct {
-	Accepted bool   `json:"accepted"`
-	Worker   Worker `json:"worker"`
+	Accepted                 bool   `json:"accepted"`
+	Worker                   Worker `json:"worker"`
+	GPUMemoryObservedBefore  bool   `json:"gpu_memory_observed_before,omitempty"`
+	GPUMemoryAllocatedBefore uint64 `json:"gpu_memory_allocated_before_bytes,omitempty"`
+	GPUMemoryReservedBefore  uint64 `json:"gpu_memory_reserved_before_bytes,omitempty"`
 }
 
 type registryHandler struct {
@@ -185,7 +192,7 @@ func (h *registryHandler) applyAction(w http.ResponseWriter, request *http.Reque
 		http.Error(w, "worker action requires sandbox, generation, and idempotency_key", http.StatusBadRequest)
 		return
 	}
-	if action.Action != "pause" && action.Action != "resume" && action.Action != "stop" {
+	if _, supported := scopedWorkerActions[action.Action]; !supported {
 		http.Error(w, "unsupported worker action", http.StatusBadRequest)
 		return
 	}
@@ -202,6 +209,15 @@ func (h *registryHandler) applyAction(w http.ResponseWriter, request *http.Reque
 	if worker.Generation != action.Generation {
 		http.Error(w, "worker generation mismatch", http.StatusConflict)
 		return
+	}
+	if _, replay := state.Receipts[action.IdempotencyKey]; !replay {
+		worker, err = h.controller.DiscoverWorker(
+			request.Context(), action.SandboxID, action.Generation,
+		)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadGateway)
+			return
+		}
 	}
 	digest := RequestDigest(action.Action, action.SandboxID, action.Generation)
 	updated, err := h.controller.Apply(request.Context(), ActionRequest{
@@ -221,7 +237,23 @@ func (h *registryHandler) applyAction(w http.ResponseWriter, request *http.Reque
 		http.Error(w, err.Error(), http.StatusConflict)
 		return
 	}
-	writeRegistryResponse(w, http.StatusOK, workerActionResponse{Accepted: true, Worker: publicWorker(updated)})
+	current, err := h.store.Snapshot()
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	receipt, found := current.Receipts[action.IdempotencyKey]
+	if !found {
+		http.Error(w, "worker action receipt is unavailable", http.StatusInternalServerError)
+		return
+	}
+	writeRegistryResponse(w, http.StatusOK, workerActionResponse{
+		Accepted:                 true,
+		Worker:                   publicWorker(updated),
+		GPUMemoryObservedBefore:  receipt.SourceGPUMemoryObserved,
+		GPUMemoryAllocatedBefore: receipt.SourceGPUMemoryAllocated,
+		GPUMemoryReservedBefore:  receipt.SourceGPUMemoryReserved,
+	})
 }
 
 func (h *registryHandler) status(w http.ResponseWriter, request *http.Request) {

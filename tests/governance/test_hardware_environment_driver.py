@@ -6,6 +6,7 @@ import json
 import stat
 import sys
 import threading
+from dataclasses import replace
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from types import SimpleNamespace
@@ -1409,6 +1410,274 @@ def test_worker_lifecycle_hook_uses_receipt_without_fake_scheduler_action(
     assert event["action"] == "checkpoint"
     assert event["receipt_id"] == "worker-receipt"
     assert event["decision_id"] == "decision-1"
+
+
+def test_scoped_worker_action_uses_bundle_credential_without_exposing_it(
+    driver_environment: tuple[Any, _GatewayState, Path],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    driver, _state, root = driver_environment
+    token = "scoped-worker-token-that-must-not-leak"
+    bundle_registry_url = "http://tgsrl-scheduler:50091"
+    registry_url = "http://127.0.0.1:15091"
+    driver.config.targets["E2"] = replace(
+        driver.config.targets["E2"], worker_registry_url=registry_url
+    )
+    bundle = {
+        "spec": {
+            "bundle": {
+                "generation": 1,
+                "runtimeTargets": [
+                    {
+                        "runtimeUnitId": "unit-a",
+                        "sandboxId": "sandbox-a",
+                        "generation": 1,
+                    }
+                ],
+                "job": {
+                    "spec": {
+                        "template": {
+                            "spec": {
+                                "containers": [
+                                    {
+                                        "env": [
+                                            {
+                                                "name": "TGSRL_WORKER_REGISTRY_TOKEN",
+                                                "value": token,
+                                            },
+                                            {
+                                                "name": "TGSRL_WORKER_REGISTRY_URL",
+                                                "value": bundle_registry_url,
+                                            },
+                                        ]
+                                    }
+                                ]
+                            }
+                        }
+                    }
+                },
+            }
+        }
+    }
+    captured: dict[str, Any] = {}
+    monkeypatch.setattr(driver, "_bundles", lambda *_args, **_kwargs: [bundle])
+
+    def registry_request(
+        actual_url: str,
+        endpoint: str,
+        actual_token: str,
+        body: JsonObject,
+        timeout: float,
+    ) -> JsonObject:
+        captured.setdefault("calls", []).append(
+            {
+                "url": actual_url,
+                "endpoint": endpoint,
+                "token": actual_token,
+                "body": body,
+                "timeout": timeout,
+            }
+        )
+        return {
+            "accepted": True,
+            "gpu_memory_observed_before": True,
+            "gpu_memory_allocated_before_bytes": 536870912,
+            "gpu_memory_reserved_before_bytes": 603979776,
+            "worker": {
+                "sandbox_id": "sandbox-a",
+                "generation": 1,
+                "state": "sleeping",
+                "safe_point": True,
+                "offloaded": True,
+                "ready": False,
+                "checkpoint_ref": "/tmp/checkpoints/global_step_1",
+                "gpu_memory_observed": True,
+                "gpu_memory_allocated_bytes": 0,
+                "gpu_memory_reserved_bytes": 0,
+            },
+        }
+
+    monkeypatch.setattr(
+        DRIVER.HardwareEnvironmentDriver,
+        "_worker_registry_request",
+        staticmethod(registry_request),
+    )
+    run = {"job_id": "job-a", "run_id": "run-a", "attempt": 1}
+    response_root = root / "worker-action"
+    response_root.mkdir()
+    events = driver._apply_worker_action(
+        _request("apply_worker_action", 4, action="offload"),
+        driver.config.targets["E2"],
+        run,
+        response_root / "response.json",
+    )
+
+    assert [call["endpoint"] for call in captured["calls"]] == ["/v1/workers/action"]
+    action_call = captured["calls"][0]
+    assert action_call["url"] == registry_url
+    assert action_call["token"] == token
+    assert action_call["body"] == {
+        "action": "offload",
+        "sandbox_id": "sandbox-a",
+        "generation": 1,
+        "idempotency_key": "hardware-request-4-apply_worker_action-offload-a1-offload",
+    }
+    assert len(events) == 1
+    assert events[0]["action"] == "offload"
+    assert events[0]["checkpoint_present"] is True
+    assert events[0]["gpu_memory_allocated_before_bytes"] == 536870912
+    assert events[0]["gpu_memory_allocated_after_bytes"] == 0
+    assert events[0]["gpu_memory_reserved_before_bytes"] == 603979776
+    assert events[0]["gpu_memory_reserved_after_bytes"] == 0
+    assert token not in json.dumps(events)
+
+
+def test_worker_registry_url_rejects_credentials() -> None:
+    with pytest.raises(DRIVER.DriverError, match="URL is invalid"):
+        DRIVER.HardwareEnvironmentDriver._worker_registry_call(
+            "http://user:password@127.0.0.1:50091",
+            "token",
+            {},
+            1,
+        )
+
+
+@pytest.mark.parametrize(
+    "value",
+    (
+        "http://user:password@registry.example.test",
+        "http://registry.example.test?token=value",
+        "ftp://registry.example.test",
+    ),
+)
+def test_worker_registry_override_rejects_unsafe_urls(value: str) -> None:
+    with pytest.raises(DRIVER.DriverError, match="worker_registry_url"):
+        DRIVER._optional_http_base_url(value, label="targets.E1.worker_registry_url")
+
+
+def test_scoped_worker_action_rejects_action_identity_mismatch(
+    driver_environment: tuple[Any, _GatewayState, Path],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    driver, _state, root = driver_environment
+    bundle = {
+        "spec": {
+            "bundle": {
+                "generation": 1,
+                "runtimeTargets": [{"sandboxId": "sandbox-a", "generation": 1}],
+                "job": {
+                    "spec": {
+                        "template": {
+                            "spec": {
+                                "containers": [
+                                    {
+                                        "env": [
+                                            {
+                                                "name": "TGSRL_WORKER_REGISTRY_TOKEN",
+                                                "value": "scoped-worker-token",
+                                            },
+                                            {
+                                                "name": "TGSRL_WORKER_REGISTRY_URL",
+                                                "value": "http://127.0.0.1:50091",
+                                            },
+                                        ]
+                                    }
+                                ]
+                            }
+                        }
+                    }
+                },
+            }
+        }
+    }
+    monkeypatch.setattr(driver, "_bundles", lambda *_args, **_kwargs: [bundle])
+    monkeypatch.setattr(
+        DRIVER.HardwareEnvironmentDriver,
+        "_worker_registry_request",
+        staticmethod(
+            lambda *_args: {
+                "accepted": True,
+                "gpu_memory_observed_before": True,
+                "worker": {
+                    "sandbox_id": "sandbox-other",
+                    "generation": 1,
+                    "gpu_memory_observed": True,
+                },
+            }
+        ),
+    )
+
+    with pytest.raises(DRIVER.DriverError, match="response identity"):
+        driver._apply_worker_action(
+            _request("apply_worker_action", 4, action="offload"),
+            driver.config.targets["E2"],
+            {"job_id": "job-a", "run_id": "run-a", "attempt": 1},
+            root / "unused-response.json",
+        )
+
+
+def test_scoped_pause_does_not_require_gpu_memory_observation(
+    driver_environment: tuple[Any, _GatewayState, Path],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    driver, _state, root = driver_environment
+    bundle = {
+        "spec": {
+            "bundle": {
+                "generation": 1,
+                "runtimeTargets": [{"sandboxId": "sandbox-a", "generation": 1}],
+                "job": {
+                    "spec": {
+                        "template": {
+                            "spec": {
+                                "containers": [
+                                    {
+                                        "env": [
+                                            {
+                                                "name": "TGSRL_WORKER_REGISTRY_TOKEN",
+                                                "value": "scoped-worker-token",
+                                            },
+                                            {
+                                                "name": "TGSRL_WORKER_REGISTRY_URL",
+                                                "value": "http://127.0.0.1:50091",
+                                            },
+                                        ]
+                                    }
+                                ]
+                            }
+                        }
+                    }
+                },
+            }
+        }
+    }
+    monkeypatch.setattr(driver, "_bundles", lambda *_args, **_kwargs: [bundle])
+    monkeypatch.setattr(
+        DRIVER.HardwareEnvironmentDriver,
+        "_worker_registry_request",
+        staticmethod(
+            lambda *_args: {
+                "accepted": True,
+                "worker": {
+                    "sandbox_id": "sandbox-a",
+                    "generation": 1,
+                    "state": "paused",
+                    "safe_point": True,
+                    "ready": False,
+                },
+            }
+        ),
+    )
+
+    events = driver._apply_worker_action(
+        _request("apply_worker_action", 4, action="pause"),
+        driver.config.targets["E2"],
+        {"job_id": "job-a", "run_id": "run-a", "attempt": 1},
+        root / "unused-response.json",
+    )
+
+    assert events[0]["action"] == "pause"
+    assert "gpu_memory_allocated_before_bytes" not in events[0]
 
 
 def test_driver_rejects_resourceclaim_device_identity_mismatch(

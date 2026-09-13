@@ -306,6 +306,82 @@ func TestWorkerRegistryScopesStatusAndLifecycleToRegistrationToken(t *testing.T)
 	}
 }
 
+func TestWorkerRegistryAllowsScopedCooperativeOffloadAndResume(t *testing.T) {
+	signingKey := []byte(strings.Repeat("registry-signing-key-", 2))
+	workerState, offloaded, checkpointRef := "running", false, ""
+	var calls []string
+	controlServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+		var control ControlRequest
+		if err := json.NewDecoder(request.Body).Decode(&control); err != nil {
+			t.Fatal(err)
+		}
+		calls = append(calls, control.Action)
+		switch control.Action {
+		case "prepare_pause":
+			_ = json.NewEncoder(w).Encode(ControlResponse{Accepted: true, Generation: 4, InstanceID: "instance-a", PID: 4242, ProcessToken: "process-a", State: workerState, SafePoint: true, BindingID: "binding-a", DeviceID: "GPU-aaaa", Share: 1, GPUMemoryObserved: true, GPUMemoryAllocated: 536870912, GPUMemoryReserved: 603979776})
+		case "checkpoint":
+			checkpointRef = "/tmp/checkpoint-a"
+			_ = json.NewEncoder(w).Encode(ControlResponse{Accepted: true, Generation: 4, InstanceID: "instance-a", PID: 4242, ProcessToken: "process-a", State: workerState, SafePoint: true, CheckpointRef: checkpointRef, BindingID: "binding-a", DeviceID: "GPU-aaaa", Share: 1, GPUMemoryObserved: true, GPUMemoryAllocated: 536870912, GPUMemoryReserved: 603979776})
+		case "offload":
+			workerState, offloaded = "sleeping", true
+			_ = json.NewEncoder(w).Encode(ControlResponse{Accepted: true, Generation: 4, InstanceID: "instance-a", PID: 4242, ProcessToken: "process-a", State: workerState, SafePoint: true, Offloaded: true, CheckpointRef: checkpointRef, BindingID: "binding-a", DeviceID: "GPU-aaaa", Share: 1, GPUMemoryObserved: true, GPUMemoryAllocated: 0, GPUMemoryReserved: 0})
+		case "reload":
+			offloaded = false
+			_ = json.NewEncoder(w).Encode(ControlResponse{Accepted: true, Generation: 4, InstanceID: "instance-a", PID: 4242, ProcessToken: "process-a", State: workerState, SafePoint: true, CheckpointRef: checkpointRef, BindingID: "binding-a", DeviceID: "GPU-aaaa", Share: 1})
+		case "resume":
+			workerState = "running"
+			_ = json.NewEncoder(w).Encode(ControlResponse{Accepted: true, Generation: 4, InstanceID: "instance-a", PID: 4242, ProcessToken: "process-a", State: workerState, Ready: true, Offloaded: offloaded, CheckpointRef: checkpointRef, BindingID: "binding-a", DeviceID: "GPU-aaaa", Share: 1, GPUMemoryObserved: true, GPUMemoryAllocated: 536870912, GPUMemoryReserved: 536870912})
+		default:
+			allocated, reserved := uint64(536870912), uint64(603979776)
+			if offloaded {
+				allocated, reserved = 0, 0
+			}
+			_ = json.NewEncoder(w).Encode(ControlResponse{Accepted: true, Generation: 4, InstanceID: "instance-a", PID: 4242, ProcessToken: "process-a", State: workerState, Ready: true, Offloaded: offloaded, CheckpointRef: checkpointRef, BindingID: "binding-a", DeviceID: "GPU-aaaa", Share: 1, GPUMemoryObserved: true, GPUMemoryAllocated: allocated, GPUMemoryReserved: reserved})
+		}
+	}))
+	defer controlServer.Close()
+	store, _ := NewStore(filepath.Join(t.TempDir(), "runtime.json"))
+	controller, _ := NewController(store)
+	handler, err := NewRegistryHandler(controller, store, signingKey, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	registry := httptest.NewServer(handler)
+	defer registry.Close()
+	worker := Worker{RunID: "run-a", JobID: "job-a", RuntimeUnitID: "unit-a", SandboxID: "sandbox-a", BindingID: "binding-a", Generation: 4, PID: 4242, ProcessToken: "process-a", InstanceID: "instance-a", State: "running", Ready: true, DeviceIDs: []string{"GPU-aaaa"}, DeviceID: "GPU-aaaa", Share: 1, ControlURL: controlServer.URL, ControlToken: "worker-token"}
+	token, err := bootstrapauth.Sign(signingKey, registrationClaims(worker))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := RegisterRemoteWorker(context.Background(), registry.URL, token, worker); err != nil {
+		t.Fatal(err)
+	}
+	offloadedWorker, err := ApplyRemoteWorkerAction(context.Background(), registry.URL, token, WorkerActionRequest{Action: "offload", SandboxID: worker.SandboxID, Generation: 4, IdempotencyKey: "offload-a"})
+	if err != nil || !offloadedWorker.Offloaded || offloadedWorker.CheckpointRef == "" {
+		t.Fatalf("offload = (%+v, %v)", offloadedWorker, err)
+	}
+	if offloadedWorker.GPUMemoryAllocated != 0 || offloadedWorker.GPUMemoryReserved != 0 {
+		t.Fatalf("offload GPU memory = (%d, %d)", offloadedWorker.GPUMemoryAllocated, offloadedWorker.GPUMemoryReserved)
+	}
+	var replay workerActionResponse
+	if err := postRegistryResponse(context.Background(), registry.URL, token, "/v1/workers/action", WorkerActionRequest{Action: "offload", SandboxID: worker.SandboxID, Generation: 4, IdempotencyKey: "offload-a"}, &replay); err != nil {
+		t.Fatal(err)
+	}
+	if !replay.GPUMemoryObservedBefore || replay.GPUMemoryAllocatedBefore != 536870912 || replay.GPUMemoryReservedBefore != 603979776 {
+		t.Fatalf("replayed offload source memory = %+v", replay)
+	}
+	resumedWorker, err := ApplyRemoteWorkerAction(context.Background(), registry.URL, token, WorkerActionRequest{Action: "resume", SandboxID: worker.SandboxID, Generation: 4, IdempotencyKey: "resume-a"})
+	if err != nil || !resumedWorker.Ready || resumedWorker.Offloaded {
+		t.Fatalf("resume = (%+v, %v)", resumedWorker, err)
+	}
+	if resumedWorker.GPUMemoryAllocated != 536870912 || resumedWorker.GPUMemoryReserved != 536870912 {
+		t.Fatalf("resume GPU memory = (%d, %d)", resumedWorker.GPUMemoryAllocated, resumedWorker.GPUMemoryReserved)
+	}
+	if want := []string{"status", "status", "status", "prepare_pause", "checkpoint", "offload", "status", "status", "reload", "resume"}; !reflect.DeepEqual(calls, want) {
+		t.Fatalf("control calls = %+v, want %+v", calls, want)
+	}
+}
+
 func TestWorkerRegistryPublishesTraceOnlyForCurrentRegisteredIdentity(t *testing.T) {
 	signingKey := []byte(strings.Repeat("registry-signing-key-", 2))
 	controlServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {

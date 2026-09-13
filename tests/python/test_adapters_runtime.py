@@ -878,6 +878,53 @@ class _VerlTrainerDouble:
             "ReplayBufferDouble", (), {"partitions": {"train": {"a": {}, "b": {}}}}
         )()
     )
+    gpu_memory_allocated_bytes: int = 0
+    gpu_memory_reserved_bytes: int = 0
+
+    def tgsrl_resource_metrics(self) -> dict[str, int]:
+        return {
+            "gpu_memory_allocated_bytes": self.gpu_memory_allocated_bytes,
+            "gpu_memory_reserved_bytes": self.gpu_memory_reserved_bytes,
+        }
+
+
+def test_verl_bridge_exposes_embedding_resource_metrics(tmp_path: Path) -> None:
+    trainer = _VerlTrainerDouble(
+        1,
+        _VerlWorkerGroupDouble(),
+        _VerlWorkerGroupDouble(),
+        _VerlCheckpointManagerDouble(),
+        gpu_memory_allocated_bytes=512 * 1024 * 1024,
+        gpu_memory_reserved_bytes=640 * 1024 * 1024,
+    )
+    hook = install_verl_control(
+        trainer,
+        identity=WorkerIdentity(
+            run_id="run-1",
+            job_id="job-1",
+            trace_id="trace-1",
+            sandbox_id="sandbox-1",
+            role="actor-rollout",
+            generation=1,
+            policy_version="policy-1",
+        ),
+        socket_path=tmp_path / "worker.sock",
+        trace_path=tmp_path / "trace.ndjson",
+        checkpoint_root=tmp_path / "checkpoints",
+        verify_version=False,
+    )
+
+    response = hook.bridge.handle(
+        {
+            "action": "status",
+            "sandbox_id": "sandbox-1",
+            "generation": 1,
+            "idempotency_key": "status-1",
+        }
+    )
+
+    assert response["gpu_memory_allocated_bytes"] == 512 * 1024 * 1024
+    assert response["gpu_memory_reserved_bytes"] == 640 * 1024 * 1024
 
 
 def test_verl_runtime_adapter_drives_real_trainer_surface() -> None:

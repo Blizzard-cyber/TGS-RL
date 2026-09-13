@@ -673,6 +673,8 @@ func (s *supervisor) handle(ctx context.Context, request runtimehelper.ControlRe
 			}
 			worker.State, worker.SafePoint, worker.Offloaded, worker.Ready = response.State, response.SafePoint, response.Offloaded, response.Ready
 			worker.CheckpointRef = response.CheckpointRef
+			worker.GPUMemoryObserved = response.GPUMemoryObserved
+			worker.GPUMemoryAllocated, worker.GPUMemoryReserved = response.GPUMemoryAllocated, response.GPUMemoryReserved
 		} else {
 			if token, err := runtimehelper.ProcessToken(ctx, worker.PID); err != nil || token != worker.ProcessToken {
 				return workerResponse(worker, false, "worker process identity changed")
@@ -724,6 +726,8 @@ func (s *supervisor) apply(ctx context.Context, worker runtimehelper.Worker, req
 		if response.Accepted {
 			worker.State, worker.SafePoint, worker.Offloaded, worker.Ready = response.State, response.SafePoint, response.Offloaded, response.Ready
 			worker.CheckpointRef = response.CheckpointRef
+			worker.GPUMemoryObserved = response.GPUMemoryObserved
+			worker.GPUMemoryAllocated, worker.GPUMemoryReserved = response.GPUMemoryAllocated, response.GPUMemoryReserved
 			if response.Generation != 0 {
 				worker.Generation = response.Generation
 			}
@@ -785,7 +789,7 @@ func workerResponse(worker runtimehelper.Worker, accepted bool, detail string) r
 	if deviceID == "" && len(worker.DeviceIDs) == 1 {
 		deviceID = worker.DeviceIDs[0]
 	}
-	return runtimehelper.ControlResponse{Accepted: accepted, State: worker.State, Generation: worker.Generation, SafePoint: worker.SafePoint, Offloaded: worker.Offloaded, Ready: worker.Ready, CheckpointRef: worker.CheckpointRef, BindingID: worker.BindingID, DeviceID: deviceID, Share: worker.Share, InstanceID: worker.InstanceID, PID: worker.PID, ProcessToken: worker.ProcessToken, Error: detail}
+	return runtimehelper.ControlResponse{Accepted: accepted, State: worker.State, Generation: worker.Generation, SafePoint: worker.SafePoint, Offloaded: worker.Offloaded, Ready: worker.Ready, CheckpointRef: worker.CheckpointRef, BindingID: worker.BindingID, DeviceID: deviceID, Share: worker.Share, InstanceID: worker.InstanceID, PID: worker.PID, ProcessToken: worker.ProcessToken, GPUMemoryObserved: worker.GPUMemoryObserved, GPUMemoryAllocated: worker.GPUMemoryAllocated, GPUMemoryReserved: worker.GPUMemoryReserved, Error: detail}
 }
 
 func (s *supervisor) snapshot() runtimehelper.Worker {

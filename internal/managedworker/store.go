@@ -48,6 +48,9 @@ type Worker struct {
 	SafePointFile         string    `json:"safe_point_file,omitempty"`
 	ReadinessFile         string    `json:"readiness_file,omitempty"`
 	CheckpointRef         string    `json:"checkpoint_ref,omitempty"`
+	GPUMemoryObserved     bool      `json:"gpu_memory_observed,omitempty"`
+	GPUMemoryAllocated    uint64    `json:"gpu_memory_allocated_bytes,omitempty"`
+	GPUMemoryReserved     uint64    `json:"gpu_memory_reserved_bytes,omitempty"`
 	LastOperation         string    `json:"last_operation,omitempty"`
 	LastUpdatedAt         time.Time `json:"last_updated_at"`
 	ExitCode              int       `json:"exit_code,omitempty"`
@@ -55,34 +58,37 @@ type Worker struct {
 }
 
 type Receipt struct {
-	Operation             string  `json:"operation"`
-	Phase                 string  `json:"phase"`
-	StepIndex             int     `json:"step_index"`
-	ExpectedActions       int     `json:"expected_actions"`
-	Committed             bool    `json:"committed"`
-	PlanDigest            string  `json:"plan_digest"`
-	ActionID              string  `json:"action_id"`
-	PlanID                string  `json:"plan_id"`
-	IdempotencyKey        string  `json:"idempotency_key"`
-	SandboxID             string  `json:"sandbox_id"`
-	TransactionGeneration uint64  `json:"transaction_generation"`
-	ActionGeneration      uint64  `json:"action_generation"`
-	TargetGeneration      uint64  `json:"target_generation,omitempty"`
-	TargetDeviceID        string  `json:"target_device_id,omitempty"`
-	TargetProfile         string  `json:"target_profile,omitempty"`
-	TargetParentID        string  `json:"target_parent_id,omitempty"`
-	TargetBindingID       string  `json:"target_binding_id,omitempty"`
-	TargetShare           float64 `json:"target_share,omitempty"`
-	SourceBindingID       string  `json:"source_binding_id,omitempty"`
-	SourceDeviceID        string  `json:"source_device_id,omitempty"`
-	BindingSynchronized   bool    `json:"binding_synchronized,omitempty"`
-	Completed             bool    `json:"completed"`
-	Succeeded             bool    `json:"succeeded"`
-	ErrorCode             string  `json:"error_code,omitempty"`
-	ErrorMessage          string  `json:"error_message,omitempty"`
-	CommandDigest         string  `json:"command_digest"`
-	RequestDigest         string  `json:"request_digest"`
-	Recoverable           bool    `json:"recoverable,omitempty"`
+	Operation                string  `json:"operation"`
+	Phase                    string  `json:"phase"`
+	StepIndex                int     `json:"step_index"`
+	ExpectedActions          int     `json:"expected_actions"`
+	Committed                bool    `json:"committed"`
+	PlanDigest               string  `json:"plan_digest"`
+	ActionID                 string  `json:"action_id"`
+	PlanID                   string  `json:"plan_id"`
+	IdempotencyKey           string  `json:"idempotency_key"`
+	SandboxID                string  `json:"sandbox_id"`
+	TransactionGeneration    uint64  `json:"transaction_generation"`
+	ActionGeneration         uint64  `json:"action_generation"`
+	TargetGeneration         uint64  `json:"target_generation,omitempty"`
+	TargetDeviceID           string  `json:"target_device_id,omitempty"`
+	TargetProfile            string  `json:"target_profile,omitempty"`
+	TargetParentID           string  `json:"target_parent_id,omitempty"`
+	TargetBindingID          string  `json:"target_binding_id,omitempty"`
+	TargetShare              float64 `json:"target_share,omitempty"`
+	SourceBindingID          string  `json:"source_binding_id,omitempty"`
+	SourceDeviceID           string  `json:"source_device_id,omitempty"`
+	SourceGPUMemoryObserved  bool    `json:"source_gpu_memory_observed,omitempty"`
+	SourceGPUMemoryAllocated uint64  `json:"source_gpu_memory_allocated_bytes,omitempty"`
+	SourceGPUMemoryReserved  uint64  `json:"source_gpu_memory_reserved_bytes,omitempty"`
+	BindingSynchronized      bool    `json:"binding_synchronized,omitempty"`
+	Completed                bool    `json:"completed"`
+	Succeeded                bool    `json:"succeeded"`
+	ErrorCode                string  `json:"error_code,omitempty"`
+	ErrorMessage             string  `json:"error_message,omitempty"`
+	CommandDigest            string  `json:"command_digest"`
+	RequestDigest            string  `json:"request_digest"`
+	Recoverable              bool    `json:"recoverable,omitempty"`
 }
 
 type State struct {
@@ -252,6 +258,9 @@ func (s *Store) Begin(request ActionRequest) (Worker, Receipt, bool, error) {
 			return fmt.Errorf("sandbox %q is not registered", request.SandboxID)
 		}
 		candidate := receiptFor(request)
+		candidate.SourceGPUMemoryObserved = current.GPUMemoryObserved
+		candidate.SourceGPUMemoryAllocated = current.GPUMemoryAllocated
+		candidate.SourceGPUMemoryReserved = current.GPUMemoryReserved
 		if err := validateReceipt(candidate); err != nil {
 			return err
 		}

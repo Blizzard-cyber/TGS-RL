@@ -16,7 +16,7 @@ import os
 import socket
 import tempfile
 import threading
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
@@ -779,7 +779,7 @@ class VerlWorkerBridge:
             raise ValueError("veRL trace cannot restore its sequence") from error
 
     def _response(self, *, accepted: bool = True, error: str = "") -> dict[str, Any]:
-        return {
+        response = {
             "accepted": accepted,
             "state": self.state,
             "generation": self.identity.generation,
@@ -792,6 +792,23 @@ class VerlWorkerBridge:
             "share": self.identity.share,
             "error": error,
         }
+        metrics = getattr(self.callbacks, "tgsrl_resource_metrics", None)
+        if callable(metrics):
+            try:
+                values = metrics()
+            except Exception:
+                values = None
+            if isinstance(values, Mapping):
+                observed = True
+                for key in ("gpu_memory_allocated_bytes", "gpu_memory_reserved_bytes"):
+                    value = values.get(key)
+                    if isinstance(value, int) and not isinstance(value, bool) and value >= 0:
+                        response[key] = value
+                    else:
+                        observed = False
+                if observed:
+                    response["gpu_memory_observed"] = True
+        return response
 
 
 def _read_request(connection: socket.socket) -> dict[str, Any]:

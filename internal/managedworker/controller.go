@@ -38,20 +38,31 @@ type ControlRequest struct {
 }
 
 type ControlResponse struct {
-	Accepted      bool    `json:"accepted"`
-	State         string  `json:"state,omitempty"`
-	Generation    uint64  `json:"generation,omitempty"`
-	SafePoint     bool    `json:"safe_point,omitempty"`
-	Offloaded     bool    `json:"offloaded,omitempty"`
-	Ready         bool    `json:"ready,omitempty"`
-	CheckpointRef string  `json:"checkpoint_ref,omitempty"`
-	BindingID     string  `json:"binding_id,omitempty"`
-	DeviceID      string  `json:"device_id,omitempty"`
-	Share         float64 `json:"share,omitempty"`
-	InstanceID    string  `json:"instance_id,omitempty"`
-	PID           int     `json:"pid,omitempty"`
-	ProcessToken  string  `json:"process_token,omitempty"`
-	Error         string  `json:"error,omitempty"`
+	Accepted           bool    `json:"accepted"`
+	State              string  `json:"state,omitempty"`
+	Generation         uint64  `json:"generation,omitempty"`
+	SafePoint          bool    `json:"safe_point,omitempty"`
+	Offloaded          bool    `json:"offloaded,omitempty"`
+	Ready              bool    `json:"ready,omitempty"`
+	CheckpointRef      string  `json:"checkpoint_ref,omitempty"`
+	BindingID          string  `json:"binding_id,omitempty"`
+	DeviceID           string  `json:"device_id,omitempty"`
+	Share              float64 `json:"share,omitempty"`
+	InstanceID         string  `json:"instance_id,omitempty"`
+	PID                int     `json:"pid,omitempty"`
+	ProcessToken       string  `json:"process_token,omitempty"`
+	GPUMemoryObserved  bool    `json:"gpu_memory_observed,omitempty"`
+	GPUMemoryAllocated uint64  `json:"gpu_memory_allocated_bytes,omitempty"`
+	GPUMemoryReserved  uint64  `json:"gpu_memory_reserved_bytes,omitempty"`
+	Error              string  `json:"error,omitempty"`
+}
+
+func applyControlObservation(worker *Worker, response ControlResponse) {
+	worker.State, worker.SafePoint, worker.Offloaded, worker.Ready = response.State, response.SafePoint, response.Offloaded, response.Ready
+	worker.CheckpointRef = response.CheckpointRef
+	worker.GPUMemoryObserved = response.GPUMemoryObserved
+	worker.GPUMemoryAllocated = response.GPUMemoryAllocated
+	worker.GPUMemoryReserved = response.GPUMemoryReserved
 }
 
 var ErrOutcomeUnknown = errors.New("managed-worker outcome is unknown")
@@ -91,8 +102,7 @@ func (c *Controller) Register(ctx context.Context, worker Worker) error {
 		if response.DeviceID != "" && len(worker.AllDeviceIDs()) == 1 && response.DeviceID != worker.AllDeviceIDs()[0] {
 			return errors.New("remote worker device does not match registration")
 		}
-		worker.State, worker.SafePoint, worker.Offloaded, worker.Ready = response.State, response.SafePoint, response.Offloaded, response.Ready
-		worker.CheckpointRef = response.CheckpointRef
+		applyControlObservation(&worker, response)
 		if response.DeviceID != "" && len(worker.AllDeviceIDs()) <= 1 {
 			worker.DeviceID, worker.DeviceIDs = response.DeviceID, []string{response.DeviceID}
 		}
@@ -111,8 +121,7 @@ func (c *Controller) Register(ctx context.Context, worker Worker) error {
 		if !response.Accepted || (response.Generation != 0 && response.Generation != worker.Generation) {
 			return errors.New("managed worker status does not match registration")
 		}
-		worker.State, worker.SafePoint, worker.Offloaded, worker.Ready = response.State, response.SafePoint, response.Offloaded, response.Ready
-		worker.CheckpointRef = response.CheckpointRef
+		applyControlObservation(&worker, response)
 	} else if worker.ControlURL == "" {
 		if worker.SafePointFile == "" || worker.ReadinessFile == "" {
 			return errors.New("signal-managed worker requires safe-point and readiness marker files")
@@ -181,8 +190,7 @@ func (c *Controller) discoverWorker(ctx context.Context, state State, worker Wor
 			worker.State, worker.SafePoint, worker.Offloaded, worker.Ready = "failed", false, false, false
 			worker.Detail = "remote worker status does not match registration"
 		} else {
-			worker.State, worker.SafePoint, worker.Offloaded, worker.Ready = response.State, response.SafePoint, response.Offloaded, response.Ready
-			worker.CheckpointRef = response.CheckpointRef
+			applyControlObservation(&worker, response)
 			if response.BindingID != "" || response.DeviceID != "" || response.Share != 0 {
 				worker.BindingID, worker.DeviceID, worker.Share = response.BindingID, response.DeviceID, response.Share
 				if response.DeviceID != "" && len(worker.AllDeviceIDs()) <= 1 {
@@ -203,8 +211,7 @@ func (c *Controller) discoverWorker(ctx context.Context, state State, worker Wor
 		if response.Generation != 0 && response.Generation != worker.Generation {
 			return Worker{}, fmt.Errorf("managed worker generation %d does not match %d", response.Generation, worker.Generation)
 		}
-		worker.State, worker.SafePoint, worker.Offloaded, worker.Ready = response.State, response.SafePoint, response.Offloaded, response.Ready
-		worker.CheckpointRef = response.CheckpointRef
+		applyControlObservation(&worker, response)
 		if response.BindingID != "" || response.DeviceID != "" || response.Share != 0 {
 			worker.BindingID, worker.DeviceID, worker.Share = response.BindingID, response.DeviceID, response.Share
 		}
@@ -520,6 +527,8 @@ func (c *Controller) apply(ctx context.Context, worker Worker, request ActionReq
 			return Worker{}, err
 		}
 		worker.State, worker.SafePoint, worker.Offloaded, worker.Ready, worker.CheckpointRef = "sleeping", true, true, false, checkpoint.CheckpointRef
+		worker.GPUMemoryObserved = response.GPUMemoryObserved
+		worker.GPUMemoryAllocated, worker.GPUMemoryReserved = response.GPUMemoryAllocated, response.GPUMemoryReserved
 	case "resume":
 		if worker.ControlSocket != "" || worker.ControlURL != "" {
 			if worker.Offloaded {
@@ -537,6 +546,8 @@ func (c *Controller) apply(ctx context.Context, worker Worker, request ActionReq
 				}
 				return Worker{}, err
 			}
+			worker.GPUMemoryObserved = response.GPUMemoryObserved
+			worker.GPUMemoryAllocated, worker.GPUMemoryReserved = response.GPUMemoryAllocated, response.GPUMemoryReserved
 		} else {
 			if err := c.signal(worker.PID, syscall.SIGCONT); err != nil {
 				return Worker{}, fmt.Errorf("resume worker: %w", err)

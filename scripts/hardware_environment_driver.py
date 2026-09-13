@@ -55,6 +55,7 @@ RUN_OPERATIONS = frozenset(
     {
         "provision",
         "apply_action",
+        "apply_worker_action",
         "launch",
         "verify_device_identity",
         "inject_fault",
@@ -114,6 +115,7 @@ TARGET_FIELDS = frozenset(
         "job_template",
         "gpu_profile",
         "execution_mode",
+        "worker_registry_url",
         "trace_command",
         "action_hooks",
         "fault_hooks",
@@ -299,6 +301,7 @@ class TargetConfig:
     job_template: Path
     gpu_profile: str
     execution_mode: str
+    worker_registry_url: str
     trace_command: tuple[str, ...]
     action_hooks: Mapping[str, tuple[str, ...]]
     fault_hooks: Mapping[str, Mapping[str, tuple[str, ...]]]
@@ -329,6 +332,23 @@ def _resolve_config_path(base: Path, value: object, *, label: str) -> Path:
     if resolved.is_symlink() or not resolved.is_file():
         raise DriverError(f"{label} is not a regular file: {resolved}")
     return resolved
+
+
+def _optional_http_base_url(value: object, *, label: str) -> str:
+    raw = str(value or "").strip()
+    if not raw:
+        return ""
+    parsed = parse.urlsplit(raw)
+    if (
+        parsed.scheme not in {"http", "https"}
+        or not parsed.netloc
+        or parsed.username is not None
+        or parsed.password is not None
+        or parsed.query
+        or parsed.fragment
+    ):
+        raise DriverError(f"{label} must be an HTTP(S) URL without credentials, query, or fragment")
+    return raw.rstrip("/")
 
 
 def _hook_map(value: object, *, label: str) -> dict[str, tuple[str, ...]]:
@@ -470,6 +490,10 @@ def load_config(path: Path) -> DriverConfig:
             ),
             gpu_profile=gpu_profile,
             execution_mode=execution_mode,
+            worker_registry_url=_optional_http_base_url(
+                values.get("worker_registry_url"),
+                label=f"targets.{experiment_id}.worker_registry_url",
+            ),
             trace_command=trace_command,
             action_hooks=_hook_map(
                 values.get("action_hooks", {}),
@@ -1241,6 +1265,7 @@ class HardwareEnvironmentDriver:
         ] = {
             "provision": self._provision,
             "apply_action": self._apply_action,
+            "apply_worker_action": self._apply_worker_action,
             "launch": self._launch,
             "verify_device_identity": self._verify_device_identity,
             "inject_fault": self._inject_fault,
@@ -1519,6 +1544,191 @@ class HardwareEnvironmentDriver:
             "action": action,
         }
         return [started_event, event]
+
+    def _apply_worker_action(
+        self, request_value: JsonObject, target: TargetConfig, run: JsonObject, response_path: Path
+    ) -> list[JsonObject]:
+        del response_path
+        action = _string(request_value.get("action"), label="request.action")
+        if action not in {"pause", "resume", "sleep", "offload"}:
+            raise DriverError(f"unsupported scoped worker action {action!r}")
+        kube = Kubernetes(target)
+        bundles = self._latest_bundles(self._bundles(kube, run))
+        if len(bundles) != 1:
+            raise DriverError("scoped worker action requires exactly one current worker")
+        bundle = _mapping(
+            _mapping(bundles[0].get("spec"), label="JobRunBundle spec").get("bundle"),
+            label="JobRunBundle bundle",
+        )
+        runtime_targets = _items(bundle, "runtimeTargets")
+        if len(runtime_targets) != 1:
+            raise DriverError("scoped worker action requires one runtime target")
+        runtime_target = runtime_targets[0]
+        job = _mapping(bundle.get("job"), label="bundle Job")
+        template = _mapping(
+            _mapping(job.get("spec"), label="bundle Job spec").get("template"),
+            label="bundle Job template",
+        )
+        containers = _items(_mapping(template.get("spec"), label="bundle Pod spec"), "containers")
+        if len(containers) != 1:
+            raise DriverError("managed-worker bundle must contain one main container")
+        environment = self._literal_environment(containers[0])
+        token = _string(
+            environment.get("TGSRL_WORKER_REGISTRY_TOKEN"),
+            label="scoped worker registry token",
+        )
+        bundle_registry_url = _string(
+            environment.get("TGSRL_WORKER_REGISTRY_URL"),
+            label="worker registry URL",
+        )
+        registry_url = target.worker_registry_url or bundle_registry_url
+        sandbox_id = _string(runtime_target.get("sandboxId"), label="runtime target sandbox ID")
+        generation = int(runtime_target.get("generation", bundle.get("generation", 0)))
+        if generation <= 0:
+            raise DriverError("runtime target generation must be positive")
+        body = {
+            "action": action,
+            "sandbox_id": sandbox_id,
+            "generation": generation,
+            "idempotency_key": _operation_key(request_value, run, action),
+        }
+        started = time.monotonic()
+        response = self._worker_registry_call(registry_url, token, body, target.timeout)
+        worker = _mapping(response.get("worker"), label="worker registry response")
+        if response.get("accepted") is not True:
+            raise DriverError(f"worker registry did not accept {action}")
+        if worker.get("sandbox_id") != sandbox_id or int(worker.get("generation", 0)) != generation:
+            raise DriverError("worker registry response identity does not match the target")
+        expected = {
+            "pause": lambda value: (
+                value.get("state") == "paused" and value.get("safe_point") is True
+            ),
+            "sleep": lambda value: value.get("state") == "sleeping",
+            "offload": lambda value: (
+                value.get("state") == "sleeping"
+                and value.get("offloaded") is True
+                and bool(str(value.get("checkpoint_ref", "")).strip())
+            ),
+            "resume": lambda value: (
+                value.get("state") == "running"
+                and value.get("ready") is True
+                and value.get("offloaded") is not True
+            ),
+        }[action]
+        if not expected(worker):
+            raise DriverError(f"worker did not confirm {action}")
+        event = self._common_event(run) | {
+            "event_type": "control_completed",
+            "source": "operator",
+            "action": action,
+            "sandbox_id": sandbox_id,
+            "generation": generation,
+            "duration_ms": (time.monotonic() - started) * 1000.0,
+            "succeeded": True,
+            "ready": bool(worker.get("ready", False)),
+            "offloaded": bool(worker.get("offloaded", False)),
+            "checkpoint_present": bool(str(worker.get("checkpoint_ref", "")).strip()),
+            "receipt_id": body["idempotency_key"],
+        }
+        if action in {"offload", "resume"}:
+            before = {
+                "gpu_memory_observed": response.get("gpu_memory_observed_before"),
+                "gpu_memory_allocated_bytes": response.get("gpu_memory_allocated_before_bytes", 0),
+                "gpu_memory_reserved_bytes": response.get("gpu_memory_reserved_before_bytes", 0),
+            }
+            event.update(
+                {
+                    "gpu_memory_allocated_before_bytes": self._memory_bytes(
+                        before, "gpu_memory_allocated_bytes"
+                    ),
+                    "gpu_memory_allocated_after_bytes": self._memory_bytes(
+                        worker, "gpu_memory_allocated_bytes"
+                    ),
+                    "gpu_memory_reserved_before_bytes": self._memory_bytes(
+                        before, "gpu_memory_reserved_bytes"
+                    ),
+                    "gpu_memory_reserved_after_bytes": self._memory_bytes(
+                        worker, "gpu_memory_reserved_bytes"
+                    ),
+                }
+            )
+        return [event]
+
+    @staticmethod
+    def _literal_environment(container: Mapping[str, Any]) -> dict[str, str]:
+        result: dict[str, str] = {}
+        for raw in _list(container.get("env", []), label="container environment"):
+            item = _mapping(raw, label="container environment entry")
+            name = _string(item.get("name"), label="container environment name")
+            if item.get("valueFrom") is None and isinstance(item.get("value"), str):
+                result[name] = str(item["value"])
+        return result
+
+    @staticmethod
+    def _worker_registry_call(
+        registry_url: str, token: str, body: Mapping[str, Any], timeout: float
+    ) -> JsonObject:
+        return HardwareEnvironmentDriver._worker_registry_request(
+            registry_url, "/v1/workers/action", token, body, timeout
+        )
+
+    @staticmethod
+    def _worker_registry_request(
+        registry_url: str,
+        endpoint_path: str,
+        token: str,
+        body: Mapping[str, Any],
+        timeout: float,
+    ) -> JsonObject:
+        parsed = parse.urlsplit(registry_url)
+        if (
+            parsed.scheme not in {"http", "https"}
+            or not parsed.netloc
+            or parsed.username is not None
+            or parsed.password is not None
+            or parsed.query
+            or parsed.fragment
+        ):
+            raise DriverError("worker registry URL is invalid")
+        endpoint = parse.urlunsplit(
+            (parsed.scheme, parsed.netloc, parsed.path.rstrip("/") + endpoint_path, "", "")
+        )
+        payload = json.dumps(body, separators=(",", ":")).encode()
+        action_request = request.Request(
+            endpoint,
+            data=payload,
+            headers={
+                "Content-Type": "application/json",
+                "X-TGSRL-Worker-Token": token,
+            },
+            method="POST",
+        )
+        try:
+            with request.urlopen(action_request, timeout=timeout) as response:
+                raw = response.read(MAX_JSON_BYTES + 1)
+        except error.HTTPError as exc:
+            detail = exc.read(4096).decode(errors="replace")
+            raise DriverError(
+                f"worker registry action returned HTTP {exc.code}: {_safe_detail(detail)}"
+            ) from exc
+        except error.URLError as exc:
+            raise DriverError(f"worker registry action failed: {exc.reason}") from exc
+        if len(raw) > MAX_JSON_BYTES:
+            raise DriverError("worker registry response is oversized")
+        try:
+            value = json.loads(raw)
+        except json.JSONDecodeError as exc:
+            raise DriverError("worker registry returned invalid JSON") from exc
+        return _mapping(value, label="worker registry response")
+
+    @staticmethod
+    def _memory_bytes(worker: Mapping[str, Any], key: str) -> int:
+        if worker.get("gpu_memory_observed") is not True:
+            raise DriverError("worker did not report authoritative GPU memory observations")
+        value = worker.get(key, 0)
+        if not isinstance(value, int) or isinstance(value, bool) or value < 0:
+            raise DriverError(f"worker registry omitted valid {key}")
+        return value
 
     def _start_and_wait_for_decision(
         self, request_value: JsonObject, target: TargetConfig, run: JsonObject

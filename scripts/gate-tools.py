@@ -58,6 +58,8 @@ CAMPAIGN_EVIDENCE_REQUIREMENTS = {
     "parent-uuid",
     "throughput",
     "gpu-active-time",
+    "gpu-memory-release",
+    "gpu-memory-restore",
     "useful-gpu-time",
     "policy-lag",
     "sample-staleness",
@@ -67,6 +69,7 @@ CAMPAIGN_EVIDENCE_REQUIREMENTS = {
     "priority-readback",
     "action-start",
     "action-receipt",
+    "checkpoint",
     "readiness",
     "fault-injected",
     "durable-receipt",
@@ -662,7 +665,7 @@ def _validate_full_stack_events(
             operator_actions = {
                 str(event.get("action"))
                 for event in run_events
-                if event.get("event_type") == "decision_applied"
+                if event.get("event_type") in {"decision_applied", "control_completed"}
                 and event.get("source") == "operator"
                 and event.get("succeeded") is True
             }
@@ -1961,6 +1964,32 @@ def _validate_named_campaign_evidence(
                 and float(event["gpu_active_ms"]) > 0
             )
         ),
+        "gpu-memory-release": any(
+            event.get("action") == "offload"
+            and event.get("source") == "operator"
+            and isinstance(event.get("gpu_memory_allocated_before_bytes"), int)
+            and isinstance(event.get("gpu_memory_allocated_after_bytes"), int)
+            and isinstance(event.get("gpu_memory_reserved_before_bytes"), int)
+            and isinstance(event.get("gpu_memory_reserved_after_bytes"), int)
+            and int(event["gpu_memory_allocated_before_bytes"])
+            > int(event["gpu_memory_allocated_after_bytes"])
+            and int(event["gpu_memory_reserved_before_bytes"])
+            > int(event["gpu_memory_reserved_after_bytes"])
+            for event in variant_actions
+        ),
+        "gpu-memory-restore": any(
+            event.get("action") == "resume"
+            and event.get("source") == "operator"
+            and isinstance(event.get("gpu_memory_allocated_before_bytes"), int)
+            and isinstance(event.get("gpu_memory_allocated_after_bytes"), int)
+            and isinstance(event.get("gpu_memory_reserved_before_bytes"), int)
+            and isinstance(event.get("gpu_memory_reserved_after_bytes"), int)
+            and int(event["gpu_memory_allocated_after_bytes"])
+            > int(event["gpu_memory_allocated_before_bytes"])
+            and int(event["gpu_memory_reserved_after_bytes"])
+            > int(event["gpu_memory_reserved_before_bytes"])
+            for event in variant_actions
+        ),
         "useful-gpu-time": both_sides(
             lambda event: (
                 event.get("event_type") == "sample_consumed"
@@ -2022,6 +2051,7 @@ def _validate_named_campaign_evidence(
             for action in required_actions
         ),
         "action-receipt": all(action_has(action, "receipt_id") for action in required_actions),
+        "checkpoint": action_has("offload", "checkpoint_present", lambda value: value is True),
         "readiness": any(
             event.get("action") in {"reload", "resume"} and event.get("ready") is True
             for event in variant_actions

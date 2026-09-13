@@ -249,6 +249,22 @@ class VerlTrainerCallbacks:
             raise RuntimeError("veRL policy version must use policy-<global_step>")
         _call(self._required("checkpoint_manager"), "update_weights", int(normalized))
 
+    def tgsrl_resource_metrics(self) -> dict[str, int]:
+        """Return optional allocator evidence exposed by the embedding trainer."""
+        observe = getattr(self.trainer, "tgsrl_resource_metrics", None)
+        if not callable(observe):
+            return {}
+        raw = observe()
+        if not isinstance(raw, Mapping):
+            raise RuntimeError("veRL resource metrics must be a mapping")
+        result: dict[str, int] = {}
+        for key in ("gpu_memory_allocated_bytes", "gpu_memory_reserved_bytes"):
+            value = raw.get(key)
+            if not isinstance(value, int) or isinstance(value, bool) or value < 0:
+                raise RuntimeError(f"veRL resource metric {key} must be a non-negative integer")
+            result[key] = value
+        return result
+
     def emit_observation(
         self,
         bridge: VerlWorkerBridge,

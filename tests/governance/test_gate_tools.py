@@ -19,6 +19,8 @@ HARDWARE_MANIFEST = ROOT / "configs" / "gates" / "gate-e1-e8-hardware.json"
 CAMPAIGN = ROOT / "configs" / "gates" / "e1-e8.json"
 HAMI_CAMPAIGN = ROOT / "configs" / "gates" / "hami-smoke.json"
 HAMI_CONCURRENCY_CAMPAIGN = ROOT / "configs" / "gates" / "hami-concurrency-smoke.json"
+A10_READINESS_CAMPAIGN = ROOT / "configs" / "gates" / "a10-readiness.json"
+A10_READINESS_MANIFEST = ROOT / "configs" / "gates" / "gate-a10-readiness.json"
 SPEC = importlib.util.spec_from_file_location("tgsrl_gate_tools", SCRIPT)
 assert SPEC is not None and SPEC.loader is not None
 GATE_TOOLS = importlib.util.module_from_spec(SPEC)
@@ -469,6 +471,20 @@ elif operation == "apply_action":
         "event_type": "control_started", "source": "operator",
         "action": request["action"],
     }})
+elif operation == "apply_worker_action":
+    action = request["action"]
+    offload = action == "offload"
+    events.append(common | {{
+        "event_type": "control_completed", "source": "operator",
+        "action": action, "duration_ms": 1.0, "succeeded": True,
+        "receipt_id": "receipt-" + request["request_id"],
+        "ready": action == "resume", "offloaded": offload,
+        "checkpoint_present": True,
+        "gpu_memory_allocated_before_bytes": 536870912 if offload else 0,
+        "gpu_memory_allocated_after_bytes": 0 if offload else 536870912,
+        "gpu_memory_reserved_before_bytes": 536870912 if offload else 0,
+        "gpu_memory_reserved_after_bytes": 0 if offload else 536870912,
+    }})
 elif operation == "inject_fault":
     events.append(common | {{
         "event_type": "fault_injected", "source": "operator",
@@ -586,6 +602,11 @@ def test_hami_campaign_is_independent_and_requires_fractional_allocation_evidenc
     assert campaign["campaign_id"] == "tgsrl-hami-smoke"
     assert [item["experiment_id"] for item in campaign["experiments"]] == ["H1"]
     experiment = campaign["experiments"][0]
+    manifest = GATE_TOOLS.load_manifest(A10_READINESS_MANIFEST)
+    assert manifest.data["workload_runner"]["required_variant_actions"] == [
+        "offload",
+        "resume",
+    ]
     assert experiment["requirements"]["execution_modes"] == ["hami-vgpu"]
     scenario = json.loads((ROOT / experiment["scenario_manifest"]).read_text(encoding="utf-8"))
     assert "hami-allocation" in scenario["required_evidence"]
@@ -618,6 +639,152 @@ def test_hami_concurrency_campaign_requires_two_workers_on_one_physical_gpu() ->
     scenario = json.loads((ROOT / experiment["scenario_manifest"]).read_text(encoding="utf-8"))
     assert scenario["topology"]["minimum_workers"] == 2
     assert "worker-concurrency" in scenario["required_evidence"]
+
+
+def test_a10_readiness_campaign_requires_real_memory_release_and_restore() -> None:
+    campaign = GATE_TOOLS.load_campaign(A10_READINESS_CAMPAIGN)
+
+    assert campaign["campaign_id"] == "tgsrl-a10-readiness"
+    experiment = campaign["experiments"][0]
+    assert experiment["requirements"]["required_actions"] == [
+        "bind",
+        "offload",
+        "resume",
+    ]
+    scenario = json.loads((ROOT / experiment["scenario_manifest"]).read_text(encoding="utf-8"))
+    assert "gpu-memory-release" in scenario["required_evidence"]
+    assert "gpu-memory-restore" in scenario["required_evidence"]
+    worker_steps = [
+        step
+        for step in scenario["execution_plan"]["variant"]
+        if step["operation"] == "apply_worker_action"
+    ]
+    assert [step["action"] for step in worker_steps] == ["offload", "resume"]
+
+
+def test_a10_readiness_executor_accepts_scoped_lifecycle_evidence(tmp_path: Path) -> None:
+    driver, calls = tmp_path / "driver.py", tmp_path / "calls.ndjson"
+    _write_hardware_driver(driver, calls)
+    output = tmp_path / "a10-output"
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(HARDWARE_EXECUTOR),
+            "--experiment",
+            "A10-FULL",
+            "--campaign",
+            str(A10_READINESS_CAMPAIGN),
+            "--gate-manifest",
+            str(A10_READINESS_MANIFEST),
+            "--scenario",
+            str(ROOT / "configs/scenarios/a10-full-lifecycle.yaml"),
+            "--output-dir",
+            str(output),
+            "--evidence",
+            "GPU_SINGLE_NODE",
+            "--driver",
+            str(driver),
+        ],
+        cwd=ROOT,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    report = read_report(output)
+    assert report["status"] == "PASSED"
+    events = json.loads((output / report["variant_trace"]).read_text(encoding="utf-8"))["events"]
+    actions = [
+        event["action"] for event in events if event.get("event_type") == "control_completed"
+    ]
+    assert "offload" in actions and "resume" in actions
+
+
+@pytest.mark.parametrize(
+    ("action", "before", "after", "message"),
+    [
+        ("offload", 512, 512, "did not reduce"),
+        ("resume", 512, 0, "did not restore"),
+    ],
+)
+def test_worker_lifecycle_evidence_requires_a_real_gpu_memory_transition(
+    action: str, before: int, after: int, message: str
+) -> None:
+    response = {
+        "schema_version": HARDWARE_TOOLS.DRIVER_RESPONSE_SCHEMA,
+        "request_id": "request-a10",
+        "status": "SUCCEEDED",
+        "events": [
+            {
+                "event_type": "control_completed",
+                "source": "operator",
+                "action": action,
+                "succeeded": True,
+                "gpu_memory_allocated_before_bytes": before,
+                "gpu_memory_allocated_after_bytes": after,
+                "gpu_memory_reserved_before_bytes": before,
+                "gpu_memory_reserved_after_bytes": after,
+            }
+        ],
+    }
+
+    with pytest.raises(HARDWARE_TOOLS.ExecutionError, match=message):
+        HARDWARE_TOOLS._validate_driver_response(
+            response,
+            request_id="request-a10",
+            operation="apply_worker_action",
+            action=action,
+        )
+
+
+def test_metrics_keep_scheduler_action_semantics_with_worker_registry_evidence() -> None:
+    events = [
+        {
+            "phase": "measurement",
+            "event_type": "decision_applied",
+            "source": "scheduler",
+            "action": "bind",
+            "succeeded": True,
+            "duration_ms": 2.0,
+        },
+        {
+            "phase": "measurement",
+            "event_type": "control_completed",
+            "source": "operator",
+            "action": "offload",
+            "succeeded": True,
+            "duration_ms": 3.0,
+        },
+        {
+            "phase": "measurement",
+            "event_type": "control_completed",
+            "source": "operator",
+            "action": "resume",
+            "succeeded": True,
+            "duration_ms": 4.0,
+        },
+        {
+            "phase": "measurement",
+            "event_type": "sample_consumed",
+            "duration_ms": 10.0,
+            "gpu_active_ms": 8.0,
+            "items": 1,
+            "contract_observation": {},
+        },
+        {
+            "phase": "measurement",
+            "event_type": "workload_completed",
+            "elapsed_ms": 10.0,
+            "item_count": 1,
+        },
+    ]
+
+    metrics = GATE_TOOLS._metrics_from_events(events)
+
+    assert metrics["action_success_rate"] == 1.0
+    assert metrics["decision_count"] == 1.0
 
 
 def test_hami_driver_response_rejects_share_mismatch() -> None:
@@ -1270,6 +1437,37 @@ def test_repository_hardware_executor_rejects_unsafe_scenario_order() -> None:
     ]
 
     with pytest.raises(HARDWARE_TOOLS.ExecutionError, match="unsafe ordering"):
+        HARDWARE_TOOLS._scenario_plan(scenario, experiment)
+
+
+def test_repository_hardware_executor_accepts_scoped_worker_lifecycle_actions() -> None:
+    campaign = GATE_TOOLS.load_campaign(CAMPAIGN)
+    experiment = dict(campaign["experiments"][0])
+    experiment["requirements"] = dict(experiment["requirements"])
+    experiment["requirements"]["required_actions"] = ["bind", "offload", "resume"]
+    scenario = json.loads((ROOT / experiment["scenario_manifest"]).read_text(encoding="utf-8"))
+    scenario["execution_plan"]["variant"][4:4] = [
+        {"operation": "apply_worker_action", "action": "offload"},
+        {"operation": "apply_worker_action", "action": "resume"},
+    ]
+
+    plan = HARDWARE_TOOLS._scenario_plan(scenario, experiment)
+
+    assert [
+        step["action"] for step in plan["variant"] if step["operation"] == "apply_worker_action"
+    ] == ["offload", "resume"]
+
+
+def test_repository_hardware_executor_rejects_bind_through_worker_registry() -> None:
+    campaign = GATE_TOOLS.load_campaign(CAMPAIGN)
+    experiment = campaign["experiments"][0]
+    scenario = json.loads((ROOT / experiment["scenario_manifest"]).read_text(encoding="utf-8"))
+    scenario["execution_plan"]["variant"][1] = {
+        "operation": "apply_worker_action",
+        "action": "bind",
+    }
+
+    with pytest.raises(HARDWARE_TOOLS.ExecutionError, match="must bind once"):
         HARDWARE_TOOLS._scenario_plan(scenario, experiment)
 
 

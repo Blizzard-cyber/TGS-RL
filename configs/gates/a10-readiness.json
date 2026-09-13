@@ -1,0 +1,29 @@
+{
+  "schema_version": "tgsrl.io/gate-campaign/v1alpha1",
+  "campaign_id": "tgsrl-a10-readiness",
+  "campaign_revision": 1,
+  "description": "Pre-experiment A10 engineering readiness. This does not replace E1-E8.",
+  "experiments": [
+    {
+      "experiment_id": "A10-FULL",
+      "title": "A10 Full GPU managed-worker lifecycle readiness",
+      "gate_manifest": "configs/gates/gate-a10-readiness.json",
+      "scenario_manifest": "configs/scenarios/a10-full-lifecycle.yaml",
+      "output_directory": "a10-full-lifecycle",
+      "minimum_evidence": "GPU_SINGLE_NODE",
+      "requirements": {
+        "minimum_nodes": 1,
+        "minimum_accelerators": 1,
+        "gpu_profiles": ["full-gpu"],
+        "execution_modes": ["kubernetes-dra"],
+        "exact_device_identity": true,
+        "required_actions": ["bind", "offload", "resume"],
+        "required_events": ["worker_registered", "device_identity_verified", "sample_consumed", "workload_completed"],
+        "required_faults": []
+      },
+      "rules": [
+        {"rule_id": "a10-full-actions-succeed", "metric": "action_success_rate", "comparison": "variant", "operator": ">=", "threshold": 1}
+      ]
+    }
+  ]
+}

@@ -1,0 +1,13 @@
+{
+  "schema_version": "tgsrl.io/hardware-scenario/v1alpha1",
+  "experiment_id": "A10-FULL",
+  "title": "A10 Full GPU managed-worker lifecycle readiness",
+  "topology": {"minimum_nodes": 1, "minimum_accelerators": 1, "gpu_profiles": ["full-gpu"]},
+  "workload": {"framework": "verl", "execution_backend": "ray", "trainer": "pytorch", "rollout_engine": "vllm"},
+  "execution_plan": {
+    "baseline": [{"operation": "provision"}, {"operation": "apply_action", "action": "bind"}, {"operation": "launch"}, {"operation": "verify_device_identity"}, {"operation": "measure"}, {"operation": "stop"}, {"operation": "cleanup"}],
+    "variant": [{"operation": "provision"}, {"operation": "apply_action", "action": "bind"}, {"operation": "launch"}, {"operation": "verify_device_identity"}, {"operation": "apply_worker_action", "action": "offload"}, {"operation": "apply_worker_action", "action": "resume"}, {"operation": "measure"}, {"operation": "stop"}, {"operation": "cleanup"}]
+  },
+  "faults": [],
+  "required_evidence": ["scheduler-binding", "dra-allocation", "worker-device-identity", "throughput", "gpu-active-time", "gpu-memory-release", "gpu-memory-restore", "checkpoint", "action-receipt", "readiness"]
+}
