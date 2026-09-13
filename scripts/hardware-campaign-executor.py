@@ -84,6 +84,12 @@ def _load_gate_tools() -> Any:
 GATE_TOOLS = _load_gate_tools()
 
 
+def _fingerprint_value_present(value: object) -> bool:
+    if value is None or value == "":
+        return False
+    return not isinstance(value, (dict, list, tuple, set)) or bool(value)
+
+
 def _read_json(path: Path) -> dict[str, Any]:
     if not path.is_file() or path.stat().st_size > MAX_RESPONSE_BYTES:
         raise ExecutionError(f"missing or oversized JSON artifact: {path}")
@@ -404,6 +410,15 @@ def _validate_driver_response(
             raise ExecutionError(
                 "hardware driver launch returned the wrong number of worker identities"
             )
+    if operation == "provision":
+        artifacts = response.get("artifacts", [])
+        if not isinstance(artifacts, list) or not any(
+            isinstance(record, dict)
+            and record.get("path") == "rendered-job.json"
+            and str(record.get("sha256", "")).strip()
+            for record in artifacts
+        ):
+            raise ExecutionError("hardware driver provision omitted rendered-job.json evidence")
     if operation == "measure" and not any(
         event.get("event_type") == "workload_completed" for event in events
     ):
@@ -939,7 +954,9 @@ def execute(args: argparse.Namespace) -> int:
         raise ExecutionError("hardware driver preflight omitted environment_fingerprint")
     required_fingerprint = set(gate_manifest.data["environment_fingerprint"]["required_fields"])
     missing_fingerprint = [
-        field for field in sorted(required_fingerprint) if fingerprint.get(field) in {None, ""}
+        field
+        for field in sorted(required_fingerprint)
+        if not _fingerprint_value_present(fingerprint.get(field))
     ]
     if missing_fingerprint:
         raise ExecutionError(

@@ -299,6 +299,14 @@ def _write_full_stack_gpu_report(
             "git_dirty": False,
             "execution_mode": "kubernetes-dra",
             "gpu_profile": profile,
+            "kube_context": "fixture-context",
+            "cluster_uid": "fixture-cluster-uid",
+            "kubernetes_server_version": "v1.35.1",
+            "namespace_uid": "fixture-namespace-uid",
+            "environment_config_sha256": "fixture-environment-digest",
+            "job_template_sha256": "fixture-job-digest",
+            "trace_command_digest": "fixture-trace-command-digest",
+            "hooks_fingerprint": {"actions": {"fixture": {}}, "faults": {}},
             "accelerator_count": (
                 requirements["minimum_accelerators"] if complete_requirements else 1
             ),
@@ -374,6 +382,7 @@ if (
     raise SystemExit(7)
 operation = request["operation"]
 events = []
+artifacts = []
 if operation == "preflight":
     profile = "mig" if request["experiment_id"] == "E2" else "full-gpu"
     response = {{
@@ -384,11 +393,26 @@ if operation == "preflight":
             "python_version": "3.12", "git_commit": {str(GATE_TOOLS.git_commit())!r},
             "git_dirty": False, "execution_mode": "kubernetes-dra",
             "gpu_profile": profile, "accelerator_count": {preflight_accelerator_count!r},
+            "kube_context": "fixture-context",
+            "cluster_uid": "fixture-cluster-uid",
+            "kubernetes_server_version": "v1.35.1",
+            "namespace_uid": "fixture-namespace-uid",
+            "environment_config_sha256": "fixture-environment-digest",
+            "job_template_sha256": "fixture-job-digest",
+            "trace_command_digest": "fixture-trace-command-digest",
+            "hooks_fingerprint": {{"actions": {{"fixture": {{}}}}, "faults": {{}}}},
             "accelerator_inventory_digest": {preflight_inventory_digest!r},
         }},
     }}
     Path(args.response).write_text(json.dumps(response), encoding="utf-8")
     raise SystemExit(0)
+if operation == "provision":
+    artifact = Path(args.response).parent / "rendered-job.json"
+    artifact.write_text(json.dumps({{"jobId": "job-" + request["run_key"]}}), encoding="utf-8")
+    artifacts.append({{
+        "path": artifact.name,
+        "sha256": hashlib.sha256(artifact.read_bytes()).hexdigest(),
+    }})
 common = {{
     "service_job_id": "job-" + request["run_key"],
     "service_run_id": "run-" + request["run_key"],
@@ -490,6 +514,7 @@ response = {{
     "request_id": request["request_id"],
     "status": ("FAILED" if {invalid_cleanup!r} and operation == "cleanup" else "SUCCEEDED"),
     "events": events,
+    "artifacts": artifacts,
 }}
 Path(args.response).write_text(json.dumps(response), encoding="utf-8")
 """,

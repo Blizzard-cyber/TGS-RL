@@ -472,6 +472,12 @@ def _is_finite_number(value: object) -> bool:
     )
 
 
+def _fingerprint_value_present(value: object) -> bool:
+    if value is None or value == "":
+        return False
+    return not isinstance(value, (dict, list, tuple, set)) or bool(value)
+
+
 def _parse_workload_events(
     payload: bytes, *, label: str, phase: str, iteration: int
 ) -> list[dict[str, Any]]:
@@ -967,7 +973,7 @@ def cmd_ingest(args: argparse.Namespace) -> int:
     if not isinstance(fingerprint, dict):
         raise GateToolError("ingested report must include environment_fingerprint")
     for field in manifest.data["environment_fingerprint"]["required_fields"]:
-        if field not in fingerprint or fingerprint[field] in {None, ""}:
+        if field not in fingerprint or not _fingerprint_value_present(fingerprint[field]):
             raise GateToolError(f"environment_fingerprint missing required field {field}")
     baseline_source = _resolve_external_artifact(
         source, report.get("baseline_trace"), "baseline_trace"
@@ -1221,7 +1227,7 @@ def _validate_report(
             errors.append("GPU evidence requires environment_fingerprint")
         else:
             for field in manifest.data["environment_fingerprint"]["required_fields"]:
-                if field not in fingerprint or fingerprint[field] in {None, ""}:
+                if field not in fingerprint or not _fingerprint_value_present(fingerprint[field]):
                     errors.append(f"GPU evidence missing environment_fingerprint.{field}")
             if (
                 not isinstance(fingerprint.get("accelerator_count"), int)

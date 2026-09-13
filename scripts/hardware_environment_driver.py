@@ -172,6 +172,10 @@ def _canonical_digest(value: object) -> str:
     return hashlib.sha256(payload).hexdigest()
 
 
+def _file_digest(path: Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
 def _compact_cleaned_run(run: JsonObject) -> None:
     if run.get("cleaned") is not True:
         return
@@ -344,6 +348,37 @@ def _hook_map(value: object, *, label: str) -> dict[str, tuple[str, ...]]:
     return result
 
 
+def _command_fingerprint(argv: Sequence[str]) -> JsonObject:
+    executable = Path(_resolve_executable(argv[0], label="hardware environment hook"))
+    file_arguments: dict[str, str] = {}
+    for index, value in enumerate(argv[1:], start=1):
+        if PLACEHOLDER_PATTERN.search(value):
+            continue
+        candidate = Path(value).expanduser()
+        if not candidate.is_absolute():
+            candidate = ROOT / candidate
+        resolved = candidate.resolve()
+        if resolved.is_file() and not resolved.is_symlink():
+            file_arguments[str(index)] = _file_digest(resolved)
+    return {
+        "argv_digest": _canonical_digest(list(argv)),
+        "executable_sha256": _file_digest(executable),
+        "file_arguments_sha256": file_arguments,
+    }
+
+
+def _hooks_fingerprint(target: TargetConfig) -> JsonObject:
+    return {
+        "actions": {
+            name: _command_fingerprint(argv) for name, argv in sorted(target.action_hooks.items())
+        },
+        "faults": {
+            fault_id: {phase: _command_fingerprint(argv) for phase, argv in sorted(phases.items())}
+            for fault_id, phases in sorted(target.fault_hooks.items())
+        },
+    }
+
+
 def load_config(path: Path) -> DriverConfig:
     resolved = path.expanduser().resolve()
     raw = _read_json(resolved)
@@ -423,7 +458,10 @@ def load_config(path: Path) -> DriverConfig:
                 label=f"targets.{experiment_id}.gateway_url",
             ).rstrip("/"),
             namespace=namespace,
-            kube_context=str(values.get("kube_context", "")).strip(),
+            kube_context=_string(
+                values.get("kube_context"),
+                label=f"targets.{experiment_id}.kube_context",
+            ),
             kubectl=_resolve_executable(values.get("kubectl", "kubectl"), label="kubectl"),
             job_template=_resolve_config_path(
                 resolved.parent,
@@ -536,6 +574,7 @@ class Kubernetes:
         *,
         namespaced: bool = True,
         timeout: float | None = None,
+        input_text: str | None = None,
     ) -> str:
         command = [*self._base(namespaced=namespaced), *argv]
         try:
@@ -545,6 +584,7 @@ class Kubernetes:
                 text=True,
                 check=False,
                 timeout=timeout or self.target.timeout,
+                input=input_text,
             )
         except subprocess.TimeoutExpired as exc:
             raise DriverError(f"kubectl operation timed out: {argv[0]}") from exc
@@ -564,6 +604,81 @@ class Kubernetes:
         except json.JSONDecodeError as exc:
             raise DriverError(f"kubectl {argv[0]} returned invalid JSON") from exc
         return _mapping(value, label="kubectl response")
+
+    def delete_preconditioned(self, resource: str, name: str, live: Mapping[str, Any]) -> None:
+        metadata = _mapping(live.get("metadata"), label=f"live {resource} metadata")
+        uid = _string(metadata.get("uid"), label=f"live {resource} UID")
+        resource_version = _string(
+            metadata.get("resourceVersion"),
+            label=f"live {resource} resourceVersion",
+        )
+        api_version = _string(live.get("apiVersion"), label=f"live {resource} apiVersion")
+        plural = resource.split(".", 1)[0]
+        escaped_namespace = parse.quote(self.target.namespace, safe="")
+        escaped_name = parse.quote(name, safe="")
+        if "/" in api_version:
+            group, version = api_version.split("/", 1)
+            raw_path = (
+                f"/apis/{parse.quote(group, safe='')}/{parse.quote(version, safe='')}"
+                f"/namespaces/{escaped_namespace}/{plural}/{escaped_name}"
+            )
+        else:
+            raw_path = (
+                f"/api/{parse.quote(api_version, safe='')}/namespaces/{escaped_namespace}"
+                f"/{plural}/{escaped_name}"
+            )
+        options = {
+            "apiVersion": "v1",
+            "kind": "DeleteOptions",
+            "propagationPolicy": "Foreground",
+            "preconditions": {
+                "uid": uid,
+                "resourceVersion": resource_version,
+            },
+        }
+        self.run(
+            ["delete", f"--raw={raw_path}", "-f", "-"],
+            input_text=json.dumps(options, separators=(",", ":")),
+        )
+
+        def deleted_or_replaced() -> bool:
+            current = self.optional_json(["get", resource, name])
+            if current is None:
+                return True
+            current_metadata = _mapping(
+                current.get("metadata"), label=f"current {resource} metadata"
+            )
+            return str(current_metadata.get("uid", "")) != uid
+
+        _wait(
+            f"deletion of {resource}/{name}",
+            deleted_or_replaced,
+            timeout=self.target.timeout,
+            interval=self.target.poll_interval,
+        )
+
+    def clear_finalizers_preconditioned(
+        self, resource: str, name: str, live: Mapping[str, Any]
+    ) -> JsonObject:
+        metadata = _mapping(live.get("metadata"), label=f"live {resource} metadata")
+        uid = _string(metadata.get("uid"), label=f"live {resource} UID")
+        resource_version = _string(
+            metadata.get("resourceVersion"),
+            label=f"live {resource} resourceVersion",
+        )
+        patch = json.dumps(
+            [
+                {"op": "test", "path": "/metadata/uid", "value": uid},
+                {
+                    "op": "test",
+                    "path": "/metadata/resourceVersion",
+                    "value": resource_version,
+                },
+                {"op": "add", "path": "/metadata/finalizers", "value": []},
+            ],
+            separators=(",", ":"),
+        )
+        return self.json(["patch", resource, name, "--type=json", "--patch", patch])
 
     def optional_json(self, argv: Sequence[str], *, namespaced: bool = True) -> JsonObject | None:
         raw = self.run(
@@ -1160,11 +1275,26 @@ class HardwareEnvironmentDriver:
         gateway.get("/health")
         capabilities = gateway.get("/v1/capabilities")
         kube = Kubernetes(target)
-        kube.json(["get", "namespace", target.namespace], namespaced=False)
-        if target.kube_context:
-            current = kube.run(["config", "current-context"], namespaced=False).strip()
-            if current != target.kube_context:
-                raise DriverError("kubectl current context does not match the configured context")
+        namespace = kube.json(["get", "namespace", target.namespace], namespaced=False)
+        namespace_metadata = _mapping(
+            namespace.get("metadata"), label="validation namespace metadata"
+        )
+        namespace_uid = _string(namespace_metadata.get("uid"), label="validation namespace UID")
+        current = kube.run(["config", "current-context"], namespaced=False).strip()
+        if current != target.kube_context:
+            raise DriverError("kubectl current context does not match the configured context")
+        cluster_namespace = kube.json(["get", "namespace", "kube-system"], namespaced=False)
+        cluster_uid = _string(
+            _mapping(cluster_namespace.get("metadata"), label="kube-system namespace metadata").get(
+                "uid"
+            ),
+            label="Kubernetes cluster UID",
+        )
+        version = kube.json(["version"], namespaced=False)
+        server_version = _mapping(version.get("serverVersion"), label="Kubernetes serverVersion")
+        server_git_version = _string(
+            server_version.get("gitVersion"), label="Kubernetes server gitVersion"
+        )
         if target.execution_mode == "kubernetes-dra":
             device_class = PROFILE_CLASS[target.gpu_profile]
             kube.json(["get", "deviceclasses.resource.k8s.io", device_class], namespaced=False)
@@ -1196,6 +1326,14 @@ class HardwareEnvironmentDriver:
             "git_dirty": False,
             "execution_mode": target.execution_mode,
             "gpu_profile": target.gpu_profile,
+            "kube_context": current,
+            "cluster_uid": cluster_uid,
+            "kubernetes_server_version": server_git_version,
+            "namespace_uid": namespace_uid,
+            "environment_config_sha256": _file_digest(self.config.path),
+            "job_template_sha256": _file_digest(target.job_template),
+            "trace_command_digest": _canonical_digest(list(target.trace_command)),
+            "hooks_fingerprint": _hooks_fingerprint(target),
             "accelerator_count": len(inventory),
             "accelerator_inventory_digest": _canonical_digest(inventory),
         }
@@ -1220,7 +1358,6 @@ class HardwareEnvironmentDriver:
     def _provision(
         self, request_value: JsonObject, target: TargetConfig, run: JsonObject, response_path: Path
     ) -> list[JsonObject]:
-        del response_path
         template = _read_json(target.job_template)
         if _contains_sensitive_field(template):
             raise DriverError("job template must not contain inline credential-like fields")
@@ -1249,6 +1386,7 @@ class HardwareEnvironmentDriver:
             }
         )
         job["displayName"] = f"{job.get('displayName', 'hardware-gate')}-{request_value['run_key']}"
+        self._write_artifact(response_path, "rendered-job.json", job)
         gateway = Gateway(target.gateway_url, target.timeout)
         attempt = int(run.get("attempt", 1))
         expected_job_id = _job_id(request_value, attempt)
@@ -1681,40 +1819,29 @@ class HardwareEnvironmentDriver:
                     raise DriverError(
                         f"refusing to delete {resource}/{name}: ownership labels do not match"
                     )
-                kube.run(
-                    [
-                        "delete",
-                        resource,
-                        name,
-                        "--wait=true",
-                        "--ignore-not-found=true",
-                    ]
-                )
+                kube.delete_preconditioned(resource, name, live)
             metadata = _mapping(bundle.get("metadata"), label="JobRunBundle metadata")
             name = _string(metadata.get("name"), label="JobRunBundle name")
             # Child names and ownership labels were verified above. Removing
             # this test-owned marker finalizer after its children are gone
             # prevents cleanup from hanging if the external Operator misses a
             # deletion watch or is stopped during teardown.
-            kube.run(
-                [
-                    "patch",
-                    "jobrunbundles.tgsrl.io",
-                    name,
-                    "--type=merge",
-                    "--patch",
-                    '{"metadata":{"finalizers":[]}}',
-                ]
-            )
-            kube.run(
-                [
-                    "delete",
-                    "jobrunbundles.tgsrl.io",
-                    name,
-                    "--wait=true",
-                    "--ignore-not-found=true",
-                ]
-            )
+            live_bundle = kube.optional_json(["get", "jobrunbundles.tgsrl.io", name])
+            if live_bundle is not None:
+                live_spec = _mapping(
+                    _mapping(live_bundle.get("spec"), label="live JobRunBundle spec").get("bundle"),
+                    label="live JobRunBundle bundle",
+                )
+                if live_spec.get("sourceJobId") != run.get("job_id") or live_spec.get(
+                    "sourceRunId"
+                ) != run.get("run_id"):
+                    raise DriverError(
+                        f"refusing to delete jobrunbundles.tgsrl.io/{name}: identity changed"
+                    )
+                patched = kube.clear_finalizers_preconditioned(
+                    "jobrunbundles.tgsrl.io", name, live_bundle
+                )
+                kube.delete_preconditioned("jobrunbundles.tgsrl.io", name, patched)
         return []
 
     def _inject_fault(

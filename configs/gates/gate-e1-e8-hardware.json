@@ -26,7 +26,7 @@
     }
   },
   "environment_fingerprint": {
-    "required_fields": ["host_hash", "platform", "python_version", "git_commit", "git_dirty", "execution_mode", "gpu_profile", "accelerator_count", "accelerator_inventory_digest"]
+    "required_fields": ["host_hash", "platform", "python_version", "git_commit", "git_dirty", "execution_mode", "gpu_profile", "kube_context", "cluster_uid", "kubernetes_server_version", "namespace_uid", "environment_config_sha256", "job_template_sha256", "trace_command_digest", "hooks_fingerprint", "accelerator_count", "accelerator_inventory_digest"]
   },
   "artifacts": {
     "archive": "artifacts/raw/archive.tar.gz",

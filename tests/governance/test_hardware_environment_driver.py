@@ -240,6 +240,7 @@ import json
 import os
 import sys
 from pathlib import Path
+from urllib.parse import unquote, urlsplit
 
 args = sys.argv[1:]
 for option in ("--context", "--namespace"):
@@ -251,6 +252,8 @@ if args[-2:] == ["-o", "json"]:
 if "--ignore-not-found=true" in args:
     args.remove("--ignore-not-found=true")
 marker = Path(os.environ["TGSRL_FAKE_REBIND_MARKER"])
+deleted_path = marker.with_suffix(".deleted.json")
+deleted = set(json.loads(deleted_path.read_text()) if deleted_path.exists() else [])
 job_id = os.environ["TGSRL_FAKE_JOB_ID"]
 generation = 2 if marker.exists() else 1
 device_id = f"MIG-{generation}/1/0"
@@ -261,10 +264,15 @@ claim_name = f"claim-{generation}"
 def emit(value):
     print(json.dumps(value, sort_keys=True))
 
+def metadata(name):
+    return {"name": name, "uid": f"uid-{name}", "resourceVersion": "1"}
+
 if args == ["config", "current-context"]:
     print("test-context")
+elif args == ["version"]:
+    emit({"serverVersion": {"gitVersion": "v1.35.1"}})
 elif args[:2] == ["get", "namespace"]:
-    emit({"metadata": {"name": "tgsrl-workloads"}})
+    emit({"apiVersion": "v1", "kind": "Namespace", "metadata": metadata(args[2])})
 elif args[:2] == ["get", "deviceclasses.resource.k8s.io"]:
     emit({"metadata": {"name": args[2]}})
 elif args == ["get", "nodes"]:
@@ -317,8 +325,11 @@ elif args == ["get", "resourceslices.resource.k8s.io"]:
     }}]})
 elif args == ["get", "jobrunbundles.tgsrl.io"]:
     def bundle(current):
+        name = f"bundle-{current}"
         return {
-            "metadata": {"name": f"bundle-{current}"},
+            "apiVersion": "tgsrl.io/v1alpha1",
+            "kind": "JobRunBundle",
+            "metadata": metadata(name),
             "spec": {"bundle": {
                 "generation": current,
                 "sourceJobId": job_id,
@@ -333,7 +344,33 @@ elif args == ["get", "jobrunbundles.tgsrl.io"]:
                 "resourceClaimTemplate": {"metadata": {"name": f"claim-template-{current}"}},
             }}
         }
-    emit({"items": [bundle(current) for current in range(1, generation + 1)]})
+    emit({"items": [
+        bundle(current)
+        for current in range(1, generation + 1)
+        if f"bundle-{current}" not in deleted
+    ]})
+elif len(args) == 3 and args[:2] == ["get", "jobrunbundles.tgsrl.io"]:
+    current = int(args[2].removeprefix("bundle-"))
+    if args[2] not in deleted:
+        name = args[2]
+        emit({
+            "apiVersion": "tgsrl.io/v1alpha1",
+            "kind": "JobRunBundle",
+            "metadata": metadata(name),
+            "spec": {"bundle": {
+                "generation": current,
+                "sourceJobId": job_id,
+                "sourceRunId": "run-a",
+                "runtimeTargets": [{
+                    "runtimeUnitId": "unit-a",
+                    "sandboxId": "sandbox-a",
+                    "generation": current,
+                }],
+                "job": {"metadata": {"name": f"kube-job-{current}"}},
+                "workload": {"metadata": {"name": f"workload-{current}"}},
+                "resourceClaimTemplate": {"metadata": {"name": f"claim-template-{current}"}},
+            }},
+        })
 elif args == ["get", "pods"]:
     emit({"items": [{
         "metadata": {
@@ -351,10 +388,14 @@ elif args == ["get", "pods"]:
         },
     }]})
 elif len(args) == 3 and args[:2] == ["get", "resourceclaims.resource.k8s.io"]:
+    if args[2] in deleted:
+        raise SystemExit(0)
     owner = "other-job" if os.environ.get("TGSRL_FAKE_BAD_OWNER") else job_id
     emit({
+        "apiVersion": "resource.k8s.io/v1",
+        "kind": "ResourceClaim",
         "metadata": {
-            "name": claim_name,
+            **metadata(claim_name),
             "labels": {"tgsrl.io/job-id": owner, "tgsrl.io/run-id": "run-a"},
         },
         "spec": {"devices": {"requests": [{
@@ -373,10 +414,19 @@ elif len(args) == 3 and args[0] == "get" and args[1] in {
     "workloads.kueue.x-k8s.io",
     "resourceclaimtemplates.resource.k8s.io",
 }:
+    if args[2] in deleted:
+        raise SystemExit(0)
     owner = "other-job" if os.environ.get("TGSRL_FAKE_BAD_OWNER") else job_id
+    api_version, kind = {
+        "jobs.batch": ("batch/v1", "Job"),
+        "workloads.kueue.x-k8s.io": ("kueue.x-k8s.io/v1beta2", "Workload"),
+        "resourceclaimtemplates.resource.k8s.io": ("resource.k8s.io/v1", "ResourceClaimTemplate"),
+    }[args[1]]
     emit({
+        "apiVersion": api_version,
+        "kind": kind,
         "metadata": {
-            "name": args[2],
+            **metadata(args[2]),
             "labels": {"tgsrl.io/job-id": owner, "tgsrl.io/run-id": "run-a"},
         }
     })
@@ -412,8 +462,47 @@ elif args[:1] == ["exec"]:
         },
     ]
     print("\n".join(json.dumps(event, sort_keys=True) for event in events))
-elif args[:1] in (["delete"], ["patch"]):
+elif args[:1] == ["delete"] and any(item.startswith("--raw=") for item in args):
+    raw = next(item.removeprefix("--raw=") for item in args if item.startswith("--raw="))
+    name = unquote(urlsplit(raw).path.rsplit("/", 1)[-1])
+    options = json.loads(sys.stdin.read())
+    expected = {"uid": f"uid-{name}", "resourceVersion": "1"}
+    if options.get("preconditions") != expected:
+        print("precondition mismatch", file=sys.stderr)
+        raise SystemExit(1)
+    deleted.add(name)
+    deleted_path.write_text(json.dumps(sorted(deleted)))
     emit({})
+elif args[:1] == ["patch"]:
+    name = args[2]
+    patch = json.loads(args[args.index("--patch") + 1])
+    expected = [
+        {"op": "test", "path": "/metadata/uid", "value": f"uid-{name}"},
+        {"op": "test", "path": "/metadata/resourceVersion", "value": "1"},
+        {"op": "add", "path": "/metadata/finalizers", "value": []},
+    ]
+    if patch != expected:
+        print("patch precondition mismatch", file=sys.stderr)
+        raise SystemExit(1)
+    current = int(name.removeprefix("bundle-"))
+    emit({
+        "apiVersion": "tgsrl.io/v1alpha1",
+        "kind": "JobRunBundle",
+        "metadata": metadata(name),
+        "spec": {"bundle": {
+            "generation": current,
+            "sourceJobId": job_id,
+            "sourceRunId": "run-a",
+            "runtimeTargets": [{
+                "runtimeUnitId": "unit-a",
+                "sandboxId": "sandbox-a",
+                "generation": current,
+            }],
+            "job": {"metadata": {"name": f"kube-job-{current}"}},
+            "workload": {"metadata": {"name": f"workload-{current}"}},
+            "resourceClaimTemplate": {"metadata": {"name": f"claim-template-{current}"}},
+        }},
+    })
 else:
     print("unsupported fake kubectl argv: " + repr(args), file=sys.stderr)
     raise SystemExit(3)
@@ -853,7 +942,8 @@ def test_driver_replays_receipt_without_repeating_side_effect(
     first = _execute(driver, root, request)
     create_count = state.requests.count(("POST", "/v1/jobs"))
     replay = cast(JsonObject, driver.execute(request, root / "replay" / "response.json"))
-    assert replay == first
+    assert first["artifacts"][0]["path"] == "rendered-job.json"
+    assert replay == {key: value for key, value in first.items() if key != "artifacts"}
     assert state.requests.count(("POST", "/v1/jobs")) == create_count
 
 
@@ -993,6 +1083,17 @@ def test_driver_preflight_accepts_full_gpu_inventory(
     fingerprint = response["environment_fingerprint"]
     assert fingerprint["gpu_profile"] == "full-gpu"
     assert fingerprint["accelerator_count"] == 1
+    assert fingerprint["kube_context"] == "test-context"
+    assert fingerprint["cluster_uid"] == "uid-kube-system"
+    assert fingerprint["kubernetes_server_version"] == "v1.35.1"
+    assert fingerprint["namespace_uid"] == "uid-tgsrl-workloads"
+    assert fingerprint["environment_config_sha256"] == DRIVER._file_digest(driver.config.path)
+    target = driver.config.targets["E1"]
+    assert fingerprint["job_template_sha256"] == DRIVER._file_digest(target.job_template)
+    assert fingerprint["trace_command_digest"] == DRIVER._canonical_digest(
+        list(target.trace_command)
+    )
+    assert fingerprint["hooks_fingerprint"] == {"actions": {}, "faults": {}}
 
 
 def test_driver_preflight_accepts_hami_inventory(
@@ -1357,7 +1458,62 @@ def test_driver_cleanup_removes_bundle_finalizer_before_delete(
     delete_index = next(
         index
         for index, argv in enumerate(calls)
-        if argv[:2] == ["delete", "jobrunbundles.tgsrl.io"]
+        if argv[:1] == ["delete"]
+        and any("/jobrunbundles/" in item for item in argv if item.startswith("--raw="))
     )
-    assert calls[patch_index][-1] == '{"metadata":{"finalizers":[]}}'
+    patch_argv = calls[patch_index]
+    patch = json.loads(patch_argv[patch_argv.index("--patch") + 1])
+    assert patch == [
+        {"op": "test", "path": "/metadata/uid", "value": "uid-bundle-1"},
+        {"op": "test", "path": "/metadata/resourceVersion", "value": "1"},
+        {"op": "add", "path": "/metadata/finalizers", "value": []},
+    ]
     assert patch_index < delete_index
+    raw_deletes = [argv for argv in calls if argv[:1] == ["delete"]]
+    assert raw_deletes
+    assert all(any(item.startswith("--raw=") for item in argv) for argv in raw_deletes)
+
+
+def test_preconditioned_delete_uses_server_identity_and_waits_for_original_object(
+    driver_environment: tuple[Any, _GatewayState, Path],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    driver, _state, _root = driver_environment
+    kube = DRIVER.Kubernetes(driver.config.targets["E2"])
+    calls: list[tuple[list[str], str | None]] = []
+    original_run = DRIVER.Kubernetes.run
+
+    def record_run(self: Any, argv: list[str], **kwargs: Any) -> str:
+        calls.append((list(argv), kwargs.get("input_text")))
+        return cast(str, original_run(self, argv, **kwargs))
+
+    monkeypatch.setattr(DRIVER.Kubernetes, "run", record_run)
+    live = {
+        "apiVersion": "batch/v1",
+        "kind": "Job",
+        "metadata": {
+            "name": "kube-job-1",
+            "uid": "uid-kube-job-1",
+            "resourceVersion": "1",
+        },
+    }
+    kube.delete_preconditioned("jobs.batch", "kube-job-1", live)
+    delete_argv, delete_input = next(item for item in calls if item[0][:1] == ["delete"])
+    assert delete_argv[1] == ("--raw=/apis/batch/v1/namespaces/tgsrl-workloads/jobs/kube-job-1")
+    assert json.loads(cast(str, delete_input))["preconditions"] == {
+        "uid": "uid-kube-job-1",
+        "resourceVersion": "1",
+    }
+
+
+def test_preconditioned_delete_rejects_missing_server_identity(
+    driver_environment: tuple[Any, _GatewayState, Path],
+) -> None:
+    driver, _state, _root = driver_environment
+    kube = DRIVER.Kubernetes(driver.config.targets["E2"])
+    with pytest.raises(DRIVER.DriverError, match="UID"):
+        kube.delete_preconditioned(
+            "jobs.batch",
+            "kube-job-1",
+            {"apiVersion": "batch/v1", "metadata": {"resourceVersion": "1"}},
+        )
