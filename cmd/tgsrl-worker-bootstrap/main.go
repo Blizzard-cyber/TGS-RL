@@ -372,6 +372,15 @@ func runWorker(cfg config) error {
 		if err := writeRegistrationReady(cfg.registrationFile, worker); err != nil {
 			_ = server.Close()
 			terminateProcess(waiter, worker.PID, syscall.SIGKILL, cfg.shutdownWait)
+			terminal := supervisor.snapshot()
+			terminal.State, terminal.Ready, terminal.ExitCode = "failed", false, -1
+			terminal.Detail = "worker registration readiness publication failed"
+			reportErr := reportWorkerExitWithRetry(
+				context.Background(), cfg.registryURL, cfg.registryToken, terminal, 5, 5*time.Second, 100*time.Millisecond,
+			)
+			if reportErr != nil {
+				return errors.Join(err, fmt.Errorf("report workload exit: %w", reportErr))
+			}
 			return err
 		}
 		defer cleanupRegistrationReady(cfg.registrationFile, worker)
@@ -423,18 +432,11 @@ func runWorker(cfg config) error {
 	supervisor.worker.State, supervisor.worker.Ready, supervisor.worker.ExitCode, supervisor.worker.Detail = state, false, exitCode, detail
 	terminal := supervisor.worker
 	supervisor.mu.Unlock()
-	for attempt := 0; attempt < 5; attempt++ {
-		reportCtx, reportCancel := context.WithTimeout(context.Background(), 5*time.Second)
-		reportErr := runtimehelper.ReportRemoteWorkerExit(reportCtx, cfg.registryURL, cfg.registryToken, terminal)
-		reportCancel()
-		if reportErr == nil {
-			break
-		}
-		if attempt == 4 {
-			fmt.Fprintln(os.Stderr, "report workload exit:", reportErr)
-		} else {
-			time.Sleep(time.Duration(attempt+1) * 100 * time.Millisecond)
-		}
+	reportErr := reportWorkerExitWithRetry(
+		context.Background(), cfg.registryURL, cfg.registryToken, terminal, 5, 5*time.Second, 100*time.Millisecond,
+	)
+	if reportErr != nil {
+		return fmt.Errorf("report workload exit: %w", reportErr)
 	}
 	if terminatedByBootstrap {
 		return nil
@@ -446,6 +448,34 @@ func runWorker(cfg config) error {
 		return fmt.Errorf("workload exited with code %d", exitCode)
 	}
 	return nil
+}
+
+func reportWorkerExitWithRetry(
+	ctx context.Context, registryURL, token string, worker runtimehelper.Worker, attempts int, requestTimeout, retryDelay time.Duration,
+) error {
+	if attempts <= 0 {
+		return errors.New("worker exit reporting requires at least one attempt")
+	}
+	var lastErr error
+	for attempt := 0; attempt < attempts; attempt++ {
+		reportCtx, cancel := context.WithTimeout(ctx, requestTimeout)
+		lastErr = runtimehelper.ReportRemoteWorkerExit(reportCtx, registryURL, token, worker)
+		cancel()
+		if lastErr == nil {
+			return nil
+		}
+		if attempt+1 == attempts {
+			break
+		}
+		timer := time.NewTimer(time.Duration(attempt+1) * retryDelay)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return errors.Join(lastErr, ctx.Err())
+		case <-timer.C:
+		}
+	}
+	return lastErr
 }
 
 func verifyWorkloadDependencies(command, modules []string) error {

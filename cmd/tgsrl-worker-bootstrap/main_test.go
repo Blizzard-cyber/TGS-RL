@@ -59,6 +59,117 @@ func TestRunWorkerRegistersRealProcessAndReportsExit(t *testing.T) {
 	}
 }
 
+func TestRunWorkerReportsUnexpectedCrash(t *testing.T) {
+	terminal := make(chan runtimehelper.Worker, 1)
+	registry := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+		var worker runtimehelper.Worker
+		if err := json.NewDecoder(request.Body).Decode(&worker); err != nil {
+			t.Fatal(err)
+		}
+		if request.URL.Path == "/v1/workers/exit" {
+			terminal <- worker
+		}
+		_ = json.NewEncoder(w).Encode(map[string]bool{"accepted": true})
+	}))
+	defer registry.Close()
+	setWorkerEnvironment(t)
+	err := runWorker(config{
+		registryURL: registry.URL, registryToken: "registry-token",
+		listenAddress: "127.0.0.1:0", advertiseHost: "127.0.0.1",
+		registrationWait: time.Second, command: []string{"/bin/sh", "-c", "sleep 0.2; exit 9"},
+	})
+	if err == nil || !strings.Contains(err.Error(), "exit status 9") {
+		t.Fatalf("runWorker() error = %v", err)
+	}
+	select {
+	case observed := <-terminal:
+		if observed.State != "failed" || observed.ExitCode != 9 || observed.Ready {
+			t.Fatalf("terminal crash = %+v", observed)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("bootstrap did not report the crash")
+	}
+}
+
+func TestRunWorkerRetriesLostRegistrationResponse(t *testing.T) {
+	var mu sync.Mutex
+	registerCalls := 0
+	registry := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+		if request.URL.Path == "/v1/workers/register" {
+			mu.Lock()
+			registerCalls++
+			current := registerCalls
+			mu.Unlock()
+			if current == 1 {
+				hijacker := w.(http.Hijacker)
+				connection, _, err := hijacker.Hijack()
+				if err != nil {
+					t.Fatal(err)
+				}
+				_ = connection.Close()
+				return
+			}
+		}
+		_ = json.NewEncoder(w).Encode(map[string]bool{"accepted": true})
+	}))
+	defer registry.Close()
+	setWorkerEnvironment(t)
+	if err := runWorker(config{
+		registryURL: registry.URL, registryToken: "registry-token",
+		listenAddress: "127.0.0.1:0", advertiseHost: "127.0.0.1",
+		registrationWait: 2 * time.Second, command: []string{"/bin/sh", "-c", "sleep 0.3"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if registerCalls != 2 {
+		t.Fatalf("registration calls = %d, want 2", registerCalls)
+	}
+}
+
+func TestRunWorkerReportsFailureWhenRegistrationMarkerCannotBePublished(t *testing.T) {
+	directory := t.TempDir()
+	marker := filepath.Join(directory, "registered.json")
+	terminal := make(chan runtimehelper.Worker, 1)
+	registry := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+		var worker runtimehelper.Worker
+		if err := json.NewDecoder(request.Body).Decode(&worker); err != nil {
+			t.Fatal(err)
+		}
+		if request.URL.Path == "/v1/workers/register" {
+			if err := os.RemoveAll(directory); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(directory, []byte("not-a-directory"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+		} else if request.URL.Path == "/v1/workers/exit" {
+			terminal <- worker
+		}
+		_ = json.NewEncoder(w).Encode(map[string]bool{"accepted": true})
+	}))
+	defer registry.Close()
+	setWorkerEnvironment(t)
+	err := runWorker(config{
+		registryURL: registry.URL, registryToken: "registry-token",
+		listenAddress: "127.0.0.1:0", advertiseHost: "127.0.0.1",
+		registrationFile: marker, registrationWait: time.Second, shutdownWait: time.Second,
+		command: []string{"sleep", "30"},
+	})
+	if err == nil {
+		t.Fatal("registration marker failure was reported as success")
+	}
+	select {
+	case observed := <-terminal:
+		if observed.State != "failed" || !strings.Contains(observed.Detail, "readiness") {
+			t.Fatalf("terminal marker failure = %+v", observed)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("marker failure did not reach the registry")
+	}
+}
+
 func TestRegistrationReadyMarkerIsIdentityScopedAndCleaned(t *testing.T) {
 	t.Setenv("TGSRL_SANDBOX_ID", "sandbox-a")
 	t.Setenv("TGSRL_GENERATION", "4")
@@ -338,6 +449,84 @@ func TestSupervisorSnapshotDoesNotBlockOnCooperativeControl(t *testing.T) {
 		}
 	case <-time.After(time.Second):
 		t.Fatal("cooperative control did not finish")
+	}
+}
+
+func TestSupervisorRetriesCooperativeMutationAfterUnknownTimeout(t *testing.T) {
+	directory, err := os.MkdirTemp("/tmp", "tgsrl-control-timeout-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(directory) })
+	socketPath := filepath.Join(directory, "worker.sock")
+	listener, err := net.Listen("unix", socketPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+	requests := make(chan runtimehelper.ControlRequest, 2)
+	go func() {
+		for attempt := 0; attempt < 2; attempt++ {
+			connection, acceptErr := listener.Accept()
+			if acceptErr != nil {
+				return
+			}
+			var request runtimehelper.ControlRequest
+			if json.NewDecoder(connection).Decode(&request) == nil {
+				requests <- request
+			}
+			if attempt == 0 {
+				time.Sleep(100 * time.Millisecond)
+				_ = connection.Close()
+				continue
+			}
+			_ = json.NewEncoder(connection).Encode(runtimehelper.ControlResponse{
+				Accepted: true, Generation: 4, State: "paused", SafePoint: true,
+			})
+			_ = connection.Close()
+		}
+	}()
+	s := &supervisor{
+		worker:        runtimehelper.Worker{SandboxID: "sandbox-a", Generation: 4, State: "running"},
+		controlSocket: socketPath, controlTimeout: 20 * time.Millisecond, receipts: map[string]receipt{},
+	}
+	request := runtimehelper.ControlRequest{
+		Action: "pause", SandboxID: "sandbox-a", Generation: 4, IdempotencyKey: "pause-a",
+	}
+	first := s.handle(context.Background(), request)
+	if first.Accepted || !strings.Contains(first.Error, "outcome is not confirmed") {
+		t.Fatalf("first response = %+v", first)
+	}
+	if len(s.receipts) != 0 {
+		t.Fatalf("unknown outcome was cached: %+v", s.receipts)
+	}
+	time.Sleep(120 * time.Millisecond)
+	second := s.handle(context.Background(), request)
+	if !second.Accepted || second.State != "paused" {
+		t.Fatalf("second response = %+v", second)
+	}
+	if len(s.receipts) != 1 {
+		t.Fatalf("confirmed outcome was not cached: %+v", s.receipts)
+	}
+	if len(requests) != 2 {
+		t.Fatalf("cooperative calls = %d, want 2", len(requests))
+	}
+}
+
+func TestExitReportFailureIsReturnedAfterBoundedRetries(t *testing.T) {
+	var calls int
+	registry := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+		calls++
+		http.Error(w, "registry unavailable", http.StatusServiceUnavailable)
+	}))
+	defer registry.Close()
+	err := reportWorkerExitWithRetry(
+		context.Background(), registry.URL, "registry-token",
+		runtimehelper.Worker{SandboxID: "sandbox-a", Generation: 4},
+		3, time.Second, time.Millisecond,
+	)
+	if err == nil || calls != 3 {
+		t.Fatalf("report retry = calls:%d err:%v", calls, err)
 	}
 }
 
