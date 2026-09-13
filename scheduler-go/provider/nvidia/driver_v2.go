@@ -247,8 +247,8 @@ func (noOpBindingBackend) Apply(_ context.Context, request BackendActionRequest)
 	return nil, v2ActionError(request.Action, ErrorCodeUnavailable, "nvidia binding backend is not configured", base.ErrFailedPrecondition)
 }
 
-// NewLocalDriverV2 constructs a mutation-capable driver. MPS is the default;
-// MIG is used only when explicitly requested and never silently downgraded.
+// NewLocalDriverV2 constructs a mutation-capable driver. The default is the
+// capability-aware Full GPU/MIG view; MPS must never be selected implicitly.
 func NewLocalDriverV2(options LocalDriverV2Options) (*LocalDriverV2, error) {
 	if options.Executor == nil {
 		options.Executor = NewExecCommandExecutor()
@@ -263,7 +263,7 @@ func NewLocalDriverV2(options LocalDriverV2Options) (*LocalDriverV2, error) {
 		if options.Partition != nil {
 			options.PartitionMode = options.Partition.Mode()
 		} else {
-			options.PartitionMode = PartitionModeMPS
+			options.PartitionMode = PartitionModeAuto
 		}
 	}
 	if err := validatePartitionMode(options.PartitionMode); err != nil {

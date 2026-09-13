@@ -273,6 +273,9 @@ func parseArgs(argv []string) (*cliArgs, error) {
 		if *nvidiaCommandTimeout <= 0 {
 			return nil, fmt.Errorf("NVIDIA command timeout must be positive")
 		}
+		if mode == nvidiaprovider.PartitionModeMPS {
+			return nil, fmt.Errorf("NVIDIA MPS production mode is unavailable: online share changes require checkpoint/recreate of MPS clients")
+		}
 		if strings.TrimSpace(*nvidiaBindingHelper) == "" {
 			return nil, fmt.Errorf("NVIDIA binding helper must not be empty")
 		}

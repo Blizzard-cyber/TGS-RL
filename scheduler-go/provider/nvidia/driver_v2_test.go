@@ -307,37 +307,24 @@ func TestLegacyLocalDriverKeepsReadOnlyBehavior(t *testing.T) {
 	}
 }
 
-func TestMPSBackendDiscoversDaemonAndAppliesDynamicShare(t *testing.T) {
+func TestMPSBackendDiscoversDaemonButRejectsOnlineShare(t *testing.T) {
 	executor := NewFakeCommandExecutor(
 		FakeCommandResponse{Result: CommandResult{Stdout: []byte("100\n")}},
-		FakeCommandResponse{Result: CommandResult{}},
-		FakeCommandResponse{Result: CommandResult{Stdout: []byte("38\n")}},
 	)
 	backend := NewMPSBackend(executor, time.Second, "/run/mps", "/var/log/mps")
 	inventory := v2Inventory(false)
 	discovery, err := backend.Discover(context.Background(), inventory)
-	if err != nil || !discovery.Available || len(discovery.Partitions) != 1 {
+	if err != nil || !discovery.Available || len(discovery.Partitions) != 1 || len(discovery.SupportedActions) != 0 {
 		t.Fatalf("Discover() = (%+v, %v)", discovery, err)
 	}
 	action := v2Action(tgsrlv1.ActionType_ACTION_TYPE_SET_SHARE)
 	action.Share = 0.375
 	result, err := backend.Apply(context.Background(), BackendActionRequest{Action: action, Partitions: discovery, Binding: &DiscoveredBinding{SandboxID: "sandbox-a", Generation: 1, ServerPID: 4242}})
-	if err != nil {
-		t.Fatal(err)
+	if !errors.Is(err, base.ErrUnsupported) || result != nil {
+		t.Fatalf("MPS online set_share = (%+v, %v), want unsupported", result, err)
 	}
-	if len(result.Commands) != 2 || result.Commands[0].Argv[0] != commandNvidiaMPSControl || string(result.Commands[0].Stdin) != "set_active_thread_percentage 4242 38\n" || string(result.Commands[1].Stdin) != "get_active_thread_percentage 4242\n" {
-		t.Fatalf("MPS commands = %+v", result.Commands)
-	}
-	if result.ObservedShare == nil || *result.ObservedShare != 0.38 {
-		t.Fatalf("MPS observed share = %v, want 0.38", result.ObservedShare)
-	}
-	commands := executor.Commands()
-	if len(commands) != 3 || commands[1].Env["CUDA_MPS_PIPE_DIRECTORY"] != "/run/mps" || commands[2].Env["CUDA_MPS_PIPE_DIRECTORY"] != "/run/mps" {
-		t.Fatalf("recorded MPS commands = %+v", commands)
-	}
-	profiles := backend.Profiles()
-	if len(profiles) != 1 || profiles[0].SandboxID != "sandbox-a" || profiles[0].ActiveThreadPercentage != 38 {
-		t.Fatalf("MPS profiles = %+v", profiles)
+	if commands := executor.Commands(); len(commands) != 1 {
+		t.Fatalf("MPS mutation commands ran: %+v", commands)
 	}
 }
 
@@ -353,28 +340,6 @@ func TestMPSBackendRejectsShareRoundedToZeroBeforeMutation(t *testing.T) {
 		if !errors.Is(err, base.ErrInvalidArgument) || result != nil || len(executor.Commands()) != 0 {
 			t.Fatalf("Apply(dryRun=%v) = (%+v, %v), commands=%+v", dryRun, result, err, executor.Commands())
 		}
-	}
-}
-
-func TestMPSBackendFailsWhenShareReadbackDoesNotMatch(t *testing.T) {
-	executor := NewFakeCommandExecutor(
-		FakeCommandResponse{Result: CommandResult{}},
-		FakeCommandResponse{Result: CommandResult{Stdout: []byte("25\n")}},
-	)
-	backend := NewMPSBackend(executor, time.Second, "/run/mps", "/var/log/mps")
-	action := v2Action(tgsrlv1.ActionType_ACTION_TYPE_SET_SHARE)
-	action.Share = 0.5
-
-	result, err := backend.Apply(context.Background(), BackendActionRequest{
-		Action:     action,
-		Partitions: v2MPSPartition().Snapshot,
-		Binding:    &DiscoveredBinding{SandboxID: "sandbox-a", Generation: 1, ServerPID: 4242},
-	})
-	if !errors.Is(err, base.ErrFailedPrecondition) || result == nil || result.ObservedShare != nil || !result.MutationMayHaveApplied {
-		t.Fatalf("MPS readback mismatch = result:%+v err:%v", result, err)
-	}
-	if profiles := backend.Profiles(); len(profiles) != 0 {
-		t.Fatalf("mismatched readback was recorded as a profile: %+v", profiles)
 	}
 }
 
@@ -437,7 +402,7 @@ func TestMPSBackendStartsMissingDaemonAndFailsClosedWhenStartFails(t *testing.T)
 
 func TestMPSBackendDryRunNeverStartsMissingDaemon(t *testing.T) {
 	executor := NewFakeCommandExecutor(FakeCommandResponse{Err: errors.New("exit status 1"), Result: CommandResult{ExitCode: 1, Stderr: []byte("MPS control daemon is not running")}})
-	driver, err := NewLocalDriverV2(LocalDriverV2Options{Executor: executor, Inventory: &FakeInventoryBackend{Snapshots: []*InventorySnapshot{v2Inventory(false)}}, Binding: &FakeBindingBackend{Snapshot: &BindingSnapshot{Available: true}}, DryRun: true, Now: func() time.Time { return v2Now }})
+	driver, err := NewLocalDriverV2(LocalDriverV2Options{Executor: executor, Inventory: &FakeInventoryBackend{Snapshots: []*InventorySnapshot{v2Inventory(false)}}, PartitionMode: PartitionModeMPS, Binding: &FakeBindingBackend{Snapshot: &BindingSnapshot{Available: true}}, DryRun: true, Now: func() time.Time { return v2Now }})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -473,6 +438,20 @@ func TestMPSBackendStartsAndVerifiesMissingDaemon(t *testing.T) {
 	}
 	if commands := executor.Commands(); len(commands) != 3 || commands[1].Argv[1] != "-d" {
 		t.Fatalf("MPS startup commands = %+v", commands)
+	}
+}
+
+func TestLocalDriverV2DefaultsToCapabilityAwareAuto(t *testing.T) {
+	driver, err := NewLocalDriverV2(LocalDriverV2Options{
+		Inventory: &FakeInventoryBackend{Snapshots: []*InventorySnapshot{v2Inventory(false)}},
+		Binding:   &FakeBindingBackend{Snapshot: &BindingSnapshot{Available: true}},
+		Now:       func() time.Time { return v2Now },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if driver.partition.Mode() != PartitionModeAuto {
+		t.Fatalf("default partition mode = %q, want auto", driver.partition.Mode())
 	}
 }
 

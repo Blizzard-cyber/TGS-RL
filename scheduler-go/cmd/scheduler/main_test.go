@@ -282,6 +282,9 @@ func TestParseArgsDefaultsNVIDIABindingStateUnderSchedulerState(t *testing.T) {
 }
 
 func TestParseArgsRejectsIncompleteNVIDIADriverV2Configuration(t *testing.T) {
+	if _, err := parseArgs([]string{"-nvidia-driver-v2", "-nvidia-partition-mode=mps"}); err == nil || !strings.Contains(err.Error(), "checkpoint/recreate") {
+		t.Fatalf("MPS production mode error = %v", err)
+	}
 	if _, err := parseArgs([]string{"-nvidia-driver-v2", "-nvidia-binding-helper="}); err == nil || !strings.Contains(err.Error(), "binding helper") {
 		t.Fatalf("empty binding helper error = %v", err)
 	}

@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"math"
 	"sort"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -15,7 +14,10 @@ import (
 	base "github.com/Blizzard-cyber/TGS-RL/scheduler-go/provider"
 )
 
-// MPSBackend manages the shared MPS daemon and per-binding thread profiles.
+// MPSBackend discovers the shared MPS daemon and recovered binding profiles.
+// NVIDIA's server-level active-thread command only affects clients created
+// after the command. It cannot safely implement an online set_share action for
+// an already-running training process, so production mutation fails closed.
 type MPSBackend struct {
 	executor      CommandExecutor
 	timeout       time.Duration
@@ -30,7 +32,7 @@ type MPSBackend struct {
 // SetDryRun suppresses daemon startup during discovery.
 func (b *MPSBackend) SetDryRun(dryRun bool) { b.dryRun = dryRun }
 
-// NewMPSBackend constructs the default dynamic-share backend.
+// NewMPSBackend constructs the low-level MPS discovery backend.
 func NewMPSBackend(executor CommandExecutor, timeout time.Duration, pipeDirectory, logDirectory string) *MPSBackend {
 	if executor == nil {
 		executor = NewExecCommandExecutor()
@@ -84,12 +86,11 @@ func (b *MPSBackend) Discover(ctx context.Context, inventory *InventorySnapshot)
 			return &PartitionSnapshot{Mode: PartitionModeMPS, Reason: reason, ObservedAt: inventory.ObservedAt}, verifyErr
 		}
 	}
-	actions := []tgsrlv1.ActionType{tgsrlv1.ActionType_ACTION_TYPE_SET_SHARE}
 	partitions := make([]Partition, 0, len(inventory.Devices))
 	for _, device := range inventory.Devices {
-		partitions = append(partitions, Partition{ID: "mps-" + device.UUID, ParentUUID: device.UUID, Profile: "dynamic", MemoryBytes: device.MemoryBytes, Share: 1, Labels: map[string]string{"mode": string(PartitionModeMPS), "daemon": "ready"}})
+		partitions = append(partitions, Partition{ID: "mps-" + device.UUID, ParentUUID: device.UUID, Profile: "startup-only", MemoryBytes: device.MemoryBytes, Share: 1, Labels: map[string]string{"mode": string(PartitionModeMPS), "daemon": "ready", "online_share_mutation": "unsupported"}})
 	}
-	return &PartitionSnapshot{Mode: PartitionModeMPS, Available: true, Partitions: partitions, SupportedActions: actions, RequiresBindingMetadata: true, ObservedAt: inventory.ObservedAt}, nil
+	return &PartitionSnapshot{Mode: PartitionModeMPS, Available: true, Reason: "MPS daemon is available, but online share mutation is unsupported for existing clients", Partitions: partitions, RequiresBindingMetadata: true, ObservedAt: inventory.ObservedAt}, nil
 }
 
 func isMPSDaemonStopped(result CommandResult, err error) bool {
@@ -101,8 +102,11 @@ func isMPSDaemonStopped(result CommandResult, err error) bool {
 	return containsAnyFold(diagnostic, "cannot find mps control daemon", "mps control daemon is not running", "control daemon not found")
 }
 
-// Apply validates and executes one dynamic MPS share mutation.
-func (b *MPSBackend) Apply(ctx context.Context, request BackendActionRequest) (*BackendActionResult, error) {
+// Apply rejects online MPS share mutation. NVIDIA's server-level percentage
+// applies only to future clients; a safe implementation needs a
+// checkpoint/recreate workflow that starts a new client with the desired
+// CUDA_MPS_ACTIVE_THREAD_PERCENTAGE and then verifies that incarnation.
+func (b *MPSBackend) Apply(_ context.Context, request BackendActionRequest) (*BackendActionResult, error) {
 	action := request.Action
 	if action == nil {
 		return nil, fmt.Errorf("%w: action is required", base.ErrInvalidArgument)
@@ -112,12 +116,6 @@ func (b *MPSBackend) Apply(ctx context.Context, request BackendActionRequest) (*
 	default:
 		return nil, fmt.Errorf("%w: MPS backend does not support %s", base.ErrUnsupported, action.GetActionType())
 	}
-	if action.GetActionId() != "" && request.Partitions != nil && !containsActionType(request.Partitions.SupportedActions, action.GetActionType()) {
-		return nil, v2ActionError(action, ErrorCodeUnavailable, "MPS profile helper did not advertise the requested mutation", base.ErrFailedPrecondition)
-	}
-	if request.Binding == nil || request.Binding.ServerPID == 0 {
-		return nil, v2ActionError(action, ErrorCodeUnavailable, "MPS server PID is unavailable for sandbox", base.ErrFailedPrecondition)
-	}
 	share := action.GetShare()
 	if !validShare(share) {
 		return nil, fmt.Errorf("%w: MPS share must be finite and within (0,1]", base.ErrInvalidArgument)
@@ -126,54 +124,12 @@ func (b *MPSBackend) Apply(ctx context.Context, request BackendActionRequest) (*
 	if percentage == 0 {
 		return nil, fmt.Errorf("%w: MPS share rounds to zero active thread percentage", base.ErrInvalidArgument)
 	}
-	command := b.controlCommand([]byte("set_active_thread_percentage " + strconv.FormatUint(uint64(request.Binding.ServerPID), 10) + " " + strconv.Itoa(percentage) + "\n"))
-	result := &BackendActionResult{Detail: fmt.Sprintf("MPS dynamic profile set to %d%%", percentage), Commands: []Command{command}}
-	if request.DryRun {
-		return result, nil
-	}
-	executionContext, cancel := commandContext(ctx, b.timeout)
-	defer cancel()
-	commandResult, err := b.executor.Execute(executionContext, command)
-	result.Results = []CommandResult{commandResult}
-	if err != nil {
-		return result, err
-	}
-	result.MutationMayHaveApplied = true
-	readbackCommand := b.controlCommand([]byte("get_active_thread_percentage " + strconv.FormatUint(uint64(request.Binding.ServerPID), 10) + "\n"))
-	readback, err := b.executor.Execute(executionContext, readbackCommand)
-	result.Commands = append(result.Commands, readbackCommand)
-	result.Results = append(result.Results, readback)
-	if err != nil {
-		return result, err
-	}
-	observedPercentage, err := parseMPSPercentage(readback.Stdout)
-	if err != nil {
-		return result, v2ActionError(action, ErrorCodeUnavailable, err.Error(), base.ErrFailedPrecondition)
-	}
-	if observedPercentage != percentage {
-		return result, v2ActionError(action, base.ErrorCodeFailedPrecondition, fmt.Sprintf("MPS share readback is %d%%, want %d%%", observedPercentage, percentage), base.ErrFailedPrecondition)
-	}
-	observedShare := float64(observedPercentage) / 100
-	result.ObservedShare = &observedShare
-	result.MutationMayHaveApplied = false
-	b.mu.Lock()
-	b.profiles[actionSandboxID(action)] = MPSProfile{SandboxID: actionSandboxID(action), Generation: action.GetExpectedGeneration(), ActiveThreadPercentage: observedPercentage, UpdatedAt: b.now()}
-	b.mu.Unlock()
-	return result, nil
-}
-
-func parseMPSPercentage(output []byte) (int, error) {
-	fields := strings.Fields(strings.TrimSpace(string(output)))
-	if len(fields) == 0 {
-		return 0, fmt.Errorf("MPS share readback is empty")
-	}
-	raw := strings.TrimSuffix(fields[len(fields)-1], "%")
-	value, err := strconv.ParseFloat(raw, 64)
-	percentage := int(math.Round(value))
-	if err != nil || math.IsNaN(value) || math.IsInf(value, 0) || math.Abs(value-float64(percentage)) > 1e-9 || percentage <= 0 || percentage > 100 {
-		return 0, fmt.Errorf("MPS share readback %q is invalid", strings.TrimSpace(string(output)))
-	}
-	return percentage, nil
+	return nil, v2ActionError(
+		action,
+		base.ErrorCodeUnsupported,
+		fmt.Sprintf("MPS %d%% can only be applied before a new client starts; online set_share requires checkpoint/recreate", percentage),
+		base.ErrUnsupported,
+	)
 }
 
 func (b *MPSBackend) restoreProfiles(bindings []DiscoveredBinding, now time.Time) {
