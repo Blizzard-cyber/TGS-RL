@@ -152,6 +152,38 @@ begin
   assert(runtime_args.include?("--worker-registry-signing-key-file=/var/run/secrets/tgsrl-worker-registry/signing-key"), "Runtime must authenticate worker trace requests with the shared signing key")
   assert(runtime.dig("spec", "template", "spec", "volumes").any? { |volume| volume.dig("secret", "secretName") == "tgsrl-worker-registry" }, "Runtime must mount the shared signing key")
 
+  gpu_docs = render(
+    chart,
+    "--set", "scheduler.nvidia.enabled=true",
+    "--set-string", "scheduler.nvidia.image.digest=sha256:#{'c' * 64}",
+    "--set", "scheduler.nvidia.partitionMode=auto",
+    "--set", "scheduler.nvidia.runtimeClassName=nvidia",
+    "--set-json", 'scheduler.nvidia.nodeSelector={"kubernetes.io/hostname":"gpu-node-a"}',
+    "--set", "scheduler.workerRegistry.enabled=true",
+    "--set", "scheduler.workerRegistry.signingKeySecret=tgsrl-worker-registry",
+    "--set", "scheduler.manifest=compatibility/manifests/gpu-smoke-verl.yaml",
+    "--set", "operator.controller.gpuProfile=kubernetes-dra",
+    "--set-json", 'operator.controller.nodeSelector={"kubernetes.io/hostname":"gpu-node-a"}',
+    "--set", "operator.controller.workerBootstrap.enabled=true",
+    "--set", "operator.controller.workerBootstrap.installerImage=registry.example.test/tgsrl/bootstrap@sha256:#{'b' * 64}",
+    "--set", "operator.controller.workerBootstrap.registryURL=http://tgsrl-scheduler:50091",
+    "--set", "operator.controller.workerBootstrap.registrySigningKeySecret=tgsrl-worker-registry",
+    "--set", "operator.controller.workerBootstrap.verifyDeviceIdentities=true"
+  )
+  gpu_scheduler = resource(gpu_docs, "Deployment", "tgsrl-scheduler")
+  gpu_pod = gpu_scheduler.dig("spec", "template", "spec")
+  gpu_args = gpu_pod.dig("containers", 0, "args")
+  assert(gpu_pod["runtimeClassName"] == "nvidia", "NVIDIA Scheduler must use the selected runtime class")
+  assert(gpu_pod.dig("containers", 0, "image") == "tgsrl-scheduler-nvidia@sha256:#{'c' * 64}", "NVIDIA Scheduler must use the dedicated immutable image")
+  assert(gpu_pod["nodeSelector"] == {"kubernetes.io/hostname" => "gpu-node-a"}, "NVIDIA Scheduler must be pinned to the inventory node")
+  assert(gpu_args.include?("--nvidia-driver-v2=true"), "NVIDIA Scheduler must enable Driver v2")
+  assert(gpu_args.include?("--nvidia-partition-mode=auto"), "NVIDIA partition mode is not projected")
+  assert(gpu_args.include?("--worker-registry-state=/var/lib/tgsrl-scheduler/nvidia-runtime.json"), "NVIDIA runtime helper and registry must share worker state")
+  gpu_env = gpu_pod.dig("containers", 0, "env")
+  assert(gpu_env.include?({"name" => "NVIDIA_VISIBLE_DEVICES", "value" => "all"}), "NVIDIA Scheduler device visibility is not configured")
+  gpu_operator_args = resource(gpu_docs, "Deployment", "tgsrl-operator").dig("spec", "template", "spec", "containers", 0, "args")
+  assert(gpu_operator_args.include?("--node-selector=kubernetes.io/hostname=gpu-node-a"), "managed workloads must be pinned to the Scheduler inventory node")
+
   failure, status = Open3.capture2e("helm", "template", "contract-test", chart, "--set", "scheduler.workerRegistry.enabled=true")
   assert(!status.success? && failure.include?("signingKeySecret"), "registry render must fail when its signing-key Secret is missing")
 
@@ -163,6 +195,15 @@ begin
     "--set", "operator.controller.workerBootstrap.registrySigningKeySecret=tgsrl-worker-registry"
   )
   assert(!status.success? && failure.include?("scheduler.workerRegistry.enabled"), "bootstrap render must require the in-chart worker registry")
+
+  {
+    "scheduler.nvidia.enabled=true" => "workerRegistry.enabled",
+    "scheduler.nvidia.enabled=true,--set,scheduler.workerRegistry.enabled=true,--set,scheduler.workerRegistry.signingKeySecret=tgsrl-worker-registry" => "workerBootstrap.enabled"
+  }.each do |settings, message|
+    args = settings.split(",--set,").flat_map { |setting| ["--set", setting] }
+    failure, status = Open3.capture2e("helm", "template", "contract-test", chart, *args)
+    assert(!status.success? && failure.include?(message), "incomplete NVIDIA Helm mode must fail on #{message}")
+  end
 
   failure, status = Open3.capture2e(
     "helm", "template", "contract-test", chart, "--namespace", "tgsrl-system",

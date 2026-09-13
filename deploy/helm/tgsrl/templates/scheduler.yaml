@@ -14,6 +14,11 @@ spec:
     spec:
       serviceAccountName: tgsrl-control-plane
       automountServiceAccountToken: false
+{{- if .Values.scheduler.nvidia.enabled }}
+      runtimeClassName: {{ .Values.scheduler.nvidia.runtimeClassName }}
+      nodeSelector:
+{{ toYaml .Values.scheduler.nvidia.nodeSelector | indent 8 }}
+{{- end }}
       securityContext:
 {{ include "tgsrl.podSecurityContext" . | indent 8 }}
 {{- with .Values.global.imagePullSecrets }}
@@ -22,7 +27,7 @@ spec:
 {{- end }}
       containers:
         - name: scheduler
-          image: {{ include "tgsrl.image" (list .Values.scheduler.image) | quote }}
+          image: {{ include "tgsrl.image" (list (ternary .Values.scheduler.nvidia.image .Values.scheduler.image .Values.scheduler.nvidia.enabled)) | quote }}
           imagePullPolicy: {{ .Values.global.imagePullPolicy }}
           securityContext:
 {{ include "tgsrl.securityContext" . | indent 12 }}
@@ -33,11 +38,27 @@ spec:
             - --manifest={{ .Values.scheduler.manifest }}
             - --fallback={{ .Values.scheduler.fallback }}
             - --state-dir=/var/lib/tgsrl-scheduler
+{{- if .Values.scheduler.nvidia.enabled }}
+            - --nvidia-driver-v2=true
+            - --nvidia-partition-mode={{ .Values.scheduler.nvidia.partitionMode }}
+            - --nvidia-dry-run={{ .Values.scheduler.nvidia.dryRun }}
+            - --nvidia-command-timeout={{ .Values.scheduler.nvidia.commandTimeout }}
+            - --nvidia-binding-helper=/usr/local/bin/tgsrl-nvidia-binding
+            - --nvidia-binding-state=/var/lib/tgsrl-scheduler/nvidia-binding.json
+            - --nvidia-runtime-helper=/usr/local/bin/tgsrl-nvidia-runtime
+            - --nvidia-runtime-state=/var/lib/tgsrl-scheduler/nvidia-runtime.json
+            - --nvidia-mig-helper=/usr/local/bin/tgsrl-nvidia-mig
+{{- end }}
 {{- if .Values.scheduler.workerRegistry.enabled }}
             - --worker-registry-listen=0.0.0.0:{{ .Values.scheduler.service.registryPort }}
             - --worker-registry-runtime-target=tgsrl-runtime:{{ .Values.runtime.service.grpcPort }}
             - --worker-registry-signing-key-file=/var/run/secrets/tgsrl-worker-registry/signing-key
-            - --worker-registry-state=/var/lib/tgsrl-scheduler/worker-registry.json
+            - --worker-registry-state=/var/lib/tgsrl-scheduler/{{ ternary "nvidia-runtime.json" "worker-registry.json" .Values.scheduler.nvidia.enabled }}
+{{- end }}
+{{- if .Values.scheduler.nvidia.enabled }}
+          env:
+            - {name: NVIDIA_VISIBLE_DEVICES, value: {{ .Values.scheduler.nvidia.visibleDevices | quote }}}
+            - {name: NVIDIA_DRIVER_CAPABILITIES, value: {{ .Values.scheduler.nvidia.driverCapabilities | quote }}}
 {{- end }}
           ports:
             - {name: grpc, containerPort: {{ .Values.scheduler.service.grpcPort }}, protocol: TCP}

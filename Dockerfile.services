@@ -1,11 +1,14 @@
-FROM --platform=$BUILDPLATFORM golang:1.26.4-bookworm@sha256:b305420a68d0f229d91eb3b3ed9e519fcf2cf5461da4bef997bf927e8c0bfd2b AS go-build
+ARG TGSRL_GO_BASE_IMAGE=golang:1.26.4-bookworm@sha256:b305420a68d0f229d91eb3b3ed9e519fcf2cf5461da4bef997bf927e8c0bfd2b
+ARG TGSRL_NVIDIA_BASE_IMAGE=nvidia/cuda:13.0.2-devel-ubuntu24.04@sha256:5dc1bca23d05bd37b011be68ec470c03b403a5da07ec3a86e41af9470e9d0cc6
+FROM --platform=$BUILDPLATFORM ${TGSRL_GO_BASE_IMAGE} AS go-build
 
 ARG TARGETOS
 ARG TARGETARCH
+ARG TGSRL_GOPROXY=https://proxy.golang.org,direct
 
 WORKDIR /src
 COPY go.mod go.sum ./
-RUN go mod download
+RUN GOPROXY="${TGSRL_GOPROXY}" go mod download
 COPY cmd ./cmd
 COPY gen/go ./gen/go
 COPY internal ./internal
@@ -35,6 +38,25 @@ COPY configs /opt/tgsrl/config/configs
 COPY upstream /opt/tgsrl/config/upstream
 COPY LICENSE /licenses/TGS-RL/LICENSE
 WORKDIR /opt/tgsrl/config
+ENTRYPOINT ["/usr/local/bin/tgsrl-scheduler"]
+
+# The generic Scheduler image is distroless and intentionally has no NVIDIA
+# userspace. This target is for the explicit single-node NVIDIA Helm mode; the
+# NVIDIA Runtime injects nvidia-smi and driver libraries at runtime.
+FROM ${TGSRL_NVIDIA_BASE_IMAGE} AS scheduler-nvidia
+LABEL org.opencontainers.image.licenses="Apache-2.0"
+RUN groupadd --gid 65532 tgsrl && useradd --uid 65532 --gid 65532 --no-create-home --shell /usr/sbin/nologin tgsrl && \
+    install -d -o 65532 -g 65532 -m 0750 /var/lib/tgsrl-scheduler
+COPY --from=go-build /out/tgsrl-scheduler /usr/local/bin/tgsrl-scheduler
+COPY --from=go-build /out/tgsrl-nvidia-binding /usr/local/bin/tgsrl-nvidia-binding
+COPY --from=go-build /out/tgsrl-nvidia-runtime /usr/local/bin/tgsrl-nvidia-runtime
+COPY --from=go-build /out/tgsrl-nvidia-mig /usr/local/bin/tgsrl-nvidia-mig
+COPY compatibility /opt/tgsrl/config/compatibility
+COPY configs /opt/tgsrl/config/configs
+COPY upstream /opt/tgsrl/config/upstream
+COPY LICENSE /licenses/TGS-RL/LICENSE
+WORKDIR /opt/tgsrl/config
+USER 65532:65532
 ENTRYPOINT ["/usr/local/bin/tgsrl-scheduler"]
 
 FROM gcr.io/distroless/static-debian12:nonroot@sha256:afa5c872c891853ca7fcf1f12c3edb23f7eeef36189728842dd51042ff57f7ab AS job-controller

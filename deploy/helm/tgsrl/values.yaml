@@ -47,6 +47,22 @@ scheduler:
     enabled: false
     signingKeySecret: ""
     signingKeyKey: signing-key
+  # The current NVIDIA provider discovers devices locally with nvidia-smi.
+  # This therefore describes one explicitly selected GPU node, not a
+  # cluster-wide multi-node inventory service.
+  nvidia:
+    enabled: false
+    image:
+      repository: tgsrl-scheduler-nvidia
+      tag: "0.1.0"
+      digest: ""
+    partitionMode: auto
+    dryRun: false
+    commandTimeout: 15s
+    runtimeClassName: ""
+    nodeSelector: {}
+    visibleDevices: all
+    driverCapabilities: compute,utility
 
 runtime:
   image:

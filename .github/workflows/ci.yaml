@@ -202,6 +202,16 @@ jobs:
             python3 scripts/check-oci-platforms.py \
               "/tmp/tgsrl-${target}.oci" linux/amd64 linux/arm64
           done
+      - name: Build NVIDIA Scheduler image contract
+        run: |
+          docker buildx build \
+            --platform linux/amd64 \
+            --file Dockerfile.services \
+            --target scheduler-nvidia \
+            --tag tgsrl-scheduler-nvidia:ci \
+            --output type=oci,dest=/tmp/tgsrl-scheduler-nvidia.oci .
+          python3 scripts/check-oci-platforms.py \
+            /tmp/tgsrl-scheduler-nvidia.oci linux/amd64
       - name: Load amd64 operator image
         run: |
           docker buildx build \

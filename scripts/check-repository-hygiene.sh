@@ -65,7 +65,7 @@ grep -Fqx '!LICENSE' .dockerignore ||
 distributable_stages=(
   "Dockerfile.local:3"
   "Dockerfile.operator:1"
-  "Dockerfile.services:5"
+  "Dockerfile.services:6"
   "Dockerfile.worker-bootstrap:1"
   "Dockerfile.gpu-smoke:1"
 )

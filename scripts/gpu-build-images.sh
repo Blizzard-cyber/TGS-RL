@@ -47,6 +47,25 @@ build() {
   printf '%s_IMAGE=%s@%s\n%s_DIGEST=%s\n' "$variable_name" "${REGISTRY}/${name}" "$digest" "$variable_name" "$digest"
 }
 
+build_target() {
+  local name=$1 dockerfile=$2 target=$3
+  shift 3
+  local image="${REGISTRY}/${name}:${VERSION}"
+  local args=(docker buildx build --platform "$PLATFORM" -f "$dockerfile" --target "$target" -t "$image")
+  local build_arg
+  for build_arg in "$@"; do
+    args+=(--build-arg "$build_arg")
+  done
+  args+=(--push .)
+  "${args[@]}" >&2
+  local digest
+  digest=$(docker buildx imagetools inspect "$image" --raw | sha256sum | awk '{print "sha256:" $1}')
+  [[ "$digest" =~ ^sha256:[a-f0-9]{64}$ ]] || { echo "cannot resolve immutable digest for $image" >&2; exit 1; }
+  local variable_name
+  variable_name=$(printf '%s' "$name" | tr '[:lower:]-' '[:upper:]_')
+  printf '%s_IMAGE=%s@%s\n%s_DIGEST=%s\n' "$variable_name" "${REGISTRY}/${name}" "$digest" "$variable_name" "$digest"
+}
+
 output=${TGSRL_IMAGE_ENV_FILE:-.cache/tgsrl/gpu-images.env}
 mkdir -p "$(dirname "$output")"
 temp=$(mktemp "${TMPDIR:-/tmp}/tgsrl-gpu-images.XXXXXX")
@@ -55,6 +74,10 @@ trap 'rm -f "$temp"' EXIT
   build worker-bootstrap Dockerfile.worker-bootstrap \
     "TGSRL_GO_BASE_IMAGE=$GO_BASE_IMAGE" \
     "TGSRL_DISTROLESS_BASE_IMAGE=$DISTROLESS_BASE_IMAGE" \
+    "TGSRL_GOPROXY=$GOPROXY"
+  build_target scheduler-nvidia Dockerfile.services scheduler-nvidia \
+    "TGSRL_GO_BASE_IMAGE=$GO_BASE_IMAGE" \
+    "TGSRL_NVIDIA_BASE_IMAGE=$VERL_BASE_IMAGE" \
     "TGSRL_GOPROXY=$GOPROXY"
   build gpu-smoke Dockerfile.gpu-smoke \
     "TGSRL_VERL_BASE_IMAGE=$VERL_BASE_IMAGE" \

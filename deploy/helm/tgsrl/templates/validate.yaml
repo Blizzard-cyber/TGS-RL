@@ -7,3 +7,35 @@
 {{- if and .Values.operator.controller.workerBootstrap.enabled (ne .Values.operator.controller.workerBootstrap.registrySigningKeySecret .Values.scheduler.workerRegistry.signingKeySecret) -}}
 {{- fail "operator and scheduler must reference the same worker registry signing-key Secret" -}}
 {{- end -}}
+{{- if .Values.scheduler.nvidia.enabled -}}
+{{- if not .Values.scheduler.workerRegistry.enabled -}}
+{{- fail "scheduler.nvidia.enabled requires scheduler.workerRegistry.enabled=true" -}}
+{{- end -}}
+{{- if not .Values.operator.controller.workerBootstrap.enabled -}}
+{{- fail "scheduler.nvidia.enabled requires operator.controller.workerBootstrap.enabled=true" -}}
+{{- end -}}
+{{- if eq .Values.operator.controller.gpuProfile "none" -}}
+{{- fail "scheduler.nvidia.enabled requires an Operator GPU realization profile" -}}
+{{- end -}}
+{{- if not .Values.operator.controller.workerBootstrap.verifyDeviceIdentities -}}
+{{- fail "scheduler.nvidia.enabled requires worker device identity verification" -}}
+{{- end -}}
+{{- if not .Values.scheduler.nvidia.runtimeClassName -}}
+{{- fail "scheduler.nvidia.enabled requires scheduler.nvidia.runtimeClassName" -}}
+{{- end -}}
+{{- if not .Values.scheduler.nvidia.image.digest -}}
+{{- fail "scheduler.nvidia.enabled requires an immutable scheduler.nvidia.image.digest" -}}
+{{- end -}}
+{{- if not .Values.scheduler.nvidia.nodeSelector -}}
+{{- fail "scheduler.nvidia.enabled requires one explicit GPU node selector" -}}
+{{- end -}}
+{{- if not (deepEqual .Values.scheduler.nvidia.nodeSelector .Values.operator.controller.nodeSelector) -}}
+{{- fail "scheduler and managed workloads must use the same single-node selector" -}}
+{{- end -}}
+{{- if eq .Values.scheduler.nvidia.partitionMode "mps" -}}
+{{- fail "the Helm NVIDIA mode does not support MPS without a node PID integration" -}}
+{{- end -}}
+{{- if eq .Values.scheduler.manifest "compatibility/manifests/cpu-mock.yaml" -}}
+{{- fail "scheduler.nvidia.enabled requires an NVIDIA compatibility manifest" -}}
+{{- end -}}
+{{- end -}}

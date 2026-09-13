@@ -23,7 +23,32 @@
       },
       "additionalProperties": false
     },
-    "scheduler": {"$ref": "#/definitions/statefulGoService"},
+    "scheduler": {
+      "allOf": [
+        {"$ref": "#/definitions/statefulGoService"},
+        {
+          "type": "object",
+          "properties": {
+            "nvidia": {
+              "type": "object",
+              "required": ["enabled", "image", "partitionMode", "dryRun", "commandTimeout", "runtimeClassName", "nodeSelector", "visibleDevices", "driverCapabilities"],
+              "properties": {
+                "enabled": {"type": "boolean"},
+                "image": {"$ref": "#/definitions/image"},
+                "partitionMode": {"type": "string", "enum": ["auto", "full", "mps", "mig"]},
+                "dryRun": {"type": "boolean"},
+                "commandTimeout": {"type": "string", "pattern": "^[1-9][0-9]*(ms|s|m)$"},
+                "runtimeClassName": {"type": "string"},
+                "nodeSelector": {"type": "object", "additionalProperties": {"type": "string", "minLength": 1}},
+                "visibleDevices": {"type": "string", "minLength": 1},
+                "driverCapabilities": {"type": "string", "minLength": 1}
+              },
+              "additionalProperties": false
+            }
+          }
+        }
+      ]
+    },
     "runtime": {"$ref": "#/definitions/statefulPythonService"},
     "jobController": {"$ref": "#/definitions/statefulGoService"},
     "gateway": {"$ref": "#/definitions/httpService"},
