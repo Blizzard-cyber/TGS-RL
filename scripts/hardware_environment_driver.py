@@ -261,6 +261,11 @@ def _safe_detail(value: object) -> str:
     return detail
 
 
+def _is_kubectl_server_not_found(stderr: str) -> bool:
+    lines = [line.strip() for line in stderr.splitlines() if line.strip()]
+    return len(lines) == 1 and lines[0].startswith("Error from server (NotFound):")
+
+
 def _resolve_executable(value: object, *, label: str) -> str:
     raw = str(value or "").strip()
     if not raw:
@@ -611,6 +616,7 @@ class Kubernetes:
         namespaced: bool = True,
         timeout: float | None = None,
         input_text: str | None = None,
+        accept_not_found: bool = False,
     ) -> str:
         command = [*self._base(namespaced=namespaced), *argv]
         try:
@@ -624,7 +630,9 @@ class Kubernetes:
             )
         except subprocess.TimeoutExpired as exc:
             raise DriverError(f"kubectl operation timed out: {argv[0]}") from exc
-        if completed.returncode != 0:
+        if completed.returncode != 0 and not (
+            accept_not_found and _is_kubectl_server_not_found(completed.stderr)
+        ):
             raise DriverError(
                 f"kubectl {argv[0]} failed with exit {completed.returncode}: "
                 + _safe_detail(completed.stderr)
@@ -675,6 +683,7 @@ class Kubernetes:
         self.run(
             ["delete", f"--raw={raw_path}", "-f", "-"],
             input_text=json.dumps(options, separators=(",", ":")),
+            accept_not_found=True,
         )
 
         def deleted_or_replaced() -> bool:

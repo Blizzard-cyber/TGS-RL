@@ -4,6 +4,7 @@ import fcntl
 import importlib.util
 import json
 import stat
+import subprocess
 import sys
 import threading
 from dataclasses import replace
@@ -1789,6 +1790,65 @@ def test_preconditioned_delete_uses_server_identity_and_waits_for_original_objec
         "uid": "uid-kube-job-1",
         "resourceVersion": "1",
     }
+
+
+@pytest.mark.parametrize(
+    ("stderr", "accepted"),
+    [
+        (
+            'Error from server (NotFound): jobs.batch "kube-job-1" not found\n',
+            True,
+        ),
+        (
+            "Error from server (Conflict): Operation cannot be fulfilled on jobs.batch "
+            '"kube-job-1": UID in precondition: uid-original, UID in object meta: uid-reused\n',
+            False,
+        ),
+        (
+            "Error from server (Conflict): Operation cannot be fulfilled on jobs.batch "
+            '"kube-job-1": the object has been modified; please apply your changes to the '
+            "latest version and try again\n",
+            False,
+        ),
+        (
+            'Error from server (NotFound): jobs.batch "kube-job-1" not found\n'
+            "error: additional kubectl failure\n",
+            False,
+        ),
+    ],
+)
+def test_preconditioned_delete_only_accepts_server_not_found(
+    driver_environment: tuple[Any, _GatewayState, Path],
+    monkeypatch: pytest.MonkeyPatch,
+    stderr: str,
+    accepted: bool,
+) -> None:
+    driver, _state, _root = driver_environment
+    kube = DRIVER.Kubernetes(driver.config.targets["E2"])
+    live = {
+        "apiVersion": "batch/v1",
+        "kind": "Job",
+        "metadata": {
+            "name": "kube-job-1",
+            "uid": "uid-kube-job-1",
+            "resourceVersion": "1",
+        },
+    }
+
+    def kubectl(
+        command: list[str],
+        **_kwargs: Any,
+    ) -> subprocess.CompletedProcess[str]:
+        if "delete" in command:
+            return subprocess.CompletedProcess(command, 1, "", stderr)
+        return subprocess.CompletedProcess(command, 0, "", "")
+
+    monkeypatch.setattr(DRIVER.subprocess, "run", kubectl)
+    if accepted:
+        kube.delete_preconditioned("jobs.batch", "kube-job-1", live)
+    else:
+        with pytest.raises(DRIVER.DriverError, match="kubectl delete failed"):
+            kube.delete_preconditioned("jobs.batch", "kube-job-1", live)
 
 
 def test_preconditioned_delete_rejects_missing_server_identity(
