@@ -290,6 +290,7 @@ services:
       - ./pyproject.toml:/workspace/pyproject.toml:ro
       - ./uv.lock:/workspace/uv.lock:ro
       - ./adapters:/workspace/adapters:ro
+      - ./configs:/workspace/configs:ro
       - ./gateway-python:/workspace/gateway-python:ro
       - ./gen/python:/workspace/gen/python:ro
       - ./runtime-python:/workspace/runtime-python:ro

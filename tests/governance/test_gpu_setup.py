@@ -309,6 +309,14 @@ def test_gpu_compose_keeps_console_dependencies_from_the_image() -> None:
     assert "/workspace/console:ro" not in console
 
 
+def test_compose_smoke_mounts_the_cpu_job_fixture() -> None:
+    source = (ROOT / "compose.yaml").read_text(encoding="utf-8")
+    smoke = source.split("  smoke:", 1)[1].split("\nvolumes:", 1)[0]
+
+    assert "./configs:/workspace/configs:ro" in smoke
+    assert "./scripts:/workspace/scripts:ro" in smoke
+
+
 def test_gpu_smoke_requires_e1_to_pass() -> None:
     makefile = (ROOT / "Makefile").read_text(encoding="utf-8")
     target = makefile.split("gpu-smoke:", 1)[1].split("\ngpu-down:", 1)[0]
