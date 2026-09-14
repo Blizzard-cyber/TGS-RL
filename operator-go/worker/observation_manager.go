@@ -2,6 +2,7 @@ package worker
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"sync"
@@ -10,6 +11,7 @@ import (
 	tgsrlv1 "github.com/Blizzard-cyber/TGS-RL/gen/go/tgsrl/v1"
 	"github.com/Blizzard-cyber/TGS-RL/internal/protocolmeta"
 	"github.com/Blizzard-cyber/TGS-RL/operator-go/api"
+	"github.com/Blizzard-cyber/TGS-RL/operator-go/bundleadapter"
 	"github.com/Blizzard-cyber/TGS-RL/operator-go/compiler"
 	runtimepub "github.com/Blizzard-cyber/TGS-RL/operator-go/runtime"
 	"github.com/Blizzard-cyber/TGS-RL/operator-go/statuswatch"
@@ -130,27 +132,6 @@ func (m *ObservationManager) Run(ctx context.Context) error {
 	runCtx := m.ctx
 	m.mu.Unlock()
 
-	var bundles []*api.Bundle
-	var err error
-	if bundleSource != nil {
-		bundles, err = bundleSource.List(runCtx)
-		if err != nil {
-			m.stopAfterStartFailure()
-			return fmt.Errorf("list materialized bundles for observation recovery: %w", err)
-		}
-		if restorer, ok := bundleSource.(ControlMetadataRestorer); ok {
-			if err := restorer.RestoreControlMetadata(runCtx); err != nil {
-				m.stopAfterStartFailure()
-				return fmt.Errorf("restore backend control metadata: %w", err)
-			}
-			bundles, err = bundleSource.List(runCtx)
-			if err != nil {
-				m.stopAfterStartFailure()
-				return fmt.Errorf("reload materialized bundles after control recovery: %w", err)
-			}
-		}
-	}
-
 	m.repoMu.Lock()
 	registrations, err := m.repository.ListRegistrations()
 	if err != nil {
@@ -159,22 +140,51 @@ func (m *ObservationManager) Run(ctx context.Context) error {
 		return fmt.Errorf("load observation registrations: %w", err)
 	}
 	if bundleSource != nil {
-		known := make(map[string]bool, len(registrations))
+		bundles, err := bundleSource.List(runCtx)
+		if err != nil {
+			m.repoMu.Unlock()
+			m.stopAfterStartFailure()
+			return fmt.Errorf("list materialized bundles for observation recovery: %w", err)
+		}
+		if restorer, ok := bundleSource.(ControlMetadataRestorer); ok {
+			if err := restorer.RestoreControlMetadata(runCtx); err != nil {
+				m.repoMu.Unlock()
+				m.stopAfterStartFailure()
+				return fmt.Errorf("restore backend control metadata: %w", err)
+			}
+			bundles, err = bundleSource.List(runCtx)
+			if err != nil {
+				m.repoMu.Unlock()
+				m.stopAfterStartFailure()
+				return fmt.Errorf("reload materialized bundles after control recovery: %w", err)
+			}
+		}
+		materialized := make(map[string]*api.Bundle, len(bundles))
+		for _, bundle := range bundles {
+			if bundle != nil && len(bundle.RuntimeTargets) > 0 {
+				materialized[bundle.Key] = bundle
+			}
+		}
+		recovered := make([]ObservationRegistration, 0, len(materialized))
+		known := make(map[string]bool, len(materialized))
 		for _, registration := range registrations {
-			known[registration.BundleKey] = true
+			if materialized[registration.BundleKey] != nil {
+				recovered = append(recovered, registration)
+				known[registration.BundleKey] = true
+			}
 		}
 		for _, bundle := range bundles {
 			if bundle == nil || known[bundle.Key] || len(bundle.RuntimeTargets) == 0 {
 				continue
 			}
-			registration := registrationFromBundle(bundle)
-			if err := m.repository.SaveRegistration(registration); err != nil {
-				m.repoMu.Unlock()
-				m.stopAfterStartFailure()
-				return fmt.Errorf("recover observation registration %q: %w", bundle.Key, err)
-			}
-			registrations = append(registrations, registration)
+			recovered = append(recovered, registrationFromBundle(bundle))
 			known[bundle.Key] = true
+		}
+		registrations = recovered
+		if err := m.repository.ReplaceRegistrations(registrations); err != nil {
+			m.repoMu.Unlock()
+			m.stopAfterStartFailure()
+			return fmt.Errorf("replace recovered observation registrations: %w", err)
 		}
 	}
 	m.repoMu.Unlock()
@@ -402,6 +412,11 @@ func (m *ObservationManager) watch(ctx context.Context, bundleKey string, watche
 		}
 		if ctx.Err() != nil {
 			return
+		}
+		if errors.Is(err, bundleadapter.ErrBundleAbsent) {
+			if err := m.deleteRegistration(registration); err == nil {
+				return
+			}
 		}
 		if err == nil {
 			return

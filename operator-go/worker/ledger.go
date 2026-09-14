@@ -29,6 +29,7 @@ type DeliveryRepository interface {
 // has been saved.
 type RegistrationRepository interface {
 	ListRegistrations() ([]ObservationRegistration, error)
+	ReplaceRegistrations([]ObservationRegistration) error
 	SaveRegistration(ObservationRegistration) error
 	DeleteRegistration(bundleKey string) error
 }
@@ -117,6 +118,26 @@ func (r *FileDeliveryRepository) SaveRegistration(registration ObservationRegist
 		state.Registrations = make(map[string]ObservationRegistration)
 	}
 	state.Registrations[registration.BundleKey] = registration
+	return r.writeStateLocked(state)
+}
+
+func (r *FileDeliveryRepository) ReplaceRegistrations(registrations []ObservationRegistration) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	state, err := r.readStateLocked()
+	if err != nil {
+		return err
+	}
+	state.Registrations = make(map[string]ObservationRegistration, len(registrations))
+	for _, registration := range registrations {
+		if registration.BundleKey == "" {
+			return fmt.Errorf("observation registration bundle key is required")
+		}
+		if _, exists := state.Registrations[registration.BundleKey]; exists {
+			return fmt.Errorf("duplicate observation registration %q", registration.BundleKey)
+		}
+		state.Registrations[registration.BundleKey] = registration
+	}
 	return r.writeStateLocked(state)
 }
 

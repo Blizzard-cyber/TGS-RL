@@ -41,6 +41,35 @@ func TestFileDeliveryRepositoryRegistrationProtoJSONRoundTrip(t *testing.T) {
 	assertRegistrationProtosEqual(t, registrations, want)
 }
 
+func TestFileDeliveryRepositoryReplacesRegistrationsAtomically(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "delivery.json")
+	repository := NewFileDeliveryRepository(path)
+	stale := observationRegistration(decisionForSequence(40))
+	current := observationRegistration(decisionForSequence(41))
+	if err := repository.Save(DeliveryRecord{DecisionID: "decision-active", Sequence: 42}); err != nil {
+		t.Fatal(err)
+	}
+	if err := repository.SaveRegistration(stale); err != nil {
+		t.Fatal(err)
+	}
+	if err := repository.ReplaceRegistrations([]ObservationRegistration{current}); err != nil {
+		t.Fatal(err)
+	}
+
+	registrations, err := repository.ListRegistrations()
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertRegistrationProtosEqual(t, registrations, current)
+	delivery, err := repository.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if delivery.DecisionID != "decision-active" || delivery.Sequence != 42 {
+		t.Fatalf("delivery = %+v, want preserved active record", delivery)
+	}
+}
+
 func TestFileDeliveryRepositoryLoadsLegacyRegistrationWithoutOneof(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "delivery.json")
 	want := observationRegistration(decisionForSequence(42))

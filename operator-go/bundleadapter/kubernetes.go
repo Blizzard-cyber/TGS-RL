@@ -246,6 +246,11 @@ func (a *KubernetesAdapter) observeOnce(ctx context.Context, reader Reader, bund
 	workloadObject := metaFor(defaultAPIVersion(bundle.Workload.TypeMeta.APIVersion, "kueue.x-k8s.io/v1beta1"), defaultKind(bundle.Workload.TypeMeta.Kind, "Workload"), bundle.Workload.ObjectMeta)
 	workloadBody, err := reader.GetPath(ctx, objectPath(workloadObject, bundle.Namespace))
 	if err != nil {
+		if errors.Is(err, ErrNotFound) {
+			if confirmErr := confirmBundlePresent(ctx, reader, a.BundleObject(bundle.Key), bundle.Namespace); confirmErr != nil {
+				return nil, false, confirmErr
+			}
+		}
 		return nil, false, err
 	}
 	var requestID, idempotencyKey string
@@ -256,6 +261,9 @@ func (a *KubernetesAdapter) observeOnce(ctx context.Context, reader Reader, bund
 	if strings.TrimSpace(bundle.Key) != "" {
 		bundleBody, err := reader.GetPath(ctx, objectPath(a.BundleObject(bundle.Key), bundle.Namespace))
 		if err != nil {
+			if errors.Is(err, ErrNotFound) {
+				return nil, false, fmt.Errorf("%w: %s", ErrBundleAbsent, bundle.Key)
+			}
 			return nil, false, err
 		}
 		requestID, idempotencyKey, controlAction, backendRevision, controlCommitted, controlRetireRun, err = controlMetadataFromBundleBody(bundleBody)

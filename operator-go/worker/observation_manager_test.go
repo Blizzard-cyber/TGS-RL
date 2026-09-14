@@ -15,6 +15,7 @@ import (
 	"github.com/Blizzard-cyber/TGS-RL/internal/protocolmeta"
 	"github.com/Blizzard-cyber/TGS-RL/operator-go/api"
 	"github.com/Blizzard-cyber/TGS-RL/operator-go/backend"
+	"github.com/Blizzard-cyber/TGS-RL/operator-go/bundleadapter"
 	"github.com/Blizzard-cyber/TGS-RL/operator-go/compiler"
 	"github.com/Blizzard-cyber/TGS-RL/operator-go/cursor"
 	"github.com/Blizzard-cyber/TGS-RL/operator-go/statuswatch"
@@ -126,6 +127,51 @@ func TestObservationManagerPublishesInBackgroundAndReconnects(t *testing.T) {
 	}
 }
 
+func TestObservationManagerRemovesRegistrationAfterBundleCleanup(t *testing.T) {
+	ledger := NewFileDeliveryRepository(filepath.Join(t.TempDir(), "delivery.json"))
+	registration := observationRegistration(decisionForSequence(9))
+	if err := ledger.SaveRegistration(registration); err != nil {
+		t.Fatal(err)
+	}
+	observer := &reconnectingObserver{
+		streams: []statuswatch.Stream{
+			&scriptedErrorStream{err: fmt.Errorf(
+				"observe workload: %w",
+				bundleadapter.ErrBundleAbsent,
+			)},
+		},
+	}
+	manager, err := NewObservationManager(observer, &fakePublisher{}, ledger)
+	if err != nil {
+		t.Fatal(err)
+	}
+	manager.retryBase = time.Millisecond
+	manager.retryMax = 2 * time.Millisecond
+	done, cancel := startObservationManager(t, manager)
+	defer stopObservationManager(t, cancel, done)
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		registrations, err := ledger.ListRegistrations()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(registrations) == 0 && manager.Active() == 0 {
+			return
+		}
+		time.Sleep(time.Millisecond)
+	}
+	registrations, err := ledger.ListRegistrations()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Fatalf(
+		"bundle cleanup left registrations=%d active_watchers=%d",
+		len(registrations),
+		manager.Active(),
+	)
+}
+
 func TestObservationManagerPublishesFromPersistedSemanticRegistration(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "delivery.json")
 	registration := semanticRegistrationForLedgerTest()
@@ -197,6 +243,42 @@ func TestObservationManagerRecoversDurableAndMaterializedRegistrations(t *testin
 	stopObservationManager(t, cancel, done)
 	if active := manager.Active(); active != 0 {
 		t.Fatalf("active watchers after cancel = %d", active)
+	}
+}
+
+func TestObservationManagerPrunesRegistrationsWithoutMaterializedBundles(t *testing.T) {
+	ledger := NewFileDeliveryRepository(filepath.Join(t.TempDir(), "delivery.json"))
+	current := observationRegistration(decisionForSequence(9))
+	stale := observationRegistration(decisionForSequence(10))
+	if err := ledger.SaveRegistration(current); err != nil {
+		t.Fatal(err)
+	}
+	if err := ledger.SaveRegistration(stale); err != nil {
+		t.Fatal(err)
+	}
+	observer := newControlledObserver()
+	manager, err := NewObservationManager(observer, &fakePublisher{}, ledger)
+	if err != nil {
+		t.Fatal(err)
+	}
+	manager.SetBundleSource(staticBundleSource{bundles: []*api.Bundle{current.Bundle}})
+	done, cancel := startObservationManager(t, manager)
+	defer stopObservationManager(t, cancel, done)
+
+	select {
+	case <-observer.watcherStarted():
+	case <-time.After(2 * time.Second):
+		t.Fatal("current observation watcher did not start")
+	}
+	registrations, err := ledger.ListRegistrations()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(registrations) != 1 || registrations[0].BundleKey != current.BundleKey {
+		t.Fatalf("registrations = %+v, want only %q", registrations, current.BundleKey)
+	}
+	if got := observer.watchCount(); got != 1 {
+		t.Fatalf("watch count = %d, want 1", got)
 	}
 }
 

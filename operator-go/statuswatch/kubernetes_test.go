@@ -3,6 +3,7 @@ package statuswatch
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -243,5 +244,87 @@ func TestKubernetesObserverTreatsJob404AsTerminalOnlyForRegisteredBundle(t *test
 	projection := Project(snapshot, false)
 	if !snapshot.JobDeleted || projection.State != tgsrlv1.RuntimeState_RUNTIME_STATE_TERMINATED {
 		t.Fatalf("snapshot=%+v projection=%+v", snapshot, projection)
+	}
+}
+
+func TestKubernetesObserverReportsAbsentBundleWhenWorkloadWasCleanedUp(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/apis/kueue.x-k8s.io/v1beta1/namespaces/test-ns/workloads/workload-a",
+			"/apis/tgsrl.io/v1alpha1/namespaces/test-ns/jobrunbundles/bundle-a":
+			http.NotFound(w, r)
+		default:
+			t.Fatalf("unexpected path %s", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+	observer, err := NewKubernetes(
+		httpObserverClient{baseURL: server.URL, client: server.Client()},
+		time.Millisecond,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stream, err := observer.Watch(context.Background(), Request{
+		Bundle: &api.Bundle{
+			Key:       "test-ns/bundle-a",
+			Namespace: "test-ns",
+			Workload: api.Workload{
+				ObjectMeta: api.ObjectMeta{Name: "workload-a", Namespace: "test-ns"},
+			},
+			Job: api.Job{
+				ObjectMeta: api.ObjectMeta{Name: "job-a", Namespace: "test-ns"},
+			},
+		},
+		Bindings: []*tgsrlv1.Binding{{BindingId: "binding-a"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := stream.Recv(); !errors.Is(err, bundleadapter.ErrBundleAbsent) {
+		t.Fatalf("Recv() error = %v, want ErrBundleAbsent", err)
+	}
+}
+
+func TestKubernetesObserverPreservesRegistrationWhenWorkloadIsTemporarilyMissing(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/apis/kueue.x-k8s.io/v1beta1/namespaces/test-ns/workloads/workload-a":
+			http.NotFound(w, r)
+		case "/apis/tgsrl.io/v1alpha1/namespaces/test-ns/jobrunbundles/bundle-a":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"metadata": map[string]any{"name": "bundle-a"},
+			})
+		default:
+			t.Fatalf("unexpected path %s", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+	observer, err := NewKubernetes(
+		httpObserverClient{baseURL: server.URL, client: server.Client()},
+		time.Millisecond,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stream, err := observer.Watch(context.Background(), Request{
+		Bundle: &api.Bundle{
+			Key:       "test-ns/bundle-a",
+			Namespace: "test-ns",
+			Workload: api.Workload{
+				ObjectMeta: api.ObjectMeta{Name: "workload-a", Namespace: "test-ns"},
+			},
+			Job: api.Job{
+				ObjectMeta: api.ObjectMeta{Name: "job-a", Namespace: "test-ns"},
+			},
+		},
+		Bindings: []*tgsrlv1.Binding{{BindingId: "binding-a"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := stream.Recv(); !errors.Is(err, bundleadapter.ErrNotFound) ||
+		errors.Is(err, bundleadapter.ErrBundleAbsent) {
+		t.Fatalf("Recv() error = %v, want retryable ErrNotFound", err)
 	}
 }
