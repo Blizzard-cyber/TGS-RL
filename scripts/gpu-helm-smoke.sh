@@ -173,8 +173,15 @@ kubectl -n "$NAMESPACE" port-forward service/tgsrl-console "$CONSOLE_PORT:8080" 
 console_pid=$!
 kubectl -n "$NAMESPACE" port-forward service/tgsrl-scheduler "$REGISTRY_PORT:50091" >"$registry_log" 2>&1 &
 registry_pid=$!
+gateway_health_tmp="$OUTPUT/gateway-health.tmp.json"
 for _ in $(seq 1 60); do
-  if curl -fsS --connect-timeout 2 "http://127.0.0.1:$GATEWAY_PORT/health" >/dev/null && \
+  if curl -fsS --connect-timeout 2 "http://127.0.0.1:$GATEWAY_PORT/health" >"$gateway_health_tmp" && \
+    jq -e '
+      .status == "ok"
+      and .backend == "grpc"
+      and ([.dependencies[] | select(.serving == true) | .name] | sort)
+        == ["experiment", "job_control", "runtime", "scheduler"]
+    ' "$gateway_health_tmp" >/dev/null && \
     curl -fsS --connect-timeout 2 "http://127.0.0.1:$CONSOLE_PORT/healthz" >/dev/null && \
     curl -fsS --connect-timeout 2 "http://127.0.0.1:$REGISTRY_PORT/healthz" >/dev/null; then
     break
@@ -182,6 +189,13 @@ for _ in $(seq 1 60); do
   sleep 1
 done
 curl -fsS --connect-timeout 2 "http://127.0.0.1:$GATEWAY_PORT/health" >"$OUTPUT/gateway-health.json"
+jq -e '
+  .status == "ok"
+  and .backend == "grpc"
+  and ([.dependencies[] | select(.serving == true) | .name] | sort)
+    == ["experiment", "job_control", "runtime", "scheduler"]
+' "$OUTPUT/gateway-health.json" >/dev/null
+rm -f "$gateway_health_tmp"
 curl -fsS --connect-timeout 2 "http://127.0.0.1:$CONSOLE_PORT/healthz" >"$OUTPUT/console-health.txt"
 make gpu-a10-full-readiness \
   TGSRL_HARDWARE_DRIVER_CONFIG="$DRIVER_CONFIG" \

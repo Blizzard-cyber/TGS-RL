@@ -454,6 +454,8 @@ def test_gpu_helm_smoke_builds_all_services_and_runs_a10_readiness() -> None:
     assert "deployment/tgsrl-scheduler" in smoke
     assert "deployment/tgsrl-console" in smoke
     assert 'rollout status "$deployment"' in smoke
+    assert '.status == "ok"' in smoke
+    assert '["experiment", "job_control", "runtime", "scheduler"]' in smoke
     assert "make gpu-a10-full-readiness" in smoke
     assert 'A10_READINESS_REPORTS="$OUTPUT/a10-readiness"' in smoke
     assert "TGSRL_HARDWARE_WORKER_REGISTRY_URL" in smoke
