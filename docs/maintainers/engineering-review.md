@@ -7,7 +7,8 @@
 
 已具备 Job → Runtime → Scheduler → Provider → Operator → bootstrap → worker → observation/Trace
 的实现路径。本批进一步补齐 scoped lifecycle、真实 allocator 观测、A10 readiness 聚合和
-六服务 NVIDIA Helm 实装入口；目标 A10/Helm/GPU 故障证据与完整训练 callbacks 仍需测试机验证。
+六服务 NVIDIA Helm 实装入口；A10 lifecycle、H2、DRA 恢复 E1 与 Helm 已在单张 A10 上验证，
+GPU 集群故障证据与完整训练 callbacks 仍需后续测试。
 
 审查以第一方代码和入口调用链为范围：Job Controller、Runtime/SQLite、Scheduler/事务/Provider、
 Operator/backend/registry、Gateway、Console 数据层、打包/部署与 Gate。生成协议和第三方依赖
@@ -28,6 +29,9 @@ Operator/backend/registry、Gateway、Console 数据层、打包/部署与 Gate�
 | P2 | `_placeholder_launch_spec` 和 registry 注释误导读者认为执行层缺失 | 改名为失败上下文，删除错误的“无 lifecycle 接口”注释 | 既有 Runtime/Go 测试 |
 | P2 | README 无可运行任务示例、设计与滚动审查混杂、bootstrap 端口/探针描述过时 | 文档分层；示例与 smoke 共用；更新动态端口与 marker probe | 文档链接/命令检查、实际服务 smoke |
 | P1 CI | 已推送基线 Python 格式检查失败，下游进程检查 skipped | 按已有 Ruff 规范整理，不削弱 CI | 本地 lint；需提交后确认新 SHA 的远端结果 |
+| P1 | hardware campaign 跨批次复用确定性 create-job 幂等键，持久化 Gateway 会对新镜像请求返回 409 | 每个持久化 attempt 生成随机身份；Job ID 与操作键绑定该身份；同 attempt 的崩溃重试仍稳定 | driver 37 项；同一 Helm PVC 连续实机复跑通过 |
+| P1 | `kubectl rollout status deployment --all` 在 Kubernetes 1.35 已移除 | 显式等待六个预期 Deployment | Helm contract 与 A10 实装 |
+| P1 | 非 root Scheduler helper 尝试 `chmod` root-owned PVC 挂载点，导致 `bind/release` capability 不发布 | binding/runtime/registry state 使用 PVC 下由进程创建的私有子目录 | Helm contract、Pod 内 helper discovery 与 A10 lifecycle |
 
 ## 本轮进一步关闭的工程事项
 
@@ -36,21 +40,20 @@ Operator/backend/registry、Gateway、Console 数据层、打包/部署与 Gate�
 | hardware cleanup GET→DELETE 竞争 | 子资源和 Bundle 使用 UID/resourceVersion 条件删除；finalizer patch 使用 JSON Patch test | driver/Gate 专项测试 |
 | 硬件 provenance 不完整 | 锁定 cluster/namespace UID、Kubernetes 版本、environment、Job template、Trace command、hook executable 和 rendered Job | 73 项 Gate/driver 测试 |
 | worker 故障回写 | crash、注册响应丢失、marker 写失败、终态上报失败和 callback timeout 均有真实进程/通信回归 | bootstrap Go 测试 |
-| 单节点 NVIDIA Helm | NVIDIA Driver v2、helpers、共享 worker state、RuntimeClass、节点绑定和专用镜像 target 已接入并 fail closed 校验 | Helm render contract；待 GPU 集群实装 |
+| 单节点 NVIDIA Helm | NVIDIA Driver v2、helpers、共享 worker state、RuntimeClass、节点绑定和专用镜像 target 已接入并 fail closed 校验 | Helm render contract 与单张 A10 六服务实装 |
 | MPS 在线份额错误声明 | 生产 CLI 和 Helm 拒绝 MPS，backend 不再广告/执行在线 `set_share` | NVIDIA Provider/CLI 测试 |
 | scoped worker lifecycle | registry 允许 exact token/sandbox/generation 的 pause/sleep/offload/resume/stop；`bind` 仍由 Scheduler 权威执行 | Go registry/controller 与 driver contract |
-| A10 显存证据 | 最小 CUDA workload 保留 resident tensor；allocator bytes 经 worker/bootstrap/registry/driver 返回，Gate 要求 offload 下降、resume 回升 | Python/Go/Gate 专项；实机待执行 |
-| A10 总体验收 | 卡型硬校验、Full lifecycle、H2、恢复 DRA 后 E1、聚合摘要与旧证据归档 | shell/Gate contract；实机待执行 |
+| A10 显存证据 | 最小 CUDA workload 保留 resident tensor；allocator bytes 经 worker/bootstrap/registry/driver 返回，Gate 要求 offload 下降、resume 回升 | Python/Go/Gate 专项；单张 A10 实机通过 |
+| A10 总体验收 | 卡型硬校验、Full lifecycle、H2、恢复 DRA 后 E1、聚合摘要与旧证据归档 | `0295132` 单张 A10 聚合结果通过 |
 | 故障 readiness | crash、response loss、receipt 重启、Operator partial failure、CPU/内存/GPU capacity 拒绝、provider unavailable、Runtime SQLite 恢复形成可重复报告 | `.cache/tgsrl/engineering-fault-readiness/report.json` 本机 PASSED |
-| Helm 实装入口 | 构建全部不可变镜像，生成 values，install/upgrade、健康检查、A10 Full、成功/失败证据索引 | Helm/shell contract；实装待执行 |
+| Helm 实装入口 | 构建全部不可变镜像，生成 values，install/upgrade、健康检查、A10 Full、成功/失败证据索引 | 单张 A10 六服务 Helm 实装与 315 项证据索引通过 |
 
 ## 尚未关闭的工程事项
 
 | 项 | 源码/证据入口 | 影响与下一步 |
 |---|---|---|
-| 单节点 NVIDIA Helm 尚未实装验证 | `make gpu-render-helm-values`、`make gpu-helm-smoke` | 代码、镜像 targets、render 与证据归档已闭合，需 A10 集群验证 RuntimeClass、DRA、NetworkPolicy 和生命周期 |
 | MPS 节点级 realization 缺失 | `mps_backend.go` | 在线 `set_share` 已撤下；未来需要 checkpoint/recreate 新 client、启动限额注入与 incarnation readback |
-| A10 lifecycle 与完整 veRL 未验收 | `make gpu-a10-full-readiness`、GPU workload | 最小 adapter 已能做真实 checkpoint/offload/reload 和 allocator 观测，仍需 A10 实机；完整 trainer/collective 另行验证 |
+| 完整 veRL 未验收 | `make gpu-a10-full-readiness`、GPU workload | 最小 adapter 已在 A10 完成真实 checkpoint/offload/reload 和 allocator 观测；完整 trainer/collective 另行验证 |
 | 真实 GPU 故障证据不足 | `make engineering-fault-readiness`、environment hooks | CPU/真实进程报告已覆盖 crash/timeout/响应丢失/组件重启/partial failure；Pod/容量/节点网络故障明确 `NOT_RUN` |
 | 大文件维护成本 | hardware driver、Gate tools、planner 等 | 后续新增功能前按职责拆分；本轮不为“缩行数”重写稳定状态机 |
 
@@ -80,7 +83,7 @@ SQL、锁文件和原始本机证据保留；`.cache`、依赖、数据库、私
 
 | 检查 | 结果 |
 |---|---|
-| Python Runtime/Storage/Governance | **492 passed**；Gateway API **39 passed** |
+| Python Runtime/Storage/Governance | **515 passed**；Gateway API **39 passed** |
 | Go 模块与 race | 全部通过；MPS 零百分比 dry-run/执行前拒绝回归通过 |
 | 静态检查 | `make lint`、`make staticcheck` 通过；Ruff、mypy、Go vet/Buf lint |
 | 前端 | typecheck、ESLint、**73 unit tests**、production build 通过 |
@@ -119,8 +122,9 @@ adapter 产物，由真实静态/同源代理服务提供；Playwright 使用本
 
 本批新增故障 readiness 报告在本机为 `PASSED`，证据级别是
 `CPU_REAL_PROCESS_AND_COMPONENT_INTEGRATION`；GPU fault 三项保持 `NOT_RUN`。
-未执行：Docker 实际 build/pull、容器 Compose smoke、Helm 集群安装、A10 lifecycle/H2/E1 复测。
-本机 daemon 不可达且本批禁止下载/构建镜像；Compose config/Helm render 不替代实装证据。
+开发机未执行 Docker build/pull 或 GPU 测试；测试机已在 `0295132` 镜像基线上完成
+A10 lifecycle/H2/DRA 恢复 E1，并使用本批实机修复完成六服务 Helm smoke。详见
+[A10 工程与 Helm 验收](../validation/a10-readiness-2026-09-14.md)。
 
 ## 后续按工程依赖推进
 
@@ -128,7 +132,7 @@ adapter 产物，由真实静态/同源代理服务提供；Playwright 使用本
 2. 经授权提交/推送后，检查**精确 SHA**所有适用 Actions；failure/skipped/cancelled 不视为通过。
 3. GPU 机拉取干净版本；打包/driver 变更先复跑 E1，涉及共享链路再复跑 H1/H2。
 4. 核对正常/异常退出、控制超时、重启恢复、UUID 与资源清理；脱敏结果提交到 `handoff/`。
-5. 在目标环境验证完整 trainer callbacks、单节点 NVIDIA Helm 和可用 MIG；MPS 节点 adapter 未实现，保持 NOT_RUN。
+5. 在目标环境验证完整 trainer callbacks 和可用 MIG；MPS 节点 adapter 未实现，保持 NOT_RUN。
 6. 工程链路与证据稳定后，再讨论 E3–E8 标定、VUG/算法优化和毕业实验。
 
 历史 E1/H1/H2 报告继续引用原 commit，不重写 source hash，不把本地 CPU PASS 当作新的 GPU PASS。

@@ -168,8 +168,9 @@ make gpu-helm-smoke
 - 通过 port-forward 复用 A10 Full lifecycle；
 - 无论成功失败都保存 Helm status、values、资源快照、控制面日志和 SHA-256 索引。
 
-默认证据目录是 `.cache/tgsrl/helm-smoke/`。这个入口尚需在 A10 测试机执行；本地 Helm
-render/contract 通过不等于实装通过。
+默认证据目录是 `.cache/tgsrl/helm-smoke/`。单张 A10 的六服务实装与 lifecycle 已通过，
+见 [A10 工程与 Helm 验收记录](../validation/a10-readiness-2026-09-14.md)。该记录不能替代
+其他 Kubernetes 版本、StorageClass、CNI、GPU 型号或多节点拓扑的独立验证。
 
 ## 结果判定
 

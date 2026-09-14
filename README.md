@@ -155,9 +155,9 @@ API 和字段说明见[API、CLI 与 Console](docs/guides/api-and-console.md)。
 | 毕业设计实验前做 A10 工程验收 | [A10 Readiness](docs/guides/a10-readiness.md) | Full lifecycle、显存释放/恢复、H2、DRA 回归、Helm 证据 |
 | 部署 Kubernetes 控制面 | [部署指南](docs/guides/deployment.md) | 六服务 Helm 的配置、依赖和部署边界 |
 
-**当前阶段是工程链路验证，不是毕业实验或生产发布。** A10 lifecycle/H2/Helm 的新入口仍需
-测试机执行；历史 E1/H1/H2 不证明完整 veRL trainer、distributed collective、
-checkpoint/offload 显存释放、MIG/MPS、多节点、强隔离或性能收益。
+**当前阶段是工程链路验证，不是毕业实验或生产发布。** A10 lifecycle、H2、DRA 恢复 E1
+和六服务 Helm smoke 已在单张 A10 上通过；这些结果不证明完整 veRL trainer、
+distributed collective、MIG/MPS、多节点、强隔离或性能收益。
 历史证据各自绑定当时的源代码版本，不能自动覆盖后续修改。
 
 | 已归档的硬件验证 | 记录 |
@@ -165,6 +165,7 @@ checkpoint/offload 显存释放、MIG/MPS、多节点、强隔离或性能收益
 | E1 单节点 Full GPU | [环境、身份回读与清理](docs/validation/e1-full-gpu-2026-09-12.md) |
 | H1 HAMi 单 worker | [请求份额与实际分配](docs/validation/h1-hami-vgpu-2026-09-12.md) |
 | H2 HAMi 双 worker | [同卡身份与执行重叠](docs/validation/h2-hami-concurrency-2026-09-13.md) |
+| A10 lifecycle、H2、DRA 恢复与 Helm | [工程与部署验收](docs/validation/a10-readiness-2026-09-14.md) |
 
 ## 代码地图
 

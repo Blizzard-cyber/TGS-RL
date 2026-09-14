@@ -44,9 +44,10 @@ declared_matrix:
     - "partially_async"
   data_kinds:
     - "live"
-  evidence_status: "not-run"
+  evidence_status: "gpu-single-node"
   evidence:
-    - "docs/guides/gpu-smoke.md"
+    - "docs/validation/e1-full-gpu-2026-09-12.md"
+    - "docs/validation/a10-readiness-2026-09-14.md"
 verification_commands:
   preflight: "make gpu-preflight"
   smoke: "make gpu-smoke"

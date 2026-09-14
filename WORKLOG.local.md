@@ -1,6 +1,6 @@
 # 开发与 GPU 测试交接
 
-更新日期：2026-09-13。此文件按约定提交，用于两台机器通过 GitHub 协作；不是产品设计文档。
+更新日期：2026-09-14。此文件按约定提交，用于两台机器通过 GitHub 协作；不是产品设计文档。
 正式发布前移除本文件与 `handoff/`，长期内容保留在 `docs/`。
 
 ## 当前周期：工程完整性，不是毕业实验
@@ -10,7 +10,7 @@
 
 - **开发机**：macOS，无 NVIDIA GPU。负责实现、review、CPU/Mock、真实子进程、文档与治理。
 - **测试机**：Linux + NVIDIA。拉取干净 commit，验证 CUDA/设备兑现和真实故障，提交脱敏结果。
-- 本批不访问 ECS，不在开发机拉取/构建 Docker 镜像，不删除旧数据库或原始硬件证据。
+- 开发机不拉取/构建 Docker 镜像；A10 测试机只操作专用验证资源，并保留旧数据库和原始硬件证据。
 
 ## 当前工作树与 CI
 
@@ -45,14 +45,16 @@
 
 ## 仍需推进的工程项
 
-1. 本批回归/干净副本六服务/真实 HTTP 前端已通过，下一步审查并按授权提交；细节见下节。
-2. 经授权推送并核对 CI，测试机拉取该精确 SHA；不要拿旧硬件结果冒充新版本验证。
-3. 测试机先执行 `make gpu-a10-readiness`；它会跑 Full lifecycle、H2 和恢复后的 E1。
-4. 再执行 `make gpu-render-helm-values`、`make gpu-helm-smoke` 验证六服务集群部署。
-5. `make engineering-fault-readiness` 已覆盖 worker crash、响应丢失、组件重启和 partial failure；GPU Pod/容量/节点网络故障仍为 NOT_RUN。
-6. 完整 veRL trainer/collective 仍待目标 workload；A10 最小 trainer 不能代表完整训练。
-7. MPS 在线 `set_share` 已因 NVIDIA 语义不成立而撤下；未来需 checkpoint/recreate 新 client 的节点级 adapter。A10 无 MIG，不为 E2 改拓扑。
-8. 新硬件证据必须包含 cluster/namespace UID、环境/模板/hook 摘要、rendered Job 和聚合摘要。
+1. A10 lifecycle、H2、DRA 恢复 E1 与六服务 Helm smoke 已通过；详见
+   `docs/validation/a10-readiness-2026-09-14.md`。
+2. 提交本轮实机发现的跨批次幂等、Kubernetes 1.35 rollout 和 Helm helper state 修复后，
+   按精确新 SHA 再核对适用 CI；不要把工作树补丁的结果写成旧 SHA 原样通过。
+3. `make engineering-fault-readiness` 已覆盖 worker crash、响应丢失、组件重启和 partial failure；
+   GPU Pod/容量/节点网络故障仍为 NOT_RUN。
+4. 完整 veRL trainer/collective 仍待目标 workload；A10 最小 trainer 不能代表完整训练。
+5. MPS 在线 `set_share` 已因 NVIDIA 语义不成立而撤下；未来需 checkpoint/recreate 新 client 的
+   节点级 adapter。A10 无 MIG，不为 E2 改拓扑。
+6. 新硬件证据必须包含 cluster/namespace UID、环境/模板/hook 摘要、rendered Job 和聚合摘要。
 
 后续实验标定、吞吐/干扰公平性、长期存储、HA 与入口安全另行排期，不把它们混作已完成能力。
 
@@ -68,7 +70,8 @@
 - 原始本机证据：`.cache/tgsrl/review-clean-7s7wkc0m/`、`.cache/tgsrl/review-20260913-process/`。
 - 本轮 CPU process Gate 证据：`.cache/tgsrl/final-engineering-process/`，三条工程规则通过，GPU 状态保持 `NOT_RUN`。
 - 本轮故障 readiness：`.cache/tgsrl/engineering-fault-readiness/report.json`，七类真实进程/组件检查通过；三类 GPU fault 为 `NOT_RUN`。
-- 本机 Python 为 3.12.13，BOM 为 3.12.14；没有 Docker 实装、Helm 实装或 GPU 复测，不夸大验证范围。
+- 本机 Python 为 3.12.13，BOM 为 3.12.14；Docker/GPU 实装在测试机执行，不把开发机结果
+  冒充硬件证据。
 
 ## 已有硬件证据（不可改写来源）
 
@@ -79,6 +82,8 @@
 | 2026-09-12 | `9c65d46` | E1 恢复回归 | HAMi 卸载并恢复 Device Plugin 后通过 |
 | 2026-09-13 | `a45a432` | H2 HAMi | PASSED，双 worker 同卡各 40%/9211 MiB，测量期正重叠；`docs/validation/h2-hami-concurrency-2026-09-13.md` |
 | 2026-09-13 | `a45a432` | E1 恢复回归 | Device Plugin 1/1、单 GPU 容量恢复、无 HAMi 注解或 workload 残留 |
+| 2026-09-14 | `0295132` | A10 总体验收 | PASSED：故障 readiness、Full lifecycle、H2、DRA 恢复 E1；`docs/validation/a10-readiness-2026-09-14.md` |
+| 2026-09-14 | `0295132` 镜像 + 当前修复 | 六服务 Helm | PASSED：6/6 Ready、A10 lifecycle、315 项证据索引；同上 |
 
 这些是单节点限定证据，不证明 OOM 隔离、公平性、动态份额、完整训练、MIG/MPS、多节点或性能收益。
 E2–E8 未执行，九条实验阈值仍待后续真实 baseline 标定。

@@ -144,7 +144,7 @@ Runtime SQLite 恢复的实际测试结果写成独立报告。
 
 - Pod restart、跨节点 endpoint、NetworkPolicy 与异常退出恢复；
 - MPS checkpoint/recreate 新 client、启动份额注入及 incarnation readback；
-- A10 最小 trainer 的 checkpoint/offload/reload 与真实显存释放仍待新提交实机复测；
+- A10 最小 trainer 的 checkpoint/offload/reload 与真实显存释放已完成单卡实机验证；
 - 完整 veRL trainer、distributed collective 和真实模型 checkpoint 仍待专门 workload；
 - MIG rebind、部分失败、超时和未知结果调和。
 

@@ -48,6 +48,7 @@ admission:
   reject_live_data: false
   reject_physical_device_claims: false
 evidence:
-  status: "not-run"
+  status: "gpu-single-node"
   hardware_smoke:
-    - "docs/guides/gpu-smoke.md"
+    - "docs/validation/e1-full-gpu-2026-09-12.md"
+    - "docs/validation/a10-readiness-2026-09-14.md"
