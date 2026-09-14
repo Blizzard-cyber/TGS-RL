@@ -683,7 +683,9 @@ def driver_environment(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> tuple[Any, _GatewayState, Path]:
     marker = tmp_path / "rebound"
-    expected_job_id = DRIVER._job_id(_request("provision", 1), 1)
+    attempt_ids = iter(("0123456789abcdef", "fedcba9876543210"))
+    monkeypatch.setattr(DRIVER, "_new_attempt_id", lambda: next(attempt_ids))
+    expected_job_id = DRIVER._job_id(_request("provision", 1), 1, "0123456789abcdef")
     state = _GatewayState(marker, expected_job_id)
     server, thread = _gateway_server(state)
     kubectl = tmp_path / "kubectl"
@@ -809,12 +811,16 @@ def test_driver_state_compacts_legacy_cleaned_receipts_on_load(tmp_path: Path) -
 
 def test_hardware_job_identity_is_stable_and_attempt_scoped() -> None:
     request = _request("provision", 1)
-    first = DRIVER._job_id(request, 1)
-    assert first == DRIVER._job_id(request, 1)
-    assert first != DRIVER._job_id(request, 2)
+    first = DRIVER._job_id(request, 1, "attempt-a")
+    assert first == DRIVER._job_id(request, 1, "attempt-a")
+    assert first != DRIVER._job_id(request, 2, "attempt-a")
+    assert first != DRIVER._job_id(request, 1, "attempt-b")
+    assert DRIVER._operation_key(request, {"attempt": 1, "attempt_id": "attempt-a"}, "create") != (
+        DRIVER._operation_key(request, {"attempt": 1, "attempt_id": "attempt-b"}, "create")
+    )
     changed = dict(request)
     changed["run_key"] = "other-run"
-    assert first != DRIVER._job_id(changed, 1)
+    assert first != DRIVER._job_id(changed, 1, "attempt-a")
     assert len(first) <= 63
 
 
@@ -824,8 +830,10 @@ def test_driver_checkpoints_job_identity_before_gateway_create(
 ) -> None:
     driver, _state, root = driver_environment
     request = _request("provision", 1)
+    calls: list[tuple[str, str]] = []
 
-    def fail_create(*_args: object, **_kwargs: object) -> JsonObject:
+    def fail_create(_self: Any, path: str, body: JsonObject, key: str) -> JsonObject:
+        calls.append((body["jobId"], key))
         raise DRIVER.DriverError("response lost after create")
 
     monkeypatch.setattr(DRIVER.Gateway, "post", fail_create)
@@ -833,7 +841,14 @@ def test_driver_checkpoints_job_identity_before_gateway_create(
         _execute(driver, root, request)
     state = json.loads((root / "state/state.json").read_text(encoding="utf-8"))
     persisted = next(iter(state["runs"].values()))
-    assert persisted["job_id"] == DRIVER._job_id(request, 1)
+    assert persisted["attempt_id"] == "0123456789abcdef"
+    assert persisted["job_id"] == DRIVER._job_id(request, 1, persisted["attempt_id"])
+    assert persisted["job_request_digest"]
+    retry_root = root / "retry-after-response-loss"
+    retry_root.mkdir()
+    with pytest.raises(DRIVER.DriverError, match="response lost after create"):
+        driver.execute(request, retry_root / "response.json")
+    assert calls[0] == calls[1]
 
 
 def test_driver_runs_e2_through_gateway_dra_worker_and_scheduler_hook(
@@ -970,17 +985,18 @@ def test_driver_starts_new_attempt_after_completed_cleanup(
     assert first["status"] == second["status"] == "SUCCEEDED"
     assert state.requests.count(("POST", "/v1/jobs")) == 2
     assert state.created_job_ids == [
-        DRIVER._job_id(provision, 1),
-        DRIVER._job_id(provision, 2),
+        DRIVER._job_id(provision, 1, "0123456789abcdef"),
+        DRIVER._job_id(provision, 2, "fedcba9876543210"),
     ]
     persisted = json.loads((root / "state/state.json").read_text(encoding="utf-8"))
     run = next(iter(persisted["runs"].values()))
     assert run["attempt"] == 2
-    assert run["job_id"] == DRIVER._job_id(provision, 2)
+    assert run["attempt_id"] == "fedcba9876543210"
+    assert run["job_id"] == DRIVER._job_id(provision, 2, "fedcba9876543210")
     start_keys = [key for path, key in state.idempotency_keys if path.endswith("/commands/start")]
     assert len(start_keys) == 2
-    assert start_keys[0].endswith("-a1-start")
-    assert start_keys[1].endswith("-a2-start")
+    assert start_keys[0].endswith("-a1-i0123456789abcdef-start")
+    assert start_keys[1].endswith("-a2-ifedcba9876543210-start")
 
     cleanup = _request("cleanup", 8)
     cleanup_root = root / "second-cleanup"

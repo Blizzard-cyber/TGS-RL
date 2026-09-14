@@ -17,6 +17,7 @@ import math
 import os
 import platform
 import re
+import secrets
 import shutil
 import socket
 import subprocess
@@ -192,7 +193,9 @@ def _compact_cleaned_run(run: JsonObject) -> None:
         key: run[key]
         for key in (
             "attempt",
+            "attempt_id",
             "job_id",
+            "job_request_digest",
             "run_id",
             "last_step_index",
             "cleaned",
@@ -205,18 +208,27 @@ def _compact_cleaned_run(run: JsonObject) -> None:
     run.update(retained)
 
 
-def _job_id(request_value: Mapping[str, Any], attempt: int) -> str:
+def _new_attempt_id() -> str:
+    return secrets.token_hex(8)
+
+
+def _job_id(request_value: Mapping[str, Any], attempt: int, attempt_id: str = "") -> str:
     identity = {
         "campaign_id": request_value["campaign_id"],
         "experiment_id": request_value["experiment_id"],
         "run_key": request_value["run_key"],
         "attempt": attempt,
     }
+    if attempt_id:
+        identity["attempt_id"] = attempt_id
     return "hardware-" + _canonical_digest(identity)[:24]
 
 
 def _operation_key(request_value: Mapping[str, Any], run: Mapping[str, Any], suffix: str) -> str:
-    return f"hardware-{request_value['request_id']}-a{int(run.get('attempt', 1))}-{suffix}"
+    attempt = int(run.get("attempt", 1))
+    attempt_id = str(run.get("attempt_id", "")).strip()
+    identity = f"-i{attempt_id}" if attempt_id else ""
+    return f"hardware-{request_value['request_id']}-a{attempt}{identity}-{suffix}"
 
 
 def _is_sensitive_name(value: object) -> bool:
@@ -1188,10 +1200,14 @@ class HardwareEnvironmentDriver:
             )
             run = cast(JsonObject, runs.get(state_key, {}))
             if request_value["operation"] == "provision" and run.get("cleaned") is True:
-                run = {"attempt": int(run.get("attempt", 1)) + 1, "receipts": {}}
+                run = {
+                    "attempt": int(run.get("attempt", 1)) + 1,
+                    "attempt_id": _new_attempt_id(),
+                    "receipts": {},
+                }
                 runs[state_key] = run
             elif not run:
-                run = {"attempt": 1, "receipts": {}}
+                run = {"attempt": 1, "attempt_id": _new_attempt_id(), "receipts": {}}
                 runs[state_key] = run
             request_digest = _canonical_digest(request_value)
             receipts = _mapping(run.get("receipts", {}), label="run receipts")
@@ -1207,7 +1223,17 @@ class HardwareEnvironmentDriver:
                 replayed.pop("artifacts", None)
                 return replayed
             if request_value["operation"] == "provision":
-                expected_job_id = _job_id(request_value, int(run.get("attempt", 1)))
+                job = self._render_job(request_value, target)
+                job_request_digest = _canonical_digest(job)
+                persisted_digest = str(run.get("job_request_digest", "")).strip()
+                if persisted_digest and persisted_digest != job_request_digest:
+                    raise DriverError("rendered hardware Job changed during an active attempt")
+                run["job_request_digest"] = job_request_digest
+                expected_job_id = _job_id(
+                    request_value,
+                    int(run.get("attempt", 1)),
+                    str(run.get("attempt_id", "")),
+                )
                 if run.get("job_id") not in {None, "", expected_job_id}:
                     raise DriverError("persisted hardware Job identity is inconsistent")
                 run["job_id"] = expected_job_id
@@ -1380,9 +1406,7 @@ class HardwareEnvironmentDriver:
             "artifacts": [self._artifact_record(response_path, "preflight.json")],
         }
 
-    def _provision(
-        self, request_value: JsonObject, target: TargetConfig, run: JsonObject, response_path: Path
-    ) -> list[JsonObject]:
+    def _render_job(self, request_value: JsonObject, target: TargetConfig) -> JsonObject:
         template = _read_json(target.job_template)
         if _contains_sensitive_field(template):
             raise DriverError("job template must not contain inline credential-like fields")
@@ -1411,13 +1435,23 @@ class HardwareEnvironmentDriver:
             }
         )
         job["displayName"] = f"{job.get('displayName', 'hardware-gate')}-{request_value['run_key']}"
+        return job
+
+    def _provision(
+        self, request_value: JsonObject, target: TargetConfig, run: JsonObject, response_path: Path
+    ) -> list[JsonObject]:
+        job = self._render_job(request_value, target)
+        if run.get("job_request_digest") != _canonical_digest(job):
+            raise DriverError("persisted hardware Job request digest is inconsistent")
+        expected_job_id = _string(run.get("job_id"), label="persisted hardware Job ID")
+        job["jobId"] = expected_job_id
         self._write_artifact(response_path, "rendered-job.json", job)
         gateway = Gateway(target.gateway_url, target.timeout)
-        attempt = int(run.get("attempt", 1))
-        expected_job_id = _job_id(request_value, attempt)
-        job["jobId"] = expected_job_id
-        key_prefix = f"hardware-{request_value['request_id']}-a{attempt}"
-        created = gateway.post("/v1/jobs", job, key_prefix + "-create")
+        created = gateway.post(
+            "/v1/jobs",
+            job,
+            _operation_key(request_value, run, "create"),
+        )
         job_id = _string(
             _mapping(created.get("job"), label="created job").get("jobId"),
             label="created job ID",
@@ -1427,7 +1461,7 @@ class HardwareEnvironmentDriver:
         admitted = gateway.post(
             f"/v1/jobs/{parse.quote(job_id, safe='')}/admit",
             {"reason": "hardware Gate admission"},
-            key_prefix + "-admit",
+            _operation_key(request_value, run, "admit"),
         )
         admit_operation_id = _operation_id(admitted)
         run["admit_operation_id"] = admit_operation_id
