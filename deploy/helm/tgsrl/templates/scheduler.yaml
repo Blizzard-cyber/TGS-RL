@@ -44,16 +44,16 @@ spec:
             - --nvidia-dry-run={{ .Values.scheduler.nvidia.dryRun }}
             - --nvidia-command-timeout={{ .Values.scheduler.nvidia.commandTimeout }}
             - --nvidia-binding-helper=/usr/local/bin/tgsrl-nvidia-binding
-            - --nvidia-binding-state=/var/lib/tgsrl-scheduler/nvidia-binding.json
+            - --nvidia-binding-state=/var/lib/tgsrl-scheduler/nvidia-binding/state.json
             - --nvidia-runtime-helper=/usr/local/bin/tgsrl-nvidia-runtime
-            - --nvidia-runtime-state=/var/lib/tgsrl-scheduler/nvidia-runtime.json
+            - --nvidia-runtime-state=/var/lib/tgsrl-scheduler/nvidia-runtime/state.json
             - --nvidia-mig-helper=/usr/local/bin/tgsrl-nvidia-mig
 {{- end }}
 {{- if .Values.scheduler.workerRegistry.enabled }}
             - --worker-registry-listen=0.0.0.0:{{ .Values.scheduler.service.registryPort }}
             - --worker-registry-runtime-target=tgsrl-runtime:{{ .Values.runtime.service.grpcPort }}
             - --worker-registry-signing-key-file=/var/run/secrets/tgsrl-worker-registry/signing-key
-            - --worker-registry-state=/var/lib/tgsrl-scheduler/{{ ternary "nvidia-runtime.json" "worker-registry.json" .Values.scheduler.nvidia.enabled }}
+            - --worker-registry-state=/var/lib/tgsrl-scheduler/{{ ternary "nvidia-runtime/state.json" "worker-registry/state.json" .Values.scheduler.nvidia.enabled }}
 {{- end }}
 {{- if .Values.scheduler.nvidia.enabled }}
           env:

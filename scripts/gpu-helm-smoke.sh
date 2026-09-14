@@ -144,7 +144,17 @@ if helm status "$RELEASE" --namespace "$NAMESPACE" >/dev/null 2>&1; then
 else
   scripts/deploy-full-stack.sh install "$VALUES"
 fi
-kubectl -n "$NAMESPACE" rollout status deployment --all --timeout="$TIMEOUT"
+deployments=(
+  deployment/tgsrl-scheduler
+  deployment/tgsrl-runtime
+  deployment/tgsrl-job-controller
+  deployment/tgsrl-operator
+  deployment/tgsrl-gateway
+  deployment/tgsrl-console
+)
+for deployment in "${deployments[@]}"; do
+  kubectl -n "$NAMESPACE" rollout status "$deployment" --timeout="$TIMEOUT"
+done
 kubectl -n "$NAMESPACE" get deployment tgsrl-scheduler -o json \
   | jq -e '.spec.template.spec.runtimeClassName != null and (.spec.template.spec.containers[0].args | index("--nvidia-driver-v2=true") != null)' >/dev/null
 kubectl -n "$NAMESPACE" get networkpolicy tgsrl-control-plane-ingress tgsrl-console-ingress >/dev/null
