@@ -59,6 +59,7 @@ console/*.tsbuildinfo
 !scripts/
 scripts/**
 !scripts/gpu-smoke-workload.py
+!scripts/gpu-experiment-workload.py
 
 # Re-included source trees may contain local caches and runtime output. Keep
 # them out of every build context even when their parent directory is needed.

@@ -256,7 +256,10 @@ def test_gpu_network_profiles_keep_integrity_checks_and_are_explicit() -> None:
     assert "/workspace/.venv" not in local_dockerfile
     assert "FROM ${TGSRL_DISTROLESS_BASE_IMAGE}" in bootstrap_dockerfile
     assert "TGSRL_PYPI_INDEX_URL" in gpu_dockerfile
-    assert "scripts/gpu-experiment-workload.py" in gpu_dockerfile
+    dockerignore = (ROOT / ".dockerignore").read_text(encoding="utf-8").splitlines()
+    for workload in ("gpu-smoke-workload.py", "gpu-experiment-workload.py"):
+        assert f"COPY scripts/{workload}" in gpu_dockerfile
+        assert f"!scripts/{workload}" in dockerignore
     services_dockerfile = (ROOT / "Dockerfile.services").read_text(encoding="utf-8")
     for target in (
         "scheduler-nvidia",
