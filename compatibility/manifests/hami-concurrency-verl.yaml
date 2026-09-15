@@ -1,7 +1,7 @@
 schema_version: "tgsrl.io/compatibility-manifest/v1alpha1"
 manifest_id: "hami-concurrency-verl"
 revision: 1
-status: "implemented-hardware-verification-pending"
+status: "hardware-verified-single-node"
 scope: "single-node two-worker HAMi fractional-GPU concurrency smoke"
 
 references:

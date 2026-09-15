@@ -430,6 +430,9 @@ func TestCompileWrapsWorkloadWithManagedWorkerBootstrap(t *testing.T) {
 	if environment["TGSRL_WORKER_ID"].Value != "unit-1" || environment["TGSRL_RUNTIME_UNIT_ID"].Value != "unit-1" {
 		t.Fatalf("veRL worker identity environment = %+v", environment)
 	}
+	if environment["TGSRL_REPLICA_INDEX"].Value != "0" || environment["TGSRL_REPLICA_COUNT"].Value != "1" {
+		t.Fatalf("workload replica identity = %+v", environment)
+	}
 	if environment["TGSRL_EXECUTION_ID"].Value != "exec-1" || environment["TGSRL_STAGE_ID"].Value != "stage-1" {
 		t.Fatalf("workload execution identity environment = %+v", environment)
 	}
@@ -686,12 +689,17 @@ func TestCompileUsesPendingUnitIdentityForReplicasOfOneRuntimeUnit(t *testing.T)
 		t.Fatalf("logical runtime identity was not preserved: %+v %+v", bundles[0].RuntimeTargets, bundles[1].RuntimeTargets)
 	}
 	workerIDs := make([]string, 0, len(bundles))
+	ranks := make([]string, 0, len(bundles))
 	for _, bundle := range bundles {
 		environment := make(map[string]string)
 		for _, value := range bundle.Job.Spec.Template.Spec.Containers[0].Env {
 			environment[value.Name] = value.Value
 		}
 		workerIDs = append(workerIDs, environment["TGSRL_WORKER_ID"])
+		ranks = append(ranks, environment["TGSRL_REPLICA_INDEX"])
+		if environment["TGSRL_REPLICA_COUNT"] != "2" {
+			t.Fatalf("replica identity = %+v", environment)
+		}
 		if environment["TGSRL_RUNTIME_UNIT_ID"] != "run-1:actor" {
 			t.Fatalf("logical runtime identity = %q", environment["TGSRL_RUNTIME_UNIT_ID"])
 		}
@@ -706,6 +714,10 @@ func TestCompileUsesPendingUnitIdentityForReplicasOfOneRuntimeUnit(t *testing.T)
 	sort.Strings(workerIDs)
 	if !slices.Equal(workerIDs, []string{"unit-1", "unit-2"}) {
 		t.Fatalf("replica worker identities = %v", workerIDs)
+	}
+	sort.Strings(ranks)
+	if !slices.Equal(ranks, []string{"0", "1"}) {
+		t.Fatalf("replica ranks = %v", ranks)
 	}
 }
 

@@ -14,6 +14,7 @@ COPY adapters ./adapters
 COPY gen/python ./gen/python
 COPY configs/hardware/gpu-requirements.lock /tmp/gpu-requirements.lock
 COPY scripts/gpu-smoke-workload.py ./scripts/gpu-smoke-workload.py
+COPY scripts/gpu-experiment-workload.py ./scripts/gpu-experiment-workload.py
 COPY LICENSE /licenses/TGS-RL/LICENSE
 ENV PYTHONPATH=/opt/tgsrl:/opt/tgsrl/gen/python
 RUN --mount=type=cache,target=/root/.cache/pip \

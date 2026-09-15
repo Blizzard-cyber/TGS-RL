@@ -133,6 +133,65 @@ func TestControllerManagedOffloadAndReload(t *testing.T) {
 	}
 }
 
+func TestControllerManagedGranularLifecycle(t *testing.T) {
+	worker, cleanup := testWorker(t)
+	defer cleanup()
+	worker.ControlSocket = "test.sock"
+	store, _ := NewStore(filepath.Join(t.TempDir(), "runtime.json"))
+	controller, _ := NewController(store)
+	controller.control = func(_ context.Context, _ string, request ControlRequest) (ControlResponse, error) {
+		if request.Action != "status" {
+			t.Fatalf("registration action = %q", request.Action)
+		}
+		return ControlResponse{Accepted: true, Generation: 4, State: "running", Ready: true}, nil
+	}
+	if err := controller.Register(context.Background(), worker); err != nil {
+		t.Fatal(err)
+	}
+	var calls []ControlRequest
+	controller.control = func(_ context.Context, _ string, request ControlRequest) (ControlResponse, error) {
+		calls = append(calls, request)
+		switch request.Action {
+		case "prepare_pause":
+			return ControlResponse{Accepted: true, Generation: 4, State: "running", SafePoint: true}, nil
+		case "pause":
+			return ControlResponse{Accepted: true, Generation: 4, State: "paused", SafePoint: true}, nil
+		case "checkpoint":
+			return ControlResponse{Accepted: true, Generation: 4, State: "paused", SafePoint: true, CheckpointRef: "checkpoint-a"}, nil
+		case "offload":
+			return ControlResponse{Accepted: true, Generation: 4, State: "sleeping", SafePoint: true, Offloaded: true, CheckpointRef: "checkpoint-a", GPUMemoryObserved: true}, nil
+		case "reload":
+			return ControlResponse{Accepted: true, Generation: 4, State: "sleeping", SafePoint: true, CheckpointRef: "checkpoint-a", GPUMemoryObserved: true, GPUMemoryAllocated: 536870912, GPUMemoryReserved: 603979776}, nil
+		case "resume":
+			return ControlResponse{Accepted: true, Generation: 4, State: "running", Ready: true, CheckpointRef: "checkpoint-a", GPUMemoryObserved: true, GPUMemoryAllocated: 536870912, GPUMemoryReserved: 603979776}, nil
+		default:
+			return ControlResponse{}, errors.New("unexpected action")
+		}
+	}
+	for _, operation := range []string{"pause", "checkpoint", "offload", "reload", "resume"} {
+		if _, err := controller.Apply(context.Background(), actionRequest(operation, operation+"-key")); err != nil {
+			t.Fatalf("%s: %v", operation, err)
+		}
+	}
+	want := []string{"prepare_pause", "pause", "checkpoint", "offload", "reload", "resume"}
+	if len(calls) != len(want) {
+		t.Fatalf("calls = %+v", calls)
+	}
+	for index := range want {
+		if calls[index].Action != want[index] {
+			t.Fatalf("call %d = %q, want %q", index, calls[index].Action, want[index])
+		}
+	}
+	state, err := store.Snapshot()
+	if err != nil {
+		t.Fatal(err)
+	}
+	current := state.Workers[worker.SandboxID]
+	if current.State != "running" || current.Offloaded || !current.Ready || current.CheckpointRef != "checkpoint-a" {
+		t.Fatalf("granular lifecycle final worker = %+v", current)
+	}
+}
+
 func TestRemoteWorkerRegistrationControlAndStaleExitFence(t *testing.T) {
 	controlToken := "worker-token"
 	workerState := "running"

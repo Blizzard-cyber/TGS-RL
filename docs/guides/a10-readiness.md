@@ -141,6 +141,20 @@ make gpu-a10-readiness
 四个组件必须都为 `PASSED`，总状态才是 `PASSED`。摘要始终列出未执行的 MIG、多节点和 GPU
 集群故障，不会用已有 H2 历史报告或本机 CPU 结果代替本次提交的实机结果。
 
+readiness 通过后，当前单卡可继续执行：
+
+```bash
+make gpu-e6-action-cost
+make gpu-down
+make gpu-prepare-hami
+make gpu-hami-up
+make gpu-e5-interference
+```
+
+E6 使用代表性 CUDA tensor workload 测五步 lifecycle；`gpu-e5-interference` 执行
+`E5-STATIC` 静态份额 pilot。两者没有对应提交的 A10 报告前仍为 `NOT_RUN`，且
+`E5-STATIC` 不替代正式 E5 动态 share/priority 门禁。
+
 ## Helm 六服务验收
 
 完整控制面镜像已经纳入 `gpu-build-images`。渲染并安装不可变 Helm values：
@@ -162,13 +176,16 @@ make gpu-helm-smoke
 - 拒绝覆盖已有证据目录；
 - install 或 upgrade 六服务；
 - 等待全部 Deployment rollout；
-- 校验 NVIDIA Scheduler、NetworkPolicy、Gateway 和 Console；
+- 校验 NVIDIA Scheduler、NetworkPolicy、Console，以及 Gateway 到 Job Controller、
+  Scheduler、Runtime、Experiment 四个 gRPC 依赖全部 serving；
 - 为宿主机 hardware driver 建立独立 Gateway 与 worker-registry port-forward；Pod 内仍使用
   `http://tgsrl-scheduler:50091` 和原 scoped token；
 - 通过 port-forward 复用 A10 Full lifecycle；
 - 无论成功失败都保存 Helm status、values、资源快照、控制面日志和 SHA-256 索引。
 
-默认证据目录是 `.cache/tgsrl/helm-smoke/`。单张 A10 的六服务实装与 lifecycle 已通过，
+默认证据目录是 `.cache/tgsrl/helm-smoke/`。最终基线 `68f5aea` 在同一组 PVC 上连续完成
+install 与 upgrade 两轮 smoke，每轮 315 个索引文件均通过逐项 SHA-256 校验；单张 A10 的
+六服务实装与 lifecycle 已通过，
 见 [A10 工程与 Helm 验收记录](../validation/a10-readiness-2026-09-14.md)。该记录不能替代
 其他 Kubernetes 版本、StorageClass、CNI、GPU 型号或多节点拓扑的独立验证。
 

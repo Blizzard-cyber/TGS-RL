@@ -110,6 +110,13 @@ func normalize(input CompileInput, runtimeConfig RuntimeConfig) (*normalizedInpu
 	if runtimeConfig.Bootstrap.Enabled && (binding.GetBindingId() == "" || binding.GetSandboxId() == "" || bindingRuntimeUnitID(binding) == "") {
 		return nil, fmt.Errorf("worker bootstrap requires binding, sandbox, and runtime unit identities")
 	}
+	replicaCount := input.replicaCount
+	if replicaCount == 0 {
+		replicaCount = 1
+	}
+	if input.replicaIndex < 0 || input.replicaIndex >= replicaCount {
+		return nil, fmt.Errorf("replica index %d must be within replica count %d", input.replicaIndex, replicaCount)
+	}
 	return &normalizedInput{
 		Namespace:        namespace,
 		GPUProfile:       profile,
@@ -122,6 +129,8 @@ func normalize(input CompileInput, runtimeConfig RuntimeConfig) (*normalizedInpu
 		resourcesPerUnit: cloneResourceVector(resourcesPerUnit),
 		workloadUnitID:   binding.GetPendingUnitId(),
 		binding:          proto.Clone(binding).(*tgsrlv1.Binding),
+		replicaIndex:     input.replicaIndex,
+		replicaCount:     replicaCount,
 	}, nil
 }
 

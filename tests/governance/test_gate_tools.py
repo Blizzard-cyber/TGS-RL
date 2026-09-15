@@ -21,6 +21,7 @@ HAMI_CAMPAIGN = ROOT / "configs" / "gates" / "hami-smoke.json"
 HAMI_CONCURRENCY_CAMPAIGN = ROOT / "configs" / "gates" / "hami-concurrency-smoke.json"
 A10_READINESS_CAMPAIGN = ROOT / "configs" / "gates" / "a10-readiness.json"
 A10_READINESS_MANIFEST = ROOT / "configs" / "gates" / "gate-a10-readiness.json"
+E5_STATIC_CAMPAIGN = ROOT / "configs" / "gates" / "e5-static-interference.json"
 SPEC = importlib.util.spec_from_file_location("tgsrl_gate_tools", SCRIPT)
 assert SPEC is not None and SPEC.loader is not None
 GATE_TOOLS = importlib.util.module_from_spec(SPEC)
@@ -387,13 +388,16 @@ events = []
 artifacts = []
 if operation == "preflight":
     profile = "mig" if request["experiment_id"] == "E2" else "full-gpu"
+    execution_mode = (
+        "hami-vgpu" if request["experiment_id"] == "E5-STATIC" else "kubernetes-dra"
+    )
     response = {{
         "schema_version": "tgsrl.io/hardware-driver-response/v1alpha1",
         "request_id": request["request_id"], "status": "SUCCEEDED", "events": [],
         "environment_fingerprint": {{
             "host_hash": "host-digest", "platform": "linux",
             "python_version": "3.12", "git_commit": {str(GATE_TOOLS.git_commit())!r},
-            "git_dirty": False, "execution_mode": "kubernetes-dra",
+            "git_dirty": False, "execution_mode": execution_mode,
             "gpu_profile": profile, "accelerator_count": {preflight_accelerator_count!r},
             "kube_context": "fixture-context",
             "cluster_uid": "fixture-cluster-uid",
@@ -426,6 +430,8 @@ common = {{
 }}
 if request["experiment_id"] == "E8":
     nodes = ["gpu-node-1", "gpu-node-2"]
+elif request["experiment_id"] == "E5-STATIC":
+    nodes = ["gpu-node-1", "gpu-node-1"]
 else:
     nodes = ["gpu-node-1"]
 def for_nodes(event):
@@ -443,7 +449,10 @@ if operation == "launch":
 elif operation == "verify_device_identity":
     profile = "mig" if request["experiment_id"] == "E2" else "full-gpu"
     for node_index, node in enumerate(nodes, start=1):
-        device = f"MIG-{{node_index}}/1/0" if profile == "mig" else f"GPU-{{node_index}}"
+        if request["experiment_id"] == "E5-STATIC":
+            device = "GPU-shared"
+        else:
+            device = f"MIG-{{node_index}}/1/0" if profile == "mig" else f"GPU-{{node_index}}"
         events.append(common | {{
             "event_type": "device_identity_verified", "source": "worker",
             "node_id": node,
@@ -454,6 +463,11 @@ elif operation == "verify_device_identity":
             "worker_device_ids": [device],
             "device_class": "mig.nvidia.com" if profile == "mig" else "gpu.nvidia.com",
             "parent_uuid": f"GPU-parent-{{node_index}}" if profile == "mig" else "",
+            "allocation_mode": "hami-vgpu" if request["experiment_id"] == "E5-STATIC" else "",
+            "requested_core_percent": 40 if request["experiment_id"] == "E5-STATIC" else 0,
+            "allocated_core_percent": 40 if request["experiment_id"] == "E5-STATIC" else 0,
+            "requested_memory_mib": 9211 if request["experiment_id"] == "E5-STATIC" else 0,
+            "allocated_memory_mib": 9211 if request["experiment_id"] == "E5-STATIC" else 0,
         }})
 elif operation == "apply_action":
     events.append(common | {{
@@ -474,6 +488,10 @@ elif operation == "apply_action":
 elif operation == "apply_worker_action":
     action = request["action"]
     offload = action == "offload"
+    events.append(common | {{
+        "event_type": "control_started", "source": "operator",
+        "action": action,
+    }})
     events.append(common | {{
         "event_type": "control_completed", "source": "operator",
         "action": action, "duration_ms": 1.0, "succeeded": True,
@@ -501,8 +519,17 @@ elif operation == "recover_fault":
         "fault_id": request["fault_id"], "recovery_time_ms": 1.0,
     }})
 elif operation == "measure":
-    for node in nodes:
-        node_index = nodes.index(node) + 1
+    for node_index, node in enumerate(nodes, start=1):
+        if request["experiment_id"] == "E5-STATIC":
+            if request["label"] == "baseline":
+                sample_time = f"2026-01-01T00:00:0{{(node_index - 1) * 2}}Z"
+                completion_time = f"2026-01-01T00:00:0{{(node_index - 1) * 2 + 1}}Z"
+            else:
+                sample_time = "2026-01-01T00:00:00Z"
+                completion_time = "2026-01-01T00:00:01Z"
+        else:
+            sample_time = "2026-01-01T00:00:00Z"
+            completion_time = "2026-01-01T00:00:01Z"
         events.extend([
         common | {{
             "event_type": "sample_consumed", "source": "worker",
@@ -510,6 +537,7 @@ elif operation == "measure":
             "runtime_unit_id": f"unit-{{node_index}}",
             "worker_id": f"worker-{{node_index}}",
             "sandbox_id": f"sandbox-{{node_index}}",
+            "occurred_at": sample_time,
             "duration_ms": 1.0, "gpu_active_ms": 2.0, "useful_gpu_time_ms": 1.5,
             "contract_observation": {{
                 "policy_lag": 0, "sample_stale": False,
@@ -522,9 +550,20 @@ elif operation == "measure":
             "runtime_unit_id": f"unit-{{node_index}}",
             "worker_id": f"worker-{{node_index}}",
             "sandbox_id": f"sandbox-{{node_index}}",
+            "occurred_at": completion_time,
             "convergence_quality": 1.0,
         }},
         ])
+    if request["experiment_id"] == "E5-STATIC" and request["label"] == "variant":
+        events.append(common | {{
+            "event_type": "worker_concurrency_verified", "source": "operator",
+            "worker_count": 2,
+            "sandbox_ids": ["sandbox-1", "sandbox-2"],
+            "shared_device_ids": ["GPU-shared"],
+            "requested_core_percent_total": 80,
+            "allocated_core_percent_total": 80,
+            "overlap_ms": 5.0,
+        }})
 response = {{
     "schema_version": "tgsrl.io/hardware-driver-response/v1alpha1",
     "request_id": request["request_id"],
@@ -785,6 +824,58 @@ def test_metrics_keep_scheduler_action_semantics_with_worker_registry_evidence()
 
     assert metrics["action_success_rate"] == 1.0
     assert metrics["decision_count"] == 1.0
+
+
+def test_metrics_include_scoped_worker_lifecycle_latencies() -> None:
+    events = [
+        {
+            "phase": "measurement",
+            "event_type": "decision_applied",
+            "source": "scheduler",
+            "action": "bind",
+            "succeeded": True,
+            "duration_ms": 2.0,
+        },
+        *[
+            {
+                "phase": "measurement",
+                "event_type": "control_completed",
+                "source": "operator",
+                "action": action,
+                "succeeded": True,
+                "duration_ms": duration,
+            }
+            for action, duration in (
+                ("pause", 3.0),
+                ("checkpoint", 5.0),
+                ("offload", 7.0),
+                ("reload", 11.0),
+                ("resume", 13.0),
+            )
+        ],
+        {
+            "phase": "measurement",
+            "event_type": "sample_consumed",
+            "duration_ms": 10.0,
+            "gpu_active_ms": 8.0,
+            "items": 1,
+            "contract_observation": {},
+        },
+        {
+            "phase": "measurement",
+            "event_type": "workload_completed",
+            "elapsed_ms": 10.0,
+            "item_count": 1,
+        },
+    ]
+
+    metrics = GATE_TOOLS._metrics_from_events(events)
+
+    assert metrics["decision_count"] == 1.0
+    assert metrics["action_success_rate"] == 1.0
+    assert metrics["pause_latency_ms"] == 3.0
+    assert metrics["checkpoint_latency_ms"] == 5.0
+    assert metrics["reload_latency_ms"] == 11.0
 
 
 def test_hami_driver_response_rejects_share_mismatch() -> None:
@@ -1067,7 +1158,7 @@ def test_campaign_run_executes_all_scenarios_and_ingests_evidence(tmp_path: Path
     )
 
     assert result.returncode == 0, result.stderr
-    summary = json.loads(result.stdout)
+    summary = json.loads((reports / "campaign-report.json").read_text(encoding="utf-8"))
     assert summary["status"] == "BLOCKED"
     called = [json.loads(line) for line in calls.read_text(encoding="utf-8").splitlines()]
     assert list(dict.fromkeys(record["experiment_id"] for record in called)) == [
@@ -1130,11 +1221,11 @@ def test_campaign_run_executes_all_scenarios_and_ingests_evidence(tmp_path: Path
             "apply_action:bind",
             "launch",
             "verify_device_identity",
-            "apply_action:pause",
-            "apply_action:checkpoint",
-            "apply_action:offload",
-            "apply_action:reload",
-            "apply_action:resume",
+            "apply_worker_action:pause",
+            "apply_worker_action:checkpoint",
+            "apply_worker_action:offload",
+            "apply_worker_action:reload",
+            "apply_worker_action:resume",
             "measure",
             "stop",
             "cleanup",
@@ -1211,6 +1302,62 @@ def test_campaign_run_executes_all_scenarios_and_ingests_evidence(tmp_path: Path
     assert "--require-pass requires executing the complete E1-E8 campaign" in strict.stderr
     strict_execution = json.loads((reports / "campaign-execution.json").read_text(encoding="utf-8"))
     assert strict_execution["status"] == "FAILED"
+
+
+def test_e5_static_campaign_derives_interference_from_two_worker_traces(
+    tmp_path: Path,
+) -> None:
+    reports = tmp_path / "reports"
+    driver, calls = tmp_path / "driver.py", tmp_path / "calls.ndjson"
+    _write_hardware_driver(driver, calls)
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(SCRIPT),
+            "campaign-run",
+            "--campaign",
+            str(E5_STATIC_CAMPAIGN),
+            "--reports-dir",
+            str(reports),
+            "--driver",
+            str(driver),
+            "--experiment",
+            "E5-STATIC",
+            "--timeout-seconds",
+            "10",
+        ],
+        cwd=ROOT,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    summary = json.loads((reports / "campaign-report.json").read_text(encoding="utf-8"))
+    assert summary["experiments"][0]["status"] == "BLOCKED"
+    assert summary["experiments"][0]["rules"] == [
+        {
+            "metric": "interference_ratio",
+            "reason": "calibration_required",
+            "rule_id": "e5-static-interference-bound",
+            "status": "BLOCKED",
+        }
+    ]
+    report = json.loads(
+        (reports / "e5-static-interference" / "report.json").read_text(encoding="utf-8")
+    )
+    assert report["environment_fingerprint"]["execution_mode"] == "hami-vgpu"
+    assert report["metrics"]["variant"]["interference_ratio"] == pytest.approx(0.0)
+    variant = json.loads(
+        (reports / "e5-static-interference" / report["variant_trace"]).read_text(encoding="utf-8")
+    )
+    interference_events = [
+        event for event in variant["events"] if event.get("event_type") == "interference_observed"
+    ]
+    assert len(interference_events) == 3
+    assert all(event["source"] == "orchestrator" for event in interference_events)
+    assert all(event["worker_count"] == 2 for event in interference_events)
 
 
 def test_campaign_run_stops_on_executor_failure_and_keeps_diagnostics(tmp_path: Path) -> None:

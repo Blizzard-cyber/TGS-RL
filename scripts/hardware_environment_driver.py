@@ -1593,7 +1593,7 @@ class HardwareEnvironmentDriver:
     ) -> list[JsonObject]:
         del response_path
         action = _string(request_value.get("action"), label="request.action")
-        if action not in {"pause", "resume", "sleep", "offload"}:
+        if action not in {"pause", "checkpoint", "resume", "sleep", "offload", "reload"}:
             raise DriverError(f"unsupported scoped worker action {action!r}")
         kube = Kubernetes(target)
         bundles = self._latest_bundles(self._bundles(kube, run))
@@ -1646,10 +1646,21 @@ class HardwareEnvironmentDriver:
             "pause": lambda value: (
                 value.get("state") == "paused" and value.get("safe_point") is True
             ),
+            "checkpoint": lambda value: (
+                value.get("state") == "paused"
+                and value.get("safe_point") is True
+                and bool(str(value.get("checkpoint_ref", "")).strip())
+            ),
             "sleep": lambda value: value.get("state") == "sleeping",
             "offload": lambda value: (
                 value.get("state") == "sleeping"
                 and value.get("offloaded") is True
+                and bool(str(value.get("checkpoint_ref", "")).strip())
+            ),
+            "reload": lambda value: (
+                value.get("state") == "sleeping"
+                and value.get("offloaded") is not True
+                and value.get("ready") is not True
                 and bool(str(value.get("checkpoint_ref", "")).strip())
             ),
             "resume": lambda value: (
@@ -1672,8 +1683,9 @@ class HardwareEnvironmentDriver:
             "offloaded": bool(worker.get("offloaded", False)),
             "checkpoint_present": bool(str(worker.get("checkpoint_ref", "")).strip()),
             "receipt_id": body["idempotency_key"],
+            "offloaded_before": bool(response.get("offloaded_before", False)),
         }
-        if action in {"offload", "resume"}:
+        if action in {"offload", "reload", "resume"}:
             before = {
                 "gpu_memory_observed": response.get("gpu_memory_observed_before"),
                 "gpu_memory_allocated_bytes": response.get("gpu_memory_allocated_before_bytes", 0),
@@ -1695,7 +1707,12 @@ class HardwareEnvironmentDriver:
                     ),
                 }
             )
-        return [event]
+        started_event = self._common_event(run) | {
+            "event_type": "control_started",
+            "source": "operator",
+            "action": action,
+        }
+        return [started_event, event]
 
     @staticmethod
     def _literal_environment(container: Mapping[str, Any]) -> dict[str, str]:
@@ -2706,6 +2723,20 @@ class HardwareEnvironmentDriver:
             raise DriverError("hardware campaign job template must use DATA_KIND_LIVE")
         resources = _mapping(job.get("resourcesPerUnit"), label="job.resourcesPerUnit")
         accelerator_units = float(resources.get("acceleratorUnits", 0))
+        expected_share = expected.get("accelerator_share_per_worker")
+        if expected_share is not None and (
+            not isinstance(expected_share, (int, float))
+            or isinstance(expected_share, bool)
+            or not math.isclose(
+                accelerator_units,
+                float(expected_share),
+                rel_tol=0.0,
+                abs_tol=1e-9,
+            )
+        ):
+            raise DriverError(
+                "job template acceleratorUnits does not match the scenario worker share"
+            )
         if target.execution_mode == "kubernetes-dra" and accelerator_units != 1:
             raise DriverError(
                 "Kubernetes DRA hardware jobs require one whole GPU or MIG device per unit"
@@ -2755,7 +2786,19 @@ class HardwareEnvironmentDriver:
         required = scenario.get("required_evidence", [])
         if not isinstance(required, list):
             raise DriverError("scenario.required_evidence must be a list")
-        return "worker-concurrency" in required
+        if "worker-concurrency" not in required:
+            return False
+        topology = _mapping(scenario.get("topology"), label="scenario.topology")
+        labels = topology.get("concurrency_required_labels")
+        if labels is None:
+            return True
+        if not isinstance(labels, list) or any(
+            label not in {"baseline", "variant"} for label in labels
+        ):
+            raise DriverError(
+                "scenario.topology.concurrency_required_labels must contain baseline or variant"
+            )
+        return request_value.get("label") in labels
 
     @staticmethod
     def _common_event(run: Mapping[str, Any]) -> JsonObject:

@@ -1539,13 +1539,16 @@ def test_scoped_worker_action_uses_bundle_credential_without_exposing_it(
         "generation": 1,
         "idempotency_key": "hardware-request-4-apply_worker_action-offload-a1-offload",
     }
-    assert len(events) == 1
-    assert events[0]["action"] == "offload"
-    assert events[0]["checkpoint_present"] is True
-    assert events[0]["gpu_memory_allocated_before_bytes"] == 536870912
-    assert events[0]["gpu_memory_allocated_after_bytes"] == 0
-    assert events[0]["gpu_memory_reserved_before_bytes"] == 603979776
-    assert events[0]["gpu_memory_reserved_after_bytes"] == 0
+    assert [event["event_type"] for event in events] == [
+        "control_started",
+        "control_completed",
+    ]
+    assert events[1]["action"] == "offload"
+    assert events[1]["checkpoint_present"] is True
+    assert events[1]["gpu_memory_allocated_before_bytes"] == 536870912
+    assert events[1]["gpu_memory_allocated_after_bytes"] == 0
+    assert events[1]["gpu_memory_reserved_before_bytes"] == 603979776
+    assert events[1]["gpu_memory_reserved_after_bytes"] == 0
     assert token not in json.dumps(events)
 
 

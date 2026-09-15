@@ -1,0 +1,26 @@
+{
+  "schema_version": "tgsrl.io/hardware-scenario/v1alpha1",
+  "experiment_id": "E5-STATIC",
+  "title": "Static-share co-location interference pilot",
+  "topology": {
+    "minimum_nodes": 1,
+    "minimum_accelerators": 1,
+    "minimum_workers": 2,
+    "concurrency_required_labels": ["variant"],
+    "gpu_profiles": ["full-gpu"]
+  },
+  "workload": {
+    "framework": "verl",
+    "execution_backend": "ray",
+    "trainer": "pytorch",
+    "rollout_engine": "vllm",
+    "comparison": "same-two-workers-serialized-versus-colocated",
+    "accelerator_share_per_worker": 0.4
+  },
+  "execution_plan": {
+    "baseline": [{"operation": "provision"}, {"operation": "apply_action", "action": "bind"}, {"operation": "launch"}, {"operation": "verify_device_identity"}, {"operation": "measure"}, {"operation": "stop"}, {"operation": "cleanup"}],
+    "variant": [{"operation": "provision"}, {"operation": "apply_action", "action": "bind"}, {"operation": "launch"}, {"operation": "verify_device_identity"}, {"operation": "measure"}, {"operation": "stop"}, {"operation": "cleanup"}]
+  },
+  "faults": [],
+  "required_evidence": ["scheduler-binding", "hami-allocation", "worker-device-identity", "worker-concurrency", "throughput", "gpu-active-time", "interference-ratio"]
+}

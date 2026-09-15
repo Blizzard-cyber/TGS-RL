@@ -1,4 +1,4 @@
-# 工程完整性审查（2026-09-13）
+# 工程完整性审查（2026-09-13—2026-09-15）
 
 ## 结论与范围
 
@@ -8,7 +8,8 @@
 已具备 Job → Runtime → Scheduler → Provider → Operator → bootstrap → worker → observation/Trace
 的实现路径。本批进一步补齐 scoped lifecycle、真实 allocator 观测、A10 readiness 聚合和
 六服务 NVIDIA Helm 实装入口；A10 lifecycle、H2、DRA 恢复 E1 与 Helm 已在单张 A10 上验证，
-GPU 集群故障证据与完整训练 callbacks 仍需后续测试。
+最终 `68f5aea` 还完成同一 PVC 上的 install/upgrade 两轮 smoke。GPU 集群故障证据与完整
+训练 callbacks 仍需后续测试。
 
 审查以第一方代码和入口调用链为范围：Job Controller、Runtime/SQLite、Scheduler/事务/Provider、
 Operator/backend/registry、Gateway、Console 数据层、打包/部署与 Gate。生成协议和第三方依赖
@@ -19,7 +20,7 @@ Operator/backend/registry、Gateway、Console 数据层、打包/部署与 Gate�
 | 优先级 | 问题与影响 | 修复 | 回归 |
 |---|---|---|---|
 | P0 | Python wheel 不含 SQL migrations；源码 editable 测试通过，但独立 Runtime 无法建业务表 | 显式 package-data；迁移目录缺失/为空立即失败；初始化失败关闭连接 | 干净源目录构建 sdist → wheel → 隔离安装 → SQLite 写入/重开 |
-| P1 | `.dockerignore` 后部重新包含 `configs/**`，可能把本机 hardware 配置打入镜像 | 最后再次排除真实配置、嵌套凭据、私钥、PID/socket，保留 examples | 排除规则回归；实际 BuildKit context 尚未验证 |
+| P1 | `.dockerignore` 后部重新包含 `configs/**`，可能把本机 hardware 配置打入镜像 | 最后再次排除真实配置、嵌套凭据、私钥、PID/socket，保留 examples | 排除规则回归；`68f5aea` 在 A10 构建并推送全部不可变镜像 |
 | P1 | driver 等待 bind Decision 时不看 Start Operation，已明确失败仍可能等完整 timeout | 同一轮检查 Operation，终态失败立即报错；进行中的 Start 不阻止 Decision | 立即失败、延迟失败、Start 未结束但 bind 成功 |
 | P1 | Console `tsc --noEmit` 只检查空 root project，实际未检查源码 | 明确检查 app/node 两个 tsconfig | 修复前 listFiles 为空；修复后两个项目 typecheck |
 | P1 | 总览/任务列表吞掉 Run 查询失败，页面可能显示旧状态而不报错 | 保留查询错误，不把失败映射成“没有 Run” | 两条 API contract 回归与实际 HTTP 页面故障注入 |
@@ -28,7 +29,7 @@ Operator/backend/registry、Gateway、Console 数据层、打包/部署与 Gate�
 | P1 | MPS 合法小份额可四舍五入为 0，先发无效 mutation 再因 readback 拒绝 | 转换后为 0 时在执行前拒绝，不偷偷提高请求份额 | dry-run/真实执行均无命令发出 |
 | P2 | `_placeholder_launch_spec` 和 registry 注释误导读者认为执行层缺失 | 改名为失败上下文，删除错误的“无 lifecycle 接口”注释 | 既有 Runtime/Go 测试 |
 | P2 | README 无可运行任务示例、设计与滚动审查混杂、bootstrap 端口/探针描述过时 | 文档分层；示例与 smoke 共用；更新动态端口与 marker probe | 文档链接/命令检查、实际服务 smoke |
-| P1 CI | 已推送基线 Python 格式检查失败，下游进程检查 skipped | 按已有 Ruff 规范整理，不削弱 CI | 本地 lint；需提交后确认新 SHA 的远端结果 |
+| P1 CI | 已推送基线 Python 格式检查失败，下游进程检查 skipped | 按已有 Ruff 规范整理，不削弱 CI | 最终 `68f5aea` 精确 SHA 的 10/10 GitHub checks 全部 success |
 | P1 | hardware campaign 跨批次复用确定性 create-job 幂等键，持久化 Gateway 会对新镜像请求返回 409 | 每个持久化 attempt 生成随机身份；Job ID 与操作键绑定该身份；同 attempt 的崩溃重试仍稳定 | driver 37 项；同一 Helm PVC 连续实机复跑通过 |
 | P1 | `kubectl rollout status deployment --all` 在 Kubernetes 1.35 已移除 | 显式等待六个预期 Deployment | Helm contract 与 A10 实装 |
 | P1 | 非 root Scheduler helper 尝试 `chmod` root-owned PVC 挂载点，导致 `bind/release` capability 不发布 | binding/runtime/registry state 使用 PVC 下由进程创建的私有子目录 | Helm contract、Pod 内 helper discovery 与 A10 lifecycle |
@@ -42,11 +43,14 @@ Operator/backend/registry、Gateway、Console 数据层、打包/部署与 Gate�
 | worker 故障回写 | crash、注册响应丢失、marker 写失败、终态上报失败和 callback timeout 均有真实进程/通信回归 | bootstrap Go 测试 |
 | 单节点 NVIDIA Helm | NVIDIA Driver v2、helpers、共享 worker state、RuntimeClass、节点绑定和专用镜像 target 已接入并 fail closed 校验 | Helm render contract 与单张 A10 六服务实装 |
 | MPS 在线份额错误声明 | 生产 CLI 和 Helm 拒绝 MPS，backend 不再广告/执行在线 `set_share` | NVIDIA Provider/CLI 测试 |
-| scoped worker lifecycle | registry 允许 exact token/sandbox/generation 的 pause/sleep/offload/resume/stop；`bind` 仍由 Scheduler 权威执行 | Go registry/controller 与 driver contract |
+| scoped worker lifecycle | registry 允许 exact token/sandbox/generation 的 pause/checkpoint/sleep/offload/reload/resume/stop；`bind` 仍由 Scheduler 权威执行 | Go registry/controller 与 driver contract |
 | A10 显存证据 | 最小 CUDA workload 保留 resident tensor；allocator bytes 经 worker/bootstrap/registry/driver 返回，Gate 要求 offload 下降、resume 回升 | Python/Go/Gate 专项；单张 A10 实机通过 |
-| A10 总体验收 | 卡型硬校验、Full lifecycle、H2、恢复 DRA 后 E1、聚合摘要与旧证据归档 | `0295132` 单张 A10 聚合结果通过 |
+| A10 总体验收 | 卡型硬校验、Full lifecycle、H2、恢复 DRA 后 E1、聚合摘要与旧证据归档 | `68f5aea` 单张 A10 四组件聚合结果通过 |
 | 故障 readiness | crash、response loss、receipt 重启、Operator partial failure、CPU/内存/GPU capacity 拒绝、provider unavailable、Runtime SQLite 恢复形成可重复报告 | `.cache/tgsrl/engineering-fault-readiness/report.json` 本机 PASSED |
-| Helm 实装入口 | 构建全部不可变镜像，生成 values，install/upgrade、健康检查、A10 Full、成功/失败证据索引 | 单张 A10 六服务 Helm 实装与 315 项证据索引通过 |
+| cleanup 删除竞争 | 条件删除只将精确 `NotFound` 视为幂等完成；UID/resourceVersion Conflict 保持 fail closed | driver 专项、全量回归与 A10 cleanup |
+| observation registration 泄漏 | 启动时按现存 Bundle 原子剪枝，运行中在 Bundle absence 后删除 registration | 97 个孤儿记录降为 0；Operator CPU 恢复，A10/H2/E1 重跑通过 |
+| Helm 依赖就绪 | 不再把 HTTP 200 + degraded 当就绪；要求 Gateway 四个 gRPC 依赖全部 serving | 首次失败证据保留；`68f5aea` install/upgrade 两轮均通过 |
+| Helm 实装入口 | 构建全部不可变镜像，生成 values，install/upgrade、健康检查、A10 Full、成功/失败证据索引 | 单张 A10 六服务两轮实装，各 315 项，共 630/630 哈希匹配 |
 
 ## 尚未关闭的工程事项
 
@@ -78,12 +82,13 @@ SQL、锁文件和原始本机证据保留；`.cache`、依赖、数据库、私
 
 ## 验证记录
 
-本批在 macOS arm64、Python 3.12.13 环境执行，Python patch 低于 BOM 的 3.12.14；不据此宣称
-锁定 Linux/GPU 镜像已复验。以下均为当前工作树检查，不是远端 CI 的替代。
+本批在 macOS arm64、Python 3.12.13 环境执行，Python patch 低于 BOM 的 3.12.14；本机结果
+不用于替代 Linux/GPU 证据。最终 `68f5aea` 的本地门禁、GitHub CI 10/10 和 A10 实机验收
+分别核对，三类证据不互相替代。
 
 | 检查 | 结果 |
 |---|---|
-| Python Runtime/Storage/Governance | **515 passed**；Gateway API **39 passed** |
+| Python Runtime/Storage/Governance | **520 passed**；Gateway API **39 passed** |
 | Go 模块与 race | 全部通过；MPS 零百分比 dry-run/执行前拒绝回归通过 |
 | 静态检查 | `make lint`、`make staticcheck` 通过；Ruff、mypy、Go vet/Buf lint |
 | 前端 | typecheck、ESLint、**73 unit tests**、production build 通过 |
@@ -122,17 +127,19 @@ adapter 产物，由真实静态/同源代理服务提供；Playwright 使用本
 
 本批新增故障 readiness 报告在本机为 `PASSED`，证据级别是
 `CPU_REAL_PROCESS_AND_COMPONENT_INTEGRATION`；GPU fault 三项保持 `NOT_RUN`。
-开发机未执行 Docker build/pull 或 GPU 测试；测试机已在 `0295132` 镜像基线上完成
-A10 lifecycle/H2/DRA 恢复 E1，并使用本批实机修复完成六服务 Helm smoke。详见
+开发机未执行 Docker build/pull 或 GPU 测试；测试机已在最终 `68f5aea` 干净基线上完成
+A10 lifecycle/H2/DRA 恢复 E1，并完成六服务 Helm install/upgrade 两轮 smoke。详见
 [A10 工程与 Helm 验收](../validation/a10-readiness-2026-09-14.md)。
 
 ## 后续按工程依赖推进
 
-1. 完成本批本地回归、干净副本与前后端检查，审查可提交文件。
-2. 经授权提交/推送后，检查**精确 SHA**所有适用 Actions；failure/skipped/cancelled 不视为通过。
-3. GPU 机拉取干净版本；打包/driver 变更先复跑 E1，涉及共享链路再复跑 H1/H2。
-4. 核对正常/异常退出、控制超时、重启恢复、UUID 与资源清理；脱敏结果提交到 `handoff/`。
-5. 在目标环境验证完整 trainer callbacks 和可用 MIG；MPS 节点 adapter 未实现，保持 NOT_RUN。
-6. 工程链路与证据稳定后，再讨论 E3–E8 标定、VUG/算法优化和毕业实验。
+1. 冻结 `68f5aea` 为毕业实验前工程基线；非实验阻断问题不再扩张控制面范围。
+2. 接入完整或代表性的 veRL workload，冻结模型、数据、seed、batch、镜像和节点条件。
+3. 当前工作树已补齐 E6 五步 scoped lifecycle 和 E5-STATIC 静态 HAMi 共置 pilot；
+   通过本地合同回归后仍须在 A10 上运行。随后推进 E3，并接入 E4/正式 E5/E7 所需环境 hook。
+4. 获得 MIG 硬件后执行 E2；准备至少两个 GPU 节点后执行 E8。
+5. 每轮核对正常/异常退出、控制超时、重启恢复、UUID 与资源清理，保留脱敏证据。
+6. 完成阈值评审、统计分析、论文结果章节和答辩材料。统一进度见
+   [毕设推进状态](../project-progress.md)。
 
 历史 E1/H1/H2 报告继续引用原 commit，不重写 source hash，不把本地 CPU PASS 当作新的 GPU PASS。

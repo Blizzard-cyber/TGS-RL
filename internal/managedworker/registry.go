@@ -57,7 +57,7 @@ type WorkerActionRequest struct {
 }
 
 var scopedWorkerActions = map[string]struct{}{
-	"pause": {}, "resume": {}, "sleep": {}, "offload": {}, "stop": {},
+	"pause": {}, "checkpoint": {}, "resume": {}, "sleep": {}, "offload": {}, "reload": {}, "stop": {},
 }
 
 // WorkerStatusRequest identifies one exact registered workload generation.
@@ -85,6 +85,7 @@ type WorkerTraceResponse struct {
 type workerActionResponse struct {
 	Accepted                 bool   `json:"accepted"`
 	Worker                   Worker `json:"worker"`
+	OffloadedBefore          bool   `json:"offloaded_before,omitempty"`
 	GPUMemoryObservedBefore  bool   `json:"gpu_memory_observed_before,omitempty"`
 	GPUMemoryAllocatedBefore uint64 `json:"gpu_memory_allocated_before_bytes,omitempty"`
 	GPUMemoryReservedBefore  uint64 `json:"gpu_memory_reserved_before_bytes,omitempty"`
@@ -250,6 +251,7 @@ func (h *registryHandler) applyAction(w http.ResponseWriter, request *http.Reque
 	writeRegistryResponse(w, http.StatusOK, workerActionResponse{
 		Accepted:                 true,
 		Worker:                   publicWorker(updated),
+		OffloadedBefore:          receipt.SourceOffloaded,
 		GPUMemoryObservedBefore:  receipt.SourceGPUMemoryObserved,
 		GPUMemoryAllocatedBefore: receipt.SourceGPUMemoryAllocated,
 		GPUMemoryReservedBefore:  receipt.SourceGPUMemoryReserved,

@@ -1,0 +1,33 @@
+{
+  "schema_version": "tgsrl.io/gate-campaign/v1alpha1",
+  "campaign_id": "tgsrl-e5-static-interference",
+  "campaign_revision": 1,
+  "description": "Single-node static-share HAMi co-location pilot. This does not replace dynamic E5 share and priority control.",
+  "experiments": [
+    {
+      "experiment_id": "E5-STATIC",
+      "title": "Static-share co-location interference pilot",
+      "gate_manifest": "configs/gates/gate-hami-hardware.json",
+      "scenario_manifest": "configs/scenarios/e5-static-interference.yaml",
+      "output_directory": "e5-static-interference",
+      "minimum_evidence": "GPU_SINGLE_NODE",
+      "requirements": {
+        "minimum_nodes": 1,
+        "minimum_accelerators": 1,
+        "minimum_workers": 2,
+        "expected_total_core_percent": 80,
+        "gpu_profiles": ["full-gpu"],
+        "execution_modes": ["hami-vgpu"],
+        "exact_device_identity": true,
+        "shared_device_identity": true,
+        "concurrency_required_labels": ["variant"],
+        "required_actions": ["bind"],
+        "required_events": ["interference_observed", "device_identity_verified", "worker_concurrency_verified", "workload_completed"],
+        "required_faults": []
+      },
+      "rules": [
+        {"rule_id": "e5-static-interference-bound", "metric": "interference_ratio", "comparison": "variant", "operator": "<=", "threshold": null, "calibration_required": true}
+      ]
+    }
+  ]
+}

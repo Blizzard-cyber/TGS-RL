@@ -4,7 +4,7 @@ revision: 1
 source: "nvidia"
 measured_at: null
 semantics: "live-hardware-discovered-at-runtime"
-verification_status: "hardware-verification-pending"
+verification_status: "hardware-verified-single-node"
 runtime_loader: false
 names:
   - "nvidia-gpu"

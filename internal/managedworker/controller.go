@@ -264,10 +264,15 @@ func lifecycleObserved(operation string, worker Worker) bool {
 	switch operation {
 	case "pause":
 		return worker.State == "paused" && worker.SafePoint
+	case "checkpoint":
+		return worker.State == "paused" && worker.SafePoint && worker.CheckpointRef != ""
 	case "sleep":
 		return worker.State == "sleeping"
 	case "offload":
 		return worker.State == "sleeping" && worker.Offloaded && worker.CheckpointRef != ""
+	case "reload":
+		return worker.State == "sleeping" && !worker.Offloaded &&
+			worker.CheckpointRef != ""
 	case "resume":
 		return worker.State == "running" && worker.Ready && !worker.Offloaded
 	default:
@@ -501,32 +506,68 @@ func (c *Controller) apply(ctx context.Context, worker Worker, request ActionReq
 			worker.State = "sleeping"
 		}
 		worker.Ready = false
-	case "offload":
+	case "checkpoint":
 		if worker.ControlSocket == "" && worker.ControlURL == "" {
-			return Worker{}, errors.New("offload requires a managed-worker control socket")
+			return Worker{}, errors.New("checkpoint requires a managed-worker control socket")
 		}
-		prepared, err := c.call(ctx, worker, request, "prepare_pause", "")
-		if err != nil || !prepared.SafePoint {
-			if err == nil {
-				err = errors.New("managed worker did not confirm a safe point")
-			}
-			return Worker{}, err
-		}
-		checkpoint, err := c.call(ctx, worker, request, "checkpoint", "")
-		if err != nil || checkpoint.CheckpointRef == "" {
+		response, err := c.call(ctx, worker, request, "checkpoint", "")
+		if err != nil || response.CheckpointRef == "" {
 			if err == nil {
 				err = errors.New("managed worker did not return a checkpoint reference")
 			}
 			return Worker{}, err
 		}
-		response, err := c.call(ctx, worker, request, "offload", checkpoint.CheckpointRef)
+		worker.CheckpointRef = response.CheckpointRef
+	case "offload":
+		if worker.ControlSocket == "" && worker.ControlURL == "" {
+			return Worker{}, errors.New("offload requires a managed-worker control socket")
+		}
+		if worker.State == "running" || !worker.SafePoint {
+			prepared, err := c.call(ctx, worker, request, "prepare_pause", "")
+			if err != nil || !prepared.SafePoint {
+				if err == nil {
+					err = errors.New("managed worker did not confirm a safe point")
+				}
+				return Worker{}, err
+			}
+			worker.SafePoint = true
+		}
+		if worker.CheckpointRef == "" {
+			checkpoint, err := c.call(ctx, worker, request, "checkpoint", "")
+			if err != nil || checkpoint.CheckpointRef == "" {
+				if err == nil {
+					err = errors.New("managed worker did not return a checkpoint reference")
+				}
+				return Worker{}, err
+			}
+			worker.CheckpointRef = checkpoint.CheckpointRef
+		}
+		response, err := c.call(ctx, worker, request, "offload", worker.CheckpointRef)
 		if err != nil || !response.Offloaded {
 			if err == nil {
 				err = fmt.Errorf("%w: managed worker did not confirm offload", ErrOutcomeUnknown)
 			}
 			return Worker{}, err
 		}
-		worker.State, worker.SafePoint, worker.Offloaded, worker.Ready, worker.CheckpointRef = "sleeping", true, true, false, checkpoint.CheckpointRef
+		worker.State, worker.SafePoint, worker.Offloaded, worker.Ready = "sleeping", true, true, false
+		worker.GPUMemoryObserved = response.GPUMemoryObserved
+		worker.GPUMemoryAllocated, worker.GPUMemoryReserved = response.GPUMemoryAllocated, response.GPUMemoryReserved
+	case "reload":
+		if worker.ControlSocket == "" && worker.ControlURL == "" {
+			return Worker{}, errors.New("reload requires a managed-worker control socket")
+		}
+		response, err := c.call(ctx, worker, request, "reload", worker.CheckpointRef)
+		if err != nil {
+			return Worker{}, err
+		}
+		if response.Offloaded || response.Ready || response.CheckpointRef == "" {
+			return Worker{}, fmt.Errorf(
+				"%w: managed worker reported offloaded=%t ready=%t checkpoint=%q after reload",
+				ErrOutcomeUnknown, response.Offloaded, response.Ready, response.CheckpointRef,
+			)
+		}
+		worker.State, worker.SafePoint, worker.Offloaded, worker.Ready = "sleeping", true, false, false
+		worker.CheckpointRef = response.CheckpointRef
 		worker.GPUMemoryObserved = response.GPUMemoryObserved
 		worker.GPUMemoryAllocated, worker.GPUMemoryReserved = response.GPUMemoryAllocated, response.GPUMemoryReserved
 	case "resume":

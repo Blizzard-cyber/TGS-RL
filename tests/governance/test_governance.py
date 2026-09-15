@@ -79,7 +79,24 @@ def test_compatibility_claims_are_evidence_backed() -> None:
     result = run_script("check-compatibility.py")
     assert result.returncode == 0, result.stderr
 
+    hardware_status = "hardware-verified-single-node"
+    for path in (
+        ROOT / "compatibility" / "manifests" / "gpu-smoke-verl.yaml",
+        ROOT / "compatibility" / "manifests" / "hami-smoke-verl.yaml",
+        ROOT / "compatibility" / "manifests" / "hami-concurrency-verl.yaml",
+        ROOT / "compatibility" / "profiles" / "gpu-smoke-verl-v1.yaml",
+        ROOT / "compatibility" / "profiles" / "hami-smoke-verl-v1.yaml",
+    ):
+        assert f'status: "{hardware_status}"' in path.read_text(encoding="utf-8")
+    assert 'status: "hardware-verified-single-node"' in (
+        ROOT / "configs" / "scenarios" / "gpu-smoke-verl.yaml"
+    ).read_text(encoding="utf-8")
+    assert 'verification_status: "hardware-verified-single-node"' in (
+        ROOT / "configs" / "capabilities" / "nvidia-gpu-smoke.yaml"
+    ).read_text(encoding="utf-8")
+
     matrix = json.loads((ROOT / "compatibility" / "matrix.json").read_text(encoding="utf-8"))
+    assert hardware_status in matrix["policy"]
     statuses = {item["id"]: item["status"] for item in matrix["combinations"]}
     assert statuses["local-product-contract"] == "supported"
     assert statuses["verl-ray-pytorch-vllm-nvidia"] == "conditional"

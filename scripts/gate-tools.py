@@ -510,7 +510,11 @@ def _parse_workload_events(
 def _metrics_from_events(events: list[dict[str, Any]]) -> dict[str, float]:
     measured = [event for event in events if event.get("phase") == "measurement"]
     consumed = [event for event in measured if event.get("event_type") == "sample_consumed"]
-    actions = [event for event in measured if event.get("event_type") == "decision_applied"]
+    actions = [
+        event
+        for event in measured
+        if event.get("event_type") in {"decision_applied", "control_completed"}
+    ]
     completed = [event for event in measured if event.get("event_type") == "workload_completed"]
     recoveries = [event for event in measured if event.get("event_type") == "fault_recovered"]
     if not consumed or not completed:
@@ -1397,6 +1401,17 @@ def load_campaign(path: Path) -> dict[str, Any]:
                 raise GateToolError(
                     f"campaign {experiment_id} requirements.{field} must be boolean"
                 )
+        concurrency_labels = requirements.get("concurrency_required_labels")
+        if concurrency_labels is not None and (
+            not isinstance(concurrency_labels, list)
+            or not concurrency_labels
+            or any(label not in {"baseline", "variant"} for label in concurrency_labels)
+            or len(set(concurrency_labels)) != len(concurrency_labels)
+        ):
+            raise GateToolError(
+                f"campaign {experiment_id} requirements.concurrency_required_labels "
+                "must contain unique baseline/variant labels"
+            )
         total_core = requirements.get("expected_total_core_percent", 0)
         if (
             not isinstance(total_core, int)
@@ -1415,6 +1430,10 @@ def load_campaign(path: Path) -> dict[str, Any]:
         topology = scenario.get("topology")
         if not isinstance(topology, dict):
             raise GateToolError(f"campaign {experiment_id} scenario topology must be an object")
+        if topology.get("concurrency_required_labels") != concurrency_labels:
+            raise GateToolError(
+                f"campaign {experiment_id} scenario concurrency labels do not match requirements"
+            )
         for field in ("minimum_nodes", "minimum_accelerators", "gpu_profiles"):
             if topology.get(field) != requirements.get(field):
                 raise GateToolError(
@@ -1640,11 +1659,12 @@ def _validate_campaign_requirements(
     for action in requirements.get("required_actions", []):
         if action not in observed_actions:
             errors.append(f"required action {action} is missing from variant evidence")
+    interference_source = "orchestrator" if experiment["experiment_id"] == "E5-STATIC" else "worker"
     authoritative_sources = {
         "device_identity_verified": "worker",
         "fault_injected": "operator",
         "fault_recovered": "operator",
-        "interference_observed": "worker",
+        "interference_observed": interference_source,
         "sample_consumed": "worker",
         "worker_concurrency_verified": "operator",
         "worker_registered": "worker",
@@ -1784,7 +1804,13 @@ def _validate_campaign_requirements(
                     ):
                         errors.append(f"{label} shared device aggregate share is invalid")
                         break
-            if requirements.get("shared_device_identity") is True:
+            concurrency_labels = requirements.get("concurrency_required_labels")
+            concurrency_required = (
+                label in concurrency_labels
+                if isinstance(concurrency_labels, list)
+                else requirements.get("shared_device_identity") is True
+            )
+            if concurrency_required:
                 concurrency = [
                     event
                     for event in events
@@ -1850,6 +1876,7 @@ def _validate_named_campaign_evidence(
     if not isinstance(required, list):
         return []
 
+    interference_source = "orchestrator" if experiment["experiment_id"] == "E5-STATIC" else "worker"
     variant_actions = [
         event
         for event in variant_events
@@ -1913,8 +1940,8 @@ def _validate_named_campaign_evidence(
                 and event.get("requested_memory_mib") == event.get("allocated_memory_mib")
             )
         ),
-        "worker-concurrency": both_sides(
-            lambda event: (
+        "worker-concurrency": all(
+            any(
                 event.get("event_type") == "worker_concurrency_verified"
                 and event.get("source") == "operator"
                 and _is_finite_number(event.get("overlap_ms"))
@@ -1922,7 +1949,11 @@ def _validate_named_campaign_evidence(
                 and isinstance(event.get("worker_count"), int)
                 and not isinstance(event.get("worker_count"), bool)
                 and int(event["worker_count"]) >= 2
+                for event in events
             )
+            for label, events in (("baseline", baseline_events), ("variant", variant_events))
+            if not isinstance(experiment["requirements"].get("concurrency_required_labels"), list)
+            or label in experiment["requirements"]["concurrency_required_labels"]
         ),
         "worker-device-identity": both_sides(
             lambda event: (
@@ -1978,7 +2009,7 @@ def _validate_named_campaign_evidence(
             for event in variant_actions
         ),
         "gpu-memory-restore": any(
-            event.get("action") == "resume"
+            event.get("action") in {"reload", "resume"}
             and event.get("source") == "operator"
             and isinstance(event.get("gpu_memory_allocated_before_bytes"), int)
             and isinstance(event.get("gpu_memory_allocated_after_bytes"), int)
@@ -2027,7 +2058,7 @@ def _validate_named_campaign_evidence(
                 event
                 for event in variant_events
                 if event.get("event_type") == "interference_observed"
-                and event.get("source") == "worker"
+                and event.get("source") == interference_source
             ],
             "interference_ratio",
         ),
@@ -2051,7 +2082,8 @@ def _validate_named_campaign_evidence(
             for action in required_actions
         ),
         "action-receipt": all(action_has(action, "receipt_id") for action in required_actions),
-        "checkpoint": action_has("offload", "checkpoint_present", lambda value: value is True),
+        "checkpoint": action_has("checkpoint", "checkpoint_present", lambda value: value is True)
+        or action_has("offload", "checkpoint_present", lambda value: value is True),
         "readiness": any(
             event.get("action") in {"reload", "resume"} and event.get("ready") is True
             for event in variant_actions

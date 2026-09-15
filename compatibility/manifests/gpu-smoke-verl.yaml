@@ -1,7 +1,7 @@
 schema_version: "tgsrl.io/compatibility-manifest/v1alpha1"
 manifest_id: "gpu-smoke-verl"
 revision: 1
-status: "implemented-hardware-verification-pending"
+status: "hardware-verified-single-node"
 scope: "single-node NVIDIA DRA full-GPU end-to-end smoke"
 references:
   bom: "compatibility/bom/runtime.yaml"

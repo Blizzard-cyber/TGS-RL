@@ -120,6 +120,8 @@ func buildEnv(input *normalizedInput) []api.EnvVar {
 		"TGSRL_DATA_KIND": struct{}{}, "TGSRL_WORKER_TRACE_URL": struct{}{},
 		"TGSRL_WORKER_TRACE_TOKEN":      struct{}{},
 		"TGSRL_REQUIRED_PYTHON_MODULES": struct{}{},
+		"TGSRL_REPLICA_INDEX":           struct{}{},
+		"TGSRL_REPLICA_COUNT":           struct{}{},
 	}
 	values := make([]api.EnvVar, 0, len(input.Manifest.GetEnvironment())+12)
 	for _, key := range sortedProtoLabelKeys(input.Manifest.GetEnvironment()) {
@@ -153,6 +155,8 @@ func buildEnv(input *normalizedInput) []api.EnvVar {
 		api.EnvVar{Name: "TGSRL_PHASE_KIND", Value: fmt.Sprintf("%d", phaseKindForStage(input.Manifest, input.Plan.GetStageId()))},
 		api.EnvVar{Name: "TGSRL_ROLLOUT_MODE", Value: fmt.Sprintf("%d", input.Manifest.GetRolloutMode())},
 		api.EnvVar{Name: "TGSRL_DATA_KIND", Value: fmt.Sprintf("%d", input.Manifest.GetDataKind())},
+		api.EnvVar{Name: "TGSRL_REPLICA_INDEX", Value: strconv.Itoa(input.replicaIndex)},
+		api.EnvVar{Name: "TGSRL_REPLICA_COUNT", Value: strconv.Itoa(input.replicaCount)},
 	)
 	if strings.EqualFold(input.Manifest.GetFramework(), "verl") {
 		controlSocket := manifestEnvironmentOrDefault(input.Manifest.GetEnvironment(), "TGSRL_VERL_CONTROL_SOCKET", "/tmp/tgsrl/verl.sock")

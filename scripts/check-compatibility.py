@@ -20,10 +20,11 @@ DOCKERFILES = (
 PINNED_IMAGE_REFERENCES = (ROOT / "scripts" / "gpu-preflight.sh",)
 BOM = ROOT / "compatibility" / "bom" / "runtime.yaml"
 SUPPORTED = "supported"
+HARDWARE_VERIFIED = "hardware-verified-single-node"
 HARDWARE_PENDING = "implemented-hardware-verification-pending"
 CONDITIONAL = "conditional"
 UNSUPPORTED = "unsupported"
-ALLOWED_STATUS = {SUPPORTED, HARDWARE_PENDING, CONDITIONAL, UNSUPPORTED}
+ALLOWED_STATUS = {SUPPORTED, HARDWARE_VERIFIED, HARDWARE_PENDING, CONDITIONAL, UNSUPPORTED}
 REAL_COMPONENTS = {"verl", "openrlhf", "ray", "pytorch", "vllm", "sglang", "nvidia"}
 
 
@@ -95,7 +96,10 @@ def validate_matrix(data: dict[str, Any], errors: list[str]) -> None:
             errors.append(f"{combination_id}: required_dependencies must be string list")
             continue
         expected_missing = sorted(name for name in required if name.lower() not in locks)
-        if status in {HARDWARE_PENDING, CONDITIONAL} and sorted(missing) != expected_missing:
+        if (
+            status in {HARDWARE_VERIFIED, HARDWARE_PENDING, CONDITIONAL}
+            and sorted(missing) != expected_missing
+        ):
             errors.append(
                 f"{combination_id}: missing_dependencies must equal "
                 f"lockfile gaps {expected_missing}"
@@ -109,8 +113,8 @@ def validate_matrix(data: dict[str, Any], errors: list[str]) -> None:
                 f"{combination_id}: real dependency combination cannot be "
                 "marked supported by this offline gate"
             )
-        if status == HARDWARE_PENDING and not values & REAL_COMPONENTS:
-            errors.append(f"{combination_id}: hardware-pending status requires a real component")
+        if status in {HARDWARE_VERIFIED, HARDWARE_PENDING} and not values & REAL_COMPONENTS:
+            errors.append(f"{combination_id}: hardware evidence status requires a real component")
     missing_components = sorted(REAL_COMPONENTS - covered)
     if missing_components:
         errors.append(f"matrix: declared real components are not covered: {missing_components}")
@@ -131,6 +135,36 @@ def validate_yaml_evidence(errors: list[str]) -> None:
     repository_files = {"go.mod", "go.sum", "pyproject.toml", "uv.lock"}
     for yaml_path in sorted((ROOT / "compatibility").rglob("*.yaml")):
         text = yaml_path.read_text(encoding="utf-8")
+        status_match = re.search(r'^status:\s*"([^"]+)"', text, flags=re.MULTILINE)
+        if (
+            yaml_path.parent.name in {"manifests", "profiles"}
+            and status_match
+            and status_match.group(1)
+            not in {
+                SUPPORTED,
+                "supported-with-limitations",
+                HARDWARE_VERIFIED,
+                HARDWARE_PENDING,
+                CONDITIONAL,
+                UNSUPPORTED,
+            }
+        ):
+            errors.append(
+                f"{yaml_path.relative_to(ROOT)}: invalid status {status_match.group(1)!r}"
+            )
+        if status_match and status_match.group(1) == HARDWARE_VERIFIED:
+            if 'status: "gpu-single-node"' not in text and (
+                'evidence_status: "gpu-single-node"' not in text
+            ):
+                errors.append(
+                    f"{yaml_path.relative_to(ROOT)}: single-node hardware status "
+                    "requires gpu-single-node evidence"
+                )
+            if "docs/validation/" not in text:
+                errors.append(
+                    f"{yaml_path.relative_to(ROOT)}: single-node hardware status "
+                    "requires a validation document"
+                )
         for line_number, line in enumerate(text.splitlines(), 1):
             for match in quoted_value.findall(line):
                 path = Path(match)

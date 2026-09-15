@@ -64,6 +64,16 @@ payload = {
             "execution_mode": "kubernetes-dra",
             "job_template": str(Path("configs/hardware/verl-lifecycle-job.example.json").resolve()),
         },
+        "E5-STATIC": {
+            "gpu_profile": "full-gpu",
+            "execution_mode": "hami-vgpu",
+            "job_template": str(Path("configs/hardware/e5-interference-job.example.json").resolve()),
+        },
+        "E6": {
+            "gpu_profile": "full-gpu",
+            "execution_mode": "kubernetes-dra",
+            "job_template": str(Path("configs/hardware/e6-action-cost-job.example.json").resolve()),
+        },
         "H1": {
             "gpu_profile": "full-gpu",
             "execution_mode": "hami-vgpu",

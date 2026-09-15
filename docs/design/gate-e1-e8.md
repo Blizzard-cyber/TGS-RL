@@ -6,16 +6,16 @@
 
 ## 实验矩阵
 
-| 实验 | 目标 | 最低证据 | 关键要求 | 当前阈值状态 |
+| 实验 | 目标 | 当前状态 | 关键要求 | 当前阈值状态 |
 |---|---|---|---|---|
-| E1 | Full GPU 精确设备执行 | GPU 单节点 | Scheduler、DRA allocation 与 worker UUID 一致；bind 成功 | action success 已锁定 |
-| E2 | MIG 精确设备执行 | GPU 单节点 | MIG profile、parent UUID、设备身份一致；bind/rebind 成功 | action success 已锁定 |
-| E3 | 吞吐与 Valuable Useful GPU | GPU 单节点 | 同模型、数据、seed、节点；采集 GPU active/useful time | throughput 下限已锁定；VUG 待校准 |
-| E4 | policy lag、staleness 与 ESS | GPU 单节点 | 注入 policy update delay；采集真实 batch quality | 待校准 |
-| E5 | 共置干扰隔离 | GPU 单节点 | 注入 competing workload；执行 share/priority 控制 | 待校准 |
-| E6 | lifecycle 动作代价 | GPU 单节点 | pause/checkpoint/offload/reload/resume 全部有 receipt | 待校准 |
-| E7 | 故障与事务恢复 | GPU 单节点 | worker exit、response loss 均有 injected/recovered 事件 | action success 已锁定；恢复时间待校准 |
-| E8 | 多节点稳定性与收敛 | GPU 多节点 | 至少两节点；node loss 恢复；两侧节点集合一致 | throughput 下限已锁定；收敛质量待校准 |
+| E1 | Full GPU 精确设备执行 | **PASSED**，`GPU_SINGLE_NODE` | Scheduler、DRA allocation 与 worker UUID 一致；bind 成功 | action success 已锁定 |
+| E2 | MIG 精确设备执行 | **BLOCKED / NOT_RUN**，当前 A10 无可用 MIG 拓扑 | MIG profile、parent UUID、设备身份一致；bind/rebind 成功 | action success 已锁定 |
+| E3 | 吞吐与 Valuable Useful GPU | **NOT_RUN**，待正式 workload | 同模型、数据、seed、节点；采集 GPU active/useful time | throughput 下限已锁定；VUG 待校准 |
+| E4 | policy lag、staleness 与 ESS | **NOT_RUN**，待环境 hook | 注入 policy update delay；采集真实 batch quality | 待校准 |
+| E5 | 共置干扰隔离 | **NOT_RUN**；静态份额 pilot 已实现、尚未实机运行 | 正式 E5 仍需 competing workload 与动态 share/priority 控制 | 待校准 |
+| E6 | lifecycle 动作代价 | **NOT_RUN**；五步 scoped lifecycle 与代表性 workload 已实现、尚未实机运行 | pause/checkpoint/offload/reload/resume 全部有独立 receipt | 待校准 |
+| E7 | 故障与事务恢复 | **NOT_RUN**，CPU/进程故障不替代 GPU fault | worker exit、response loss 均有 injected/recovered 事件 | action success 已锁定；恢复时间待校准 |
+| E8 | 多节点稳定性与收敛 | **BLOCKED / NOT_RUN**，缺少两个 GPU 节点 | 至少两节点；node loss 恢复；两侧节点集合一致 | throughput 下限已锁定；收敛质量待校准 |
 
 机器可读入口为：
 
@@ -59,11 +59,38 @@ H1 结果写入 `.cache/tgsrl/hami-smoke/h1-hami-vgpu/`，H2 结果写入
 `.cache/tgsrl/hami-concurrency-smoke/h2-hami-concurrency/`。两者都是 realization smoke，
 不进入 E1–E8 release evaluation；H2 也不替代 E5 共置干扰、OOM/公平性或 E6 生命周期实验。
 
+当前单张 A10 可先执行独立 `E5-STATIC` pilot：
+
+```bash
+make gpu-down
+make gpu-prepare-hami
+make gpu-hami-up
+make gpu-e5-interference
+```
+
+它保持两个 worker、每个 `40%` core/显存份额、workload 参数、seed、镜像和节点一致，仅让
+baseline 的两个 worker 错峰执行、variant 的两个 worker 并发执行。orchestrator 从每个 worker
+的 `item_count / elapsed_ms` 推导共置干扰率，并硬校验 baseline 无重叠、variant 有正重叠。
+该 pilot 用于得到当前硬件上的静态份额干扰边界，不满足正式 E5 的在线 `set_share` /
+`set_priority` 要求，因此不会修改正式 E5 状态。
+
 A10 实验前 readiness 另有独立 `A10-FULL` campaign。它在 E1 已证明的 exact-device 主链上，
 通过 scoped registry 调用 cooperative worker，要求 checkpoint 存在，并把 PyTorch allocator 的
 allocated/reserved bytes 从 worker → bootstrap → registry → hardware driver → Gate 证据链
 带回。offload 后 allocated bytes 必须下降，resume 后必须回升；仅有状态布尔值不能通过。
 `make gpu-a10-readiness` 再组合 H2 与 DRA 恢复后的 E1，但不改变 E1–E8 发布矩阵。
+
+正式 E6 使用同一个 scoped worker registry，把 `pause`、`checkpoint`、`offload`、`reload`
+和 `resume` 作为五个独立、幂等、generation-fenced 的动作执行。代表性 CUDA tensor workload 会
+实际序列化并重新加载 tensor checkpoint；Gate 从每个动作的独立 receipt 计算延迟，并继续
+要求 offload 后 allocator bytes 下降、reload 后恢复。执行入口为：
+
+```bash
+make gpu-down
+make gpu-restore-dra
+make gpu-up
+make gpu-e6-action-cost
+```
 
 仓库提供 `scripts/tgsrl-hardware-environment-driver`。目标环境从
 `configs/hardware/environment.example.json` 派生本地配置，至少指定 Gateway URL、固定
@@ -189,5 +216,6 @@ make gate-campaign-calibrate
 
 仓库 CI 会验证 campaign schema、证据降级、设备身份分叉、故障证据缺失、场景 digest、
 日志复制和未校准阈值的 fail-closed 行为。`make gate-cpu-integration` 已验证完整本地服务链，
-但仍输出 `CPU_INTEGRATION/NOT_RUN`。E1–E8 的真实 GPU、MIG、MPS、Kubernetes、veRL
-训练与收敛结果必须在目标环境执行后再导入。
+但仍输出 `CPU_INTEGRATION/NOT_RUN`。E1 已在 `68f5aea` 之前和最终 readiness 中取得真实
+单节点 GPU 证据；E2–E8 的 MIG、正式 workload、故障、性能与多节点结果仍必须在目标环境
+执行后再导入。整体推进顺序见[毕设推进状态](../project-progress.md)。

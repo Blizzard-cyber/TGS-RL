@@ -21,7 +21,7 @@ STATICCHECK_VERSION := 2026.1
 GATE_CAMPAIGN_DRIVER ?= scripts/tgsrl-hardware-environment-driver
 A10_READINESS_REPORTS ?= .cache/tgsrl/a10-readiness
 GO_PACKAGES := ./gen/go/... ./internal/... ./scheduler-go/... ./job-controller-go/... ./operator-go/... ./storage/... ./scripts ./cmd/...
-PYTHON_PATHS := adapters runtime-python gateway-python tests/python tests/api tests/storage tests/e2e tests/governance scripts/check-proto-roundtrip.py scripts/check-oci-platforms.py scripts/check-docs.py scripts/generate-sbom.py scripts/check-compatibility.py scripts/check-upstream-patches.py scripts/gate-tools.py scripts/hardware-campaign-executor.py scripts/hardware_environment_driver.py scripts/engineering-fault-readiness.py scripts/tgsrl-hardware-environment-driver scripts/verl-reference-workload.py scripts/gate-full-stack-workload.py scripts/gate-managed-workload.py scripts/gpu-smoke-workload.py scripts/compose-smoke.py
+PYTHON_PATHS := adapters runtime-python gateway-python tests/python tests/api tests/storage tests/e2e tests/governance scripts/check-proto-roundtrip.py scripts/check-oci-platforms.py scripts/check-docs.py scripts/generate-sbom.py scripts/check-compatibility.py scripts/check-upstream-patches.py scripts/gate-tools.py scripts/hardware-campaign-executor.py scripts/hardware_environment_driver.py scripts/engineering-fault-readiness.py scripts/tgsrl-hardware-environment-driver scripts/verl-reference-workload.py scripts/gate-full-stack-workload.py scripts/gate-managed-workload.py scripts/gpu-smoke-workload.py scripts/gpu-experiment-workload.py scripts/compose-smoke.py
 GO_FORMAT_PATHS := scheduler-go job-controller-go operator-go storage cmd internal
 SCHEDULER_PACKAGE := ./scheduler-go/cmd/scheduler
 NVIDIA_BINDING_PACKAGE := ./cmd/tgsrl-nvidia-binding
@@ -36,7 +36,7 @@ GATEWAY_LISTEN ?= 127.0.0.1:8080
 OPERATOR_LISTEN ?= 127.0.0.1:50081
 SCHEDULER_FALLBACK ?= noop
 
-.PHONY: help doctor doctor-dev doctor-kubernetes gpu-install-host gpu-create-cluster gpu-prepare-cluster gpu-configure-access gpu-configure-registry gpu-preflight gpu-build-images gpu-render-config gpu-render-helm-values gpu-up gpu-status gpu-smoke gpu-a10-full-readiness gpu-a10-hami-readiness gpu-a10-readiness gpu-helm-smoke engineering-fault-readiness gpu-down gpu-prepare-hami gpu-hami-up gpu-hami-status gpu-hami-smoke gpu-hami-concurrency-smoke gpu-restore-dra local-up local-status local-stop local-down local-reset proto check-generated check-openapi proto-roundtrip check-migrations check-compose compose-smoke compose-smoke-host check-repository check-deploy render-kubernetes check-docs check-public-content sbom check-governance gate-campaign gate-campaign-run gate-campaign-calibrate test-go test-performance test-python test-api test-console test-console-browser lint staticcheck test race build-nvidia-binding build-nvidia-runtime build-nvidia-mig build-worker-bootstrap demo product-e2e gate-cpu-integration run-scheduler run-controller run-runtime run-gateway run-operator run-console
+.PHONY: help doctor doctor-dev doctor-kubernetes gpu-install-host gpu-create-cluster gpu-prepare-cluster gpu-configure-access gpu-configure-registry gpu-preflight gpu-build-images gpu-render-config gpu-render-helm-values gpu-up gpu-status gpu-smoke gpu-a10-full-readiness gpu-a10-hami-readiness gpu-a10-readiness gpu-helm-smoke gpu-e5-interference gpu-e6-action-cost engineering-fault-readiness gpu-down gpu-prepare-hami gpu-hami-up gpu-hami-status gpu-hami-smoke gpu-hami-concurrency-smoke gpu-restore-dra local-up local-status local-stop local-down local-reset proto check-generated check-openapi proto-roundtrip check-migrations check-compose compose-smoke compose-smoke-host check-repository check-deploy render-kubernetes check-docs check-public-content sbom check-governance gate-campaign gate-campaign-run gate-campaign-calibrate test-go test-performance test-python test-api test-console test-console-browser lint staticcheck test race build-nvidia-binding build-nvidia-runtime build-nvidia-mig build-worker-bootstrap demo product-e2e gate-cpu-integration run-scheduler run-controller run-runtime run-gateway run-operator run-console
 
 help:
 	@printf '%s\n' \
@@ -60,6 +60,8 @@ help:
 	  '  make gpu-a10-hami-readiness verify A10 H2 HAMi same-card concurrency and restore DRA' \
 	  '  make gpu-a10-readiness run the complete A10 Full/HAMi/restore readiness sequence' \
 	  '  make gpu-helm-smoke   install all six services with Helm and run A10 Full readiness' \
+	  '  make gpu-e6-action-cost run the E6 lifecycle-cost experiment on Full GPU DRA' \
+	  '  make gpu-e5-interference run the E5 static-share HAMi interference experiment' \
 	  '  make engineering-fault-readiness run real-process/restart failure-path checks' \
 	  '  make gpu-prepare-hami install pinned HAMi and switch the test node to vGPU' \
 	  '  make gpu-hami-up      start the H2 HAMi two-worker control plane' \
@@ -184,6 +186,23 @@ gpu-a10-readiness:
 
 gpu-helm-smoke:
 	./scripts/gpu-helm-smoke.sh
+
+gpu-e6-action-cost:
+	TGSRL_HARDWARE_DRIVER_CONFIG=$${TGSRL_HARDWARE_DRIVER_CONFIG:-configs/hardware/environment.json} \
+		uv run --frozen python scripts/gate-tools.py campaign-run \
+		--campaign configs/gates/e1-e8.json \
+		--reports-dir .cache/tgsrl/e1-e8 \
+		--driver "$(GATE_CAMPAIGN_DRIVER)" --experiment E6
+	jq -e '.status == "PASSED"' .cache/tgsrl/e1-e8/e6-action-cost/report.json >/dev/null
+
+gpu-e5-interference:
+	TGSRL_HARDWARE_DRIVER_CONFIG=$${TGSRL_HARDWARE_DRIVER_CONFIG:-configs/hardware/environment.json} \
+		uv run --frozen python scripts/gate-tools.py campaign-run \
+		--campaign configs/gates/e5-static-interference.json \
+		--reports-dir .cache/tgsrl/e5-static-interference \
+		--driver "$(GATE_CAMPAIGN_DRIVER)" --experiment E5-STATIC
+	jq -e '.status == "PASSED"' \
+		.cache/tgsrl/e5-static-interference/e5-static-interference/report.json >/dev/null
 
 engineering-fault-readiness:
 	uv run --frozen python scripts/engineering-fault-readiness.py

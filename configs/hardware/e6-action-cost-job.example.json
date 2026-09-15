@@ -1,0 +1,71 @@
+{
+  "displayName": "tgsrl-e6-action-cost",
+  "protocolVersion": "v0.3",
+  "algorithm": "grpo",
+  "runtime": {
+    "framework": "verl",
+    "frameworkVersion": "0.9.0",
+    "executionBackend": "ray",
+    "executionBackendVersion": "2.58.0",
+    "trainer": "pytorch",
+    "trainerVersion": "2.13.0",
+    "rolloutEngine": "vllm",
+    "rolloutEngineVersion": "0.28.0",
+    "imageDigest": "${WORKLOAD_IMAGE_DIGEST}",
+    "artifactUri": "${WORKLOAD_IMAGE}",
+    "compatibilityProfile": "gpu-smoke-verl-v1",
+    "command": ["python3.12"],
+    "args": [
+      "/opt/tgsrl/scripts/gpu-experiment-workload.py",
+      "--mode",
+      "lifecycle",
+      "--seed",
+      "${SEED}",
+      "--iterations",
+      "200",
+      "--matrix-size",
+      "1024",
+      "--minimum-run-seconds",
+      "10",
+      "--resident-memory-mib",
+      "512"
+    ]
+  },
+  "executionContract": {
+    "contractId": "contract-sha256-156567905e62917039a3c6d63f709af09564f60fd94b65aa08934eb3ff5f74e1",
+    "version": "1.0.0",
+    "phaseGraph": {
+      "phases": [{"phaseId": "decode", "displayName": "E6 Action Cost", "kind": "PHASE_KIND_DECODE", "parallelism": 1, "maxAttempts": 1}],
+      "entryPhaseIds": ["decode"]
+    },
+    "validityRules": [
+      {
+        "ruleId": "live-gpu-input",
+        "description": "E6 consumes live hardware observations",
+        "expression": "data_kind == live",
+        "failureMode": "VALIDITY_FAILURE_MODE_REJECT"
+      }
+    ],
+    "versionConstraints": [
+      {
+        "component": "protocol",
+        "operator": "VERSION_OPERATOR_COMPATIBLE",
+        "version": "0.3.0",
+        "source": "e6-action-cost",
+        "revision": "1"
+      }
+    ],
+    "commitPolicy": {"mode": "COMMIT_MODE_ALL_OR_NOTHING", "minimumSuccessfulUnits": 1, "maxRetries": 1, "commitTimeout": "120s"},
+    "backpressurePolicy": {"mode": "BACKPRESSURE_MODE_BLOCK_PRODUCER", "lowWatermark": "1", "highWatermark": "2", "maximumBufferLevel": "4", "stallTimeout": "120s"},
+    "safePointPolicy": {"enabled": true, "trigger": "SAFE_POINT_TRIGGER_EXPLICIT", "maximumWait": "30s", "requiredPhaseIds": ["decode"]},
+    "capabilities": {"checkpointRestore": true, "policyHotSwap": true}
+  },
+  "resourcesPerUnit": {"cpuMillis": "4000", "memoryBytes": "17179869184", "acceleratorUnits": 1},
+  "requiredCapabilities": {"names": ["nvidia-gpu"], "algorithms": ["grpo"], "rolloutModes": ["partially_async"], "supportedActions": ["bind", "release"]},
+  "desiredUnits": 1,
+  "priority": 1,
+  "queue": "default",
+  "rolloutMode": "ROLLOUT_MODE_PARTIALLY_ASYNC",
+  "policyRef": "1",
+  "dataKind": "DATA_KIND_LIVE"
+}

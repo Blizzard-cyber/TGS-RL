@@ -163,8 +163,9 @@ Scheduler registry 和 bootstrap control endpoint 都没有内建 TLS；明文 H
 
 本地 Kubernetes 工具链固定 Minikube `1.38.1`、Kubernetes `1.35.1` 和 Kueue
 `0.19.2`；kubectl 应与 API server 保持在同一 minor 或相邻 minor。E1/H1/H2 已在专用
-单节点 GPU smoke 路径验证设备兑现、注册和 CUDA Trace；Helm 工件仍以模板/参数契约校验为主，
-不把 smoke 的成功推广为全栈 Helm 安装、网络策略或所有故障恢复已验证。
+单节点 GPU smoke 路径验证设备兑现、注册和 CUDA Trace；最终 `68f5aea` 还完成了六服务
+NVIDIA Helm install/upgrade、Gateway 四依赖就绪、A10 lifecycle 和同 PVC 重跑。该结果只覆盖
+记录中的单节点 Minikube 环境，不推广为其他集群、网络策略或所有故障恢复已验证。
 
 ```bash
 minikube start --profile tgsrl --driver=docker --kubernetes-version=v1.35.1
@@ -322,6 +323,7 @@ sequence 和 cursor 原子写入 `decision-cursor.json`。状态目录还包括�
 更多状态边界见[配置、持久化与恢复](configuration-and-recovery.md)，真实集成状态见
 [当前能力与限制](../reference/current-capabilities.md)。Helm、原生 Operator manifest 与 GPU smoke
 ServiceAccount 已为 Job、Workload、ResourceClaimTemplate 和 JobRunBundle 提供最小
-read/upsert/delete 权限，并为生成的 ResourceClaim 提供只读权限；
-权限；`make check-deploy` 与 `make gpu-preflight` 分别校验静态规则和目标集群实际授权。真实
-generation replacement、terminal cleanup 与 ServiceAccount 行为仍须由 E1 集群运行证明。
+read/upsert/delete 权限，并为生成的 ResourceClaim 提供只读权限；`make check-deploy` 与
+`make gpu-preflight` 分别校验静态规则和目标集群实际授权。E1 与最终 A10 readiness 已证明
+当前单节点 DRA 路径的 terminal cleanup 与 ServiceAccount 行为；其他 API 版本、namespace
+策略和多节点集群仍须独立验证。

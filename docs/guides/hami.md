@@ -309,6 +309,18 @@ H2 是并发共置 smoke，不是隔离或性能实验。它证明两个真实 C
 物理 GPU 的两个 HAMi 份额，并能被 TGS-RL 按独立 sandbox/binding 观测；它没有故意触发
 OOM，也没有为公平性、干扰率或吞吐收益设置统计门槛。
 
+在 H2 通过后，可运行单卡静态份额干扰 pilot：两个 worker 均固定为 `40%`，baseline
+通过 `TGSRL_REPLICA_INDEX` 错峰执行，variant 并发执行；orchestrator 从两组逐 worker
+吞吐推导干扰率并校验时间区间。入口与输出为：
+
+```bash
+make gpu-e5-interference
+# .cache/tgsrl/e5-static-interference/e5-static-interference/report.json
+```
+
+这项 `E5-STATIC` pilot 不声明 HAMi 在线动态修改份额或优先级。正式 E5 仍要求 Scheduler
+权威动作和 infrastructure readback；当前 HAMi 实现只兑现启动时静态 core/memory 配额。
+
 在 NVIDIA A10 上做毕业设计实验前验收时，优先使用 `make gpu-a10-hami-readiness` 或
 完整的 `make gpu-a10-readiness`。它会先核对卡型，再复用同一 H2 合同，并在结束后恢复
 DRA；完整入口还会复跑 E1 和生成聚合摘要。详见 [A10 Readiness](a10-readiness.md)。
@@ -322,7 +334,7 @@ make gpu-restore-dra
 
 不要用 MIG 测试阻塞不具备该能力的设备。后续分开验证：
 
-1. **HAMi 干扰与故障边界**：在 H2 同卡并发基础上测量公平性、干扰、OOM 与单 worker 失败；
+1. **E5/HAMi 干扰边界**：先完成 E5-STATIC，再补动态 share/priority、OOM 与单 worker 失败；
 2. **HAMi 动态份额**：验证运行中修改 core/memory 份额及 readback；
 3. **MPS**：未来实现 checkpoint/recreate 新 client 后，验证启动限额、incarnation readback 和显存边界；
 4. **MIG**：获得支持型号后再执行 E2，验证 DeviceClass、parent UUID 和 rebind。

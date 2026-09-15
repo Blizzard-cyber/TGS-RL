@@ -1,7 +1,7 @@
 schema_version: "tgsrl.io/compatibility-profile/v1alpha1"
 profile_id: "gpu-smoke-verl-v1"
 revision: 1
-status: "implemented-hardware-verification-pending"
+status: "hardware-verified-single-node"
 description: "Single-node Full GPU smoke through NVIDIA DRA and a managed veRL adapter workload; not a full model-training claim."
 provider:
   kind: "nvidia"

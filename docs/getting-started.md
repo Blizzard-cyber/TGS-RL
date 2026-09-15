@@ -172,6 +172,7 @@ Sandbox、Decision 和 allocation；组件恢复职责见[配置与恢复](guide
 
 ## 下一步
 
+- [毕设推进状态](project-progress.md)：查看工程、实验和论文分别推进到哪一步。
 - [系统设计](design/system-design.md)：理解职责、身份与状态模型。
 - [开发指南](maintainers/development.md)：从源码启动，执行真实子进程验证。
 - [GPU Smoke](guides/gpu-smoke.md)：在 NVIDIA 主机验证全链路。

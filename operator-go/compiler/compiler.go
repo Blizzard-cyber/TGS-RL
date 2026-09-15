@@ -2,6 +2,7 @@ package compiler
 
 import (
 	"fmt"
+	"sort"
 
 	tgsrlv1 "github.com/Blizzard-cyber/TGS-RL/gen/go/tgsrl/v1"
 	"github.com/Blizzard-cyber/TGS-RL/operator-go/api"
@@ -114,6 +115,19 @@ func (c *Compiler) Compile(input CompileInput) ([]*api.Bundle, error) {
 	if len(bindings) == 0 {
 		return nil, fmt.Errorf("placement plan requires at least one binding")
 	}
+	orderedBindings := append([]*tgsrlv1.Binding(nil), bindings...)
+	sort.Slice(orderedBindings, func(i, j int) bool {
+		if orderedBindings[i].GetPendingUnitId() != orderedBindings[j].GetPendingUnitId() {
+			return orderedBindings[i].GetPendingUnitId() < orderedBindings[j].GetPendingUnitId()
+		}
+		return orderedBindings[i].GetBindingId() < orderedBindings[j].GetBindingId()
+	})
+	ranks := make(map[string]int, len(orderedBindings))
+	for rank, binding := range orderedBindings {
+		if binding != nil {
+			ranks[binding.GetBindingId()] = rank
+		}
+	}
 	bundles := make([]*api.Bundle, 0, len(bindings))
 	for index, binding := range bindings {
 		if binding == nil {
@@ -124,6 +138,8 @@ func (c *Compiler) Compile(input CompileInput) ([]*api.Bundle, error) {
 		plan.Actions = actionsForBinding(input.PlacementPlan, binding)
 		unitInput := input
 		unitInput.PlacementPlan = plan
+		unitInput.replicaIndex = ranks[binding.GetBindingId()]
+		unitInput.replicaCount = len(orderedBindings)
 		if binding.GetGeneration() != 0 {
 			unitInput.Generation = binding.GetGeneration()
 		}

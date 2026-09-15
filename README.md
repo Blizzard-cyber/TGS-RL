@@ -8,7 +8,7 @@
   <a href="LICENSE"><img alt="Apache-2.0" src="https://img.shields.io/badge/license-Apache--2.0-blue.svg"></a>
 </p>
 
-[快速开始](#快速开始) · [系统架构](#系统架构) · [项目文档](docs/README.md) · [参与开发](CONTRIBUTING.md)
+[快速开始](#快速开始) · [毕设进度](docs/project-progress.md) · [系统架构](#系统架构) · [项目文档](docs/README.md) · [参与开发](CONTRIBUTING.md)
 
 </div>
 
@@ -153,12 +153,17 @@ API 和字段说明见[API、CLI 与 Console](docs/guides/api-and-console.md)。
 | 空白 NVIDIA 主机验证全链路 | [GPU Smoke 指南](docs/guides/gpu-smoke.md) | Full GPU、Kubernetes/DRA、CUDA worker、注册与清理 |
 | 验证同卡分数共享 | [HAMi 指南](docs/guides/hami.md) | H1 份额兑现与 H2 同卡并发 |
 | 毕业设计实验前做 A10 工程验收 | [A10 Readiness](docs/guides/a10-readiness.md) | Full lifecycle、显存释放/恢复、H2、DRA 回归、Helm 证据 |
+| 当前单卡毕业实验 | [E1–E8 设计](docs/design/gate-e1-e8.md) | E6 lifecycle cost 与 E5-STATIC 静态份额干扰；实机结果生成前保持 NOT_RUN |
 | 部署 Kubernetes 控制面 | [部署指南](docs/guides/deployment.md) | 六服务 Helm 的配置、依赖和部署边界 |
 
-**当前阶段是工程链路验证，不是毕业实验或生产发布。** A10 lifecycle、H2、DRA 恢复 E1
-和六服务 Helm smoke 已在单张 A10 上通过；这些结果不证明完整 veRL trainer、
-distributed collective、MIG/MPS、多节点、强隔离或性能收益。
+**当前阶段已从工程实现转入正式毕业实验。** 最终工程基线 `68f5aea` 已通过 A10 lifecycle、
+H2、DRA 恢复 E1 和同一 PVC 上连续两轮六服务 Helm smoke；正式 E1 已通过，但 E2–E8
+尚未全部执行，因此当前不宣称完整 veRL trainer、distributed collective、MIG/MPS、多节点、
+强隔离或性能收益已经证明。完整阶段矩阵见[毕设推进状态](docs/project-progress.md)。
 历史证据各自绑定当时的源代码版本，不能自动覆盖后续修改。
+
+当前工作树已经补齐 E6 五步 lifecycle 实验与 `E5-STATIC` 单卡静态份额干扰 pilot；
+两者仍需在 A10 上运行并评审阈值。`E5-STATIC` 不替代正式 E5 的动态 share/priority 门禁。
 
 | 已归档的硬件验证 | 记录 |
 |---|---|

@@ -13,6 +13,7 @@ import shutil
 import subprocess
 import sys
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 from typing import Any, cast
 
@@ -359,6 +360,7 @@ def _validate_driver_response(
     gpu_profile: str = "",
     execution_mode: str = "",
     shared_device_identity: bool = False,
+    concurrency_required: bool = False,
     expected_total_core_percent: int = 0,
 ) -> list[dict[str, Any]]:
     minimum_workers = max(minimum_workers, minimum_nodes)
@@ -459,7 +461,7 @@ def _validate_driver_response(
             or sample_workers != completed_workers
         ):
             raise ExecutionError("hardware driver measure returned too few worker identities")
-        if shared_device_identity:
+        if concurrency_required:
             concurrency = [
                 event
                 for event in events
@@ -581,7 +583,7 @@ def _validate_driver_response(
         for event in events
     ):
         raise ExecutionError(f"hardware driver omitted successful {action} action evidence")
-    if operation == "apply_worker_action" and action in {"offload", "resume"}:
+    if operation == "apply_worker_action" and action in {"offload", "reload", "resume"}:
         controls = [
             event
             for event in events
@@ -607,11 +609,14 @@ def _validate_driver_response(
             raise ExecutionError(
                 "managed worker offload did not reduce allocated/reserved GPU memory"
             )
-        if action == "resume" and not (
+        restores_memory = action == "reload" or (
+            action == "resume" and controls[0].get("offloaded_before", True) is True
+        )
+        if restores_memory and not (
             int(after) > int(before) and int(reserved_after) > int(reserved_before)
         ):
             raise ExecutionError(
-                "managed worker resume did not restore allocated/reserved GPU memory"
+                f"managed worker {action} did not restore allocated/reserved GPU memory"
             )
     fault_event = {
         "inject_fault": "fault_injected",
@@ -821,6 +826,7 @@ def _run_iteration(
     execution_mode: str,
     minimum_workers: int,
     shared_device_identity: bool,
+    concurrency_required: bool,
     expected_total_core_percent: int,
 ) -> tuple[list[dict[str, Any]], dict[str, Any], list[dict[str, Any]]]:
     run_key = f"{experiment['experiment_id'].lower()}-{label}-{phase}-{iteration}"
@@ -867,6 +873,7 @@ def _run_iteration(
                 gpu_profile=gpu_profile,
                 execution_mode=execution_mode,
                 shared_device_identity=shared_device_identity,
+                concurrency_required=concurrency_required,
                 expected_total_core_percent=expected_total_core_percent,
             )
             for event in operation_events:
@@ -935,6 +942,141 @@ def _run_iteration(
         },
         artifacts,
     )
+
+
+def _label_requires_concurrency(
+    experiment: dict[str, Any], scenario: dict[str, Any], label: str
+) -> bool:
+    topology = scenario.get("topology", {})
+    if not isinstance(topology, dict):
+        raise ExecutionError("scenario topology must be an object")
+    configured = topology.get("concurrency_required_labels")
+    required = experiment["requirements"].get("concurrency_required_labels", configured)
+    if required is None:
+        return bool(experiment["requirements"].get("shared_device_identity", False))
+    if (
+        not isinstance(required, list)
+        or any(value not in {"baseline", "variant"} for value in required)
+        or len(set(required)) != len(required)
+    ):
+        raise ExecutionError("concurrency_required_labels must contain unique baseline/variant")
+    if configured != required:
+        raise ExecutionError(
+            "scenario topology concurrency_required_labels does not match requirements"
+        )
+    return label in required
+
+
+def _append_e5_interference_evidence(traces: dict[str, dict[str, Any]]) -> None:
+    baseline_events = traces["baseline"]["events"]
+    variant_events = traces["variant"]["events"]
+    baseline_by_iteration: dict[int, list[float]] = {}
+    variant_by_iteration: dict[int, list[float]] = {}
+
+    def worker_rates(events: list[dict[str, Any]]) -> dict[int, list[float]]:
+        rates: dict[int, list[float]] = {}
+        for event in events:
+            if (
+                event.get("phase") != "measurement"
+                or event.get("event_type") != "workload_completed"
+            ):
+                continue
+            elapsed_ms = float(event.get("elapsed_ms", 0.0))
+            item_count = int(event.get("item_count", 0))
+            if elapsed_ms <= 0 or item_count <= 0:
+                raise ExecutionError("E5 workload completion must contain positive work and time")
+            rates.setdefault(int(event.get("iteration", 0)), []).append(
+                item_count * 1000.0 / elapsed_ms
+            )
+        return rates
+
+    baseline_by_iteration = worker_rates(baseline_events)
+    variant_by_iteration = worker_rates(variant_events)
+    if set(baseline_by_iteration) != set(variant_by_iteration):
+        raise ExecutionError("E5 baseline and variant iterations do not match")
+
+    def maximum_overlap(events: list[dict[str, Any]], iteration: int) -> float:
+        starts: dict[str, datetime] = {}
+        completions: dict[str, datetime] = {}
+        for event in events:
+            if event.get("phase") != "measurement" or int(event.get("iteration", 0)) != iteration:
+                continue
+            sandbox_id = str(event.get("sandbox_id", ""))
+            occurred_at = str(event.get("occurred_at", ""))
+            if not sandbox_id or not occurred_at:
+                continue
+            try:
+                observed = datetime.fromisoformat(occurred_at.replace("Z", "+00:00"))
+            except ValueError as error:
+                raise ExecutionError("E5 trace contains an invalid occurred_at") from error
+            if observed.tzinfo is None:
+                raise ExecutionError("E5 trace occurred_at must include a timezone")
+            if event.get("event_type") == "sample_consumed":
+                duration_ms = float(event.get("duration_ms", 0.0))
+                started = datetime.fromtimestamp(
+                    observed.timestamp() - duration_ms / 1000.0,
+                    tz=observed.tzinfo,
+                )
+                starts[sandbox_id] = min(starts.get(sandbox_id, started), started)
+            elif event.get("event_type") == "workload_completed":
+                completions[sandbox_id] = max(completions.get(sandbox_id, observed), observed)
+        intervals = [
+            (starts[sandbox_id], completions[sandbox_id])
+            for sandbox_id in sorted(set(starts) & set(completions))
+        ]
+        if len(intervals) != 2:
+            raise ExecutionError("E5 requires two complete worker execution intervals")
+        return max(
+            0.0,
+            (
+                min(intervals[0][1], intervals[1][1]) - max(intervals[0][0], intervals[1][0])
+            ).total_seconds()
+            * 1000.0,
+        )
+
+    for iteration in sorted(baseline_by_iteration):
+        baseline_rates = baseline_by_iteration[iteration]
+        variant_rates = variant_by_iteration[iteration]
+        if len(baseline_rates) != 2 or len(variant_rates) != 2:
+            raise ExecutionError("E5 requires exactly two worker throughput observations per side")
+        if maximum_overlap(baseline_events, iteration) > 0:
+            raise ExecutionError("E5 baseline worker execution intervals overlap")
+        if maximum_overlap(variant_events, iteration) <= 0:
+            raise ExecutionError("E5 variant worker execution intervals do not overlap")
+        baseline_per_worker = sum(baseline_rates) / len(baseline_rates)
+        variant_per_worker = sum(variant_rates) / len(variant_rates)
+        interference = max(0.0, 1.0 - variant_per_worker / baseline_per_worker)
+        common = next(
+            event
+            for event in variant_events
+            if event.get("phase") == "measurement" and int(event.get("iteration", 0)) == iteration
+        )
+        variant_events.append(
+            {
+                key: common[key]
+                for key in (
+                    "experiment_id",
+                    "label",
+                    "phase",
+                    "iteration",
+                    "service_job_id",
+                    "service_run_id",
+                    "device",
+                    "node_id",
+                )
+                if key in common
+            }
+            | {
+                "event_type": "interference_observed",
+                "source": "orchestrator",
+                "derivation": "1-variant_mean_worker_throughput/baseline_mean_worker_throughput",
+                "interference_ratio": interference,
+                "baseline_mean_worker_throughput_items_per_s": baseline_per_worker,
+                "variant_mean_worker_throughput_items_per_s": variant_per_worker,
+                "worker_count": 2,
+            }
+        )
+    traces["variant"]["metrics"] = GATE_TOOLS._metrics_from_events(variant_events)
 
 
 def execute(args: argparse.Namespace) -> int:
@@ -1048,6 +1190,9 @@ def execute(args: argparse.Namespace) -> int:
                         shared_device_identity=bool(
                             experiment["requirements"].get("shared_device_identity", False)
                         ),
+                        concurrency_required=_label_requires_concurrency(
+                            experiment, scenario, label
+                        ),
                         expected_total_core_percent=int(
                             experiment["requirements"].get("expected_total_core_percent", 0)
                         ),
@@ -1076,6 +1221,8 @@ def execute(args: argparse.Namespace) -> int:
                 "events": events,
                 "metrics": GATE_TOOLS._metrics_from_events(events),
             }
+        if args.experiment == "E5-STATIC":
+            _append_e5_interference_evidence(traces)
     except DriverFailure as error:
         artifacts.extend(error.artifacts)
         raise

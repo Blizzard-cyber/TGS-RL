@@ -78,6 +78,7 @@ type Receipt struct {
 	TargetShare              float64 `json:"target_share,omitempty"`
 	SourceBindingID          string  `json:"source_binding_id,omitempty"`
 	SourceDeviceID           string  `json:"source_device_id,omitempty"`
+	SourceOffloaded          bool    `json:"source_offloaded,omitempty"`
 	SourceGPUMemoryObserved  bool    `json:"source_gpu_memory_observed,omitempty"`
 	SourceGPUMemoryAllocated uint64  `json:"source_gpu_memory_allocated_bytes,omitempty"`
 	SourceGPUMemoryReserved  uint64  `json:"source_gpu_memory_reserved_bytes,omitempty"`
@@ -258,6 +259,7 @@ func (s *Store) Begin(request ActionRequest) (Worker, Receipt, bool, error) {
 			return fmt.Errorf("sandbox %q is not registered", request.SandboxID)
 		}
 		candidate := receiptFor(request)
+		candidate.SourceOffloaded = current.Offloaded
 		candidate.SourceGPUMemoryObserved = current.GPUMemoryObserved
 		candidate.SourceGPUMemoryAllocated = current.GPUMemoryAllocated
 		candidate.SourceGPUMemoryReserved = current.GPUMemoryReserved
@@ -559,12 +561,16 @@ func validateTransition(worker Worker, operation string) error {
 	switch operation {
 	case "pause":
 		allowed = worker.State == "running"
+	case "checkpoint":
+		allowed = worker.State == "paused" && worker.SafePoint
 	case "resume":
 		allowed = worker.State == "paused" || worker.State == "sleeping"
 	case "sleep":
 		allowed = worker.State == "running" || worker.State == "paused"
 	case "offload":
 		allowed = worker.State == "running" || worker.State == "paused" || worker.State == "sleeping"
+	case "reload":
+		allowed = worker.State == "sleeping" && worker.Offloaded && worker.CheckpointRef != ""
 	case "rebind", "recreate":
 		allowed = worker.ControlSocket != "" && (worker.State == "running" || worker.State == "paused" || worker.State == "sleeping" || worker.State == "failed")
 	case "stop":

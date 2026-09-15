@@ -1,7 +1,7 @@
 schema_version: "tgsrl.io/compatibility-profile/v1alpha1"
 profile_id: "hami-smoke-verl-v1"
 revision: 1
-status: "implemented-hardware-verification-pending"
+status: "hardware-verified-single-node"
 description: >-
   Single-node HAMi fractional-GPU smoke through managed veRL adapter workloads;
   not a full model-training or multi-node claim.

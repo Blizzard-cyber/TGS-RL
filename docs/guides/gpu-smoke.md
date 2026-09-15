@@ -275,17 +275,23 @@ make gpu-down
 
 E1 通过后先执行 [A10 工程验收](a10-readiness.md)，确认 cooperative offload/resume、
 显存释放/恢复、HAMi H2、DRA 恢复和可选 Helm 六服务实装。它仍不代表毕业实验结论成立。
-工程验收通过后，实验矩阵按顺序执行：
+工程验收通过后，当前建议按依赖顺序推进正式实验：
 
 ```text
-E2 MIG identity
+E6 pause/checkpoint/offload/reload cost
+  -> E5-STATIC fixed-share co-location pilot
   -> E3 throughput / VUG calibration
   -> E4 staleness / ESS
-  -> E5 co-location interference
-  -> E6 pause/checkpoint/offload/reload cost
+  -> E5 dynamic share / priority isolation
   -> E7 recovery
   -> E8 multi-node convergence
 ```
 
-其中 E3–E8 的 `threshold: null` 必须用真实 baseline 数据标定并人工审定；首轮 smoke 不会
-自动把这些门禁改成 PASS。
+E2 MIG identity 在获得支持 MIG 的目标 GPU 后插入，不在当前 A10 上强行改拓扑。E3–E8
+带 `calibration_required` 的规则必须用真实 baseline 数据标定并人工审定；首轮 smoke 不会
+自动把这些门禁改成 PASS。当前逐项状态见[毕设推进状态](../project-progress.md)。
+
+当前单 A10 可以先使用 `make gpu-e6-action-cost` 获取 E6 的五步 scoped lifecycle 原始数据；
+切换到 HAMi 后使用 `make gpu-e5-interference` 获取 `E5-STATIC` 的静态份额串行/共置对照。
+`E5-STATIC` 是正式 E5 的前置 pilot，不包含在线 `set_share` / `set_priority`，不能据此将正式
+E5 标为通过。

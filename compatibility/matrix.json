@@ -64,6 +64,7 @@
   ],
   "policy": {
     "supported": "Implementation and evidence are available for the declared target environment.",
+    "hardware-verified-single-node": "The declared smoke scope has reproducible evidence from one real GPU node; broader hardware, topology, training, and performance claims remain separate.",
     "implemented-hardware-verification-pending": "The implementation and simulated conformance evidence exist, but no target hardware result is recorded.",
     "conditional": "The integration requires external components listed in required_dependencies.",
     "unsupported": "The capability is not implemented or is outside the current product scope."

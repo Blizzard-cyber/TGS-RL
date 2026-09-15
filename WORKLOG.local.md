@@ -1,12 +1,13 @@
 # 开发与 GPU 测试交接
 
-更新日期：2026-09-14。此文件按约定提交，用于两台机器通过 GitHub 协作；不是产品设计文档。
+更新日期：2026-09-15。此文件按约定提交，用于两台机器通过 GitHub 协作；不是产品设计文档。
 正式发布前移除本文件与 `handoff/`，长期内容保留在 `docs/`。
 
-## 当前周期：工程完整性，不是毕业实验
+## 当前周期：工程基线已完成，进入毕业实验
 
-目标是确认代码、模块和执行接线能正常运行，并处理失败、取消、重启和资源清理。
-暂不推进 VUG/算法优化或 E3–E8 性能标定，不用一个进度百分比代替验收证据。
+代码、模块、执行接线、失败/取消/重启/清理和单节点 GPU 部署验收已经完成。
+后续主线是正式 workload、E2–E8 实验、阈值标定和论文结果，不再无边界扩张控制面功能。
+统一进度口径见 `docs/project-progress.md`。
 
 - **开发机**：macOS，无 NVIDIA GPU。负责实现、review、CPU/Mock、真实子进程、文档与治理。
 - **测试机**：Linux + NVIDIA。拉取干净 commit，验证 CUDA/设备兑现和真实故障，提交脱敏结果。
@@ -14,11 +15,13 @@
 
 ## 当前工作树与 CI
 
-- 本批起点：`08b13313b95c82a86a19ef311db1976653d68ad7`，分支 `main`；本文件随本批实现一起提交。
-- 测试机复测前以实际拉取的 `git rev-parse HEAD` 为准，不要把起点 SHA 当作本批结果 SHA。
-- 当前改动尚未推送或获得新 CI 结果。本地通过不等于远端绿色；获授权推送后逐项检查新 SHA
-  的所有适用 workflow/job 到终态，skipped/cancelled/running 都不是通过。不绕过 hooks，
-  不加自动 `Co-authored-by` trailer。
+- 当前工程验收基线：`68f5aeaf4e601af01c8fa8d7e33cd3f16f94f898`，分支 `main`。
+- 验收完成时，本地 `main`、`origin/main` 与 A10 测试机均对齐该 SHA且工作树干净；本次
+  文档同步属于基线之后的未提交说明更新，不能冒充新的 GPU 验收基线。
+- 该 SHA 的 GitHub CI 10/10 全部 `success`，包括 Product E2E、Full-stack CPU Gate、
+  Process E2E、race/staticcheck、部署与兼容性治理。
+- 提交无自动 `Co-authored-by` trailer。新实验仍必须记录实际 `git rev-parse HEAD`，
+  不能把本基线的证据外推到后续代码。
 
 ## 本批改动
 
@@ -39,28 +42,40 @@
 | A10 聚合 | 故障 readiness → Full lifecycle → H2 HAMi → DRA 恢复 → E1，生成总汇摘要 |
 | 故障 readiness | 真实进程/响应丢失/重启/partial failure 可重复报告；GPU fault 保持 NOT_RUN |
 | Helm 实装 | 全部不可变控制面镜像、values、install/upgrade、健康检查和证据索引 |
+| cleanup 竞态 | preconditioned delete 仅把精确 NotFound 视为幂等成功，Conflict 继续 fail closed |
+| observation 回收 | 启动时原子剪枝、运行时回收已删除 Bundle 的 registration，关闭 watcher/ledger 泄漏 |
+| Helm 依赖就绪 | Gateway 必须确认四个 gRPC 依赖全部 serving，HTTP 200 + degraded 不再通过 |
 
 详细发现与本批最终验证见 [工程审查](docs/maintainers/engineering-review.md)。
 稳定架构见 [系统设计](docs/design/system-design.md)，使用入口见 [快速上手](docs/getting-started.md)。
 
-## 仍需推进的工程项
+## 仍需推进的项目项
 
-1. A10 lifecycle、H2、DRA 恢复 E1 与六服务 Helm smoke 已通过；详见
-   `docs/validation/a10-readiness-2026-09-14.md`。
-2. 提交本轮实机发现的跨批次幂等、Kubernetes 1.35 rollout 和 Helm helper state 修复后，
-   按精确新 SHA 再核对适用 CI；不要把工作树补丁的结果写成旧 SHA 原样通过。
+1. 工程基线与单节点 A10 验收已完成；详见
+   `docs/validation/a10-readiness-2026-09-14.md` 和 `docs/project-progress.md`。
+2. 接入完整或代表性的 veRL workload，冻结模型、数据、seed、batch、镜像和节点条件。
 3. `make engineering-fault-readiness` 已覆盖 worker crash、响应丢失、组件重启和 partial failure；
    GPU Pod/容量/节点网络故障仍为 NOT_RUN。
-4. 完整 veRL trainer/collective 仍待目标 workload；A10 最小 trainer 不能代表完整训练。
-5. MPS 在线 `set_share` 已因 NVIDIA 语义不成立而撤下；未来需 checkpoint/recreate 新 client 的
+4. 正式 E1 已通过；E6 五步 lifecycle 与 E5-STATIC 静态 HAMi 共置 pilot 已实现并通过本地
+   合同回归，但尚未在 A10 上生成新报告。正式 E5 仍需动态 share/priority 权威动作。
+5. E2 等待可用 MIG GPU，E8 等待至少两个 GPU 节点；不为过进度强改 A10 拓扑。
+6. MPS 在线 `set_share` 已因 NVIDIA 语义不成立而撤下；未来需 checkpoint/recreate 新 client 的
    节点级 adapter。A10 无 MIG，不为 E2 改拓扑。
-6. 新硬件证据必须包含 cluster/namespace UID、环境/模板/hook 摘要、rendered Job 和聚合摘要。
+7. 新硬件证据必须包含 cluster/namespace UID、环境/模板/hook 摘要、rendered Job 和聚合摘要。
 
-后续实验标定、吞吐/干扰公平性、长期存储、HA 与入口安全另行排期，不把它们混作已完成能力。
+当前实验入口：
+
+- `make gpu-e6-action-cost`：DRA Full GPU，使用代表性 CUDA tensor workload 独立执行并计时
+  `pause/checkpoint/offload/reload/resume`，验证真实 tensor checkpoint 与 allocator bytes。
+- `make gpu-e5-interference`：HAMi 双 worker 各 `40%`，baseline 错峰、variant 共置，
+  从逐 worker 吞吐推导静态份额干扰率；它不替代正式 E5 动态控制。
+
+吞吐/VUG、staleness/ESS、干扰、公平性、动作代价、恢复与收敛属于正式实验；长期存储、HA
+与入口安全属于超出当前毕设工程基线的生产化工作，不混作已完成能力。
 
 ## 本批本机验证
 
-- Python Runtime/Storage/Governance 515 passed，Gateway API 39 passed；Go 全模块/race、lint/staticcheck 通过。
+- Python Runtime/Storage/Governance 520 passed，Gateway API 39 passed；Go 全模块/race、lint/staticcheck 通过。
 - Console 73 unit tests + build/typecheck/lint；17 项 mock 浏览器路由/响应式检查通过。
 - 产品 E2E 重启/恢复通过；生成协议、docs、部署、Compose config、SBOM/公开内容/仓库检查通过。
 - 干净源码副本新建独立 venv、重新构建 Go，六服务 smoke 四次操作成功、13 条 Trace、无 allocation 残留；
@@ -82,8 +97,10 @@
 | 2026-09-12 | `9c65d46` | E1 恢复回归 | HAMi 卸载并恢复 Device Plugin 后通过 |
 | 2026-09-13 | `a45a432` | H2 HAMi | PASSED，双 worker 同卡各 40%/9211 MiB，测量期正重叠；`docs/validation/h2-hami-concurrency-2026-09-13.md` |
 | 2026-09-13 | `a45a432` | E1 恢复回归 | Device Plugin 1/1、单 GPU 容量恢复、无 HAMi 注解或 workload 残留 |
-| 2026-09-14 | `0295132` | A10 总体验收 | PASSED：故障 readiness、Full lifecycle、H2、DRA 恢复 E1；`docs/validation/a10-readiness-2026-09-14.md` |
-| 2026-09-14 | `0295132` 镜像 + 当前修复 | 六服务 Helm | PASSED：6/6 Ready、A10 lifecycle、315 项证据索引；同上 |
+| 2026-09-14 | `0295132` | 中间 A10 验收批次 | PASSED，但后续最终 SHA 又关闭 cleanup/registration/依赖就绪问题；仅保留为历史证据 |
+| 2026-09-14 | `0295132` 镜像 + 工作树修复 | 中间 Helm 批次 | PASSED，315 项证据；已由 `68f5aea` 干净基线两轮结果取代 |
+| 2026-09-14 | `68f5aea` | 最终 A10 总体验收 | PASSED：四组件同一干净 SHA 全部通过；MIG、多节点和 GPU 破坏性故障保持 NOT_RUN |
+| 2026-09-14 | `68f5aea` | 六服务 Helm install + upgrade | PASSED：同 8 个 PVC、revision 2、两轮各 315 项、630/630 哈希匹配、6/6 Ready |
 
 这些是单节点限定证据，不证明 OOM 隔离、公平性、动态份额、完整训练、MIG/MPS、多节点或性能收益。
 E2–E8 未执行，九条实验阈值仍待后续真实 baseline 标定。
@@ -113,6 +130,8 @@ DRA 0.5.0、Minikube 1.38.1。**这是历史快照，复测先检查当前状态
 - H2：`.cache/tgsrl/hami-concurrency-smoke/`
 - A10 汇总：`.cache/tgsrl/a10-readiness/readiness-summary.json`
 - Helm：`.cache/tgsrl/helm-smoke/evidence-index.json`
+- Helm 第二轮：`.cache/tgsrl/helm-smoke-round2/evidence-index.json`
+- 最终审计：`.cache/tgsrl/final-a10-audit-68f5aea.json`
 - 故障 readiness：`.cache/tgsrl/engineering-fault-readiness/report.json`
 
 每批复测前归档旧目录，不能覆盖原证据。提交给开发机的是**脱敏副本**：

@@ -112,6 +112,7 @@ make gpu-helm-smoke
 
 第一个命令检查 context、节点、pull secret 与镜像 digest，并创建 worker-registry Secret；
 第二个命令 install/upgrade 六服务、等待 rollout、检查 NetworkPolicy/Gateway/Console，
+要求 Gateway 的 Job Controller、Scheduler、Runtime、Experiment 四个 gRPC 依赖全部 serving，
 执行 A10 Full lifecycle，并在 `.cache/tgsrl/helm-smoke/` 保存资源、日志和 SHA-256 索引。
 宿主机 driver 通过临时 Gateway/registry port-forward 访问集群服务，Pod 内仍使用 ClusterIP
 registry 与 scoped token。已有证据目录不会被覆盖。完整顺序见
@@ -147,8 +148,9 @@ operator:
       verifyDeviceIdentities: true
 ```
 
-该模式仍需目标集群验证 RuntimeClass、DRA、NetworkPolicy 和 GPU 驱动注入；已有 E1/H1/H2
-使用专用 GPU smoke 部署，不是 Helm 实装证据。多节点需要独立的集群 inventory agent，当前
+最终 `68f5aea` 已在专用单节点 A10 上完成六服务 Helm install/upgrade 与 A10 lifecycle，
+但其他目标集群仍需独立验证 RuntimeClass、DRA、NetworkPolicy、StorageClass、CNI 和 GPU
+驱动注入；历史 E1/H1/H2 使用专用 GPU smoke 部署，不能单独替代 Helm 实装证据。多节点需要独立的集群 inventory agent，当前
 不把一个本地 Scheduler 的 `nvidia-smi` 结果扩展成多节点能力。MPS 模式会被 chart 拒绝。
 
 ## 4. NVIDIA 首次链路验证

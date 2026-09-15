@@ -27,6 +27,8 @@ type CompileInput struct {
 	JobRun          *tgsrlv1.JobRun
 	RuntimeManifest *tgsrlv1.RuntimeManifest
 	PlacementPlan   *tgsrlv1.PlacementPlan
+	replicaIndex    int
+	replicaCount    int
 }
 
 type RuntimeClassConfig struct {
@@ -75,6 +77,8 @@ type normalizedInput struct {
 	binding          *tgsrlv1.Binding
 	draDevices       []DRADevice
 	hamiDevices      []HAMIDevice
+	replicaIndex     int
+	replicaCount     int
 }
 
 func (in CompileInput) ManifestHasNoImageDigests() bool {

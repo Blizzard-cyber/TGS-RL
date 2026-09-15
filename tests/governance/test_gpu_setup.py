@@ -57,6 +57,8 @@ def test_kueue_patch_preserves_existing_resources() -> None:
         "verl-lifecycle-job.example.json",
         "hami-job.example.json",
         "hami-concurrency-job.example.json",
+        "e5-interference-job.example.json",
+        "e6-action-cost-job.example.json",
     ],
 )
 def test_gpu_job_template_uses_current_canonical_contract_id(template: str) -> None:
@@ -254,6 +256,7 @@ def test_gpu_network_profiles_keep_integrity_checks_and_are_explicit() -> None:
     assert "/workspace/.venv" not in local_dockerfile
     assert "FROM ${TGSRL_DISTROLESS_BASE_IMAGE}" in bootstrap_dockerfile
     assert "TGSRL_PYPI_INDEX_URL" in gpu_dockerfile
+    assert "scripts/gpu-experiment-workload.py" in gpu_dockerfile
     services_dockerfile = (ROOT / "Dockerfile.services").read_text(encoding="utf-8")
     for target in (
         "scheduler-nvidia",
@@ -355,6 +358,19 @@ def test_a10_readiness_aggregates_full_hami_and_dra_restore() -> None:
     assert '"MIG: NVIDIA A10 does not expose a usable MIG topology"' in script
 
 
+def test_e5_and_e6_make_targets_use_dedicated_campaign_contracts() -> None:
+    makefile = (ROOT / "Makefile").read_text(encoding="utf-8")
+    e6 = makefile.split("gpu-e6-action-cost:", 1)[1].split("\ngpu-e5-interference:", 1)[0]
+    e5 = makefile.split("gpu-e5-interference:", 1)[1].split("\nengineering-fault-readiness:", 1)[0]
+
+    assert "--campaign configs/gates/e1-e8.json" in e6
+    assert "--experiment E6" in e6
+    assert ".cache/tgsrl/e1-e8/e6-action-cost/report.json" in e6
+    assert "--campaign configs/gates/e5-static-interference.json" in e5
+    assert "--experiment E5-STATIC" in e5
+    assert ".cache/tgsrl/e5-static-interference/e5-static-interference/report.json" in e5
+
+
 @pytest.mark.parametrize(
     ("name", "returncode"),
     [("NVIDIA A10", 0), ("NVIDIA L4", 1)],
@@ -429,6 +445,14 @@ def test_gpu_render_config_supports_helm_port_forward_overrides(tmp_path: Path) 
     assert rendered["defaults"]["worker_registry_url"] == "http://127.0.0.1:15091"
     assert rendered["targets"]["A10-FULL"]["job_template"].endswith(
         "configs/hardware/verl-lifecycle-job.example.json"
+    )
+    assert rendered["targets"]["E5-STATIC"]["execution_mode"] == "hami-vgpu"
+    assert rendered["targets"]["E5-STATIC"]["job_template"].endswith(
+        "configs/hardware/e5-interference-job.example.json"
+    )
+    assert rendered["targets"]["E6"]["execution_mode"] == "kubernetes-dra"
+    assert rendered["targets"]["E6"]["job_template"].endswith(
+        "configs/hardware/e6-action-cost-job.example.json"
     )
 
 

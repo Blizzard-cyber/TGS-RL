@@ -17,10 +17,14 @@ required_files=(
   api/openapi.json
   compatibility/sbom/lockfiles.spdx.json
   configs/hardware/environment.example.json
+  configs/hardware/e5-interference-job.example.json
+  configs/hardware/e6-action-cost-job.example.json
   configs/hardware/verl-job.example.json
   configs/hardware/verl-lifecycle-job.example.json
+  configs/gates/e5-static-interference.json
   configs/gates/a10-readiness.json
   configs/gates/gate-a10-readiness.json
+  configs/scenarios/e5-static-interference.yaml
   configs/scenarios/a10-full-lifecycle.yaml
   configs/hardware/gpu-requirements.in
   configs/hardware/gpu-requirements.lock
@@ -30,6 +34,7 @@ required_files=(
   scripts/check-docs.py
   scripts/gpu-configure-registry.sh
   scripts/gpu-a10-readiness.sh
+  scripts/gpu-experiment-workload.py
   scripts/engineering-fault-readiness.py
   scripts/gpu-render-helm-values.sh
   scripts/gpu-helm-smoke.sh

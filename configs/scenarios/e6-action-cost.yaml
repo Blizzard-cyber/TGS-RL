@@ -6,8 +6,8 @@
   "workload": {"actions": ["pause", "checkpoint", "offload", "reload", "resume"]},
   "execution_plan": {
     "baseline": [{"operation": "provision"}, {"operation": "apply_action", "action": "bind"}, {"operation": "launch"}, {"operation": "verify_device_identity"}, {"operation": "measure"}, {"operation": "stop"}, {"operation": "cleanup"}],
-    "variant": [{"operation": "provision"}, {"operation": "apply_action", "action": "bind"}, {"operation": "launch"}, {"operation": "verify_device_identity"}, {"operation": "apply_action", "action": "pause"}, {"operation": "apply_action", "action": "checkpoint"}, {"operation": "apply_action", "action": "offload"}, {"operation": "apply_action", "action": "reload"}, {"operation": "apply_action", "action": "resume"}, {"operation": "measure"}, {"operation": "stop"}, {"operation": "cleanup"}]
+    "variant": [{"operation": "provision"}, {"operation": "apply_action", "action": "bind"}, {"operation": "launch"}, {"operation": "verify_device_identity"}, {"operation": "apply_worker_action", "action": "pause"}, {"operation": "apply_worker_action", "action": "checkpoint"}, {"operation": "apply_worker_action", "action": "offload"}, {"operation": "apply_worker_action", "action": "reload"}, {"operation": "apply_worker_action", "action": "resume"}, {"operation": "measure"}, {"operation": "stop"}, {"operation": "cleanup"}]
   },
   "faults": [],
-  "required_evidence": ["action-start", "action-receipt", "readiness"]
+  "required_evidence": ["action-start", "action-receipt", "checkpoint", "gpu-memory-release", "gpu-memory-restore", "readiness"]
 }
