@@ -130,16 +130,19 @@ adapter 产物，由真实静态/同源代理服务提供；Playwright 使用本
 开发机未执行 Docker build/pull 或 GPU 测试；测试机已在最终 `68f5aea` 干净基线上完成
 A10 lifecycle/H2/DRA 恢复 E1，并完成六服务 Helm install/upgrade 两轮 smoke。详见
 [A10 工程与 Helm 验收](../validation/a10-readiness-2026-09-14.md)。
+后续 `701e11b`/`3c9147c` 又完成 E6 与 E5-STATIC 的单 A10 数据采集；两项独立 report
+均为 `PASSED`，但数值阈值未标定，campaign gate 仍为 `BLOCKED`。详见
+[E6 与 E5-STATIC 单 A10 实验记录](../validation/e5-e6-single-a10-2026-09-16.md)。
 
 ## 后续按工程依赖推进
 
-1. 冻结 `68f5aea` 为毕业实验前工程基线；非实验阻断问题不再扩张控制面范围。
-2. 接入完整或代表性的 veRL workload，冻结模型、数据、seed、batch、镜像和节点条件。
-3. 当前工作树已补齐 E6 五步 scoped lifecycle 和 E5-STATIC 静态 HAMi 共置 pilot；
-   通过本地合同回归后仍须在 A10 上运行。随后推进 E3，并接入 E4/正式 E5/E7 所需环境 hook。
-4. 获得 MIG 硬件后执行 E2；准备至少两个 GPU 节点后执行 E8。
-5. 每轮核对正常/异常退出、控制超时、重启恢复、UUID 与资源清理，保留脱敏证据。
-6. 完成阈值评审、统计分析、论文结果章节和答辩材料。统一进度见
+1. 保留 `68f5aea` 为实验前工程基线，并以各实验报告中的 source commit 绑定后续结果。
+2. 评审 E6 三项动作延迟和 E5-STATIC 干扰率，锁定阈值、重复次数与统计方法。
+3. 接入完整或代表性的 veRL workload，冻结模型、数据、seed、batch、镜像和节点条件，推进 E3。
+4. 接入 E4/正式 E5/E7 所需环境 hook；正式 E5 不继承 E5-STATIC 的结果。
+5. 获得 MIG 硬件后执行 E2；准备至少两个 GPU 节点后执行 E8。
+6. 每轮核对正常/异常退出、控制超时、重启恢复、UUID 与资源清理，保留脱敏证据。
+7. 完成统计分析、图表、论文结果章节和答辩材料。统一进度见
    [毕设推进状态](../project-progress.md)。
 
 历史 E1/H1/H2 报告继续引用原 commit，不重写 source hash，不把本地 CPU PASS 当作新的 GPU PASS。

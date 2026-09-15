@@ -1,6 +1,6 @@
 # 开发与 GPU 测试交接
 
-更新日期：2026-09-15。此文件按约定提交，用于两台机器通过 GitHub 协作；不是产品设计文档。
+更新日期：2026-09-16。此文件按约定提交，用于两台机器通过 GitHub 协作；不是产品设计文档。
 正式发布前移除本文件与 `handoff/`，长期内容保留在 `docs/`。
 
 ## 当前周期：工程基线已完成，进入毕业实验
@@ -15,10 +15,11 @@
 
 ## 当前工作树与 CI
 
-- 当前工程验收基线：`68f5aeaf4e601af01c8fa8d7e33cd3f16f94f898`，分支 `main`。
-- 验收完成时，本地 `main`、`origin/main` 与 A10 测试机均对齐该 SHA且工作树干净；本次
-  文档同步属于基线之后的未提交说明更新，不能冒充新的 GPU 验收基线。
-- 该 SHA 的 GitHub CI 10/10 全部 `success`，包括 Product E2E、Full-stack CPU Gate、
+- 最新硬件实验实现基线：`3c9147c83065434eef1f28a0d4731306fa3f90ba`，分支 `main`；
+  实验前工程验收基线仍为 `68f5aeaf4e601af01c8fa8d7e33cd3f16f94f898`。
+- E6 报告绑定 `701e11b13ed9a14359593e7bd73c80608017de95`，E5-STATIC 报告绑定
+  `3c9147c83065434eef1f28a0d4731306fa3f90ba`；两次运行时工作树均干净。
+- `68f5aea` 的 GitHub CI 10/10 全部 `success`，包括 Product E2E、Full-stack CPU Gate、
   Process E2E、race/staticcheck、部署与兼容性治理。
 - 提交无自动 `Co-authored-by` trailer。新实验仍必须记录实际 `git rev-parse HEAD`，
   不能把本基线的证据外推到后续代码。
@@ -56,8 +57,8 @@
 2. 接入完整或代表性的 veRL workload，冻结模型、数据、seed、batch、镜像和节点条件。
 3. `make engineering-fault-readiness` 已覆盖 worker crash、响应丢失、组件重启和 partial failure；
    GPU Pod/容量/节点网络故障仍为 NOT_RUN。
-4. 正式 E1 已通过；E6 五步 lifecycle 与 E5-STATIC 静态 HAMi 共置 pilot 已实现并通过本地
-   合同回归，但尚未在 A10 上生成新报告。正式 E5 仍需动态 share/priority 权威动作。
+4. 正式 E1 已通过；E6 与 E5-STATIC 已完成真实 A10 采集，独立 report 均为 `PASSED`，
+   但阈值未标定，campaign gate 仍为 `BLOCKED`。正式 E5 仍需动态 share/priority 权威动作。
 5. E2 等待可用 MIG GPU，E8 等待至少两个 GPU 节点；不为过进度强改 A10 拓扑。
 6. MPS 在线 `set_share` 已因 NVIDIA 语义不成立而撤下；未来需 checkpoint/recreate 新 client 的
    节点级 adapter。A10 无 MIG，不为 E2 改拓扑。
@@ -101,9 +102,11 @@
 | 2026-09-14 | `0295132` 镜像 + 工作树修复 | 中间 Helm 批次 | PASSED，315 项证据；已由 `68f5aea` 干净基线两轮结果取代 |
 | 2026-09-14 | `68f5aea` | 最终 A10 总体验收 | PASSED：四组件同一干净 SHA 全部通过；MIG、多节点和 GPU 破坏性故障保持 NOT_RUN |
 | 2026-09-14 | `68f5aea` | 六服务 Helm install + upgrade | PASSED：同 8 个 PVC、revision 2、两轮各 315 项、630/630 哈希匹配、6/6 Ready |
+| 2026-09-16 | `701e11b` | E6 lifecycle 动作代价 | 执行报告 PASSED：pause/checkpoint/reload 为 45.042/704.530/260.322 ms，五类 receipt 与显存释放/恢复成立；阈值待标定 |
+| 2026-09-16 | `3c9147c` | E5-STATIC HAMi 干扰 pilot | 执行报告 PASSED：双 worker 各 40%/9211 MiB，baseline 重叠 0 ms、variant 重叠 8570.544 ms、干扰率 0.229306；正式 E5 仍 NOT_RUN |
 
 这些是单节点限定证据，不证明 OOM 隔离、公平性、动态份额、完整训练、MIG/MPS、多节点或性能收益。
-E2–E8 未执行，九条实验阈值仍待后续真实 baseline 标定。
+E6 已完成采集但三项阈值待标定；E5-STATIC 是独立 pilot，正式 E2–E5/E7–E8 仍未完成。
 
 测试机既有环境快照：Ubuntu 22.04 x86_64、NVIDIA A10、580.178.04 driver、CUDA driver API 13.0、
 Docker 29.8.0、Compose 5.5.1、Toolkit 1.20.0、Kubernetes 1.35.1、Kueue 0.19.2、NFD 0.18.3、
@@ -132,6 +135,9 @@ DRA 0.5.0、Minikube 1.38.1。**这是历史快照，复测先检查当前状态
 - Helm：`.cache/tgsrl/helm-smoke/evidence-index.json`
 - Helm 第二轮：`.cache/tgsrl/helm-smoke-round2/evidence-index.json`
 - 最终审计：`.cache/tgsrl/final-a10-audit-68f5aea.json`
+- E6：`.cache/tgsrl/e1-e8/e6-action-cost/`
+- E5-STATIC：`.cache/tgsrl/e5-static-interference/e5-static-interference/`
+- E5/E6 审计：`.cache/tgsrl/e5-e6-audit-2026-09-16.json`
 - 故障 readiness：`.cache/tgsrl/engineering-fault-readiness/report.json`
 
 每批复测前归档旧目录，不能覆盖原证据。提交给开发机的是**脱敏副本**：

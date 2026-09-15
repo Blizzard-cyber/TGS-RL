@@ -12,8 +12,8 @@
 | E2 | MIG 精确设备执行 | **BLOCKED / NOT_RUN**，当前 A10 无可用 MIG 拓扑 | MIG profile、parent UUID、设备身份一致；bind/rebind 成功 | action success 已锁定 |
 | E3 | 吞吐与 Valuable Useful GPU | **NOT_RUN**，待正式 workload | 同模型、数据、seed、节点；采集 GPU active/useful time | throughput 下限已锁定；VUG 待校准 |
 | E4 | policy lag、staleness 与 ESS | **NOT_RUN**，待环境 hook | 注入 policy update delay；采集真实 batch quality | 待校准 |
-| E5 | 共置干扰隔离 | **NOT_RUN**；静态份额 pilot 已实现、尚未实机运行 | 正式 E5 仍需 competing workload 与动态 share/priority 控制 | 待校准 |
-| E6 | lifecycle 动作代价 | **NOT_RUN**；五步 scoped lifecycle 与代表性 workload 已实现、尚未实机运行 | pause/checkpoint/offload/reload/resume 全部有独立 receipt | 待校准 |
+| E5 | 共置干扰隔离 | **NOT_RUN**；E5-STATIC 已完成 A10 采集，但不替代正式 E5 | 正式 E5 仍需 competing workload 与动态 share/priority 控制 | 待校准 |
+| E6 | lifecycle 动作代价 | **BLOCKED**；A10 执行报告 `PASSED`、`GPU_SINGLE_NODE` | pause/checkpoint/offload/reload/resume 全部有独立 receipt | 三项延迟阈值待校准 |
 | E7 | 故障与事务恢复 | **NOT_RUN**，CPU/进程故障不替代 GPU fault | worker exit、response loss 均有 injected/recovered 事件 | action success 已锁定；恢复时间待校准 |
 | E8 | 多节点稳定性与收敛 | **BLOCKED / NOT_RUN**，缺少两个 GPU 节点 | 至少两节点；node loss 恢复；两侧节点集合一致 | throughput 下限已锁定；收敛质量待校准 |
 
@@ -74,6 +74,12 @@ baseline 的两个 worker 错峰执行、variant 的两个 worker 并发执行�
 该 pilot 用于得到当前硬件上的静态份额干扰边界，不满足正式 E5 的在线 `set_share` /
 `set_priority` 要求，因此不会修改正式 E5 状态。
 
+2026-09-16 的 A10 运行中，E5-STATIC 独立 report 为 `PASSED`：baseline
+`worker_overlap_ms=0`，variant `worker_overlap_ms=8570.544`、两个并发 worker、总份额
+`0.8`，观测干扰率为 `0.229306`。由于该规则仍为 `calibration_required`，独立 campaign
+gate 保持 `BLOCKED`。详细来源、镜像和哈希见
+[E6 与 E5-STATIC 单 A10 实验记录](../validation/e5-e6-single-a10-2026-09-16.md)。
+
 A10 实验前 readiness 另有独立 `A10-FULL` campaign。它在 E1 已证明的 exact-device 主链上，
 通过 scoped registry 调用 cooperative worker，要求 checkpoint 存在，并把 PyTorch allocator 的
 allocated/reserved bytes 从 worker → bootstrap → registry → hardware driver → Gate 证据链
@@ -91,6 +97,11 @@ make gpu-restore-dra
 make gpu-up
 make gpu-e6-action-cost
 ```
+
+2026-09-16 的 A10 运行中，E6 独立 report 为 `PASSED`，pause/checkpoint/reload
+分别为 `45.042 ms`、`704.530 ms`、`260.322 ms`；offload/reload 的 allocator bytes
+变化和五类动作 receipt 均已核验。三项延迟规则仍为 `calibration_required`，因此 E6
+在 campaign 中保持 `BLOCKED`，等待阈值评审。
 
 仓库提供 `scripts/tgsrl-hardware-environment-driver`。目标环境从
 `configs/hardware/environment.example.json` 派生本地配置，至少指定 Gateway URL、固定

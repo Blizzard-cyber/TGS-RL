@@ -59,6 +59,7 @@ flowchart LR
 | HAMi 单 worker 份额 | [H1 验证记录](validation/h1-hami-vgpu-2026-09-12.md) |
 | HAMi 双 worker 同卡并发 | [H2 验证记录](validation/h2-hami-concurrency-2026-09-13.md) |
 | A10 lifecycle、恢复与六服务 Helm | [A10 工程与 Helm 验收](validation/a10-readiness-2026-09-14.md) |
+| E6 动作代价与 E5-STATIC 干扰 | [单 A10 实验记录](validation/e5-e6-single-a10-2026-09-16.md) |
 
 验证记录只适用于其中写明的 commit、环境和场景；不能把 E1/H1/H2、A10 readiness、Helm
 smoke 或 CPU CI 解释为 MIG/MPS、完整训练、生产可靠性或调度收益已证明。工程链路验证已经

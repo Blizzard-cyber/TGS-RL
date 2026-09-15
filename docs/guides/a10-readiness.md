@@ -152,8 +152,10 @@ make gpu-e5-interference
 ```
 
 E6 使用代表性 CUDA tensor workload 测五步 lifecycle；`gpu-e5-interference` 执行
-`E5-STATIC` 静态份额 pilot。两者没有对应提交的 A10 报告前仍为 `NOT_RUN`，且
-`E5-STATIC` 不替代正式 E5 动态 share/priority 门禁。
+`E5-STATIC` 静态份额 pilot。2026-09-16 已完成一轮真实 A10 采集，两项独立执行报告均为
+`PASSED`；数值阈值仍待标定，所以对应 campaign gate 为 `BLOCKED`。`E5-STATIC` 不替代
+正式 E5 动态 share/priority 门禁。详见
+[E6 与 E5-STATIC 单 A10 实验记录](../validation/e5-e6-single-a10-2026-09-16.md)。
 
 ## Helm 六服务验收
 

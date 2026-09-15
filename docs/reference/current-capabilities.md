@@ -207,6 +207,13 @@ gate-tools/campaign/gate/scenario/executor/driver digest，拒绝旧 commit、�
   variant，由 orchestrator 从逐 worker 吞吐推导 `interference_ratio`。该 `E5-STATIC`
   pilot 不声明在线动态份额或优先级能力，正式 E5 状态不因此改变。
 
+2026-09-16 的单 A10 实机运行已为两项入口生成 `GPU_SINGLE_NODE`、`simulated=false`
+报告：E6 与 E5-STATIC 的独立执行报告均为 `PASSED`。E6 测得 pause/checkpoint/reload
+为 `45.042/704.530/260.322 ms`；E5-STATIC 测得 baseline 重叠 `0 ms`、variant 重叠
+`8570.544 ms`、干扰率 `0.229306`。由于数值规则仍为 `calibration_required`，两个
+campaign gate 都保持 `BLOCKED`；正式 E5 仍为 `NOT_RUN`。详见
+[E6 与 E5-STATIC 单 A10 实验记录](../validation/e5-e6-single-a10-2026-09-16.md)。
+
 独立 `A10-FULL` readiness 使用同一 executor，但 worker action 直接走 current
 JobRunBundle 中的 scoped registry token，且只允许一个 exact sandbox/generation。它要求
 offload/resume 动作前后存在权威 allocator bytes；`make gpu-a10-readiness` 再组合 H2 和

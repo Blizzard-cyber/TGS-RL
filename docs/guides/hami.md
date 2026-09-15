@@ -237,6 +237,13 @@ TGSRL_GPU_MANIFEST=compatibility/manifests/hami-smoke-verl.yaml \
 make gpu-hami-smoke
 ```
 
+如果当前使用 Helm 常驻控制面，应先保存 release/资源快照并执行
+`helm uninstall tgsrl --namespace tgsrl-system --wait`；chart-managed PVC 带 keep
+策略，不会随 release 删除。HAMi 实验结束并执行 `make gpu-restore-dra` 后，再用
+`make gpu-render-helm-values` 和 `scripts/deploy-full-stack.sh install
+.cache/tgsrl/gpu-helm-values.yaml` 恢复六服务。切换前还应重新执行
+`make gpu-configure-access`，因为 Compose Operator 使用的 scoped token 有效期为 24 小时。
+
 `gpu-prepare-hami` 从 HAMi 官方 GitHub Release 获取并锁定 chart `2.10.0` 及其 SHA-256；
 启用 `TGSRL_NETWORK_PROFILE=cn` 时只替换下载传输地址，仍校验同一摘要。脚本停用 Minikube 自带 NVIDIA
 Device Plugin，安装 HAMi、标记测试节点并创建独立 Kueue `hami` queue。脚本拒绝在
@@ -321,6 +328,12 @@ make gpu-e5-interference
 这项 `E5-STATIC` pilot 不声明 HAMi 在线动态修改份额或优先级。正式 E5 仍要求 Scheduler
 权威动作和 infrastructure readback；当前 HAMi 实现只兑现启动时静态 core/memory 配额。
 
+2026-09-16 已在单张 A10 上完成该 pilot：两个 worker 均实际获得 `40%` core 和
+`9211 MiB`，baseline 重叠为 `0 ms`，variant 重叠为 `8570.544 ms`，由逐 worker
+吞吐推导的干扰率为 `0.229306`。独立执行报告为 `PASSED`；由于干扰率阈值仍为
+`calibration_required`，campaign gate 保持 `BLOCKED`。见
+[E6 与 E5-STATIC 单 A10 实验记录](../validation/e5-e6-single-a10-2026-09-16.md)。
+
 在 NVIDIA A10 上做毕业设计实验前验收时，优先使用 `make gpu-a10-hami-readiness` 或
 完整的 `make gpu-a10-readiness`。它会先核对卡型，再复用同一 H2 合同，并在结束后恢复
 DRA；完整入口还会复跑 E1 和生成聚合摘要。详见 [A10 Readiness](a10-readiness.md)。
@@ -334,7 +347,7 @@ make gpu-restore-dra
 
 不要用 MIG 测试阻塞不具备该能力的设备。后续分开验证：
 
-1. **E5/HAMi 干扰边界**：先完成 E5-STATIC，再补动态 share/priority、OOM 与单 worker 失败；
+1. **E5/HAMi 干扰边界**：评审 E5-STATIC 阈值，再补动态 share/priority、OOM 与单 worker 失败；
 2. **HAMi 动态份额**：验证运行中修改 core/memory 份额及 readback；
 3. **MPS**：未来实现 checkpoint/recreate 新 client 后，验证启动限额、incarnation readback 和显存边界；
 4. **MIG**：获得支持型号后再执行 E2，验证 DeviceClass、parent UUID 和 rebind。

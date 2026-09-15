@@ -153,7 +153,7 @@ API 和字段说明见[API、CLI 与 Console](docs/guides/api-and-console.md)。
 | 空白 NVIDIA 主机验证全链路 | [GPU Smoke 指南](docs/guides/gpu-smoke.md) | Full GPU、Kubernetes/DRA、CUDA worker、注册与清理 |
 | 验证同卡分数共享 | [HAMi 指南](docs/guides/hami.md) | H1 份额兑现与 H2 同卡并发 |
 | 毕业设计实验前做 A10 工程验收 | [A10 Readiness](docs/guides/a10-readiness.md) | Full lifecycle、显存释放/恢复、H2、DRA 回归、Helm 证据 |
-| 当前单卡毕业实验 | [E1–E8 设计](docs/design/gate-e1-e8.md) | E6 lifecycle cost 与 E5-STATIC 静态份额干扰；实机结果生成前保持 NOT_RUN |
+| 当前单卡毕业实验 | [E1–E8 设计](docs/design/gate-e1-e8.md) | E6 与 E5-STATIC 已完成 A10 采集，当前等待阈值标定 |
 | 部署 Kubernetes 控制面 | [部署指南](docs/guides/deployment.md) | 六服务 Helm 的配置、依赖和部署边界 |
 
 **当前阶段已从工程实现转入正式毕业实验。** 最终工程基线 `68f5aea` 已通过 A10 lifecycle、
@@ -162,8 +162,9 @@ H2、DRA 恢复 E1 和同一 PVC 上连续两轮六服务 Helm smoke；正式 E1
 强隔离或性能收益已经证明。完整阶段矩阵见[毕设推进状态](docs/project-progress.md)。
 历史证据各自绑定当时的源代码版本，不能自动覆盖后续修改。
 
-当前工作树已经补齐 E6 五步 lifecycle 实验与 `E5-STATIC` 单卡静态份额干扰 pilot；
-两者仍需在 A10 上运行并评审阈值。`E5-STATIC` 不替代正式 E5 的动态 share/priority 门禁。
+E6 五步 lifecycle 与 `E5-STATIC` 单卡静态份额干扰 pilot 已在真实 A10 上完成执行，
+两项独立 report 均为 `PASSED`；因数值阈值尚未标定，对应 campaign gate 仍为 `BLOCKED`。
+`E5-STATIC` 不替代正式 E5 的动态 share/priority 门禁。
 
 | 已归档的硬件验证 | 记录 |
 |---|---|
@@ -171,6 +172,7 @@ H2、DRA 恢复 E1 和同一 PVC 上连续两轮六服务 Helm smoke；正式 E1
 | H1 HAMi 单 worker | [请求份额与实际分配](docs/validation/h1-hami-vgpu-2026-09-12.md) |
 | H2 HAMi 双 worker | [同卡身份与执行重叠](docs/validation/h2-hami-concurrency-2026-09-13.md) |
 | A10 lifecycle、H2、DRA 恢复与 Helm | [工程与部署验收](docs/validation/a10-readiness-2026-09-14.md) |
+| E6 与 E5-STATIC | [动作代价与静态共置干扰](docs/validation/e5-e6-single-a10-2026-09-16.md) |
 
 ## 代码地图
 
