@@ -64,7 +64,7 @@
     "safePointPolicy": {"enabled": true, "trigger": "SAFE_POINT_TRIGGER_EXPLICIT", "maximumWait": "30s", "requiredPhaseIds": ["decode"]},
     "capabilities": {"checkpointRestore": true, "policyHotSwap": true}
   },
-  "resourcesPerUnit": {"cpuMillis": "4000", "memoryBytes": "12884901888", "acceleratorUnits": 0.4},
+  "resourcesPerUnit": {"cpuMillis": "4000", "memoryBytes": "8589934592", "acceleratorUnits": 0.4},
   "requiredCapabilities": {"names": ["nvidia-gpu"], "algorithms": ["grpo"], "rolloutModes": ["partially_async"], "supportedActions": ["bind"]},
   "desiredUnits": 2,
   "priority": 1,

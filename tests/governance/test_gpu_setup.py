@@ -130,6 +130,25 @@ def test_gpu_workload_lock_matches_declared_direct_versions() -> None:
     assert "--index-strategy" not in dockerfile
 
 
+def test_e5_static_resource_request_fits_two_workers_on_a10() -> None:
+    e5_job = json.loads(
+        (ROOT / "configs" / "hardware" / "e5-interference-job.example.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    h2_job = json.loads(
+        (ROOT / "configs" / "hardware" / "hami-concurrency-job.example.json").read_text(
+            encoding="utf-8"
+        )
+    )
+
+    resources = e5_job["resourcesPerUnit"]
+    assert e5_job["desiredUnits"] == 2
+    assert resources["acceleratorUnits"] == 0.4
+    assert resources["memoryBytes"] == h2_job["resourcesPerUnit"]["memoryBytes"] == str(8 << 30)
+    assert int(resources["memoryBytes"]) * e5_job["desiredUnits"] <= 23028 << 20
+
+
 def test_gpu_runtime_test_image_is_bom_pinned() -> None:
     preflight = (ROOT / "scripts" / "gpu-preflight.sh").read_text(encoding="utf-8")
     bom = (ROOT / "compatibility" / "bom" / "runtime.yaml").read_text(encoding="utf-8")
