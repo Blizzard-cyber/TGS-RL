@@ -275,10 +275,11 @@ make gpu-down
 
 E1 通过后先执行 [A10 工程验收](a10-readiness.md)，确认 cooperative offload/resume、
 显存释放/恢复、HAMi H2、DRA 恢复和可选 Helm 六服务实装。它仍不代表毕业实验结论成立。
-E6 与 E5-STATIC 已于 2026-09-16 完成首轮真实 A10 采集；当前建议按依赖顺序继续推进：
+E6 与 E5-STATIC 已于 2026-09-16 完成首轮真实 A10 采集，E6 随后完成独立门禁确认；
+当前建议按依赖顺序继续推进：
 
 ```text
-E6 independent confirmation / E5-STATIC threshold calibration
+E5-STATIC threshold calibration
   -> E3 throughput / VUG
   -> E4 staleness / ESS
   -> E5 dynamic share / priority isolation
@@ -292,6 +293,6 @@ E2 MIG identity 在获得支持 MIG 的目标 GPU 后插入，不在当前 A10 �
 
 当前单 A10 已用 `make gpu-e6-action-cost` 和 `make gpu-e5-interference` 完成首轮采集。
 E6 与 E5-STATIC 独立执行报告均为 `PASSED`。E6 已冻结 `60/900/400 ms` 门槛，
-必须由后续干净提交独立确认；E5-STATIC 阈值仍未冻结。`E5-STATIC` 是正式 E5 的
+并在 `13d0f34` 独立确认中三项全部通过；E5-STATIC 阈值仍未冻结。`E5-STATIC` 是正式 E5 的
 前置 pilot，不包含在线 `set_share` / `set_priority`，不能据此将正式 E5 标为通过。结果见
 [E6 与 E5-STATIC 单 A10 实验记录](../validation/e5-e6-single-a10-2026-09-16.md)。

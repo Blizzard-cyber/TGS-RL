@@ -57,8 +57,8 @@
 2. 接入完整或代表性的 veRL workload，冻结模型、数据、seed、batch、镜像和节点条件。
 3. `make engineering-fault-readiness` 已覆盖 worker crash、响应丢失、组件重启和 partial failure；
    GPU Pod/容量/节点网络故障仍为 NOT_RUN。
-4. 正式 E1 已通过；E6 与 E5-STATIC 已完成真实 A10 采集。E6 阈值已冻结为
-   `60/900/400 ms`，待后续干净提交独立确认；E5-STATIC 阈值仍待标定。正式 E5
+4. 正式 E1、E6 已通过；E6 在 `13d0f34` 独立确认中以
+   `54.479/695.910/272.408 ms` 通过 `60/900/400 ms` 门槛。E5-STATIC 阈值仍待标定，正式 E5
    仍需动态 share/priority 权威动作。
 5. E2 等待可用 MIG GPU，E8 等待至少两个 GPU 节点；不为过进度强改 A10 拓扑。
 6. MPS 在线 `set_share` 已因 NVIDIA 语义不成立而撤下；未来需 checkpoint/recreate 新 client 的
@@ -103,11 +103,12 @@
 | 2026-09-14 | `0295132` 镜像 + 工作树修复 | 中间 Helm 批次 | PASSED，315 项证据；已由 `68f5aea` 干净基线两轮结果取代 |
 | 2026-09-14 | `68f5aea` | 最终 A10 总体验收 | PASSED：四组件同一干净 SHA 全部通过；MIG、多节点和 GPU 破坏性故障保持 NOT_RUN |
 | 2026-09-14 | `68f5aea` | 六服务 Helm install + upgrade | PASSED：同 8 个 PVC、revision 2、两轮各 315 项、630/630 哈希匹配、6/6 Ready |
-| 2026-09-16 | `701e11b` | E6 lifecycle 动作代价 pilot | 执行报告 PASSED；三轮最大值 46.907/711.072/301.490 ms，冻结阈值 60/900/400 ms，待独立确认 |
+| 2026-09-16 | `701e11b` | E6 lifecycle 动作代价 pilot | 执行报告 PASSED；三轮最大值 46.907/711.072/301.490 ms，冻结阈值 60/900/400 ms，随后由 `13d0f34` 独立确认 |
 | 2026-09-16 | `3c9147c` | E5-STATIC HAMi 干扰 pilot | 执行报告 PASSED：双 worker 各 40%/9211 MiB，baseline 重叠 0 ms、variant 重叠 8570.544 ms、干扰率 0.229306；正式 E5 仍 NOT_RUN |
+| 2026-09-16 | `13d0f34` | E6 独立确认 | PASSED：54.479/695.910/272.408 ms 均低于 60/900/400 ms；三轮五类 receipt、显存释放/恢复与资源清理通过 |
 
 这些是单节点限定证据，不证明 OOM 隔离、公平性、动态份额、完整训练、MIG/MPS、多节点或性能收益。
-E6 已完成 pilot 和阈值冻结，待独立确认；E5-STATIC 是独立 pilot，正式
+E6 已正式通过；E5-STATIC 是独立 pilot，正式
 E2–E5/E7–E8 仍未完成。
 
 测试机既有环境快照：Ubuntu 22.04 x86_64、NVIDIA A10、580.178.04 driver、CUDA driver API 13.0、
@@ -138,6 +139,7 @@ DRA 0.5.0、Minikube 1.38.1。**这是历史快照，复测先检查当前状态
 - Helm 第二轮：`.cache/tgsrl/helm-smoke-round2/evidence-index.json`
 - 最终审计：`.cache/tgsrl/final-a10-audit-68f5aea.json`
 - E6：`.cache/tgsrl/e1-e8/e6-action-cost/`
+- E6 确认审计：`.cache/tgsrl/e6-confirm-13d0f34/e6-confirmation-audit.json`
 - E5-STATIC：`.cache/tgsrl/e5-static-interference/e5-static-interference/`
 - E5/E6 审计：`.cache/tgsrl/e5-e6-audit-2026-09-16.json`
 - 故障 readiness：`.cache/tgsrl/engineering-fault-readiness/report.json`

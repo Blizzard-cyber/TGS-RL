@@ -153,7 +153,7 @@ API 和字段说明见[API、CLI 与 Console](docs/guides/api-and-console.md)。
 | 空白 NVIDIA 主机验证全链路 | [GPU Smoke 指南](docs/guides/gpu-smoke.md) | Full GPU、Kubernetes/DRA、CUDA worker、注册与清理 |
 | 验证同卡分数共享 | [HAMi 指南](docs/guides/hami.md) | H1 份额兑现与 H2 同卡并发 |
 | 毕业设计实验前做 A10 工程验收 | [A10 Readiness](docs/guides/a10-readiness.md) | Full lifecycle、显存释放/恢复、H2、DRA 回归、Helm 证据 |
-| 当前单卡毕业实验 | [E1–E8 设计](docs/design/gate-e1-e8.md) | E6 阈值已冻结、待独立确认；E5-STATIC 待阈值标定 |
+| 当前单卡毕业实验 | [E1–E8 设计](docs/design/gate-e1-e8.md) | E6 已正式通过；E5-STATIC 已采集、待阈值标定 |
 | 部署 Kubernetes 控制面 | [部署指南](docs/guides/deployment.md) | 六服务 Helm 的配置、依赖和部署边界 |
 
 **当前阶段已从工程实现转入正式毕业实验。** 最终工程基线 `68f5aea` 已通过 A10 lifecycle、
@@ -164,7 +164,7 @@ H2、DRA 恢复 E1 和同一 PVC 上连续两轮六服务 Helm smoke；正式 E1
 
 E6 五步 lifecycle 与 `E5-STATIC` 单卡静态份额干扰 pilot 已在真实 A10 上完成执行，
 两项独立 report 均为 `PASSED`。E6 已按 pilot 三轮最大值加 25% headroom 冻结为
-`60/900/400 ms`，正在等待后续提交的独立确认运行；E5-STATIC 阈值仍待标定。
+`60/900/400 ms`，并在后续提交的独立确认运行中正式通过；E5-STATIC 阈值仍待标定。
 `E5-STATIC` 不替代正式 E5 的动态 share/priority 门禁。
 
 | 已归档的硬件验证 | 记录 |
