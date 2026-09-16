@@ -1,8 +1,8 @@
 {
   "schema_version": "tgsrl.io/gate-campaign/v1alpha1",
   "campaign_id": "tgsrl-e1-e8",
-  "campaign_revision": 1,
-  "description": "Release validation matrix. Null thresholds are intentionally blocked until the authoritative requirement values are supplied.",
+  "campaign_revision": 2,
+  "description": "Release validation matrix. E6 thresholds are frozen from the reviewed 701e11b A10 pilot; remaining null thresholds stay blocked until authoritative values are supplied.",
   "experiments": [
     {
       "experiment_id": "E1",
@@ -129,9 +129,9 @@
         "required_faults": []
       },
       "rules": [
-        {"rule_id": "e6-pause-latency", "metric": "pause_latency_ms", "comparison": "variant", "operator": "<=", "threshold": null, "calibration_required": true},
-        {"rule_id": "e6-checkpoint-latency", "metric": "checkpoint_latency_ms", "comparison": "variant", "operator": "<=", "threshold": null, "calibration_required": true},
-        {"rule_id": "e6-reload-latency", "metric": "reload_latency_ms", "comparison": "variant", "operator": "<=", "threshold": null, "calibration_required": true}
+        {"rule_id": "e6-pause-latency", "metric": "pause_latency_ms", "comparison": "variant", "operator": "<=", "threshold": 60},
+        {"rule_id": "e6-checkpoint-latency", "metric": "checkpoint_latency_ms", "comparison": "variant", "operator": "<=", "threshold": 900},
+        {"rule_id": "e6-reload-latency", "metric": "reload_latency_ms", "comparison": "variant", "operator": "<=", "threshold": 400}
       ]
     },
     {

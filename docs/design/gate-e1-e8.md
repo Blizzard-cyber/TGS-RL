@@ -13,7 +13,7 @@
 | E3 | 吞吐与 Valuable Useful GPU | **NOT_RUN**，待正式 workload | 同模型、数据、seed、节点；采集 GPU active/useful time | throughput 下限已锁定；VUG 待校准 |
 | E4 | policy lag、staleness 与 ESS | **NOT_RUN**，待环境 hook | 注入 policy update delay；采集真实 batch quality | 待校准 |
 | E5 | 共置干扰隔离 | **NOT_RUN**；E5-STATIC 已完成 A10 采集，但不替代正式 E5 | 正式 E5 仍需 competing workload 与动态 share/priority 控制 | 待校准 |
-| E6 | lifecycle 动作代价 | **BLOCKED**；A10 执行报告 `PASSED`、`GPU_SINGLE_NODE` | pause/checkpoint/offload/reload/resume 全部有独立 receipt | 三项延迟阈值待校准 |
+| E6 | lifecycle 动作代价 | **确认运行待执行**；A10 pilot report `PASSED`、`GPU_SINGLE_NODE` | pause/checkpoint/offload/reload/resume 全部有独立 receipt | 已冻结为 60/900/400 ms |
 | E7 | 故障与事务恢复 | **NOT_RUN**，CPU/进程故障不替代 GPU fault | worker exit、response loss 均有 injected/recovered 事件 | action success 已锁定；恢复时间待校准 |
 | E8 | 多节点稳定性与收敛 | **BLOCKED / NOT_RUN**，缺少两个 GPU 节点 | 至少两节点；node loss 恢复；两侧节点集合一致 | throughput 下限已锁定；收敛质量待校准 |
 
@@ -98,10 +98,11 @@ make gpu-up
 make gpu-e6-action-cost
 ```
 
-2026-09-16 的 A10 运行中，E6 独立 report 为 `PASSED`，pause/checkpoint/reload
-分别为 `45.042 ms`、`704.530 ms`、`260.322 ms`；offload/reload 的 allocator bytes
-变化和五类动作 receipt 均已核验。三项延迟规则仍为 `calibration_required`，因此 E6
-在 campaign 中保持 `BLOCKED`，等待阈值评审。
+2026-09-16 的 A10 pilot 中，E6 独立 report 为 `PASSED`，三轮 measurement 最大值分别为
+pause `46.907 ms`、checkpoint `711.072 ms`、reload `301.490 ms`。按“最大值乘
+`1.25` 后向上取工程档位”的方法，正式门槛冻结为 `60/900/400 ms`，决策见
+`configs/gates/e6-action-cost-calibration.json`。必须用后续干净提交独立复跑，不能用
+同一 pilot 同时完成标定和验收。
 
 仓库提供 `scripts/tgsrl-hardware-environment-driver`。目标环境从
 `configs/hardware/environment.example.json` 派生本地配置，至少指定 Gateway URL、固定
@@ -221,7 +222,8 @@ make gate-campaign-calibrate
 
 输出列出每条未标定规则的 observed value、证据等级和 report digest，但不会修改
 `configs/gates/e1-e8.json`。阈值仍需基于多次 baseline/variant 运行人工评审后提交；缺报告的规则
-保留在 `missing` 中，状态为 `INCOMPLETE`。
+保留在 `missing` 中，状态为 `INCOMPLETE`。E6 的标定决策已经单独保存在
+`configs/gates/e6-action-cost-calibration.json`，后续确认运行不得修改该文件。
 
 ## 当前验证边界
 

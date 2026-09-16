@@ -25,12 +25,13 @@ flowchart LR
 TGS-RL 用 Trace 和结构化 observation 表达训练事实，用 ExecutionContract 声明安全约束，
 再把调度计划落实到可核对身份的资源与进程。有效更新吞吐（VUG）是设计目标，**不是当前
 已证明的收益**；系统接线、故障行为和单节点可重复运行已经完成工程验收，E6 与
-E5-STATIC 也已取得真实 A10 数据，下一阶段是阈值标定和正式 workload 下的其余实验。
+E5-STATIC 也已取得真实 A10 数据。E6 已冻结阈值、等待独立确认；下一阶段还包括
+E5-STATIC 标定和正式 workload 下的其余实验。
 
 E6 五步 lifecycle cost 已通过 scoped worker registry 在 A10 上完成；`E5-STATIC`
-静态 HAMi 共置干扰 pilot 也已完成。两项执行报告均为 `PASSED`，但数值规则尚未标定，
-对应 campaign gate 仍为 `BLOCKED`；正式 E5 继续保留动态 share/priority 的 Scheduler
-权威动作和 infrastructure readback 要求。
+静态 HAMi 共置干扰 pilot 也已完成。两项执行报告均为 `PASSED`；E6 已按独立校准决策
+冻结 `60/900/400 ms` 门槛并等待后续确认运行，E5-STATIC 仍待标定。正式 E5 继续保留
+动态 share/priority 的 Scheduler 权威动作和 infrastructure readback 要求。
 
 | TGS-RL 提供 | 仍由外部系统提供 |
 |---|---|

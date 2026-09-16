@@ -1,0 +1,49 @@
+{
+  "schema_version": "tgsrl.io/gate-calibration-decision/v1alpha1",
+  "experiment_id": "E6",
+  "decision_date": "2026-09-16",
+  "hardware_scope": {
+    "accelerator": "NVIDIA A10",
+    "accelerator_count": 1,
+    "execution_mode": "kubernetes-dra",
+    "gpu_profile": "full-gpu"
+  },
+  "pilot": {
+    "source_commit": "701e11b13ed9a14359593e7bd73c80608017de95",
+    "report_sha256": "e0be26822159972e4b975fdf9f87ea25fe627bfe14f2631da10fddcb9de0d526",
+    "calibration_report_sha256": "7279752033f12e29175403ea66a83ef79fd065fc7575df675cc51b967371b0f9",
+    "warmup_runs": 1,
+    "measurement_runs": 3
+  },
+  "method": {
+    "description": "Take the maximum of the three pilot measurement runs, multiply by 1.25, then round upward to a stable engineering boundary.",
+    "headroom_multiplier": 1.25,
+    "confirmation_policy": "Run E6 from a later clean commit on the same hardware class. The confirmation report must satisfy every frozen threshold without changing this decision."
+  },
+  "rules": [
+    {
+      "rule_id": "e6-pause-latency",
+      "metric": "pause_latency_ms",
+      "pilot_measurements_ms": [40.10293900500983, 46.90707102417946, 45.04181700758636],
+      "pilot_max_ms": 46.90707102417946,
+      "unrounded_limit_ms": 58.63383878022432,
+      "threshold_ms": 60
+    },
+    {
+      "rule_id": "e6-checkpoint-latency",
+      "metric": "checkpoint_latency_ms",
+      "pilot_measurements_ms": [682.9835200333036, 711.072398989927, 704.529577982612],
+      "pilot_max_ms": 711.072398989927,
+      "unrounded_limit_ms": 888.8404987374088,
+      "threshold_ms": 900
+    },
+    {
+      "rule_id": "e6-reload-latency",
+      "metric": "reload_latency_ms",
+      "pilot_measurements_ms": [301.4898610417731, 260.32214402221143, 259.6852239803411],
+      "pilot_max_ms": 301.4898610417731,
+      "unrounded_limit_ms": 376.8623263022164,
+      "threshold_ms": 400
+    }
+  ]
+}

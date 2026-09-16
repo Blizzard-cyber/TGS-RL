@@ -22,6 +22,7 @@ HAMI_CONCURRENCY_CAMPAIGN = ROOT / "configs" / "gates" / "hami-concurrency-smoke
 A10_READINESS_CAMPAIGN = ROOT / "configs" / "gates" / "a10-readiness.json"
 A10_READINESS_MANIFEST = ROOT / "configs" / "gates" / "gate-a10-readiness.json"
 E5_STATIC_CAMPAIGN = ROOT / "configs" / "gates" / "e5-static-interference.json"
+E6_CALIBRATION = ROOT / "configs" / "gates" / "e6-action-cost-calibration.json"
 SPEC = importlib.util.spec_from_file_location("tgsrl_gate_tools", SCRIPT)
 assert SPEC is not None and SPEC.loader is not None
 GATE_TOOLS = importlib.util.module_from_spec(SPEC)
@@ -206,9 +207,8 @@ def _write_full_stack_gpu_report(
                         if complete_requirements
                         else ["pause", "resume"]
                     )
-                    events.extend(
-                        common
-                        | {
+                    for action in actions:
+                        action_event = common | {
                             "event_type": "decision_applied",
                             "source": "operator",
                             "action": action,
@@ -222,8 +222,32 @@ def _write_full_stack_gpu_report(
                             "observed_share": 0.5 if action == "set_share" else None,
                             "observed_priority": 1 if action == "set_priority" else None,
                         }
-                        for action in actions
-                    )
+                        if complete_requirements and experiment_id == "E6":
+                            action_event["checkpoint_present"] = action in {
+                                "checkpoint",
+                                "offload",
+                                "reload",
+                                "resume",
+                            }
+                            if action == "offload":
+                                action_event.update(
+                                    {
+                                        "gpu_memory_allocated_before_bytes": 536870912,
+                                        "gpu_memory_allocated_after_bytes": 0,
+                                        "gpu_memory_reserved_before_bytes": 536870912,
+                                        "gpu_memory_reserved_after_bytes": 0,
+                                    }
+                                )
+                            elif action in {"reload", "resume"}:
+                                action_event.update(
+                                    {
+                                        "gpu_memory_allocated_before_bytes": 0,
+                                        "gpu_memory_allocated_after_bytes": 536870912,
+                                        "gpu_memory_reserved_before_bytes": 0,
+                                        "gpu_memory_reserved_after_bytes": 536870912,
+                                    }
+                                )
+                        events.append(action_event)
                     if complete_requirements:
                         events.extend(
                             common
@@ -980,9 +1004,6 @@ def test_campaign_calibration_report_is_read_only_and_keeps_threshold_null(
         "e4-staleness-bound",
         "e4-ess-floor",
         "e5-interference-bound",
-        "e6-pause-latency",
-        "e6-checkpoint-latency",
-        "e6-reload-latency",
         "e7-recovery-time",
         "e8-convergence-quality",
     }
@@ -994,8 +1015,79 @@ def test_campaign_calibration_report_is_read_only_and_keeps_threshold_null(
         for rule in experiment["rules"]
         if rule.get("calibration_required") is True
     ]
-    assert len(calibration_rules) == 9
+    assert len(calibration_rules) == 6
     assert all(rule["threshold"] is None for rule in calibration_rules)
+
+
+def test_e6_thresholds_match_reviewed_a10_calibration() -> None:
+    campaign = json.loads(CAMPAIGN.read_text(encoding="utf-8"))
+    calibration = json.loads(E6_CALIBRATION.read_text(encoding="utf-8"))
+    experiment = next(item for item in campaign["experiments"] if item["experiment_id"] == "E6")
+    thresholds = {rule["rule_id"]: rule["threshold"] for rule in experiment["rules"]}
+    calibrated = {rule["rule_id"]: rule["threshold_ms"] for rule in calibration["rules"]}
+
+    assert campaign["campaign_revision"] == 2
+    assert calibration["pilot"]["source_commit"] == ("701e11b13ed9a14359593e7bd73c80608017de95")
+    assert calibration["pilot"]["report_sha256"] == (
+        "e0be26822159972e4b975fdf9f87ea25fe627bfe14f2631da10fddcb9de0d526"
+    )
+    assert calibration["method"]["headroom_multiplier"] == 1.25
+    assert (
+        thresholds
+        == calibrated
+        == {
+            "e6-pause-latency": 60,
+            "e6-checkpoint-latency": 900,
+            "e6-reload-latency": 400,
+        }
+    )
+    for rule in calibration["rules"]:
+        assert rule["pilot_max_ms"] == max(rule["pilot_measurements_ms"])
+        assert rule["unrounded_limit_ms"] == pytest.approx(
+            rule["pilot_max_ms"] * calibration["method"]["headroom_multiplier"]
+        )
+        assert rule["threshold_ms"] >= rule["unrounded_limit_ms"]
+
+
+def test_e6_frozen_thresholds_accept_below_and_reject_above(tmp_path: Path) -> None:
+    output = tmp_path / "e6-action-cost"
+    _write_full_stack_gpu_report(output, "E6", "full-gpu", complete_requirements=True)
+
+    evaluated = campaign_result(tmp_path)
+    assert evaluated.returncode == 0, evaluated.stderr
+    by_id = {item["experiment_id"]: item for item in json.loads(evaluated.stdout)["experiments"]}
+    assert by_id["E6"]["status"] == "PASSED"
+    assert all(rule["status"] == "PASSED" for rule in by_id["E6"]["rules"])
+
+    report = read_report(output)
+    variant_path = output / report["variant_trace"]
+    variant = json.loads(variant_path.read_text(encoding="utf-8"))
+    for event in variant["events"]:
+        if event.get("action") == "checkpoint" and event.get("event_type") == "decision_applied":
+            event["duration_ms"] = 901.0
+    variant["metrics"] = GATE_TOOLS._metrics_from_events(variant["events"])
+    variant_path.write_text(json.dumps(variant), encoding="utf-8")
+    report["metrics"]["variant"] = variant["metrics"]
+    report["trace_capture"]["variant_digest"] = hashlib.sha256(
+        variant_path.read_bytes()
+    ).hexdigest()
+    (output / "report.json").write_text(json.dumps(report), encoding="utf-8")
+
+    evaluated = campaign_result(tmp_path)
+    assert evaluated.returncode == 0, evaluated.stderr
+    by_id = {item["experiment_id"]: item for item in json.loads(evaluated.stdout)["experiments"]}
+    assert by_id["E6"]["status"] == "FAILED"
+    checkpoint = next(
+        rule for rule in by_id["E6"]["rules"] if rule["rule_id"] == "e6-checkpoint-latency"
+    )
+    assert checkpoint == {
+        "actual": 901.0,
+        "metric": "checkpoint_latency_ms",
+        "operator": "<=",
+        "rule_id": "e6-checkpoint-latency",
+        "status": "FAILED",
+        "threshold": 900.0,
+    }
 
 
 def test_campaign_accepts_complete_exact_device_evidence(tmp_path: Path) -> None:

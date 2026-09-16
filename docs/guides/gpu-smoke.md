@@ -278,7 +278,7 @@ E1 通过后先执行 [A10 工程验收](a10-readiness.md)，确认 cooperative 
 E6 与 E5-STATIC 已于 2026-09-16 完成首轮真实 A10 采集；当前建议按依赖顺序继续推进：
 
 ```text
-E6 / E5-STATIC threshold calibration
+E6 independent confirmation / E5-STATIC threshold calibration
   -> E3 throughput / VUG
   -> E4 staleness / ESS
   -> E5 dynamic share / priority isolation
@@ -286,12 +286,12 @@ E6 / E5-STATIC threshold calibration
   -> E8 multi-node convergence
 ```
 
-E2 MIG identity 在获得支持 MIG 的目标 GPU 后插入，不在当前 A10 上强行改拓扑。E3–E8
+E2 MIG identity 在获得支持 MIG 的目标 GPU 后插入，不在当前 A10 上强行改拓扑。其余
 带 `calibration_required` 的规则必须用真实 baseline 数据标定并人工审定；首轮 smoke 不会
 自动把这些门禁改成 PASS。当前逐项状态见[毕设推进状态](../project-progress.md)。
 
 当前单 A10 已用 `make gpu-e6-action-cost` 和 `make gpu-e5-interference` 完成首轮采集。
-E6 与 E5-STATIC 独立执行报告均为 `PASSED`，但阈值规则未冻结，campaign gate 仍为
-`BLOCKED`。`E5-STATIC` 是正式 E5 的前置 pilot，不包含在线 `set_share` /
-`set_priority`，不能据此将正式 E5 标为通过。结果见
+E6 与 E5-STATIC 独立执行报告均为 `PASSED`。E6 已冻结 `60/900/400 ms` 门槛，
+必须由后续干净提交独立确认；E5-STATIC 阈值仍未冻结。`E5-STATIC` 是正式 E5 的
+前置 pilot，不包含在线 `set_share` / `set_priority`，不能据此将正式 E5 标为通过。结果见
 [E6 与 E5-STATIC 单 A10 实验记录](../validation/e5-e6-single-a10-2026-09-16.md)。

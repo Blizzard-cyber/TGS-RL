@@ -193,7 +193,8 @@ gpu-e6-action-cost:
 		--campaign configs/gates/e1-e8.json \
 		--reports-dir .cache/tgsrl/e1-e8 \
 		--driver "$(GATE_CAMPAIGN_DRIVER)" --experiment E6
-	jq -e '.status == "PASSED"' .cache/tgsrl/e1-e8/e6-action-cost/report.json >/dev/null
+	jq -e '.experiments[] | select(.experiment_id == "E6") | .status == "PASSED"' \
+		.cache/tgsrl/e1-e8/campaign-report.json >/dev/null
 
 gpu-e5-interference:
 	TGSRL_HARDWARE_DRIVER_CONFIG=$${TGSRL_HARDWARE_DRIVER_CONFIG:-configs/hardware/environment.json} \
