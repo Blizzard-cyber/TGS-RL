@@ -58,8 +58,8 @@
 3. `make engineering-fault-readiness` 已覆盖 worker crash、响应丢失、组件重启和 partial failure；
    GPU Pod/容量/节点网络故障仍为 NOT_RUN。
 4. 正式 E1、E6 已通过；E6 在 `13d0f34` 独立确认中以
-   `54.479/695.910/272.408 ms` 通过 `60/900/400 ms` 门槛。E5-STATIC 已冻结
-   `32%` 干扰率门槛并等待独立确认，正式 E5
+   `54.479/695.910/272.408 ms` 通过 `60/900/400 ms` 门槛。E5-STATIC 也已在
+   `9a4321d` 独立确认中以 `10.63%` 通过 `32%` 干扰率门槛，正式 E5
    仍需动态 share/priority 权威动作。
 5. E2 等待可用 MIG GPU，E8 等待至少两个 GPU 节点；不为过进度强改 A10 拓扑。
 6. MPS 在线 `set_share` 已因 NVIDIA 语义不成立而撤下；未来需 checkpoint/recreate 新 client 的
@@ -107,9 +107,10 @@
 | 2026-09-16 | `701e11b` | E6 lifecycle 动作代价 pilot | 执行报告 PASSED；三轮最大值 46.907/711.072/301.490 ms，冻结阈值 60/900/400 ms，随后由 `13d0f34` 独立确认 |
 | 2026-09-16 | `3c9147c` | E5-STATIC HAMi 干扰 pilot | 执行报告 PASSED：三轮干扰率 0.222769/0.218472/0.246678，冻结门槛 0.32；正式 E5 仍 NOT_RUN |
 | 2026-09-16 | `13d0f34` | E6 独立确认 | PASSED：54.479/695.910/272.408 ms 均低于 60/900/400 ms；三轮五类 receipt、显存释放/恢复与资源清理通过 |
+| 2026-09-16 | `9a4321d` | E5-STATIC 独立确认 | PASSED：三轮干扰率 0.071733/0.058150/0.188928，均值 0.106270 ≤ 0.32；三轮正 overlap、40%/9211 MiB 与同卡 UUID 回读通过 |
 
 这些是单节点限定证据，不证明 OOM 隔离、公平性、动态份额、完整训练、MIG/MPS、多节点或性能收益。
-E6 已正式通过；E5-STATIC 已冻结 32% 门槛、待独立确认，正式
+E6 与 E5-STATIC 已通过各自门槛，正式
 E2–E5/E7–E8 仍未完成。
 
 测试机既有环境快照：Ubuntu 22.04 x86_64、NVIDIA A10、580.178.04 driver、CUDA driver API 13.0、
@@ -142,6 +143,7 @@ DRA 0.5.0、Minikube 1.38.1。**这是历史快照，复测先检查当前状态
 - E6：`.cache/tgsrl/e1-e8/e6-action-cost/`
 - E6 确认审计：`.cache/tgsrl/e6-confirm-13d0f34/e6-confirmation-audit.json`
 - E5-STATIC：`.cache/tgsrl/e5-static-interference/e5-static-interference/`
+- E5-STATIC 确认审计：`.cache/tgsrl/e5-static-confirm-9a4321d/e5-static-confirmation-audit.json`
 - E5/E6 审计：`.cache/tgsrl/e5-e6-audit-2026-09-16.json`
 - 故障 readiness：`.cache/tgsrl/engineering-fault-readiness/report.json`
 

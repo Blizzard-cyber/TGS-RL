@@ -154,8 +154,9 @@ make gpu-e5-interference
 E6 使用代表性 CUDA tensor workload 测五步 lifecycle；`gpu-e5-interference` 执行
 `E5-STATIC` 静态份额 pilot。2026-09-16 已完成一轮真实 A10 采集，两项独立执行报告均为
 `PASSED`。E6 随后在 `13d0f34` 独立运行中以 `54.479/695.910/272.408 ms`
-通过 `60/900/400 ms` 门槛；E5-STATIC 已冻结 `32%` 门槛并等待后续干净提交
-独立确认。`E5-STATIC` 不替代正式 E5 动态 share/priority 门禁。详见
+通过 `60/900/400 ms` 门槛；E5-STATIC 随后在 `9a4321d` 独立运行中以
+`10.63%` 平均干扰率通过 `32%` 门槛。`E5-STATIC` 不替代正式 E5 动态
+share/priority 门禁。详见
 [E6 与 E5-STATIC 单 A10 实验记录](../validation/e5-e6-single-a10-2026-09-16.md)。
 
 ## Helm 六服务验收

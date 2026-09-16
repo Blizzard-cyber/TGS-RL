@@ -78,8 +78,9 @@ baseline 的两个 worker 错峰执行、variant 的两个 worker 并发执行�
 `worker_overlap_ms=0`，variant `worker_overlap_ms=8570.544`、两个并发 worker、总份额
 `0.8`，三轮观测干扰率为 `0.222769/0.218472/0.246678`。按三轮最大值乘 `1.25`
 并向上取工程档位，门槛冻结为 `0.32`，决策见
-`configs/gates/e5-static-interference-calibration.json`。必须使用后续干净提交独立确认，
-不能用同一 pilot 同时完成标定和验收。详细来源、镜像和哈希见
+`configs/gates/e5-static-interference-calibration.json`。后续干净提交 `9a4321d`
+独立确认测得三轮 `0.071733/0.058150/0.188928`，均值 `0.106270`，正式 gate
+为 `PASSED`。同一 pilot 没有被同时用于标定和验收。详细来源、镜像和哈希见
 [E6 与 E5-STATIC 单 A10 实验记录](../validation/e5-e6-single-a10-2026-09-16.md)。
 
 A10 实验前 readiness 另有独立 `A10-FULL` campaign。它在 E1 已证明的 exact-device 主链上，
