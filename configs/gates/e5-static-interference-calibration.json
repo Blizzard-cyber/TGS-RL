@@ -1,0 +1,33 @@
+{
+  "schema_version": "tgsrl.io/gate-calibration-decision/v1alpha1",
+  "experiment_id": "E5-STATIC",
+  "decision_date": "2026-09-16",
+  "hardware_scope": {
+    "accelerator": "NVIDIA A10",
+    "accelerator_count": 1,
+    "execution_mode": "hami-vgpu",
+    "gpu_profile": "full-gpu",
+    "worker_count": 2,
+    "accelerator_share_per_worker": 0.4
+  },
+  "pilot": {
+    "source_commit": "3c9147c83065434eef1f28a0d4731306fa3f90ba",
+    "report_sha256": "8f0598588f976010b85890f6e9d09573769063b328e597ad19dfb4c59f0b325a",
+    "calibration_report_sha256": "50e22586b12ed8d716ef5e07acfdfc0d888d903a22d498f17ae69835fee8ecdf",
+    "warmup_runs": 1,
+    "measurement_runs": 3
+  },
+  "method": {
+    "description": "Take the maximum per-iteration pilot interference ratio, multiply by 1.25, then round upward to a stable percentage boundary.",
+    "headroom_multiplier": 1.25,
+    "confirmation_policy": "Run E5-STATIC from a later clean commit on the same hardware class. The confirmation report must satisfy the frozen threshold without changing this decision."
+  },
+  "rule": {
+    "rule_id": "e5-static-interference-bound",
+    "metric": "interference_ratio",
+    "pilot_measurements": [0.2227687206228356, 0.21847244749764516, 0.2466782287865078],
+    "pilot_max": 0.2466782287865078,
+    "unrounded_limit": 0.30834778598313474,
+    "threshold": 0.32
+  }
+}

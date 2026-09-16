@@ -22,6 +22,7 @@ required_files=(
   configs/hardware/verl-job.example.json
   configs/hardware/verl-lifecycle-job.example.json
   configs/gates/e6-action-cost-calibration.json
+  configs/gates/e5-static-interference-calibration.json
   configs/gates/e5-static-interference.json
   configs/gates/a10-readiness.json
   configs/gates/gate-a10-readiness.json

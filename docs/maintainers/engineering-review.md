@@ -132,13 +132,13 @@ A10 lifecycle/H2/DRA 恢复 E1，并完成六服务 Helm install/upgrade 两轮 
 [A10 工程与 Helm 验收](../validation/a10-readiness-2026-09-14.md)。
 后续 `701e11b`/`3c9147c` 又完成 E6 与 E5-STATIC 的单 A10 数据采集；两项独立 report
 均为 `PASSED`。E6 已从 pilot 冻结 `60/900/400 ms` 门槛，并在 `13d0f34`
-独立运行中全部通过；E5-STATIC 仍待阈值标定。详见
+独立运行中全部通过；E5-STATIC 已冻结 `32%` 门槛并等待独立确认。详见
 [E6 与 E5-STATIC 单 A10 实验记录](../validation/e5-e6-single-a10-2026-09-16.md)。
 
 ## 后续按工程依赖推进
 
 1. 保留 `68f5aea` 为实验前工程基线，并以各实验报告中的 source commit 绑定后续结果。
-2. 评审 E5-STATIC 干扰率阈值。
+2. 用阈值冻结后的干净提交独立确认 E5-STATIC。
 3. 接入完整或代表性的 veRL workload，冻结模型、数据、seed、batch、镜像和节点条件，推进 E3。
 4. 接入 E4/正式 E5/E7 所需环境 hook；正式 E5 不继承 E5-STATIC 的结果。
 5. 获得 MIG 硬件后执行 E2；准备至少两个 GPU 节点后执行 E8。

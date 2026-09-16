@@ -22,6 +22,7 @@ HAMI_CONCURRENCY_CAMPAIGN = ROOT / "configs" / "gates" / "hami-concurrency-smoke
 A10_READINESS_CAMPAIGN = ROOT / "configs" / "gates" / "a10-readiness.json"
 A10_READINESS_MANIFEST = ROOT / "configs" / "gates" / "gate-a10-readiness.json"
 E5_STATIC_CAMPAIGN = ROOT / "configs" / "gates" / "e5-static-interference.json"
+E5_STATIC_CALIBRATION = ROOT / "configs" / "gates" / "e5-static-interference-calibration.json"
 E6_CALIBRATION = ROOT / "configs" / "gates" / "e6-action-cost-calibration.json"
 SPEC = importlib.util.spec_from_file_location("tgsrl_gate_tools", SCRIPT)
 assert SPEC is not None and SPEC.loader is not None
@@ -1427,13 +1428,15 @@ def test_e5_static_campaign_derives_interference_from_two_worker_traces(
 
     assert result.returncode == 0, result.stderr
     summary = json.loads((reports / "campaign-report.json").read_text(encoding="utf-8"))
-    assert summary["experiments"][0]["status"] == "BLOCKED"
+    assert summary["experiments"][0]["status"] == "PASSED"
     assert summary["experiments"][0]["rules"] == [
         {
+            "actual": 0.0,
             "metric": "interference_ratio",
-            "reason": "calibration_required",
+            "operator": "<=",
             "rule_id": "e5-static-interference-bound",
-            "status": "BLOCKED",
+            "status": "PASSED",
+            "threshold": 0.32,
         }
     ]
     report = json.loads(
@@ -1450,6 +1453,99 @@ def test_e5_static_campaign_derives_interference_from_two_worker_traces(
     assert len(interference_events) == 3
     assert all(event["source"] == "orchestrator" for event in interference_events)
     assert all(event["worker_count"] == 2 for event in interference_events)
+
+
+def test_e5_static_threshold_matches_reviewed_a10_calibration() -> None:
+    campaign = json.loads(E5_STATIC_CAMPAIGN.read_text(encoding="utf-8"))
+    calibration = json.loads(E5_STATIC_CALIBRATION.read_text(encoding="utf-8"))
+    rule = campaign["experiments"][0]["rules"][0]
+    calibrated = calibration["rule"]
+
+    assert campaign["campaign_revision"] == 2
+    assert calibration["pilot"]["source_commit"] == ("3c9147c83065434eef1f28a0d4731306fa3f90ba")
+    assert calibration["pilot"]["report_sha256"] == (
+        "8f0598588f976010b85890f6e9d09573769063b328e597ad19dfb4c59f0b325a"
+    )
+    assert calibration["method"]["headroom_multiplier"] == 1.25
+    assert rule["rule_id"] == calibrated["rule_id"] == "e5-static-interference-bound"
+    assert rule["threshold"] == calibrated["threshold"] == 0.32
+    assert calibrated["pilot_max"] == max(calibrated["pilot_measurements"])
+    assert calibrated["unrounded_limit"] == pytest.approx(
+        calibrated["pilot_max"] * calibration["method"]["headroom_multiplier"]
+    )
+    assert calibrated["threshold"] >= calibrated["unrounded_limit"]
+
+
+def test_e5_static_frozen_threshold_rejects_above_limit(tmp_path: Path) -> None:
+    reports = tmp_path / "reports"
+    driver, calls = tmp_path / "driver.py", tmp_path / "calls.ndjson"
+    _write_hardware_driver(driver, calls)
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(SCRIPT),
+            "campaign-run",
+            "--campaign",
+            str(E5_STATIC_CAMPAIGN),
+            "--reports-dir",
+            str(reports),
+            "--driver",
+            str(driver),
+            "--experiment",
+            "E5-STATIC",
+            "--timeout-seconds",
+            "10",
+        ],
+        cwd=ROOT,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+
+    output = reports / "e5-static-interference"
+    report = read_report(output)
+    variant_path = output / report["variant_trace"]
+    variant = json.loads(variant_path.read_text(encoding="utf-8"))
+    for event in variant["events"]:
+        if event.get("event_type") == "interference_observed":
+            event["interference_ratio"] = 0.33
+    variant["metrics"] = GATE_TOOLS._metrics_from_events(variant["events"])
+    variant_path.write_text(json.dumps(variant), encoding="utf-8")
+    report["metrics"]["variant"] = variant["metrics"]
+    report["trace_capture"]["variant_digest"] = hashlib.sha256(
+        variant_path.read_bytes()
+    ).hexdigest()
+    (output / "report.json").write_text(json.dumps(report), encoding="utf-8")
+
+    evaluated = subprocess.run(
+        [
+            sys.executable,
+            str(SCRIPT),
+            "campaign-evaluate",
+            "--campaign",
+            str(E5_STATIC_CAMPAIGN),
+            "--reports-dir",
+            str(reports),
+        ],
+        cwd=ROOT,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    assert evaluated.returncode == 0, evaluated.stderr
+    experiment = json.loads(evaluated.stdout)["experiments"][0]
+    assert experiment["status"] == "FAILED"
+    assert experiment["rules"] == [
+        {
+            "actual": 0.33,
+            "metric": "interference_ratio",
+            "operator": "<=",
+            "rule_id": "e5-static-interference-bound",
+            "status": "FAILED",
+            "threshold": 0.32,
+        }
+    ]
 
 
 def test_campaign_run_stops_on_executor_failure_and_keeps_diagnostics(tmp_path: Path) -> None:

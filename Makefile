@@ -202,8 +202,8 @@ gpu-e5-interference:
 		--campaign configs/gates/e5-static-interference.json \
 		--reports-dir .cache/tgsrl/e5-static-interference \
 		--driver "$(GATE_CAMPAIGN_DRIVER)" --experiment E5-STATIC
-	jq -e '.status == "PASSED"' \
-		.cache/tgsrl/e5-static-interference/e5-static-interference/report.json >/dev/null
+	jq -e '.experiments[] | select(.experiment_id == "E5-STATIC") | .status == "PASSED"' \
+		.cache/tgsrl/e5-static-interference/campaign-report.json >/dev/null
 
 engineering-fault-readiness:
 	uv run --frozen python scripts/engineering-fault-readiness.py

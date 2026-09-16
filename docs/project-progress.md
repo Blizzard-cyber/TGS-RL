@@ -14,9 +14,9 @@ E2 缺少可用 MIG 硬件，E3–E5/E7 尚未完成正式 workload 或环境 ho
 GPU 节点。完整 veRL trainer、统计分析、论文结果章节和答辩材料也没有仓库内完成证据。
 
 2026-09-16 已在单张 NVIDIA A10 上完成 E6 五步 lifecycle 数据采集和 `E5-STATIC`
-静态份额共置干扰 pilot。两项独立执行报告均为 `PASSED`，但带
-`calibration_required` 的 campaign gate 仍为 `BLOCKED`。`E5-STATIC` 只比较两个固定
-`40%` HAMi worker 的错峰与并发执行，不能替代正式 E5 的动态 share/priority 门禁。
+静态份额共置干扰 pilot。E6 已正式通过；E5-STATIC pilot 的三轮干扰率为
+`22.28% / 21.85% / 24.67%`，按最大值乘 `1.25` 后向上冻结 `32%` 门槛，正在等待
+后续干净提交独立确认。`E5-STATIC` 不能替代正式 E5 的动态 share/priority 门禁。
 
 ## 里程碑
 
@@ -27,7 +27,7 @@ GPU 节点。完整 veRL trainer、统计分析、论文结果章节和答辩材
 | 可靠性与恢复 | **完成于当前工程范围** | 幂等、generation fence、receipt、补偿、SQLite/文件恢复、真实进程故障 readiness 已验证 | HA、灾备和跨服务事务不属于当前完成范围 |
 | GPU 兑现与进程接线 | **完成于单节点 NVIDIA** | DRA Full GPU E1、HAMi H1/H2、真实 CUDA、Trace、checkpoint/offload/reload/resume 已验证 | MIG、MPS、新厂商和多节点仍未验证 |
 | Kubernetes/Helm 交付 | **完成于专用单节点 A10** | 六服务不可变镜像、install + upgrade 两轮 smoke、同 PVC 重跑、严格依赖健康门禁已通过 | 其他 CNI、StorageClass、GPU 型号和生产安全需独立验证 |
-| 实验平台与证据合同 | **完成** | E1–E8 campaign、scenario、runner、driver、证据哈希、校准入口和 fail-closed 规则已实现；E6 与 E5-STATIC 已完成 A10 采集 | 标定 E5-STATIC；继续为 E3/E4/E5/E7 接入正式 workload 或 hook |
+| 实验平台与证据合同 | **完成** | E1–E8 campaign、scenario、runner、driver、证据哈希、校准入口和 fail-closed 规则已实现；E6 与 E5-STATIC 已完成 A10 采集 | 独立确认 E5-STATIC；继续为 E3/E4/E5/E7 接入正式 workload 或 hook |
 | 正式毕业实验 | **进行中** | E1、E6 已通过；H1/H2、A10 readiness 和 E5-STATIC 是工程/前置证据 | E2–E5/E7–E8 尚未形成正式通过结论 |
 | 结果分析与论文 | **开始积累结果** | E1、E6 与 E5-STATIC 已有可追溯 A10 数据；架构、工程验收和限制可作为系统章节素材 | 完成阈值选择、重复统计、图表、结果讨论、论文与答辩材料 |
 
@@ -39,7 +39,7 @@ GPU 节点。完整 veRL trainer、统计分析、论文结果章节和答辩材
 | E2 MIG 精确设备与 rebind | **BLOCKED / NOT_RUN** | typed MIG inventory、DeviceClass、identity/rebind 合同和 fake 回归 | 获取支持 MIG 的目标 GPU；不在 A10 上强改拓扑 |
 | E3 吞吐与 VUG | **NOT_RUN** | 指标、baseline/variant runner、throughput 最低规则 | 接入正式训练 workload，重复 baseline/variant，标定 VUG 阈值 |
 | E4 policy lag / staleness / ESS | **NOT_RUN** | 指标与故障/动作协议 | 实现并审查 staleness-pressure 与 `set_share` 环境 hook，标定两条阈值 |
-| E5 共置干扰隔离 | **NOT_RUN** | `E5-STATIC` A10 执行报告 `PASSED`：双 worker 各 40%/9211 MiB，baseline 重叠 0 ms、variant 重叠 8570.544 ms、干扰率 0.2293；pilot gate 待标定 | 评审静态干扰阈值；正式 E5 仍需动态 share/priority 权威动作与回读 |
+| E5 共置干扰隔离 | **NOT_RUN** | `E5-STATIC` pilot：双 worker 各 40%/9211 MiB，三轮干扰率 22.28%/21.85%/24.67%，32% 门槛已冻结 | 用后续干净提交独立确认 E5-STATIC；正式 E5 仍需动态 share/priority 权威动作与回读 |
 | E6 lifecycle 动作代价 | **PASSED** | `13d0f34` 独立 A10 确认：54.479/695.910/272.408 ms，均通过 60/900/400 ms 门槛；三轮五类 receipt 与显存释放/恢复已核验 | 固化图表和论文分析，不用新 smoke 覆盖证据 |
 | E7 故障与事务恢复 | **NOT_RUN** | CPU/真实进程已验证 crash、response loss、partial failure；GPU fault schema 已有 | 在专用 GPU 资源实现 worker-exit/control-response-loss hook，测恢复时间 |
 | E8 多节点稳定性与收敛 | **BLOCKED / NOT_RUN** | 多节点证据合同和收敛指标已定义 | 准备至少两台 GPU 节点、node-loss hook 和完整训练 workload |
@@ -56,7 +56,7 @@ H1/H2、A10-FULL、`E5-STATIC` 和两轮 Helm smoke 不计作正式 E2–E8 的�
 - **系统工程线：已完成当前设计范围。**
 - **实验基础设施线：已完成。**
 - **正式实验线：E1、E6 已通过；E2/E8 受硬件或拓扑阻塞；E3–E5/E7 待运行。**
-- **辅助实验线：E5-STATIC 已完成真实采集、待阈值标定；不替代正式 E5。**
+- **辅助实验线：E5-STATIC 已完成 pilot 和 32% 阈值冻结、待独立确认；不替代正式 E5。**
 - **论文结果线：已有 E1/E6/E5-STATIC 原始结果，但尚未形成可提交的完整分析。**
 
 因此当前阶段不是继续堆控制面功能，而是标定其余指标并准备正式 workload 与实验资源。
@@ -64,7 +64,7 @@ H1/H2、A10-FULL、`E5-STATIC` 和两轮 Helm smoke 不计作正式 E2–E8 的�
 
 ## 下一阶段
 
-1. 评审 E5-STATIC 干扰率，冻结阈值、统计方法与重复次数。
+1. 用阈值冻结后的干净提交独立复跑 E5-STATIC，验证 32% 门槛。
 2. 接入完整 veRL workload，明确模型、数据、seed、batch、节点和镜像 digest，推进 E3。
 3. 为 E4、正式 E5 和 E7 实现并审查环境 hook；正式 E5 不由 E5-STATIC 自动替代。
 4. 单独准备 MIG 和多节点环境执行 E2、E8；资源未具备时保持 `BLOCKED/NOT_RUN`。

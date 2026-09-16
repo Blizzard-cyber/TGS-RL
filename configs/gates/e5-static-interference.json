@@ -1,8 +1,8 @@
 {
   "schema_version": "tgsrl.io/gate-campaign/v1alpha1",
   "campaign_id": "tgsrl-e5-static-interference",
-  "campaign_revision": 1,
-  "description": "Single-node static-share HAMi co-location pilot. This does not replace dynamic E5 share and priority control.",
+  "campaign_revision": 2,
+  "description": "Single-node static-share HAMi co-location pilot with a threshold frozen from the reviewed 3c9147c A10 pilot. This does not replace dynamic E5 share and priority control.",
   "experiments": [
     {
       "experiment_id": "E5-STATIC",
@@ -26,7 +26,7 @@
         "required_faults": []
       },
       "rules": [
-        {"rule_id": "e5-static-interference-bound", "metric": "interference_ratio", "comparison": "variant", "operator": "<=", "threshold": null, "calibration_required": true}
+        {"rule_id": "e5-static-interference-bound", "metric": "interference_ratio", "comparison": "variant", "operator": "<=", "threshold": 0.32}
       ]
     }
   ]

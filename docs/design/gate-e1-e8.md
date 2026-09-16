@@ -74,10 +74,12 @@ baseline 的两个 worker 错峰执行、variant 的两个 worker 并发执行�
 该 pilot 用于得到当前硬件上的静态份额干扰边界，不满足正式 E5 的在线 `set_share` /
 `set_priority` 要求，因此不会修改正式 E5 状态。
 
-2026-09-16 的 A10 运行中，E5-STATIC 独立 report 为 `PASSED`：baseline
+2026-09-16 的 A10 pilot 中，E5-STATIC 独立 report 为 `PASSED`：baseline
 `worker_overlap_ms=0`，variant `worker_overlap_ms=8570.544`、两个并发 worker、总份额
-`0.8`，观测干扰率为 `0.229306`。由于该规则仍为 `calibration_required`，独立 campaign
-gate 保持 `BLOCKED`。详细来源、镜像和哈希见
+`0.8`，三轮观测干扰率为 `0.222769/0.218472/0.246678`。按三轮最大值乘 `1.25`
+并向上取工程档位，门槛冻结为 `0.32`，决策见
+`configs/gates/e5-static-interference-calibration.json`。必须使用后续干净提交独立确认，
+不能用同一 pilot 同时完成标定和验收。详细来源、镜像和哈希见
 [E6 与 E5-STATIC 单 A10 实验记录](../validation/e5-e6-single-a10-2026-09-16.md)。
 
 A10 实验前 readiness 另有独立 `A10-FULL` campaign。它在 E1 已证明的 exact-device 主链上，

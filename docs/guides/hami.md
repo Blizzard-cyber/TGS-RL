@@ -330,8 +330,8 @@ make gpu-e5-interference
 
 2026-09-16 已在单张 A10 上完成该 pilot：两个 worker 均实际获得 `40%` core 和
 `9211 MiB`，baseline 重叠为 `0 ms`，variant 重叠为 `8570.544 ms`，由逐 worker
-吞吐推导的干扰率为 `0.229306`。独立执行报告为 `PASSED`；由于干扰率阈值仍为
-`calibration_required`，campaign gate 保持 `BLOCKED`。见
+吞吐推导的三轮干扰率为 `0.222769/0.218472/0.246678`。按三轮最大值乘 `1.25`
+向上冻结 `0.32` 门槛，必须由后续干净提交独立确认。见
 [E6 与 E5-STATIC 单 A10 实验记录](../validation/e5-e6-single-a10-2026-09-16.md)。
 
 在 NVIDIA A10 上做毕业设计实验前验收时，优先使用 `make gpu-a10-hami-readiness` 或
@@ -347,7 +347,7 @@ make gpu-restore-dra
 
 不要用 MIG 测试阻塞不具备该能力的设备。后续分开验证：
 
-1. **E5/HAMi 干扰边界**：评审 E5-STATIC 阈值，再补动态 share/priority、OOM 与单 worker 失败；
+1. **E5/HAMi 干扰边界**：独立确认 E5-STATIC 32% 门槛，再补动态 share/priority、OOM 与单 worker 失败；
 2. **HAMi 动态份额**：验证运行中修改 core/memory 份额及 readback；
 3. **MPS**：未来实现 checkpoint/recreate 新 client 后，验证启动限额、incarnation readback 和显存边界；
 4. **MIG**：获得支持型号后再执行 E2，验证 DeviceClass、parent UUID 和 rebind。

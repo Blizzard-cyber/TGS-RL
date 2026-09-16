@@ -391,7 +391,8 @@ def test_e5_and_e6_make_targets_use_dedicated_campaign_contracts() -> None:
     assert ".cache/tgsrl/e1-e8/campaign-report.json" in e6
     assert "--campaign configs/gates/e5-static-interference.json" in e5
     assert "--experiment E5-STATIC" in e5
-    assert ".cache/tgsrl/e5-static-interference/e5-static-interference/report.json" in e5
+    assert 'select(.experiment_id == "E5-STATIC")' in e5
+    assert ".cache/tgsrl/e5-static-interference/campaign-report.json" in e5
 
 
 @pytest.mark.parametrize(
