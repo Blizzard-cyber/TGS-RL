@@ -16,13 +16,12 @@
 | 部署契约 | Dockerfiles、`compose.yaml`、`compose.gpu.yaml`、`deploy/` | 本机与 Kubernetes 打包 |
 | 开源入口 | `README.md`、`LICENSE`、`CONTRIBUTING.md`、`SECURITY.md`、`.gitattributes` | 首次运行、许可证、贡献、安全与跨平台行为 |
 | 脱敏示例 | `.example.*` 文件，例如 `configs/hardware/environment.example.json` | 展示输入结构而不携带真实环境数据 |
-| 临时协作文件 | `WORKLOG.local.md`、`handoff/`（脱敏后的 Gate 报告与日志） | 开发机与 GPU 测试机通过 GitHub 互相拉取的临时交接材料；发布前删除 |
 
-`WORKLOG.local.md` 与 `handoff/` 是开发机（无 GPU）和测试机（有 GPU）之间的临时交接约定：
-测试机把脱敏后的 E1-E8 报告和日志放入 `handoff/`，开发机拉取后修复。二者是临时脚手架，
-确定发布前应删除，并把 `/WORKLOG.local.md` 重新加入 `.gitignore`。真实凭据、kubeconfig、
-签名 key 和 `configs/hardware/environment.json` 仍然禁止提交；`evidence/`、`reports/`、
-`artifacts/` 仍被 `make check-repository` 拒绝，测试结果统一放入 `handoff/`。
+本地进度、临时交接和原始实验产物不属于公开发布内容。`PROJECT_PROGRESS.local.md`、
+`WORKLOG.local.md`、`handoff/`、`.cache/`、`evidence/`、`reports/` 和 `artifacts/`
+均应保持 ignored。真实凭据、kubeconfig、签名 key 和 `configs/hardware/environment.json`
+禁止提交。需要公开的验证结论应整理成 `docs/validation/` 下的脱敏摘要，并记录 source commit、
+环境、命令、证据等级、哈希和限制。
 
 生成的 Proto、OpenAPI 和确定性 SBOM 是有意纳入版本控制的产物。先修改其源文件，再按文档
 命令重新生成，并在同一个变更中提交源文件和产物。
@@ -79,4 +78,4 @@ Docker ignore 规则检查不等于实际 BuildKit context 检查；镜像仍需
 - 不为减少文件数合并职责不同的组件，也不删除生成代码、迁移、锁文件。
 - 缓存/依赖/构建输出无需上传，但不是必须现场删除；原始 GPU 证据、数据库和凭据必须保留。
 - 避免全仓 `git clean` 或无差别删除 `.cache`。有需要时只清理可再生且已确认归属的具体路径。
-- `handoff/` 中仅放脱敏结果摘要和必要日志；原始证据留在测试机，结果记录 source SHA 与复现命令。
+- 本地 handoff 中仅放脱敏结果摘要和必要日志；原始证据留在测试机，公开摘要记录 source SHA 与复现命令。

@@ -215,7 +215,7 @@ artifact 时，使用 `campaign-evaluate --require-pass` 做发布准入。
 - 测试 fake 默认放在 `_test.go` 或测试目录。`job-controller-go/runtimeclient/fake.go` 是共享给
   Controller 与 Service 两个测试包的有意例外；不要再把单包 fake 加入生产源码；
 - `.cache/`、`.tmp/`、`bin/`、虚拟环境、依赖目录、构建目录、
-  coverage、trace、数据库、journal 和日志属于本地产物；`WORKLOG.local.md` 与 `handoff/`
-  是开发机与 GPU 测试机之间的临时交接材料，会被提交，但发布前删除；
+  coverage、trace、数据库、journal、日志、`PROJECT_PROGRESS.local.md`、`WORKLOG.local.md`
+  与 `handoff/` 属于本地产物，不提交到公开仓库；
 - 提交前同时查看 `git status --short`、`git diff --stat`、`git diff --check` 和
   `git status --short --ignored`，确认没有漏掉源码，也没有带入本地产物。

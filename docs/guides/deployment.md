@@ -148,10 +148,11 @@ operator:
       verifyDeviceIdentities: true
 ```
 
-最终 `68f5aea` 已在专用单节点 A10 上完成六服务 Helm install/upgrade 与 A10 lifecycle，
-但其他目标集群仍需独立验证 RuntimeClass、DRA、NetworkPolicy、StorageClass、CNI 和 GPU
-驱动注入；历史 E1/H1/H2 使用专用 GPU smoke 部署，不能单独替代 Helm 实装证据。多节点需要独立的集群 inventory agent，当前
-不把一个本地 Scheduler 的 `nvidia-smi` 结果扩展成多节点能力。MPS 模式会被 chart 拒绝。
+已归档的单节点 A10 Helm 记录见
+[验证记录](../validation/README.md)。其他目标集群仍需独立验证 RuntimeClass、DRA、
+NetworkPolicy、StorageClass、CNI 和 GPU 驱动注入；历史 E1/H1/H2 使用专用 GPU smoke
+部署，不能单独替代 Helm 实装证据。多节点需要独立的集群 inventory agent，不能把一个本地
+Scheduler 的 `nvidia-smi` 结果扩展成多节点能力。MPS 模式会被 chart 拒绝。
 
 ## 4. NVIDIA 首次链路验证
 

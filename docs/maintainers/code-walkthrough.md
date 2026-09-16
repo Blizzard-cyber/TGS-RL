@@ -259,7 +259,7 @@ Trace 按 component/track 分轨，用 request/worker/executor/span/parent-span 
 | 子进程 | `make gate-cpu-integration` | Kubernetes/完整训练 |
 | 页面 | `make test-console-browser` | 真实后端操作 |
 | 配置/部署 | `make check-deploy`、`make check-governance` | 集群网络/RBAC/存储 |
-| 硬件 | E1/H1/H2、A10 readiness、两轮 Helm；E6 与 E5-STATIC 已通过各自门禁 | 正式 E2–E5/E7–E8 场景或收益未完成 |
+| 硬件 | `make gpu-smoke`、`make gpu-a10-readiness`、E1-E8 campaign | 其他硬件、拓扑或训练收益 |
 
 `gate-tools.py` 从原始 Trace 重算指标，核对 suite/seed/label/warmup/measurement/digest 和执行完整性。
 拒绝 bool/NaN/Infinity；full-stack 核对每轮 Job/Run/Plan/worker 与控制回执。GPU PASS 需实际 CUDA
@@ -268,7 +268,8 @@ measurement、硬件身份、源码 provenance，CPU 证据不升级为 GPU。
 `hardware_environment_driver.py` 实现 preflight/launch/measure/identity/control/cleanup，通过 Gateway
 操作任务，不 patch Binding 伪造决策。bind 等待同步检查 Start Operation，终态失败立即报告，进行中
 Start 不阻止成功 Decision 被读取。cleanup 使用 UID/resourceVersion 条件删除，只把服务器明确的
-`NotFound` 视为幂等完成；环境 hooks 和 provenance 边界见[工程审查](engineering-review.md)。
+`NotFound` 视为幂等完成；环境 hooks 和 provenance 边界见
+[E1-E8 验证合同](../design/gate-e1-e8.md)。
 
 ## 10. 扩展的最短路径
 

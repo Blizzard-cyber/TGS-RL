@@ -24,6 +24,11 @@ configs/hardware/environment.json
 configs/hardware/verl-job.json
 values.production.yaml
 
+# Local project coordination and progress notes
+/PROJECT_PROGRESS.local.md
+/WORKLOG.local.md
+/handoff/
+
 # Go build and test output
 bin/
 /operator

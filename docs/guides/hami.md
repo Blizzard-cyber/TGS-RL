@@ -328,14 +328,12 @@ make gpu-e5-interference
 这项 `E5-STATIC` pilot 不声明 HAMi 在线动态修改份额或优先级。正式 E5 仍要求 Scheduler
 权威动作和 infrastructure readback；当前 HAMi 实现只兑现启动时静态 core/memory 配额。
 
-2026-09-16 已在单张 A10 上完成该 pilot：两个 worker 均实际获得 `40%` core 和
-`9211 MiB`，baseline 重叠为 `0 ms`，variant 重叠为 `8570.544 ms`，由逐 worker
-吞吐推导的三轮干扰率为 `0.222769/0.218472/0.246678`。按三轮最大值乘 `1.25`
-向上冻结 `0.32` 门槛；后续干净提交 `9a4321d` 独立确认测得三轮
-`0.071733/0.058150/0.188928`，均值 `0.106270`，正式 gate 为 `PASSED`。见
+已归档的单张 A10 pilot 中，两个 worker 均实际获得 `40%` core 和 `9211 MiB`，
+baseline 与 variant 分别形成错峰/共置对照，并按三轮最大值乘 `1.25` 向上冻结
+`0.32` 门槛。独立确认运行通过该门槛。完整数值、commit、镜像和哈希见
 [E6 与 E5-STATIC 单 A10 实验记录](../validation/e5-e6-single-a10-2026-09-16.md)。
 
-在 NVIDIA A10 上做毕业设计实验前验收时，优先使用 `make gpu-a10-hami-readiness` 或
+在 NVIDIA A10 上做单节点工程验收时，优先使用 `make gpu-a10-hami-readiness` 或
 完整的 `make gpu-a10-readiness`。它会先核对卡型，再复用同一 H2 合同，并在结束后恢复
 DRA；完整入口还会复跑 E1 和生成聚合摘要。详见 [A10 Readiness](a10-readiness.md)。
 
@@ -348,7 +346,7 @@ make gpu-restore-dra
 
 不要用 MIG 测试阻塞不具备该能力的设备。后续分开验证：
 
-1. **E5/HAMi 干扰边界**：E5-STATIC 已通过 32% 门槛，下一步补动态 share/priority、OOM 与单 worker 失败；
+1. **E5/HAMi 干扰边界**：E5-STATIC 只覆盖固定份额共置，动态 share/priority、OOM 与单 worker 失败需要独立 gate；
 2. **HAMi 动态份额**：验证运行中修改 core/memory 份额及 readback；
 3. **MPS**：未来实现 checkpoint/recreate 新 client 后，验证启动限额、incarnation readback 和显存边界；
 4. **MIG**：获得支持型号后再执行 E2，验证 DeviceClass、parent UUID 和 rebind。

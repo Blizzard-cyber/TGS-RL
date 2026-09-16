@@ -136,18 +136,18 @@ Pod projection/readiness 和 durable runtime receipt。`make engineering-fault-r
 crash、响应丢失、pending receipt 重启调和、Operator partial failure、Provider unavailable 和
 Runtime SQLite 恢复的实际测试结果写成独立报告。
 
-已归档的 E1 证明单节点 DRA/CDI 可见 UUID、注册、CUDA Trace 与清理；H1/H2 增加 HAMi
-份额兑现和双 worker 同卡并发；最终 `68f5aea` 的 A10 readiness 与两轮 Helm smoke 还验证了
-checkpoint/offload/reload、孤儿 observation registration 回收和重复部署。结果仅适用于各记录中的版本与环境，见
+已归档的 E1/H1/H2、A10 readiness 和 Helm 记录证明过单节点 DRA/CDI 可见 UUID、注册、CUDA
+Trace、HAMi 份额、checkpoint/offload/reload、孤儿 observation registration 回收和重复部署。
+结果仅适用于各记录中的版本与环境，见[验证记录](../validation/README.md)和
 [支持矩阵](../reference/current-capabilities.md)。
 
 仍需目标环境验证：
 
 - Pod restart、跨节点 endpoint、NetworkPolicy 与异常退出恢复；
 - MPS checkpoint/recreate 新 client、启动份额注入及 incarnation readback；
-- A10 最小 trainer 的 checkpoint/offload/reload 与真实显存释放已完成单卡实机验证；
+- 最小 trainer 的 checkpoint/offload/reload 与真实显存释放需要按目标硬件独立验证；
 - E6 runner 已将 pause、checkpoint、offload、reload、resume 拆成独立 scoped registry
-  请求并记录 receipt/耗时；该实现尚需对应提交上的 A10 报告；
+  请求并记录 receipt/耗时；
 - 完整 veRL trainer、distributed collective 和真实模型 checkpoint 仍待专门 workload；
 - MIG rebind、部分失败、超时和未知结果调和。
 

@@ -162,10 +162,9 @@ Scheduler registry 和 bootstrap control endpoint 都没有内建 TLS；明文 H
 ## Kubernetes 部署工件
 
 本地 Kubernetes 工具链固定 Minikube `1.38.1`、Kubernetes `1.35.1` 和 Kueue
-`0.19.2`；kubectl 应与 API server 保持在同一 minor 或相邻 minor。E1/H1/H2 已在专用
-单节点 GPU smoke 路径验证设备兑现、注册和 CUDA Trace；最终 `68f5aea` 还完成了六服务
-NVIDIA Helm install/upgrade、Gateway 四依赖就绪、A10 lifecycle 和同 PVC 重跑。该结果只覆盖
-记录中的单节点 Minikube 环境，不推广为其他集群、网络策略或所有故障恢复已验证。
+`0.19.2`；kubectl 应与 API server 保持在同一 minor 或相邻 minor。已归档的单节点 GPU
+smoke 与 Helm 验证记录见 [验证记录](../validation/README.md)。这些结果只覆盖记录中的
+版本、镜像、硬件和 Minikube 环境，不推广为其他集群、网络策略或所有故障恢复已验证。
 
 ```bash
 minikube start --profile tgsrl --driver=docker --kubernetes-version=v1.35.1

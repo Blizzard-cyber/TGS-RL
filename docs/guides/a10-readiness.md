@@ -1,6 +1,6 @@
 # NVIDIA A10 工程验收
 
-本指南用于毕业设计实验前的工程验收。它验证代码、控制链、真实 CUDA、同卡共享、恢复和
+本指南用于单节点 NVIDIA A10 工程验收。它验证代码、控制链、真实 CUDA、同卡共享、恢复和
 证据归档是否可工作；它**不**执行 E3–E8 性能标定，也不把一次 smoke 解释为调度收益、
 完整训练或生产可靠性。
 
@@ -141,7 +141,7 @@ make gpu-a10-readiness
 四个组件必须都为 `PASSED`，总状态才是 `PASSED`。摘要始终列出未执行的 MIG、多节点和 GPU
 集群故障，不会用已有 H2 历史报告或本机 CPU 结果代替本次提交的实机结果。
 
-readiness 通过后，当前单卡可继续执行：
+readiness 通过后，可按需执行单节点后续 gate：
 
 ```bash
 make gpu-e6-action-cost
@@ -152,11 +152,8 @@ make gpu-e5-interference
 ```
 
 E6 使用代表性 CUDA tensor workload 测五步 lifecycle；`gpu-e5-interference` 执行
-`E5-STATIC` 静态份额 pilot。2026-09-16 已完成一轮真实 A10 采集，两项独立执行报告均为
-`PASSED`。E6 随后在 `13d0f34` 独立运行中以 `54.479/695.910/272.408 ms`
-通过 `60/900/400 ms` 门槛；E5-STATIC 随后在 `9a4321d` 独立运行中以
-`10.63%` 平均干扰率通过 `32%` 门槛。`E5-STATIC` 不替代正式 E5 动态
-share/priority 门禁。详见
+`E5-STATIC` 静态份额 pilot。`E5-STATIC` 不替代正式 E5 动态 share/priority 门禁。
+已归档的 A10 执行结果见
 [E6 与 E5-STATIC 单 A10 实验记录](../validation/e5-e6-single-a10-2026-09-16.md)。
 
 ## Helm 六服务验收
@@ -187,10 +184,8 @@ make gpu-helm-smoke
 - 通过 port-forward 复用 A10 Full lifecycle；
 - 无论成功失败都保存 Helm status、values、资源快照、控制面日志和 SHA-256 索引。
 
-默认证据目录是 `.cache/tgsrl/helm-smoke/`。最终基线 `68f5aea` 在同一组 PVC 上连续完成
-install 与 upgrade 两轮 smoke，每轮 315 个索引文件均通过逐项 SHA-256 校验；单张 A10 的
-六服务实装与 lifecycle 已通过，
-见 [A10 工程与 Helm 验收记录](../validation/a10-readiness-2026-09-14.md)。该记录不能替代
+默认证据目录是 `.cache/tgsrl/helm-smoke/`。已归档的单张 A10 六服务实装与 lifecycle
+结果见 [A10 工程与 Helm 验收记录](../validation/a10-readiness-2026-09-14.md)。该记录不能替代
 其他 Kubernetes 版本、StorageClass、CNI、GPU 型号或多节点拓扑的独立验证。
 
 ## 结果判定

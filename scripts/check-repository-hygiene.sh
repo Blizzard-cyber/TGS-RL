@@ -46,6 +46,7 @@ required_files=(
   docs/README.md
   docs/getting-started.md
   docs/reference/current-capabilities.md
+  docs/validation/README.md
   docs/maintainers/repository-hygiene.md
   .gitattributes
   CONTRIBUTING.md

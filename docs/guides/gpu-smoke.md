@@ -1,6 +1,6 @@
 # 单机 GPU 全链路 Smoke
 
-本指南用于一台全新的 Linux GPU 机器。目标不是测毕业设计性能，而是先获得一条可复现的
+本指南用于一台全新的 Linux GPU 机器。目标不是测训练性能，而是先获得一条可复现的
 端到端证据：
 
 ```text
@@ -271,12 +271,11 @@ make gpu-down
 | device identity mismatch | Scheduler、DRA allocation、worker `nvidia-smi -L` 三方 UUID |
 | 有 Trace 但不是 GPU 证据 | 确认 `dataKind=LIVE`、CUDA 可用且 evidence 为 `GPU_SINGLE_NODE` |
 
-## 8. 首轮通过后的顺序
+## 8. 首轮通过后的后续验证
 
 E1 通过后先执行 [A10 工程验收](a10-readiness.md)，确认 cooperative offload/resume、
-显存释放/恢复、HAMi H2、DRA 恢复和可选 Helm 六服务实装。它仍不代表毕业实验结论成立。
-E6 与 E5-STATIC 已于 2026-09-16 完成首轮真实 A10 采集，并分别完成独立门禁确认；
-当前建议按依赖顺序继续推进：
+显存释放/恢复、HAMi H2、DRA 恢复和可选 Helm 六服务实装。它仍不代表 release campaign
+的其他实验结论成立。建议按依赖顺序继续准备：
 
 ```text
 E3 throughput / VUG
@@ -288,11 +287,19 @@ E3 throughput / VUG
 
 E2 MIG identity 在获得支持 MIG 的目标 GPU 后插入，不在当前 A10 上强行改拓扑。其余
 带 `calibration_required` 的规则必须用真实 baseline 数据标定并人工审定；首轮 smoke 不会
-自动把这些门禁改成 PASS。当前逐项状态见[毕设推进状态](../project-progress.md)。
+自动把这些门禁改成 PASS。
 
-当前单 A10 已用 `make gpu-e6-action-cost` 和 `make gpu-e5-interference` 完成首轮采集。
-E6 与 E5-STATIC 独立执行报告均为 `PASSED`。E6 已冻结 `60/900/400 ms` 门槛，
-并在 `13d0f34` 独立确认中三项全部通过；E5-STATIC 也已在 `9a4321d`
-独立确认中以 `0.106270` 通过 `0.32` 门槛。`E5-STATIC` 是正式 E5 的前置 pilot，
-不包含在线 `set_share` / `set_priority`，不能据此将正式 E5 标为通过。结果见
+可选的单节点后续入口：
+
+```bash
+make gpu-e6-action-cost
+make gpu-down
+make gpu-prepare-hami
+make gpu-hami-up
+make gpu-e5-interference
+```
+
+`gpu-e6-action-cost` 验证 lifecycle 动作代价；`gpu-e5-interference` 运行固定 HAMi 份额的
+`E5-STATIC` 辅助 gate。`E5-STATIC` 不包含在线 `set_share` / `set_priority`，不能据此将
+正式 E5 标为通过。已归档结果见
 [E6 与 E5-STATIC 单 A10 实验记录](../validation/e5-e6-single-a10-2026-09-16.md)。

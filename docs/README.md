@@ -8,13 +8,12 @@ TGS-RL 连接强化学习的任务控制、训练语义、资源调度与进程�
 | 你想做什么 | 阅读入口 |
 |---|---|
 | 了解项目解决什么问题 | [项目首页](../README.md) |
-| 查看毕设推进到哪一步 | [毕设推进状态](project-progress.md) |
 | 在本机启动前后端、提交第一个任务 | [快速上手](getting-started.md) |
 | 通过 HTTP、CLI、SDK 操作任务和 Trace | [API、CLI 与 Console](guides/api-and-console.md) |
 | 在 Kubernetes 部署控制面 | [部署指南](guides/deployment.md) |
 | 在空白 NVIDIA 主机验证全链路 | [单机 GPU Smoke](guides/gpu-smoke.md) |
 | 使用 HAMi 兑现单卡分数份额 | [HAMi vGPU 接入](guides/hami.md) |
-| 执行实验前 A10 工程验收 | [A10 Readiness](guides/a10-readiness.md) |
+| 执行单节点 NVIDIA 工程验收 | [A10 Readiness](guides/a10-readiness.md) |
 | 判断功能是否适合自己的环境 | [支持范围与限制](reference/current-capabilities.md) |
 
 ## 理解设计与实现
@@ -51,10 +50,10 @@ flowchart LR
 |---|---|
 | 开发依赖、无 Docker 启动、回归命令 | [开发指南](maintainers/development.md) |
 | Git、Docker context、Python wheel 的内容边界 | [仓库卫生与发布](maintainers/repository-hygiene.md) |
-| 本轮审查、已修复缺陷与未覆盖风险 | [工程审查记录](maintainers/engineering-review.md) |
-| 毕设里程碑、正式实验状态与下一阶段 | [毕设推进状态](project-progress.md) |
+| 工程审查范围、风险分级与证据要求 | [工程审查指南](maintainers/engineering-review.md) |
 | 硬件场景与证据规则 | [E1–E8 设计](design/gate-e1-e8.md) |
-| 当前单卡实验入口 | [GPU Smoke 后续实验](guides/gpu-smoke.md#8-首轮通过后的顺序) |
+| 单机 GPU 验证入口 | [GPU Smoke 后续验证](guides/gpu-smoke.md#8-首轮通过后的后续验证) |
+| 验证记录索引 | [验证记录](validation/README.md) |
 | Full GPU 实机结果 | [E1 验证记录](validation/e1-full-gpu-2026-09-12.md) |
 | HAMi 单 worker 份额 | [H1 验证记录](validation/h1-hami-vgpu-2026-09-12.md) |
 | HAMi 双 worker 同卡并发 | [H2 验证记录](validation/h2-hami-concurrency-2026-09-13.md) |
@@ -62,8 +61,7 @@ flowchart LR
 | E6 动作代价与 E5-STATIC 干扰 | [单 A10 实验记录](validation/e5-e6-single-a10-2026-09-16.md) |
 
 验证记录只适用于其中写明的 commit、环境和场景；不能把 E1/H1/H2、A10 readiness、Helm
-smoke 或 CPU CI 解释为 MIG/MPS、完整训练、生产可靠性或调度收益已证明。工程链路验证已经
-完成，当前正式进入实验标定与论文结果阶段；以
-[毕设推进状态](project-progress.md)为统一进度口径。
+smoke 或 CPU CI 解释为 MIG/MPS、完整训练、生产可靠性或调度收益已证明。项目进度、论文
+计划、硬件排期和临时交接记录属于本地维护材料，不进入公开文档目录。
 
 参与项目请阅读[贡献指南](../CONTRIBUTING.md)和[安全策略](../SECURITY.md)。

@@ -4,18 +4,21 @@
 验收入口**，不是硬件通过声明。没有目标 GPU/Kubernetes 环境报告时，实验状态必须保持
 `NOT_RUN`；证据结构错误、设备身份不一致或故障事件不完整时为 `INVALID`。
 
-## 实验矩阵
+## Release Validation 矩阵
 
-| 实验 | 目标 | 当前状态 | 关键要求 | 当前阈值状态 |
+下表描述每项 release validation 的准入合同。仓库中的历史验证记录只说明已有 evidence；
+没有导入目标环境报告时，任何实验都不能因为代码存在、CI 通过或相邻实验通过而自动通过。
+
+| 实验 | 目标 | 已归档 evidence | 关键要求 | 阈值状态 |
 |---|---|---|---|---|
 | E1 | Full GPU 精确设备执行 | **PASSED**，`GPU_SINGLE_NODE` | Scheduler、DRA allocation 与 worker UUID 一致；bind 成功 | action success 已锁定 |
-| E2 | MIG 精确设备执行 | **BLOCKED / NOT_RUN**，当前 A10 无可用 MIG 拓扑 | MIG profile、parent UUID、设备身份一致；bind/rebind 成功 | action success 已锁定 |
-| E3 | 吞吐与 Valuable Useful GPU | **NOT_RUN**，待正式 workload | 同模型、数据、seed、节点；采集 GPU active/useful time | throughput 下限已锁定；VUG 待校准 |
-| E4 | policy lag、staleness 与 ESS | **NOT_RUN**，待环境 hook | 注入 policy update delay；采集真实 batch quality | 待校准 |
-| E5 | 共置干扰隔离 | **NOT_RUN**；E5-STATIC 已完成 A10 采集，但不替代正式 E5 | 正式 E5 仍需 competing workload 与动态 share/priority 控制 | 待校准 |
+| E2 | MIG 精确设备执行 | 无正式硬件 evidence | MIG profile、parent UUID、设备身份一致；bind/rebind 成功 | action success 已锁定 |
+| E3 | 吞吐与 Valuable Useful GPU | 无正式硬件 evidence | 同模型、数据、seed、节点；采集 GPU active/useful time | throughput 下限已锁定；VUG 待校准 |
+| E4 | policy lag、staleness 与 ESS | 无正式硬件 evidence | 注入 policy update delay；采集真实 batch quality | 待校准 |
+| E5 | 共置干扰隔离 | 无正式 E5 evidence；E5-STATIC 是独立辅助 gate | 正式 E5 仍需 competing workload 与动态 share/priority 控制 | 待校准 |
 | E6 | lifecycle 动作代价 | **PASSED**；`13d0f34` A10 独立确认、`GPU_SINGLE_NODE` | pause/checkpoint/offload/reload/resume 全部有独立 receipt | 54.479/695.910/272.408 ms 均通过 60/900/400 ms |
-| E7 | 故障与事务恢复 | **NOT_RUN**，CPU/进程故障不替代 GPU fault | worker exit、response loss 均有 injected/recovered 事件 | action success 已锁定；恢复时间待校准 |
-| E8 | 多节点稳定性与收敛 | **BLOCKED / NOT_RUN**，缺少两个 GPU 节点 | 至少两节点；node loss 恢复；两侧节点集合一致 | throughput 下限已锁定；收敛质量待校准 |
+| E7 | 故障与事务恢复 | 无正式硬件 evidence；CPU/进程故障不替代 GPU fault | worker exit、response loss 均有 injected/recovered 事件 | action success 已锁定；恢复时间待校准 |
+| E8 | 多节点稳定性与收敛 | 无正式多节点 evidence | 至少两节点；node loss 恢复；两侧节点集合一致 | throughput 下限已锁定；收敛质量待校准 |
 
 机器可读入口为：
 
@@ -229,10 +232,10 @@ make gate-campaign-calibrate
 保留在 `missing` 中，状态为 `INCOMPLETE`。E6 的标定决策已经单独保存在
 `configs/gates/e6-action-cost-calibration.json`，后续确认运行不得修改该文件。
 
-## 当前验证边界
+## 验证边界
 
 仓库 CI 会验证 campaign schema、证据降级、设备身份分叉、故障证据缺失、场景 digest、
 日志复制和未校准阈值的 fail-closed 行为。`make gate-cpu-integration` 已验证完整本地服务链，
-但仍输出 `CPU_INTEGRATION/NOT_RUN`。E1 已在 `68f5aea` 之前和最终 readiness 中取得真实
-单节点 GPU 证据；E2–E8 的 MIG、正式 workload、故障、性能与多节点结果仍必须在目标环境
-执行后再导入。整体推进顺序见[毕设推进状态](../project-progress.md)。
+但仍输出 `CPU_INTEGRATION/NOT_RUN`。已归档的真实 GPU 记录见
+[验证记录](../validation/README.md)；MIG、正式 workload、故障、性能与多节点结果仍必须在
+目标环境执行后再导入，不能由 CPU、Mock、Synthetic 或相邻硬件记录替代。

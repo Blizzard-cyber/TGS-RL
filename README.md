@@ -8,7 +8,7 @@
   <a href="LICENSE"><img alt="Apache-2.0" src="https://img.shields.io/badge/license-Apache--2.0-blue.svg"></a>
 </p>
 
-[快速开始](#快速开始) · [毕设进度](docs/project-progress.md) · [系统架构](#系统架构) · [项目文档](docs/README.md) · [参与开发](CONTRIBUTING.md)
+[快速开始](#快速开始) · [系统架构](#系统架构) · [验证与能力](docs/validation/README.md) · [项目文档](docs/README.md) · [参与开发](CONTRIBUTING.md)
 
 </div>
 
@@ -120,7 +120,7 @@ flowchart LR
 不同时计入 MIG 父卡和子设备，也不创建或销毁 MIG 拓扑。
 
 - [NVIDIA / HAMi 使用指南](docs/guides/hami.md)
-- [NVIDIA A10 工程验收](docs/guides/a10-readiness.md)
+- [单节点 NVIDIA 工程验收](docs/guides/a10-readiness.md)
 - [可插拔加速器设计](docs/design/accelerator-extension.md)
 - [完整支持矩阵与限制](docs/reference/current-capabilities.md)
 
@@ -152,29 +152,14 @@ API 和字段说明见[API、CLI 与 Console](docs/guides/api-and-console.md)。
 | 本机验证真实进程 | `make gate-cpu-integration` | 实际服务 API、bootstrap、Unix socket、pause/resume 回执与 Trace；不启动 Console |
 | 空白 NVIDIA 主机验证全链路 | [GPU Smoke 指南](docs/guides/gpu-smoke.md) | Full GPU、Kubernetes/DRA、CUDA worker、注册与清理 |
 | 验证同卡分数共享 | [HAMi 指南](docs/guides/hami.md) | H1 份额兑现与 H2 同卡并发 |
-| 毕业设计实验前做 A10 工程验收 | [A10 Readiness](docs/guides/a10-readiness.md) | Full lifecycle、显存释放/恢复、H2、DRA 回归、Helm 证据 |
-| 当前单卡毕业实验 | [E1–E8 设计](docs/design/gate-e1-e8.md) | E6 与 E5-STATIC 已通过；正式 E5 仍待动态控制能力 |
+| 做单节点 NVIDIA 工程验收 | [A10 Readiness](docs/guides/a10-readiness.md) | Full lifecycle、显存释放/恢复、H2、DRA 回归、Helm 证据 |
+| 执行发布验证 campaign | [E1–E8 设计](docs/design/gate-e1-e8.md) | Full GPU、MIG、吞吐、staleness、干扰、动作代价、故障恢复与多节点收敛 |
 | 部署 Kubernetes 控制面 | [部署指南](docs/guides/deployment.md) | 六服务 Helm 的配置、依赖和部署边界 |
 
-**当前阶段已从工程实现转入正式毕业实验。** 最终工程基线 `68f5aea` 已通过 A10 lifecycle、
-H2、DRA 恢复 E1 和同一 PVC 上连续两轮六服务 Helm smoke；正式 E1 已通过，但 E2–E8
-尚未全部执行，因此当前不宣称完整 veRL trainer、distributed collective、MIG/MPS、多节点、
-强隔离或性能收益已经证明。完整阶段矩阵见[毕设推进状态](docs/project-progress.md)。
-历史证据各自绑定当时的源代码版本，不能自动覆盖后续修改。
-
-E6 五步 lifecycle 与 `E5-STATIC` 单卡静态份额干扰 pilot 已在真实 A10 上完成执行，
-两项独立 report 均为 `PASSED`。E6 已按 pilot 三轮最大值加 25% headroom 冻结为
-`60/900/400 ms`，并在后续提交的独立确认运行中正式通过；E5-STATIC 也已在
-`9a4321d` 独立确认中以 `10.63%` 平均干扰率通过 `32%` 门槛。
-`E5-STATIC` 不替代正式 E5 的动态 share/priority 门禁。
-
-| 已归档的硬件验证 | 记录 |
-|---|---|
-| E1 单节点 Full GPU | [环境、身份回读与清理](docs/validation/e1-full-gpu-2026-09-12.md) |
-| H1 HAMi 单 worker | [请求份额与实际分配](docs/validation/h1-hami-vgpu-2026-09-12.md) |
-| H2 HAMi 双 worker | [同卡身份与执行重叠](docs/validation/h2-hami-concurrency-2026-09-13.md) |
-| A10 lifecycle、H2、DRA 恢复与 Helm | [工程与部署验收](docs/validation/a10-readiness-2026-09-14.md) |
-| E6 与 E5-STATIC | [动作代价与静态共置干扰](docs/validation/e5-e6-single-a10-2026-09-16.md) |
+验证结论只在对应记录写明的 commit、环境、镜像和场景内成立。历史 GPU PASS 不自动外推到
+其他拓扑、模型、集群版本、MIG/MPS、多节点或性能收益；缺少目标环境报告时，相关能力保持
+未验证状态。公开证据索引见[验证记录](docs/validation/README.md)，支持边界见
+[支持范围与限制](docs/reference/current-capabilities.md)。
 
 ## 代码地图
 
@@ -225,7 +210,7 @@ make gate-cpu-integration
 - worker registry 有作用域令牌和身份校验，但不能代替整个系统的入口安全。
 - 各服务独立持久化，不提供跨服务原子事务、自动 HA 或灾备。
 - Git 不提交数据库、日志、缓存、原始硬件证据、kubeconfig 或凭据；Docker context 也必须单独排除它们。
-- `WORKLOG.local.md` 和 `handoff/` 暂用于跨机器开发测试交接，不是产品运行依赖；正式发布前移除。
+- 本地进度、交接记录和原始实验产物保留在 ignored 文件或 `.cache/` 中，不进入公开发布内容。
 
 详见[仓库与发布内容规范](docs/maintainers/repository-hygiene.md)。
 
